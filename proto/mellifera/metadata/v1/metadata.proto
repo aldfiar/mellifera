@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package mellifera.metadata.v1;
+
+option go_package = "github.com/mellifera/mellifera/proto/mellifera/metadata/v1;metadatav1";
+
+import "mellifera/common/v1/common.proto";
+import "mellifera/scanner/v1/scanner.proto";
+import "mellifera/metadata/v1/request_spec.proto";
+import "google/protobuf/struct.proto";
+
+service MetadataSource {
+  // MATCH: does this plugin apply to the item, and what query will it use?
+  rpc Match(MatchRequest) returns (MatchResult);
+
+  // BUILD_REQUEST: turn a query into a concrete, serializable HTTP request spec.
+  // This is the dual-mode pivot: the spec is pure data and can be executed
+  // by EITHER the server (Mode A) or the client (Mode B).
+  rpc BuildRequest(BuildRequestRequest) returns (BuildRequestResponse);
+
+  // CONVERT: transform a raw upstream response into normalized metadata.
+  // Pure server-side function. Runs identically whether the response came
+  // from a server-side fetch (Mode A) or a client POST (Mode B).
+  rpc Convert(ConvertRequest) returns (ConvertResult);
+
+  // MERGE: integrate this plugin's metadata into the aggregate document.
+  // Two invariants the plugin MUST honor (core validates post-call, §3.3):
+  //   (a) only write into its OWN source namespace
+  //   (b) update the _view layer per the supplied MergePolicy
+  rpc Merge(MergeRequest) returns (MergeResult);
+}
+
+// --- Match ---
+
+message MatchRequest {
+  // The scanned item (parsed fields available for fuzzy title matching).
+  mellifera.scanner.v1.IdentifyResult item = 1;
+
+  string module_type = 2;
+
+  // Existing identifiers on the current document (for re-enrichment /
+  // ID-anchored match, e.g. {"tmdb_id": 1396}). Empty on first enrichment.
+  google.protobuf.Struct existing_ids = 3;
+
+  // Module-supplied plugin options (verbatim from module config §2.4).
+  google.protobuf.Struct options = 4;
+}
+
+message MatchResult {
+  // False => this plugin has nothing to contribute; core skips subsequent RPCs.
+  bool applies = 1;
+
+  // The logical query this plugin will use. Opaque to the core; passed back
+  // to BuildRequest. Example: {"title":"Breaking Bad","year":2008,"language":"ru"}.
+  google.protobuf.Struct query = 2;
+
+  // How confident the match is. Used by the UI to flag low-confidence items
+  // for review; NOT used by the core to short-circuit (priority is policy).
+  double confidence = 3;
+
+  // Human-readable reason (debug/UI). e.g. "matched by tmdb_id 1396" or
+  // "fuzzy title match 0.86, year mismatch".
+  string reason = 4;
+
+  // If non-empty, the plugin claims a stable upstream id for this item
+  // (e.g. {"kinopoisk_id": 270365}). The core writes these into document.identifiers
+  // so future matches are ID-anchored, not fuzzy.
+  google.protobuf.Struct resolved_ids = 5;
+}
+
+// --- BuildRequest ---
+
+message BuildRequestRequest {
+  google.protobuf.Struct query = 1;     // from MatchResult.query
+  string module_type = 2;
+  mellifera.common.v1.AuthContext auth = 3;                  // whose credentials, §6
+  google.protobuf.Struct options = 4;
+}
+
+message BuildRequestResponse {
+  RequestSpec spec = 1;
+}
+
+// --- Convert ---
+
+message ConvertRequest {
+  // The original query, so the plugin can interpret response fields whose
+  // meaning depends on what was asked (e.g. multi-search vs id-lookup).
+  google.protobuf.Struct query = 1;
+
+  // Raw HTTP response body (verbatim bytes). The plugin parses its own format.
+  bytes raw_response = 2;
+
+  int32 http_status = 3;
+  map<string, string> response_headers = 4;
+
+  string module_type = 5;
+  google.protobuf.Struct options = 6;
+}
+
+message ConvertResult {
+  // Normalized metadata in the plugin's namespace shape. Plugin returns
+  // ONLY its own contribution; cross-source reconciliation is Merge's job.
+  //
+  // Convention (§3): top-level keys are the plugin's contribution fields,
+  // e.g. {"titles":{"ru":"Во все тяжкие"},"ratings":{"score":8.9,"votes":215000}}.
+  // The core wraps this into document["sources"][plugin_id] during Merge.
+  google.protobuf.Struct metadata = 1;
+
+  // Per-field provenance (informational; core also stamps at merge time).
+  map<string, mellifera.common.v1.Provenance> provenance = 2;
+
+  // Soft warnings (e.g. "response truncated", "rate limit header observed").
+  repeated string warnings = 3;
+
+  // If Convert could not run (http 404, parse failure), set error and leave
+  // metadata empty. The core records this; the document is not corrupted.
+  Error error = 4;
+}
+
+message Error {
+  string code = 1;            // "upstream_404" | "parse_error" | "rate_limited" | ...
+  string message = 2;
+  bool retryable = 3;         // core may retry with backoff if true
+}
+
+// --- Merge ---
+
+message MergeRequest {
+  // Incoming metadata (from Convert, possibly user-edited in Mode B).
+  // For Mode B user edits, this carries a "_user" namespace marker.
+  google.protobuf.Struct incoming = 1;
+
+  // Current document state (the core passes the full document; the plugin
+  // is expected to only touch its own namespace — see §3.3 for the invariant).
+  mellifera.common.v1.MediaDocument document = 2;
+
+  string module_type = 3;
+  string plugin_id = 4;       // which source namespace to write
+
+  // Policy derived from module config (§2.4, §3.2): source priority order,
+  // language preference, per-field source overrides.
+  MergePolicy policy = 5;
+}
+
+message MergePolicy {
+  // Ordered source ids, highest precedence first. Drives view computation.
+  // Example for a Russian-first TV module: ["kinopoisk","tmdb"].
+  repeated string source_priority = 1;
+
+  // Ordered language preference for string fields (titles, overview).
+  // Example: ["ru","en"].
+  repeated string language_preference = 2;
+
+  // Per-field source pin. e.g. {"images.poster": "tmdb"} — always use TMDB
+  // for posters regardless of source_priority.
+  map<string, string> field_source_overrides = 3;
+
+  // If true, incoming is treated as user-authored and pinned to the "_user"
+  // namespace with highest view precedence (over all sources).
+  bool user_edit = 4;
+}
+
+message MergeResult {
+  mellifera.common.v1.MediaDocument document = 1;
+  repeated mellifera.common.v1.MergeConflict conflicts = 2;
+  repeated mellifera.common.v1.ViewBinding view = 3;   // the recomputed view bindings
+  repeated string warnings = 4;
+}

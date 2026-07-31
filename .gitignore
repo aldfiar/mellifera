@@ -1,0 +1,21 @@
+# Mellifera — build artifacts, IDE, OS, runtime
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+*.iml
+
+# Go build artifacts
+/bin/
+/base-scanner
+/mellifera
+*.exe
+*.test
+coverage.out
+coverage.html
+*.prof
+
+# Runtime data (SQLite DBs, plugin extraction, caches)
+/data/

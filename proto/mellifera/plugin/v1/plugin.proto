@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package mellifera.plugin.v1;
+
+option go_package = "github.com/mellifera/mellifera/proto/mellifera/plugin/v1;pluginv1";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// Every plugin MUST serve this service, in addition to its capability services.
+service Plugin {
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+  // Graceful shutdown hook. Core calls before SIGTERMing the subprocess.
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+message HandshakeRequest {
+  string core_version = 1;       // semver, for compat gating
+  string core_instance_id = 2;   // unique per core process; lets a stateful
+                                 // plugin (if any) scope its state per core
+  google.protobuf.Struct core_capabilities = 3; // reserved: future core-side features
+}
+
+message HandshakeResponse {
+  string plugin_id = 1;           // globally unique, matches repo manifest id
+  string plugin_version = 2;      // semver
+  string sdk_version = 3;         // Mellifera plugin SDK contract version (== proto vN)
+
+  // Compatibility floor: refuse to load below this core version.
+  string min_core_version = 4;
+
+  // Human-readable, localized (ru/en) for the UI.
+  LocalizedString display_name = 5;
+  LocalizedString description = 6;
+
+  // What this plugin provides. Core uses this to populate the capability
+  // registry and to validate module configs that reference this plugin.
+  repeated CapabilityDeclaration capabilities = 7;
+
+  // Initial health snapshot (core will poll Health thereafter).
+  HealthResponse health = 8;
+}
+
+message CapabilityDeclaration {
+  // Capability type id. Well-known MVP values: "scanner", "metadata_source".
+  // Future: "image_provider", "subtitle_provider", "transcoder".
+  string type = 1;
+
+  // Instance id within the plugin (a plugin MAY serve >1 capability of the
+  // same type, e.g. two scanners with different heuristics). Defaults to "default".
+  string id = 2;
+
+  // Fully-qualified gRPC service name the core should bind this capability to.
+  // e.g. "mellifera.scanner.v1.Scanner" or "mellifera.metadata.v1.MetadataSource".
+  // Lets the core cast its gRPC client to the right stub without guessing.
+  string proto_service = 3;
+
+  // JSON Schema describing the config this plugin accepts (validated by the
+  // core when a module references this plugin). Empty = no config expected.
+  google.protobuf.Struct config_schema = 4;
+
+  // Which module media_types this plugin CLAIMS to handle. Informational only;
+  // module config is authoritative (a module MAY bind a plugin that didn't
+  // list its media_type — the plugin then receives module_type in each RPC
+  // and decides whether to handle it).
+  repeated string claimed_media_types = 5;
+
+  // Secret names this plugin needs (e.g. ["api_key"]). Drives AuthContext.
+  // If empty and mode=SERVER, no secrets are injected; if mode=CLIENT,
+  // no redacted_ref appears.
+  repeated string required_secrets = 6;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    SERVING = 1;          // fully operational
+    DEGRADED = 2;         // serving but with issues (e.g. rate-limited, quota low)
+    NOT_SERVING = 3;      // cannot handle requests
+  }
+  Status status = 1;
+  LocalizedString message = 2;
+  // Free-form details: quota_remaining, last_error, upstream_latency_ms, ...
+  google.protobuf.Struct details = 3;
+}
+
+message ShutdownRequest {
+  string reason = 1;
+}
+message ShutdownResponse {}
+
+message LocalizedString {
+  map<string, string> values = 1;  // {"ru":"Кинопоиск","en":"Kinopoisk"}
+}

@@ -1,0 +1,69 @@
+{
+  "stack": {
+    "language": "go",
+    "version": "1.25.0 (toolchain go1.25.3)",
+    "package_manager": "go (modules)",
+    "env_activation": {"runner": "go", "detected_by": "go.mod present; go1.25.3 toolchain", "note": "detect-record-instruct; /load does not source"},
+    "runtime": "go runtime (single static binary, no CGO)",
+    "framework": ["chi v5 (HTTP router)", "hashicorp/go-plugin v1.8.0 (gRPC subprocess plugins)"],
+    "rpc": ["google.golang.org/grpc", "google.golang.org/protobuf"],
+    "database": "sqlite via modernc.org/sqlite (pure-Go, no CGO) + JSON columns (json_extract, generated columns)",
+    "codegen": "protoc 29.3 -> proto/mellifera/{common,scanner,metadata,plugin}/v1/*.pb.go (committed; buf not installed, protoc fallback used)",
+    "external_runtime_deps": ["ffmpeg", "ffprobe 7.1.1 (via os/exec arg slice ONLY; never sh -c)"],
+    "test": "go test (table-driven test per exported symbol)",
+    "linter": "golangci-lint v1.64.8 (.golangci.yml: funlen 60/40, gocognit 15, gocyclo 15, lll 120, dupl 100, depguard denies reflect + DI frameworks, govet, ineffassign, misspell)",
+    "build": "go build ./... (make build / make build-plugin)",
+    "cgo": "disabled (pure-Go SQLite for single-binary + cross-compile)"
+  },
+  "conventions": [
+    "max 8 exported symbols per package (12 hard fail) — scripts/check.sh counts",
+    "doc.go per package (contract-first; the entire public API in one file)",
+    "pure core / thin shell (logic = pure functions; I/O only at store/plugin/stream/api/janitor edges)",
+    "api handlers are pure delegation: parse request -> call ONE domain function -> write response (no branching, no orchestration)",
+    "no DI framework, no reflect (golangci depguard denies both)",
+    "flat main.go constructor wiring (the entire app graph readable in one file)",
+    "data-type boundaries (structs); interfaces only at the plugin seam with >=2 implementations (never single-impl interfaces)",
+    "no shared mutable types across packages (cross-package data crosses a struct conversion)",
+    "table-driven test per exported symbol (tests are the spec AND the acceptance gate)",
+    "parameterized SQL only (no string-built queries) — golang-security skill",
+    "dependency direction points DOWN only: api -> scan -> {module, plugin} -> store (scan inserted between api and {module,plugin}); proto/ and pkg/sdk are shared leaves; no cycles",
+    "Apache-2.0 license headers on every .go file (D12/Q18); DCO Signed-off-by, no CLA",
+    "prefer deprecation over deletion (reserved fields, additive proto changes)",
+    "precision: exact per-source values namespaced and preserved (no over-rounding, no source destroys another's data)",
+    "Russian-language data is first-class (no English-only assumptions baked in)",
+    "complexity budget: file warn >300 / fail >500 lines; outgoing intra-core deps warn >4 / fail >6 per package; a failed check means redesign, not relax"
+  ],
+  "skills": [
+    "mellifera-build",
+    "golang-security"
+  ],
+  "entry_points": {
+    "server": "cmd/mellifera/main.go",
+    "scanner_plugin": "plugins/base-scanner/main.go"
+  },
+  "docs_index": {
+    "mellifera/docs/architecture.md": "AUTHORITATIVE design: §0 design principles, §1.2 hard constraints, §1.4 capability type system, §2 protos (common/scanner/metadata/plugin), §2.4 TV module config, §7.3 plugin health/restart, §9.1 store schema (libraries/modules/items/playback_progress), §11.5 Principal auth",
+    "mellifera/docs/ai-architecture.md": "six principles, §4 module map (authoritative — keep in sync with skill), §5 complexity budget, §3 api=pure-delegation",
+    "mellifera/docs/open-questions.md": "D1-D20 immutable decisions, Q1-Q28 reversible defaults with named revisit triggers, risk register R1-R14",
+    "mellifera/docs/prior-art.md": "playback progress (Kodi bookmark/Jellyfin UserData), NFO sidecar, Kodi schema provenance; adopt/adapt/reject vs Jellyfin/Emby/Plex/Kodi/Navidrome/Audiobookshelf"
+  },
+  "src_layout": [
+    "proto/mellifera/{common,scanner,metadata,plugin}/v1/ — gRPC contracts verbatim from arch §2; generated *.pb.go + *_grpc.pb.go committed (protoc 29.3; buf absent)",
+    "pkg/sdk/ — plugin SDK (5): Serve, ScannerPlugin, Scanner, HandshakeConfig, Capability; ships in the MAIN module for MVP (R7)",
+    "internal/store/ — SQLite documents + control tables + reserved tables; 11 WARN: Open, Close, DB, CreateLibrary, GetLibrary, GetItem, PutItem, QueryItems (+ Store/Item/Library). DB() shares *sql.DB with module (seam S10). RecordProgress/GetResume DEFERRED (arch §9.1)",
+    "internal/plugin/ — subprocess lifecycle + gRPC clients + capability routing; 9 WARN: Open, Load, Start, Stop, Status, Scanner (+ Manager/Deps/Health). Typed Scanner(pluginID,capID) accessor + Status (replaces generic Call/Health); §7.3 restart (arch §2.2, §7.3)",
+    "internal/module/ — config-driven module registry; 6: Open, Get, List (+ Registry/Module/ScannerBinding). Read-only param SQL via store.DB() (arch §2.4)",
+    "internal/scan/ — scan-side orchestrator (NEW): Run, Deps, Result. GetLibrary->module->scanner->stream->identify->PutItem (3 symbols; arch §3.1 doc)",
+    "internal/api/ — chi router, pure delegation, zero logic; 3: New, Deps, Principal. Deps.AdminToken injects the middleware token",
+    "internal/enrich/ — queue + dispatch Match->Build->Convert->Merge (DEFERRED — not built this feature)",
+    "internal/stream/ — range-request file serving (DEFERRED)",
+    "internal/janitor/ — cleanup cron (DEFERRED)",
+    "plugins/base-scanner/ — subprocess binary (MAIN module for MVP) using pkg/sdk: walk + ffprobe arg-slice + TV filename parse + withinRoot path guard (serves scanner.v1 + plugin.v1)",
+    "cmd/mellifera/ — flat main.go constructor wiring; env: MELLIFERA_ADMIN_TOKEN (req), MELLIFERA_DATA_DIR, MELLIFERA_BASE_SCANNER, MELLIFERA_LISTEN",
+    "integration_test.go + qa_*_test.go — AC-1 golden e2e + independent QA acceptance/regression (stdlib-only black-box)",
+    "FOUNDATIONAL SLICE SHIPPED: scan-library implemented all of the above except the 3 deferred packages (enrich/stream/janitor)"
+  ],
+  "module_map_authoritative": "mellifera/docs/ai-architecture.md §4 + mellifera/.claude/skills/mellifera-build/SKILL.md (keep in sync)",
+  "build_gate": "mellifera/.claude/skills/mellifera-build/scripts/check.sh (run before finishing any change; fail = redesign)",
+  "last_updated": "2026-07-31"
+}

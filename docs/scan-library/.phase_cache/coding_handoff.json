@@ -1,0 +1,78 @@
+{
+  "phase": "coder",
+  "status": "done",
+  "verify_passed": true,
+  "feature": "scan-library",
+  "completed_count": 13,
+  "total_tasks": 13,
+  "coder_phase_complete": true,
+  "next_phase": "reviewer",
+  "next_task_file": null,
+  "summary": "Coder phase COMPLETE. T13 (check.sh hardening) then T12 (all five gates green) both done this turn; T01-T11 were already green. T12 was pure verification — no source fixes needed (spec B7 error path not triggered). All five verification gates + go vet exit 0 from mellifera/. AC-1 golden e2e integration test is green.",
+  "files_modified": [
+    {
+      "path": "mellifera/.claude/skills/mellifera-build/scripts/check.sh",
+      "change": "T13: three intent-preserving edits (thresholds <=8/>12 UNCHANGED). (1) mapfile -> portable while-read loop (bash 3.2 + 4+); (2) R2 .pb.go exclusion hardened with grep --exclude='*.pb.go' --exclude='*.gen.go' belt-and-suspenders (find filter was already present, G2-verified); (3) latent bug fix: added '|| true' to count pipeline so a package with zero uppercase exports (plugins/base-scanner, package main) no longer dies mid-loop under set -euo pipefail.",
+      "lines_added": 8
+    },
+    {"path": "docs/scan-library/tasks/task_13_checksh_pbgo_exclude.md", "change": "marked [x] done"},
+    {"path": "docs/scan-library/tasks/task_12_gates_green.md", "change": "marked [x] done"},
+    {"path": "docs/scan-library/task_index.md", "change": "T12 + T13 status -> done"},
+    {"path": "docs/scan-library/state.json", "change": "completed_count 11->13; next_task_file=null; T13+T12 phase_log entries"}
+  ],
+  "files_created": [
+    "docs/scan-library/.phase_cache/coding_handoff.json (this file, overwritten from the T11-era version)"
+  ],
+  "gate_results": {
+    "run_from": "mellifera/",
+    "gate_1_gofmt": {"exit": 0, "note": "gofmt -l . flags ONLY the pre-existing gitignored .claude/skills/mellifera-build/module-template/doc.go (out of scope per delegation). No real source file flagged."},
+    "gate_2_build": {"cmd": "CGO_ENABLED=0 go build ./...", "exit": 0},
+    "gate_3_test": {"cmd": "go test ./...", "exit": 0, "note": "all 9 packages ok incl. AC-1 golden e2e at module root"},
+    "gate_4_golangci_lint": {"cmd": "golangci-lint run ./...", "exit": 0, "version": "v1.64.8", "note": "IS installed; stale 'not installed' precondition note resolved -> no blocker"},
+    "gate_5_check_sh": {"cmd": "bash .claude/skills/mellifera-build/scripts/check.sh", "exit": 0, "output": "check.sh: OK", "note": "now executes under bash 3.2 after T13 mapfile/portability fix"},
+    "extra_go_vet": {"cmd": "go vet ./...", "exit": 0}
+  },
+  "symbol_count_table_check_sh_heuristic": {
+    "rule": "WARN >8, FAIL >12; *.pb.go / *.gen.go / *_test.go excluded",
+    "note": "heuristic under-counts receiver methods by design (regex matches only func/type/var/const NAME without receiver). Real go-doc counts: store=11, plugin=9 (pre-justified R10 WARN, both <12). Heuristic per-package:",
+    "packages": {
+      "github.com/mellifera/mellifera": "skipped (0 hand-written srcs; only integration_test.go)",
+      "cmd/mellifera": 0,
+      "internal/api": 3,
+      "internal/module": 4,
+      "internal/plugin": 4,
+      "internal/scan": 3,
+      "internal/store": 4,
+      "pkg/sdk": 5,
+      "plugins/base-scanner": 0,
+      "proto/mellifera/common/v1": "skipped (0 hand-written srcs after .pb.go exclusion)",
+      "proto/mellifera/metadata/v1": "skipped (0 hand-written srcs after .pb.go exclusion)",
+      "proto/mellifera/plugin/v1": "skipped (0 hand-written srcs after .pb.go exclusion)",
+      "proto/mellifera/scanner/v1": "skipped (0 hand-written srcs after .pb.go exclusion)"
+    },
+    "warnings": "none (no package >8 heuristic; no package >12)"
+  },
+  "acceptance": {
+    "acceptance_path": "docs/scan-library/acceptance.md",
+    "all_scenarios_green": true,
+    "coverage": {
+      "AC-1_e2e_scan": "PASS — mellifera/integration_test.go TestIntegrationScanLibrary (runnable golden e2e in Go module test tree; go test green)",
+      "AC-2_five_gates": "PASS — T12; all 5 gates exit 0 (Given/When/Then IS 'run the 5 commands, all exit 0')",
+      "AC-3_proto_verbatim": "PASS — T02; generated bindings compile (build/vet green)",
+      "AC-4_path_guard": "PASS — T08 withinRoot test + T11 escape.mkv fixture (not persisted)",
+      "AC-5_admin_token": "PASS — T09 TestAdminMiddleware_TokenMatrix",
+      "AC-6_ffprobe_soft_fail": "PASS — T07+T08+T11 (bad.mkv warning + empty ffprobe)"
+    },
+    "note": "Runnable acceptance test lives in Go module test tree (integration_test.go) per Go layout; no non-runnable duplicate fabricated under docs/scan-library/tests/ (outside the module)."
+  },
+  "deviations_grounding_driven": [
+    {
+      "task": "T13",
+      "deviation": "Added '|| true' to the grep count pipeline beyond the literal 'mapfile + .pb.go exclude' the task named.",
+      "justification": "The delegation's own validation gate ('symbol loop must EXECUTE and report per-package counts; runs cleanly under bash 3.2 AND 4+') is unsatisfiable without it: after killing mapfile, a latent bug surfaces — under set -euo pipefail a package with zero uppercase exports (plugins/base-scanner, package main) makes grep exit 1, pipefail propagates, script dies mid-loop before printing anything. This is a portability/robustness fix required to meet the stated goal; it changes neither what is counted nor the 8/12 thresholds. FLAG for reviewer."
+    }
+  ],
+  "gitignore_note": "mellifera/.claude/ is gitignored repo-wide (state.json repo_gitignore_note). check.sh edits are untracked on disk; the completion-commit force-add decision is the USER's (not force-added by coder).",
+  "blockers": [],
+  "next_hint": "Coder phase COMPLETE. Next: wf-reviewer at the Acceptance Gate — re-derive each AC scenario's Given/When/Then against integration_test.go (golden-test rule, acceptance.md:76-84) and validate T13 check.sh changes are intent-preserving (no threshold change)."
+}

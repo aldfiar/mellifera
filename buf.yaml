@@ -1,0 +1,19 @@
+# Buf configuration for Mellifera proto codegen.
+#
+# Proto module root: proto/ — the .proto files use verbatim imports of the form
+#   import "mellifera/<pkg>/v1/...proto"  (see docs/architecture.md §2),
+# which resolve with `proto/` as the import root. This matches the protoc
+# fallback invocation `protoc -I proto ...` used to generate the committed
+# *.pb.go (buf was not installed; see state.json phase_log coder/T02).
+#
+# When buf is installed for regeneration, run it rooted at proto/ so the
+# verbatim imports resolve (e.g. `cd proto && buf generate`). The generated
+# *.pb.go are committed (INV3), so neither buf nor protoc is needed to build.
+version: v1
+name: mellifera
+lint:
+  use:
+    - DEFAULT
+breaking:
+  use:
+    - FILE

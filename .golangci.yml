@@ -1,0 +1,39 @@
+# Mellifera lint config — enforces the AI-navigability complexity budget.
+# See docs/ai-architecture.md and .claude/skills/mellifera-build/SKILL.md.
+# (golangci-lint v1.53+ config format.)
+run:
+  timeout: 5m
+
+linters:
+  disable-all: true
+  enable:
+    - funlen       # function length
+    - gocognit     # cognitive complexity
+    - gocyclo      # cyclomatic complexity
+    - lll          # line length
+    - dupl         # duplicate code blocks
+    - depguard     # dependency direction (deny reflection; enforce no forbidden imports)
+    - govet
+    - ineffassign
+    - misspell
+
+linters-settings:
+  funlen:
+    lines: 60
+    statements: 40
+  gocognit:
+    min-complexity: 15      # fail threshold; warn ~10
+  gocyclo:
+    min-complexity: 15
+  lll:
+    line-length: 120
+  dupl:
+    threshold: 100
+  depguard:
+    rules:
+      main:
+        deny:
+          - pkg: "reflect"
+            desc: "no reflection wiring — explicit construction only (AI-navigability)"
+          - pkg: "github.com/!w!a!g!o!n"
+            desc: "no DI frameworks — flat main.go constructor calls only"

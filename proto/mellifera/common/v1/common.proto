@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package mellifera.common.v1;
+
+option go_package = "github.com/mellifera/mellifera/proto/mellifera/common/v1;commonv1";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// A media document is dynamic JSON. We never model it as typed fields.
+// Struct is the protobuf idiom for "arbitrary JSON object"; it is what
+// the core persists (as TEXT json) and what plugins read/write.
+message MediaDocument {
+  // Opaque document body. Conforms to the module's document_schema
+  // (declared in module config), but the core does not enforce a
+  // typed shape — it validates against a JSON Schema if the module provides one.
+  google.protobuf.Struct data = 1;
+
+  // Schema version of THIS document's shape (module-defined).
+  // Bumped by the module owner when the document shape changes.
+  string schema_version = 2;
+}
+
+// Provenance entry: who wrote a field, when, with what confidence.
+// Stored under document["_provenance"][field_path].
+message Provenance {
+  string plugin_id = 1;
+  string plugin_version = 2;
+  google.protobuf.Timestamp fetched_at = 3;
+  double confidence = 4;         // 0.0-1.0, informational
+  string source_url = 5;         // the upstream URL this came from (audit)
+}
+
+// Result of a view computation: which source currently surfaces for a field.
+message ViewBinding {
+  string field_path = 1;         // e.g. "titles.display"
+  string source = 2;             // "kinopoisk" | "tmdb" | "_user"
+  string reason = 3;             // "priority" | "language_match" | "user_override"
+}
+
+// Merge conflict record (informational — see §3.3).
+message MergeConflict {
+  string field_path = 1;
+  string previous_source = 2;
+  string new_source = 3;
+  string resolution = 4;         // "namespace_replaced" | "view_repointed" | "user_overrode"
+  string reason = 5;
+}
+
+// Authentication context handed to BuildRequest. Tells the plugin whose
+// credentials to use and how to express them in the RequestSpec.
+message AuthContext {
+  enum Mode {
+    AUTH_MODE_UNSPECIFIED = 0;
+    SERVER = 1;                  // use server-configured credentials (resolved in-spec)
+    CLIENT = 2;                  // client holds credentials (returned as redacted_ref)
+  }
+  Mode mode = 1;
+
+  // When mode=SERVER, the core injects resolved secret values here, keyed by
+  // the plugin's declared secret names (e.g. "api_key" -> "actual_key").
+  // The plugin MUST NOT echo these into RequestSpec.variables as plaintext
+  // when mode=CLIENT — see §6.2.
+  google.protobuf.Struct server_secrets = 2;
+}

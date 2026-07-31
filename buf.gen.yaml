@@ -1,0 +1,16 @@
+# Buf codegen config. Mirrors the protoc fallback used to generate the
+# committed *.pb.go: protoc-gen-go + protoc-gen-go-grpc with paths=source_relative,
+# output alongside each .proto (proto/mellifera/<pkg>/v1/*.pb.go).
+#
+# The committed *.pb.go are identical whether produced by `buf generate` or by
+# `protoc -I proto --go_out=. --go_opt=module=github.com/mellifera/mellifera ...`
+# (both invoke the same two protoc-gen-* plugins; the module/path options yield
+# the same output layout because the go_package import path mirrors the tree).
+version: v1
+plugins:
+  - plugin: protoc-gen-go
+    out: .
+    opt: paths=source_relative
+  - plugin: protoc-gen-go-grpc
+    out: .
+    opt: paths=source_relative

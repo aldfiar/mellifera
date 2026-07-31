@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package mellifera.metadata.v1;
+
+option go_package = "github.com/mellifera/mellifera/proto/mellifera/metadata/v1;metadatav1";
+
+import "google/protobuf/struct.proto";
+
+message RequestSpec {
+  // HTTP method. "GET" or "POST" in MVP; validated by the core.
+  string method = 1;
+
+  // URL template with {variable} placeholders. Substitution is the minimal
+  // "{name}" replacement (NOT full RFC 6570) — every variable referenced
+  // MUST appear in `variables`. The core percent-encodes substituted values.
+  // Example:
+  //   "https://api.themoviedb.org/3/search/tv?query={title}&year={year}&api_key={api_key}"
+  string url_template = 2;
+
+  // Static headers (Accept, User-Agent, ...). Auth headers resolved per §6:
+  //   - SERVER mode: header value is the resolved secret (server has it).
+  //   - CLIENT mode: header value is a redacted_ref token the client replaces
+  //     (e.g. "Authorization: Bearer {client:api_key}") — see VariableValue.redacted_ref.
+  map<string, string> headers = 3;
+
+  // Variables for {placeholder} substitution in url_template, headers, body.
+  map<string, VariableValue> variables = 4;
+
+  // Request body for POST (raw bytes; empty for GET). May itself contain
+  // {placeholder} substrings substituted from `variables`.
+  bytes body = 5;
+
+  // Suggested client/server timeout for the fetch.
+  int32 timeout_seconds = 6;
+
+  // Hint: response may be non-UTF-8 (image, gzip). Client must not utf-8-validate.
+  bool binary_safe = 7;
+
+  // Advisory rate-limit the executor SHOULD honor (protects upstream APIs).
+  // The core enforces this server-side; the client SHOULD honor it client-side.
+  int32 min_interval_ms = 8;
+}
+
+message VariableValue {
+  oneof kind {
+    string string_value = 1;
+    int64 int_value = 2;
+    double double_value = 3;
+    bool bool_value = 4;
+
+    // Reference to a secret the executor must supply. Format: "<scope>:<name>".
+    //   "server:api_key"  -> core resolves from server_secrets (Mode A)
+    //   "client:api_key"  -> client supplies from its own keystore (Mode B)
+    // When the core builds the spec for the client (Mode B, CLIENT auth),
+    // it leaves redacted_ref values intact so the secret never crosses to
+    // the client. See §6.2.
+    string redacted_ref = 5;
+  }
+}

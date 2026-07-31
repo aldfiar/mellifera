@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package mellifera.scanner.v1;
+
+option go_package = "github.com/mellifera/mellifera/proto/mellifera/scanner/v1;scannerv1";
+
+import "mellifera/common/v1/common.proto";
+import "google/protobuf/struct.proto";
+
+service Scanner {
+  // Walk a library root and emit discovered files. Streaming because
+  // libraries can be large; the core persists incrementally and can
+  // show live progress to the UI.
+  rpc Scan(ScanRequest) returns (stream DiscoveredFile);
+
+  // Parse one discovered file into a structured guess (title/season/episode/...).
+  // Pure function: no I/O beyond what Scan already did.
+  rpc Identify(IdentifyRequest) returns (IdentifyResult);
+}
+
+message ScanRequest {
+  // Absolute or library-root-relative path to scan.
+  string library_path = 1;
+
+  // Module type id (e.g. "tv"). Guides the scanner's parsing heuristics.
+  // The scanner MAY ignore it; it MUST NOT reject an unknown value
+  // (forward-compat with module types the scanner predates).
+  string module_type = 2;
+
+  // Module-supplied scanner options, verbatim from module config (§2.4).
+  // Well-known keys (advisory, not required): include_patterns, exclude_patterns,
+  // filename_format, follow_symlinks, min_size_bytes.
+  google.protobuf.Struct options = 3;
+
+  // Core-supplied resume cursor (opaque to the core). If non-empty, the
+  // scanner resumes from where it left off (crash recovery / incremental).
+  string resume_cursor = 4;
+}
+
+message DiscoveredFile {
+  // Stable id derived from path (deterministic hash); used as the join key
+  // to the items table before a full item id is minted.
+  string file_id = 1;
+
+  // Library-root-relative path. Absolute path is reconstructed by the core.
+  string relative_path = 2;
+
+  int64 size_bytes = 3;
+
+  // MIME type guessed from extension; the scanner MAY refine via ffprobe.
+  string mime_type = 4;
+
+  // Raw ffprobe JSON output (verbatim, UTF-8). Carried as bytes rather than
+  // google.protobuf.Struct: (a) it is stored verbatim in the document anyway,
+  // (b) ffprobe output is large/deeply-nested and Struct is wire-verbose,
+  // (c) the core does not structurally inspect ffprobe fields — only plugins
+  // and the storage layer (via json_extract generated columns) read them.
+  // Empty if the scanner could not probe (non-fatal; Identify still runs).
+  bytes ffprobe_json = 5;
+
+  // Scanner-resume cursor (opaque). The core persists the latest value per
+  // scan job; on crash, it restarts Scan with the last cursor.
+  string resume_cursor = 6;
+
+  // Soft errors per file (e.g. "ffprobe timed out"). Non-fatal; core logs.
+  repeated string warnings = 7;
+}
+
+message IdentifyRequest {
+  DiscoveredFile file = 1;
+  string module_type = 2;
+}
+
+message IdentifyResult {
+  string file_id = 1;
+
+  // Best-effort media type guess. May differ from the request's module_type
+  // (e.g. scanner detects a movie inside a "tv" root). The core treats this
+  // as advisory; module routing is authoritative.
+  string media_type = 2;
+
+  // Structured parse of the filename/path. Free-form JSON whose keys are
+  // module-interpreted (different modules parse different things).
+  // Well-known keys (advisory): title, year, season, episode, episode_end,
+  // release_group, crc32, resolution, source, audio_channels.
+  // Missing keys are simply absent; consumers must not assume presence.
+  google.protobuf.Struct parsed = 3;
+
+  // Confidence of the parse (0.0-1.0). Below a module-configurable threshold
+  // the UI flags the item for manual identification.
+  double confidence = 4;
+
+  // What was parsed, for debugging / UI display.
+  string parser_name = 5;
+}
