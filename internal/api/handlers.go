@@ -69,6 +69,7 @@ type itemDTO struct {
 	MediaType     string          `json:"media_type"`
 	Document      json.RawMessage `json:"document"`
 	SchemaVersion int             `json:"schema_version"`
+	Status        string          `json:"status"`
 }
 
 // createLibrary: parse createLibraryRequest → store.CreateLibrary → write
@@ -112,16 +113,19 @@ func (a *app) scanLibrary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// listItems: parse {id} + pagination → store.QueryItems → write itemsResponse.
-// One domain call.
+// listItems: parse {id} + optional ?status= + pagination → store.QueryItems →
+// write itemsResponse. One domain call. An absent/empty ?status= passes "" so all
+// statuses are returned (INV-empty-all); api does not validate the status set
+// (store/enrich own it — pure delegation).
 func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.URL.Query().Get("library"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "library query param must be an integer", false)
 		return
 	}
+	status := r.URL.Query().Get("status")
 	limit, offset := parsePagination(r)
-	items, err := a.deps.Store.QueryItems(r.Context(), id, limit, offset)
+	items, err := a.deps.Store.QueryItems(r.Context(), id, status, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -161,6 +165,7 @@ func toItemDTOs(items []store.Item) []itemDTO {
 			MediaType:     it.MediaType,
 			Document:      it.Document,
 			SchemaVersion: it.SchemaVersion,
+			Status:        it.Status,
 		}
 	}
 	return out

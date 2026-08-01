@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0",
+  "feature": "plugin-pipeline",
+  "phase": "coder",
+  "status": "DONE",
+  "phase_complete": true,
+  "summary": "wf-coder implemented T11 (11/11) — the AC-1 golden integration test + AC-2 gate capstone. CODER PHASE COMPLETE. CREATE integration_pipeline_test.go (package mellifera_test, black-box, stdlib-only): builds the REAL cmd/mellifera + base-scanner + tv-parser binaries, boots the server on a temp SQLite DB + free port + admin token + BOTH plugin envs + a fixture TV library, and drives POST /libraries -> POST /scan -> GET /items with a real HTTP client. The golden exercises the FULL Phase A pipeline with REAL go-plugin subprocesses (base-scanner + tv-parser) + REAL ffprobe + REAL HTTP (INV-real-subprocess) and asserts the provenance/view/stages/lifecycle contract end-to-end. It reuses integration_test.go's harness (buildBinary/startServer/createLibrary/scanLibrary/listItems/indexByPath/itemDTO/makeMedia/mustWrite — DRY); all new helpers are ip-prefixed to avoid the package's existing unprefixed + qa-prefixed names. Expected season/episode/title are DERIVED in-test from the fixture filename via ipDeriveShow (ASCII byte-scan; Cyrillic bytes>=0x80 never match) — INV-reviewer-independence, no magic constants, no regexp/strconv (kept to integration_test.go's 10-import baseline). B6 reconcile: scan-library goldens were already reconciled by T07/T08/T10; the ONE remaining reconcile was the shared test itemDTO missing the `status` field — added `Status string` (additive; B6 'items carry status'). All AC-2 gates green. completed_count 10->11; coder phase complete; Next: REVIEWER phase.",
+  "project_scope": "mellifera",
+  "effective_cwd": "mellifera",
+  "completed_this_pass": ["T11"],
+  "completed_count": 11,
+  "total_coder_tasks": 11,
+  "next_task_file": null,
+  "real_subprocess_confirmation": "Golden builds + launches REAL base-scanner AND tv-parser go-plugin subprocesses (buildBinary ./plugins/base-scanner + ./plugins/tv-parser; startServer sets MELLIFERA_BASE_SCANNER + MELLIFERA_TV_PARSER); probes fixture files with REAL ffprobe (ffmpeg-generated MKVs; LookPath guards); drives the three endpoints with a REAL net/http client + bearer token. No mocks/fakes between any internal joint.",
+  "assertions_confirmation": "Golden asserts: sources['tv-parser']={title,season,episode,resolution}; _provenance.{title,season,episode}.plugin_id=='tv-parser' + non-empty plugin_version (AC-5); _view.title={value,source:tv-parser}; _stages carries {tv-parser, advanced_to:parsed, status:ok} (the parse stage; impl key is stage:'metadata_source' — asserted via plugin_id/advanced_to/status, not the loose 'parse' wording); itemDTO.Status=='enriched' (AC-7); parseTV split — base-scanner parsed has NO season/episode while sources.tv-parser carries them (B3 structural/negative); Cyrillic title 'Игра престолов' preserved end-to-end; AC-6 soft-fail — corrupt.mkv persisted with EMPTY ffprobe + kinopoisk/tmdb recorded in _stages as status:unavailable + named in scan warnings, items still reach enriched via tv-parser; AC-7 — GET /items?status=enriched returns exactly the 2 TV-parsed items each with queryable provenance; re-scan idempotent.",
+  "validation": {
+    "gofmt": "clean — all tracked module .go files gofmt-clean (incl both my files); only a PRE-EXISTING .claude/skills/mellifera-build/module-template/doc.go flagged (a TEMPLATE module, not source, unchanged by me, committed before this branch)",
+    "build": "exit 0 (CGO_ENABLED=0 go build ./... — `make build`)",
+    "build_plugin": "exit 0 (make build-plugin -> bin/base-scanner AND bin/tv-parser both produced)",
+    "test": "exit 0 (go test ./... — all 9 packages pass; root pkg 9.9s incl all 3 goldens + the new TestIntegrationPipeline with 4 AC subtests: AC1_golden_provenance_state, AC1_parseTV_split, AC6_soft_fail, AC7_status_filter — all PASS)",
+    "lint": "exit 0 (golangci-lint run ./... — funlen/gocognit/gocyclo/lll/dupl/depguard/govet/ineffassign/misspell clean)",
+    "vet": "exit 0 (go vet ./...)",
+    "check_sh": "exit 0 — prints 'check.sh: OK'"
+  },
+  "refactoring_probes": {
+    "ac1_extraction": "grep 'season|episode|SxxExx|parseTV' in plugins/base-scanner/ (excl _test) -> 0 hits (PASS); parseTV in plugins/tv-parser/ -> 12 hits (>=1, PASS)",
+    "ac3_additive": "git diff --stat 7bcc6c9 -- proto/ -> empty (no proto edits); items.status TEXT NOT NULL DEFAULT 'new' at internal/store/open.go:72",
+    "ac4_config_driven": "7 grep hits for media-type literals, ALL in internal/module registry.go tvConfigJSON seed-config VALUES + a doc.go comment (the sanctioned location per acceptance.md); ZERO media-type BRANCHING (==/!=/case on tv/tmdb/kinopoisk/movie) in core orchestration — AC-4 intent holds. NOTE: this is pre-existing, owned by T03/T05/T08, NOT introduced by T11 (test-only).",
+    "go_mod": "git diff --stat 7bcc6c9 -- go.mod -> empty (no new deps)"
+  },
+  "files": {
+    "T11": {
+      "created": [
+        "integration_pipeline_test.go (CREATE — the AC-1 golden: package mellifera_test, stdlib-only black-box; TestIntegrationPipeline + 4 AC subtests; reuses integration_test.go harness; ip-prefixed helpers; ipDeriveShow strings-only independent derivation)"
+      ],
+      "modified": [
+        "integration_test.go (MODIFY — B6 reconcile: added `Status string` field to the shared test itemDTO so status is decodable package-wide; additive, minimal)"
+      ]
+    }
+  },
+  "contract_tests": {
+    "T11": [
+      "TestIntegrationPipeline — joint S-integration + S-proto: the WHOLE pipeline (api -> scan -> enrich -> {module,plugin->tv-parser subprocess} -> store) + the now-live metadatav1/commonv1 imports; jointly validates S1..S11. REAL subprocesses + REAL ffprobe + REAL HTTP (INV-real-subprocess).",
+      "  /AC1_golden_provenance_state — sources.tv-parser + _provenance (AC-5) + _view + _stages(parse stage) + status=enriched (AC-7) for Show.Name.S01E02.1080p.mkv; Cyrillic title preserved for Игра престолов S01E01.mkv",
+      "  /AC1_parseTV_split — structural/negative: base-scanner parsed has NO season/episode; sources.tv-parser carries them (proves the Task 06/07 extraction)",
+      "  /AC6_soft_fail — corrupt.mkv persisted with empty ffprobe; kinopoisk+tmdb unavailable in _stages + warnings; items still enriched via tv-parser",
+      "  /AC7_status_filter — GET /items?status=enriched returns exactly the 2 TV-parsed items, each with queryable provenance"
+    ]
+  },
+  "user_confirmed_confirmations": {
+    "golden_uses_real_base_scanner_subprocess": "true — buildBinary ./plugins/base-scanner + MELLIFERA_BASE_SCANNER env; go-plugin launches it as its own process",
+    "golden_uses_real_tv_parser_subprocess": "true — buildBinary ./plugins/tv-parser + MELLIFERA_TV_PARSER env; the enrich chain drives its Match/Convert/Merge over gRPC",
+    "golden_uses_real_ffprobe": "true — ffmpeg-generated fixture MKVs are probed by ffprobe through the subprocess pipeline; LookPath guards skip cleanly if absent",
+    "golden_uses_real_http": "true — real net/http client + bearer token drives POST /libraries, POST /scan, GET /items (and ?status=)",
+    "golden_asserts_provenance_state_parseTV_split": "true — sources.tv-parser + _provenance.plugin_id + _view + _stages + status=enriched + base-scanner parsed has no season/episode (B3)",
+    "season_episode_derived_not_hardcoded": "true — ipDeriveShow parses the SxxExx token from the fixture filename (INV-reviewer-independence)"
+  },
+  "grounding_deviations_for_reviewer": [
+    "T11: MODIFIED integration_test.go (in scope_boundary: 'MODIFY integration_test.go (reconcile)') — added ONE additive `Status string` field to the shared test itemDTO. The api handler's itemDTO already returned status (T09), but the TEST's itemDTO struct omitted it, so status was undecodable. This is the B6 'items carry status' reconciliation; minimal + additive; the existing TestIntegrationScanLibrary does not read Status so it is unaffected.",
+    "T11: REUSED integration_test.go's harness helpers (buildBinary/startServer/createLibrary/scanLibrary/listItems/indexByPath/itemDTO/makeMedia/mustWrite + consts) instead of duplicating them — per the user delegation 'DO NOT duplicate; reuse/extend'. All new symbols are ip-prefixed to avoid collision with the package's existing unprefixed + qa-prefixed names. The new file is *_test.go -> 0 package-symbol impact.",
+    "T11: AC-4 verify-probe NOTE (not a deviation introduced by T11): the probe regex (registry.go.*tvConfig) reports 7 'hits' that are actually sanctioned seed-config VALUES inside the tvConfigJSON raw string in internal/module/registry.go + a doc.go comment (acceptance.md explicitly allows media strings in internal/module seed CONFIG). Verified: ZERO media-type BRANCHING in core. The probe is line-based and loose; AC-4 invariant holds. Owned by T03/T05/T08 + T13 (QA refines the probe).",
+    "T11: _stages 'parse stage' wording — the spec/contracts example shows stage:'parse' but the IMPLEMENTATION (enrich.go appendStage) records stage:'metadata_source' with advanced_to carrying the state. The golden asserts the stage via plugin_id='tv-parser' + advanced_to='parsed' + status='ok' (the grounded shape), not the loose 'parse' literal. The 'enriched' terminal state lives in the status column/field, not as a _stages entry (the enriched transition fires after the source loop).",
+    "T11: LINE BUDGET OVERSHOOT (report-to-specifier) — integration_pipeline_test.go is 397 total lines / ~303 code lines vs the task's line_budget 180 (flex 1.4 -> 252 ceiling). All GATES pass (no linter enforces file length; funlen is per-function and all functions pass; check.sh counts symbols not lines; *_test.go = 0 package-symbol impact). The file is the MOST COMPACT of the three sibling goldens (integration_test.go=556, qa_acceptance_test.go=569). The overshoot is unavoidable without WEAKENING the AC-1 golden: it asserts 4 distinct AC areas (AC-1/5 provenance+state, AC-1 parseTV split, AC-6 soft-fail, AC-7 status filter) and carries the mandated ipDeriveShow independent-derivation helper (INV-reviewer-independence). Per the precedence rule, the more-specific correctness requirement (AC-1 fully asserted, never weaken a test) wins over the line target. Flagged for the specifier; no action requested (raising the T11 est_loc in task_sizes to ~300 would reflect reality)."
+  ],
+  "acceptance": {
+    "acceptance_md": "exists (AC-1..AC-7)",
+    "status": "T11 IS the AC-1 acceptance test (the golden at the module-root CREATE target, mirroring scan-library's integration_test.go). All scenarios T11 owns verified PASS:",
+    "scenarios_verified": {
+      "AC-1": "PASS — full pipeline e2e golden + clean parseTV split (4 subtests)",
+      "AC-2": "PASS — all gates green (gofmt/build/build-plugin/test/golangci-lint/vet/check.sh:OK)",
+      "AC-5": "PASS — _provenance.<field>.plugin_id=='tv-parser' asserted + queryable via the ?status=enriched listing",
+      "AC-6": "PASS — corrupt.mkv soft-fail (empty ffprobe) + kinopoisk/tmdb unavailable in _stages/warnings, scan succeeds",
+      "AC-7": "PASS — status fielded + ?status=enriched filter returns exactly the enriched items over HTTP"
+    },
+    "scenarios_not_owned_by_T11": "AC-3 (additive contract) + AC-4 (config-driven) are structural probes owned by T04/T07/T03/T05/T08 + T13 QA; T11 re-ran the probes (AC-3 proto-diff empty + status default 'new'; AC-4 zero media-type branching in core) — both hold.",
+    "acceptance_path": "mellifera/docs/plugin-pipeline/acceptance.md",
+    "golden_path": "mellifera/integration_pipeline_test.go"
+  },
+  "blockers": [],
+  "next_hint": "CODER PHASE COMPLETE (11/11). Next: REVIEWER phase (@wf-reviewer) — validate T01..T11 against task specs; re-derive the AC-1 golden independently; then QA (T12 independent acceptance re-derivation, T13 regression/structural)."
+}

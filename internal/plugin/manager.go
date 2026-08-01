@@ -33,6 +33,10 @@ const (
 	// server PluginSet keys are independent — the gRPC service is bound by its
 	// fully-qualified name — so this key only needs to exist in the client map.
 	scannerPluginKey = "scanner"
+	// metadataSourcePluginKey is the client PluginSet dispense key for the
+	// metadata_source capability. Same key-independence as scannerPluginKey —
+	// it is a local dispense handle, NOT the gRPC service binding.
+	metadataSourcePluginKey = "metadata_source"
 	// maxRestarts is the consecutive-failed-restart ceiling (§7.3: three).
 	maxRestarts = 3
 	// shutdownGrace bounds the Shutdown RPC + SIGTERM grace window (§7.4: 10s).
@@ -114,10 +118,11 @@ type pluginEntry struct {
 // fake so the restart state machine is exercised deterministically without a
 // subprocess.
 type runningPlugin struct {
-	scanner sdk.Scanner
-	pconn   pluginv1.PluginClient
-	exited  func() bool
-	kill    func()
+	scanner  sdk.Scanner
+	metadata sdk.MetadataSource
+	pconn    pluginv1.PluginClient
+	exited   func() bool
+	kill     func()
 }
 
 // launchFunc starts one plugin subprocess, performs the go-plugin substrate
@@ -196,6 +201,41 @@ func (m *Manager) Scanner(pluginID, capabilityID string) (sdk.Scanner, error) {
 func hasScannerCapability(caps []sdk.Capability, capabilityID string) bool {
 	for _, c := range caps {
 		if c.Type == "scanner" && c.ID == capabilityID {
+			return true
+		}
+	}
+	return false
+}
+
+// MetadataSource returns the typed sdk.MetadataSource client for a plugin's
+// declared metadata_source capability, wrapping the live gRPC connection to the
+// subprocess. It mirrors Scanner (INV1): the second typed per-capability
+// accessor. It errors if the plugin is not loaded, not serving, has no live
+// connection, or did not declare the requested metadata_source capability.
+func (m *Manager) MetadataSource(pluginID, capabilityID string) (sdk.MetadataSource, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.plugins[pluginID]
+	if !ok {
+		return nil, fmt.Errorf("plugin: metadata_source: %q not loaded", pluginID)
+	}
+	if e.state != stateServing {
+		return nil, fmt.Errorf("plugin: metadata_source: %q not serving (state=%s)", pluginID, e.state)
+	}
+	if e.rp == nil {
+		return nil, fmt.Errorf("plugin: metadata_source: %q has no live connection", pluginID)
+	}
+	if !hasMetadataCapability(e.caps, capabilityID) {
+		return nil, fmt.Errorf("plugin: metadata_source: capability %q not declared by %q", capabilityID, pluginID)
+	}
+	return e.rp.metadata, nil
+}
+
+// hasMetadataCapability reports whether caps declares a metadata_source slot
+// with the given instance id.
+func hasMetadataCapability(caps []sdk.Capability, capabilityID string) bool {
+	for _, c := range caps {
+		if c.Type == "metadata_source" && c.ID == capabilityID {
 			return true
 		}
 	}

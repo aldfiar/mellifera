@@ -26,6 +26,8 @@ lint:
 check:
 	bash .claude/skills/mellifera-build/scripts/check.sh
 
-# build-plugin: build a plugin binary. base-scanner is wired in T08.
+# build-plugin: build every plugin binary. base-scanner is wired in T08;
+# tv-parser (the first metadata_source plugin) in T06.
 build-plugin:
 	CGO_ENABLED=0 go build -o bin/base-scanner ./plugins/base-scanner
+	CGO_ENABLED=0 go build -o bin/tv-parser ./plugins/tv-parser

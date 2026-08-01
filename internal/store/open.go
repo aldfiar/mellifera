@@ -69,6 +69,7 @@ var schemaSQL = []string{
   schema_version INTEGER NOT NULL,
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'new',
   display_title  TEXT    GENERATED ALWAYS AS (json_extract(document, '$._view.title.value'))  VIRTUAL,
   display_rating REAL    GENERATED ALWAYS AS (json_extract(document, '$._view.rating.value')) VIRTUAL,
   tmdb_id        INTEGER GENERATED ALWAYS AS (json_extract(document, '$.identifiers.tmdb_id')) VIRTUAL,
@@ -142,7 +143,59 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 			return nil, fmt.Errorf("store: migrate: %w", err)
 		}
 	}
+	if err := ensureItemsStatus(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// ensureItemsStatus makes Open additive across scan-library databases: the
+// items.status column + its index. Fresh DBs already get the column from the
+// CREATE TABLE in schemaSQL; pre-existing scan-library DBs (no status column)
+// get it via a PRAGMA table_info-guarded ALTER (SQLite has no ADD COLUMN IF NOT
+// EXISTS, so the guard keeps Open re-runnable -- INV-idempotent-migration). The
+// index is created AFTER the column exists so both fresh and migrated DBs end
+// up indexed. Store stays value-agnostic: only the column DEFAULT 'new' is owned
+// here; the lifecycle set/transitions live in internal/enrich.
+func ensureItemsStatus(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(items)")
+	if err != nil {
+		return fmt.Errorf("store: migrate items.status (table_info): %w", err)
+	}
+	hasStatus := false
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: migrate items.status (scan): %w", err)
+		}
+		if name == "status" {
+			hasStatus = true
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: migrate items.status (rows): %w", err)
+	}
+	if !hasStatus {
+		if _, err := db.ExecContext(ctx,
+			"ALTER TABLE items ADD COLUMN status TEXT NOT NULL DEFAULT 'new'"); err != nil {
+			return fmt.Errorf("store: migrate items.status (alter): %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx,
+		"CREATE INDEX IF NOT EXISTS items_status ON items(status)"); err != nil {
+		return fmt.Errorf("store: migrate items_status index: %w", err)
+	}
+	return nil
 }
 
 // Close releases the database handle.

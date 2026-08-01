@@ -106,8 +106,14 @@ func TestBaseScannerSubprocess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Identify: %v", err)
 	}
-	if got := strField(id.GetParsed(), "title"); got != "Show" {
-		t.Fatalf("parsed title = %q, want Show", got)
+	// base-scanner Identify emits media-type-agnostic BASE fields only (AC-1
+	// extraction): the TV parse (title/season/episode) is produced downstream by
+	// the tv-parser plugin, not here.
+	if got := strField(id.GetParsed(), "relative_path"); got != "Show S01E01.mkv" {
+		t.Fatalf("parsed relative_path = %q, want Show S01E01.mkv", got)
+	}
+	if got := strField(id.GetParsed(), "extension"); got != ".mkv" {
+		t.Fatalf("parsed extension = %q, want .mkv", got)
 	}
 
 	// Graceful Shutdown over the shared conn — proves plugin.v1.Shutdown is served.

@@ -39,30 +39,44 @@ No branching, no multi-call orchestration, no business rules. Logic lives in `st
 
 ## 4. Module map (authoritative — keep in sync with the skill)
 
-Realized by the `scan-library` feature (the foundational slice). Counts are
-exported symbols; `WARN` = >8 but <12 (pre-justified R10); all others ≤8.
-Reserved-table methods (`RecordProgress`/`GetResume`) are deferred — the tables
-exist but no method ships yet.
+Realized by the `scan-library` feature (foundational slice) + the additive
+`plugin-pipeline` Phase A layer. Counts are exported symbols; `WARN` = >8 but
+≤12 (pre-justified R10); all others ≤8. Reserved-table methods
+(`RecordProgress`/`GetResume`) are deferred — the tables exist but no method
+ships yet. Phase A deltas are marked **[A]**.
 
 | Package | Owns | Public API (≤8; WARN noted) | Depends on |
 |---|---|---|---|
-| `cmd/mellifera` | wiring (flat `main.go`) | — | all (read-only) |
-| `internal/store` | SQLite: documents + control tables + reserved `playback_progress`/`scan_jobs` | `Open`, `Close`, `DB`, `CreateLibrary`, `GetLibrary`, `GetItem`, `PutItem`, `QueryItems` (+ `Store`/`Item`/`Library`) — **11 WARN** | — (bottom) |
-| `internal/plugin` | subprocess lifecycle + gRPC clients + capability routing | `Open`, `Load`, `Start`, `Stop`, `Status`, `Scanner` (+ `Manager`/`Deps`/`Health`) — **9 WARN** | proto, sdk |
-| `internal/module` | config-driven module registry | `Open`, `Get`, `List` (+ `Registry`/`Module`/`ScannerBinding`) | store |
-| `internal/scan` | scan-side orchestration (resolve module → scanner → stream → identify → PutItem) | `Run`, `Deps`, `Result` | store, module, plugin |
-| `internal/api` | HTTP (chi) — **pure delegation, no logic** | `New`, `Deps`, `Principal` | scan, store |
-| `pkg/sdk` | plugin SDK (ships in the MAIN Go module for MVP — R7) | `Serve`, `ScannerPlugin`, `Scanner`, `HandshakeConfig`, `Capability` | proto, go-plugin |
-| `plugins/base-scanner` | one subprocess binary (walk + ffprobe + TV parse) | per-capability | sdk, proto |
-| `internal/enrich` | queue + dispatch (Match→Build→Convert→Merge) — **DEFERRED** (not built this feature) | — | — |
+| `cmd/mellifera` | wiring (flat `main.go`) — **[A]** loads base-scanner + tv-parser, constructs `enrich.Deps` | — | all (read-only) |
+| `internal/store` | SQLite: documents + control tables + reserved `playback_progress`/`scan_jobs` — **[A]** + indexed `items.status` column (default `"new"`); `QueryItems` gained additive `status` filter (`""` ⇒ all) | `Open`, `Close`, `DB`, `CreateLibrary`, `GetLibrary`, `GetItem`, `PutItem`, `QueryItems` (+ `Store`/`Item`/`Library`) — **11 WARN** | — (bottom) |
+| `internal/plugin` | subprocess lifecycle + gRPC clients + capability routing — **[A]** caps-driven launch; `MetadataSource` accessor | `Open`, `Load`, `Start`, `Stop`, `Status`, `Scanner`, `MetadataSource` (+ `Manager`/`Deps`/`Health`) — **10 WARN** | proto, sdk |
+| `internal/module` | config-driven module registry — **[A]** `metadata_sources` chain (`Module.MetadataSources[]`); tv-parser seed | `Open`, `Get`, `List` (+ `Registry`/`Module`/`ScannerBinding`/`MetadataSourceBinding`) — **7** | store |
+| `internal/scan` | scan-side orchestration (resolve module → scanner → stream → identify → **[A]** enrich → PutItem) | `Run`, `Deps` (`.Enrich` field), `Result` | store, module, plugin, enrich |
+| `internal/enrich` | **[A] metadata-side serial orchestrator** (4-RPC chain Match→BuildRequest→Convert→Merge over `metadata.v1.MetadataSource`; pure `nextState`; provenance/`_view` assembly) | `Enrich`, `Deps`, `Result` — **3** | store, module, plugin |
+| `internal/api` | HTTP (chi) — **pure delegation, no logic** — **[A]** additive `itemDTO.Status` + `?status=` filter | `New`, `Deps`, `Principal` | scan, store |
+| `pkg/sdk` | plugin SDK (ships in the MAIN Go module for MVP — R7) — **[A]** capability-2 adapter | `Serve`, `ScannerPlugin`, `Scanner`, `MetadataSourcePlugin`, `MetadataSource`, `HandshakeConfig`, `Capability` — **7** | proto, go-plugin |
+| `plugins/base-scanner` | one subprocess binary — **[A]** media-type-agnostic (walk + ffprobe + withinRoot; parseTV extracted to tv-parser) | per-capability (scanner.v1 + plugin.v1) | sdk, proto |
+| `plugins/tv-parser` | **[A]** first `metadata_source` subprocess binary (parseTV moved here verbatim; serves `metadata.v1.MetadataSource`) | per-capability (metadata.v1 + plugin.v1) | sdk, proto |
 | `internal/stream` | range-request file serving — **DEFERRED** | — | — |
 | `internal/janitor` | cleanup cron — **DEFERRED** | — | — |
 
-`internal/scan` is the scan-side analog of the deferred `internal/enrich`
-(metadata-side orchestration); both sit at the same level. Dependency direction
-points **down** only: `api → scan → {module, plugin} → store` (scan inserted
-between api and {module, plugin}). `proto/` and `pkg/sdk` are shared leaves. No
-cycles.
+`internal/enrich` is now realized as the metadata-side analog of `internal/scan`
+(both sit at the same level). Dependency direction points **down** only:
+`api → scan → enrich → {module, plugin} → store` (enrich between scan and
+{module, plugin}; scan calls enrich between Identify and PutItem). `proto/` and
+`pkg/sdk` are shared leaves. No cycles.
+
+**Accepted deviations realized by `plugin-pipeline` Phase A** (reviewer ACCEPT,
+health-check HEALTHY; see `docs/plugin-pipeline/reviews/review_coder.md` §4):
+zero new protos — tv-parser + the enrich chain implement the already-generated
+`metadata.v1.MetadataSource` (decision D-1, capability mapping); plugin launch is
+caps-driven (base-scanner's client set byte-identical to scan-library — AC-3);
+`_view` is Phase-A last-writer (Phase B adds arbitration); `_stages.stage` is
+`"metadata_source"` (the contract example `"parse"` was illustrative); parseTV
+moved verbatim (base-scanner Identify now media-type-agnostic); `enriched` = ≥1
+success ∧ 0 failed (partial stays at furthest-valid). Phase B (external TMDB
+enricher + `AuthContext` + async queue) and Phase C (post-action) remain
+**deferred/outlined**.
 
 **Accepted deviations realized by scan-library** (reviewer/health-check ACCEPT;
 see `docs/scan-library/reviews/review_coder.md` §5):

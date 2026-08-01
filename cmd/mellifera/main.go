@@ -3,16 +3,17 @@
 
 // Command mellifera is the composition root: a flat, top-to-bottom constructor
 // list that wires the whole app graph in one file. It reads configuration from
-// the environment, opens the store, loads and starts the base-scanner plugin
-// subprocess, assembles the scan orchestrator and the HTTP edge, and serves
+// the environment, opens the store, loads and starts the base-scanner (scanner)
+// and tv-parser (metadata_source) plugin subprocesses, constructs enrich.Deps
+// and wires it into the scan orchestrator, assembles the HTTP edge, and serves
 // until SIGINT/SIGTERM. There is no DI container and no reflection wiring —
-// every dependency is an explicit constructor call (ai-architecture §2
-// principle 5; mellifera-build skill; depguard denies reflect + DI frameworks).
+// every dependency is an explicit constructor call (ai-architecture §2 principle
+// 5; mellifera-build skill; depguard denies reflect + DI frameworks).
 //
-// Dev-mode plugin loading: the base-scanner binary is loaded from a configurable
-// filesystem path (env MELLIFERA_BASE_SCANNER, default bin/base-scanner from
-// `make build-plugin`). go:embed first-run extraction is deferred to release
-// packaging (D11/Q20).
+// Dev-mode plugin loading: each plugin binary is loaded from a configurable
+// filesystem path (env MELLIFERA_BASE_SCANNER / MELLIFERA_TV_PARSER, defaults
+// bin/base-scanner / bin/tv-parser from `make build-plugin`). go:embed
+// first-run extraction is deferred to release packaging (D11/Q20).
 package main
 
 import (
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"github.com/mellifera/mellifera/internal/api"
+	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/scan"
@@ -35,14 +37,15 @@ import (
 )
 
 // Launch-consent + identity constants shared with the plugin subprocess. The
-// magic-cookie pair MUST match the values base-scanner validates (T08 baked
-// MELLIFERA_MAGIC_COOKIE / mellifera-plugin-v1); a mismatch is a fatal
-// substrate-handshake failure. coreVersion mirrors base-scanner's min_core.
+// magic-cookie pair MUST match the values base-scanner AND tv-parser validate
+// (MELLIFERA_MAGIC_COOKIE / mellifera-plugin-v1); a mismatch is a fatal
+// substrate-handshake failure. coreVersion mirrors the plugins' min_core.
 const (
 	magicCookieKey   = "MELLIFERA_MAGIC_COOKIE"
 	magicCookieValue = "mellifera-plugin-v1"
 	coreVersion      = "0.1.0"
 	scannerService   = "mellifera.scanner.v1.Scanner"
+	metadataService  = "mellifera.metadata.v1.MetadataSource"
 )
 
 // Lifecycle timeouts: a bounded read-header window (slowloris protection) and a
@@ -77,7 +80,21 @@ func main() {
 	}), "load base-scanner")
 	fatalOn(mgr.Start(ctx, "base-scanner"), "start base-scanner")
 
-	scanDeps := scan.Deps{Store: st, Modules: reg, Plugins: mgr}
+	// tv-parser is the first metadata_source plugin (parseTV extracted from
+	// base-scanner in T06/T07). It loads from a filesystem path with the same
+	// dev-mode pattern + cookie pair as base-scanner; its capability declaration
+	// matches the plugin's Handshake (T06).
+	fatalOn(mgr.Load("tv-parser", cfg.tvParserPath, []sdk.Capability{
+		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
+	}), "load tv-parser")
+	fatalOn(mgr.Start(ctx, "tv-parser"), "start tv-parser")
+
+	scanDeps := scan.Deps{
+		Store:   st,
+		Modules: reg,
+		Plugins: mgr,
+		Enrich:  enrich.Deps{Store: st, Modules: reg, Plugins: mgr},
+	}
 	handler := api.New(api.Deps{
 		AdminToken: cfg.adminToken,
 		Store:      st,
@@ -109,6 +126,7 @@ func main() {
 	defer cancel()
 	logErr(srv.Shutdown(shutdownCtx), "shutdown http server")
 	logErr(mgr.Stop(shutdownCtx, "base-scanner"), "stop base-scanner")
+	logErr(mgr.Stop(shutdownCtx, "tv-parser"), "stop tv-parser")
 	// store.Close runs via the deferred st.Close() in main.
 }
 
@@ -117,6 +135,7 @@ type config struct {
 	dsn             string
 	adminToken      string
 	baseScannerPath string
+	tvParserPath    string
 	listenAddr      string
 }
 
@@ -137,6 +156,7 @@ func loadConfig() config {
 		dsn:             filepath.Join(dataDir, "mellifera.db"),
 		adminToken:      adminToken,
 		baseScannerPath: envOr("MELLIFERA_BASE_SCANNER", "bin/base-scanner"),
+		tvParserPath:    envOr("MELLIFERA_TV_PARSER", "bin/tv-parser"),
 		listenAddr:      envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
 	}
 }

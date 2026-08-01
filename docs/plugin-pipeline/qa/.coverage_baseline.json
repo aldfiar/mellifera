@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-08-01T00:00:00Z",
+  "baseline_note": "Captured BEFORE T12/T13 QA tests, after the coder+reviewer+health phases (11/11 coder tasks green). Establishes which joints/boundaries are already proven by coder tests (referenced) vs the gaps QA independently closes.",
+  "joint_coverage": {
+    "base-scanner -> core(scan)": { "covered": true, "covered_by": "integration_test.go::TestIntegrationScanLibrary + integration_pipeline_test.go::TestIntegrationPipeline (coder)" },
+    "tv-parser(subprocess) -> core(enrich)": { "covered": true, "covered_by": "parser_test.go::TestTVParserSubprocess + integration_pipeline_test.go (coder)" },
+    "core(enrich) -> store(status column)": { "covered": true, "covered_by": "scan/run_test.go::TestRunScan_EnrichIntegration + integration_pipeline_test.go (coder)" },
+    "module config -> core(enrich plugin selection)": { "covered": true, "covered_by": "enrich_test.go::TestEnrich (coder)" },
+    "HTTP ?status= filter -> store.QueryItems": { "covered": true, "covered_by": "api/router_test.go::TestListItems_StatusFilter + integration_pipeline_test.go (coder)" },
+    "independent fixture re-derivation (multi-episode episode_end / release_group / no-season skip)": { "covered": false, "covered_lines": 0, "gap": "coder golden uses 1 primary + 1 Cyrillic fixture; episode_end, release_group extraction, and the no-season tv-parser-skip->status=new path are NOT asserted by any test. QA T12 closes this." },
+    "namespace cleanliness in persisted output (sources keys + provenance plugin_id subset)": { "covered": false, "covered_lines": 0, "gap": "coder golden asserts sources['tv-parser'] present; does NOT assert sources contains ONLY sanctioned plugin keys or that all _provenance plugin_ids are in the loaded set. QA T12 closes this (runtime consequence of validateNamespace)." },
+    "_stages.stage literal value pin": { "covered": false, "covered_lines": 0, "gap": "coder golden asserts plugin_id/status/advanced_to via ipStageHas but deliberately does NOT pin the literal stage string (reviewer advisory). QA T12 pins stage=='metadata_source'." }
+  },
+  "boundary_coverage": {
+    "namespace violation (plugin writes foreign sources.<x>)": { "error_paths_covered": 2, "total_error_paths": 2, "covered_by": "enrich_test.go::TestValidateNamespace + TestEnrich namespace-violation row (coder, UNIT layer, in-process fake)", "gap": "NOT exercised at the real-subprocess layer; black-box infeasible in Phase A (no rogue-plugin load path / no runtime module-config API). Unit proof referenced." },
+    "unloaded/missing enricher (soft-fail)": { "error_paths_covered": 1, "total_error_paths": 1, "covered_by": "integration_pipeline_test.go ipAssertSoftFailStages + ipAssertCorruptSoftFail (coder); re-witnessed by QA T12 with different fixtures" },
+    "illegal lifecycle transition (e.g. deleted->enriched)": { "error_paths_covered": 1, "total_error_paths": 1, "covered_by": "enrich_test.go::TestNextState (coder, exhaustive legal+illegal table)", "gap": "Unobservable black-box (orchestrator never emits illegal transitions). Unit proof referenced." },
+    "partial-failure furthest-valid (parsed)": { "error_paths_covered": 1, "total_error_paths": 1, "covered_by": "enrich_test.go::TestEnrich convert-error row (coder, in-process fake)", "gap": "Not reproducible end-to-end in Phase A (only tv-parser is loaded and it succeeds; unloaded sources are 'unavailable' not 'failed'). Unit proof referenced." },
+    "AC-4 media-literal-in-core (architectural negative)": { "error_paths_covered": 0, "total_error_paths": 1, "gap": "check.sh does NOT enforce; no automated test. QA T13 closes (TestQA_ConfigDrivenCore)." },
+    "AC-1 parseTV-in-base-scanner (extraction negative)": { "error_paths_covered": 0, "total_error_paths": 1, "gap": "check.sh does NOT enforce; only manual grep. QA T13 closes (TestQA_ParseTVExtractionBoundary)." },
+    "AC-3 additive proto/go.mod unchanged": { "error_paths_covered": 0, "total_error_paths": 1, "gap": "manual git diff only. QA T13 closes (TestQA_AdditiveContract)." }
+  },
+  "existing_suite_status": "GREEN — `CGO_ENABLED=0 go test ./...` all 10 packages ok (root 10.079s) before QA tests added."
+}

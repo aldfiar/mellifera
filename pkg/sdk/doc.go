@@ -9,21 +9,26 @@
 // handshake, serves the gRPC services over the negotiated address, and owns
 // the plugin process lifecycle.
 //
-// # Public API (5 symbols)
+// # Public API (7 symbols)
 //
 //   - HandshakeConfig: magic-cookie key/value + identity sent to the core.
 //   - Capability: a (type, id, proto_service) declaration for a capability slot.
-//   - Scanner: the ONE interface this feature ships (see INV1 below).
+//   - Scanner: the discovery/identify capability interface (see INV1 below).
 //   - ScannerPlugin: the dual-side GRPCPlugin adapter for the Scanner capability.
+//   - MetadataSource: the enrichment capability interface (the 4-RPC Match ->
+//     BuildRequest -> Convert -> Merge chain; see INV1).
+//   - MetadataSourcePlugin: the dual-side GRPCPlugin adapter for the
+//     MetadataSource capability.
 //   - Serve: the plugin-process entrypoint.
 //
 // # Invariants
 //
-//   - INV1: Scanner is the only interface in this feature. It has >=2 real
-//     implementations: the subprocess client wrapper built by
-//     ScannerPlugin.GRPCClient (core side) and an in-process test fake (test
-//     side). The interface is justified at the plugin seam where >=2 impls
-//     meet (R8).
+//   - INV1: interfaces exist ONLY at the plugin seam, each with >=2 real
+//     implementations (R8). Scanner (discovery/identify) and MetadataSource
+//     (the enrichment 4-RPC chain) are the two capability interfaces. Each has
+//     >=2 impls: the subprocess client wrapper built by its *Plugin.GRPCClient
+//     (core side) and an in-process test fake (test side). No other interface
+//     is shipped; no single-impl interface exists (arch data-type boundaries).
 //   - INV2: pkg/sdk is a shared LEAF. It imports proto + go-plugin + grpc +
 //     stdlib only. It MUST NOT import any internal/* package: external
 //     plugins import it.

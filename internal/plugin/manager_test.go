@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/mellifera/mellifera/pkg/sdk"
+	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 	pluginv1 "github.com/mellifera/mellifera/proto/mellifera/plugin/v1"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
 )
@@ -32,6 +33,10 @@ func testDeps() Deps {
 
 func scannerCap(id string) []sdk.Capability {
 	return []sdk.Capability{{Type: "scanner", ID: id, ProtoService: "mellifera.scanner.v1.Scanner"}}
+}
+
+func metadataCap(id string) []sdk.Capability {
+	return []sdk.Capability{{Type: "metadata_source", ID: id, ProtoService: "mellifera.metadata.v1.MetadataSource"}}
 }
 
 // buildFakePlugin builds the testdata subprocess to a temp binary. go test runs
@@ -57,6 +62,24 @@ func (mockScanner) Scan(context.Context, *scannerv1.ScanRequest) (<-chan *scanne
 	return nil, nil
 }
 func (mockScanner) Identify(context.Context, *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error) {
+	return nil, nil
+}
+
+// mockMetadata is an sdk.MetadataSource whose methods are unused by accessor
+// tests (it exists so a fake-launched metadata_source entry can reach "serving"
+// and the accessor can return its typed client).
+type mockMetadata struct{}
+
+func (mockMetadata) Match(context.Context, *metadatav1.MatchRequest) (*metadatav1.MatchResult, error) {
+	return nil, nil
+}
+func (mockMetadata) BuildRequest(context.Context, *metadatav1.BuildRequestRequest) (*metadatav1.BuildRequestResponse, error) {
+	return nil, nil
+}
+func (mockMetadata) Convert(context.Context, *metadatav1.ConvertRequest) (*metadatav1.ConvertResult, error) {
+	return nil, nil
+}
+func (mockMetadata) Merge(context.Context, *metadatav1.MergeRequest) (*metadatav1.MergeResult, error) {
 	return nil, nil
 }
 
@@ -296,5 +319,121 @@ func TestExponentialBackoff(t *testing.T) {
 				t.Fatalf("backoff(%d)=%s, want [%s,%s]", tc.attempt, d, tc.lo, tc.hi)
 			}
 		})
+	}
+}
+
+// TestMetadataSource_Accessor mirrors TestScanner_AccessorErrors for the
+// metadata_source capability: error rows for not-loaded / not-serving /
+// cap-not-declared, plus the scanner-only-plugin case (MetadataSource must
+// reject a plugin that declared only scanner — INV-ac3 / seam S2), and a
+// positive accessor returning the typed client.
+func TestMetadataSource_Accessor(t *testing.T) {
+	serving := Open(testDeps())
+	serving.launchFn = func(context.Context, *pluginEntry) (*runningPlugin, error) {
+		return &runningPlugin{metadata: mockMetadata{}, pconn: fakePluginClient{}, exited: func() bool { return false }, kill: func() {}}, nil
+	}
+	if err := serving.Load("up", "/bin/true", metadataCap("default")); err != nil {
+		t.Fatal(err)
+	}
+	if err := serving.Start(context.Background(), "up"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = serving.Stop(context.Background(), "up") })
+
+	notStarted := Open(testDeps())
+	_ = notStarted.Load("loaded", "/bin/true", metadataCap("default"))
+
+	// A scanner-only serving plugin: MetadataSource must error "not declared".
+	scannerOnly := Open(testDeps())
+	scannerOnly.launchFn = func(context.Context, *pluginEntry) (*runningPlugin, error) {
+		return &runningPlugin{scanner: mockScanner{}, pconn: fakePluginClient{}, exited: func() bool { return false }, kill: func() {}}, nil
+	}
+	if err := scannerOnly.Load("scan", "/bin/true", scannerCap("default")); err != nil {
+		t.Fatal(err)
+	}
+	if err := scannerOnly.Start(context.Background(), "scan"); err != nil {
+		t.Fatalf("Start scan: %v", err)
+	}
+	t.Cleanup(func() { _ = scannerOnly.Stop(context.Background(), "scan") })
+
+	tests := []struct {
+		name    string
+		m       *Manager
+		plugin  string
+		cap     string
+		wantErr string
+	}{
+		{name: "not loaded", m: serving, plugin: "nope", cap: "default", wantErr: "not loaded"},
+		{name: "not serving", m: notStarted, plugin: "loaded", cap: "default", wantErr: "not serving"},
+		{name: "unknown capability", m: serving, plugin: "up", cap: "missing", wantErr: "not declared"},
+		{name: "scanner-only plugin", m: scannerOnly, plugin: "scan", cap: "default", wantErr: "not declared"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			md, err := tc.m.MetadataSource(tc.plugin, tc.cap)
+			if err == nil {
+				t.Fatalf("MetadataSource: expected error, got %v", md)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("MetadataSource err=%q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+
+	// Positive accessor: the typed client comes back and implements sdk.MetadataSource.
+	md, err := serving.MetadataSource("up", "default")
+	if err != nil {
+		t.Fatalf("MetadataSource(up,default): %v", err)
+	}
+	var _ sdk.MetadataSource = md
+}
+
+// TestClientPluginSet proves B2/INV-caps-driven/INV-ac3-base-scanner: the
+// client PluginSet is built ONLY from declared capabilities, one adapter per
+// type, and base-scanner's scanner-only set is byte-for-byte {scanner: ScannerPlugin{}}.
+func TestClientPluginSet(t *testing.T) {
+	scannerOnly := scannerCap("default")
+	metaOnly := metadataCap("default")
+	both := []sdk.Capability{
+		{Type: "scanner", ID: "default"},
+		{Type: "metadata_source", ID: "default"},
+	}
+	tests := []struct {
+		name string
+		caps []sdk.Capability
+		want []string
+	}{
+		{name: "scanner only (base-scanner)", caps: scannerOnly, want: []string{scannerPluginKey}},
+		{name: "metadata only (tv-parser)", caps: metaOnly, want: []string{metadataSourcePluginKey}},
+		{name: "both capabilities", caps: both, want: []string{scannerPluginKey, metadataSourcePluginKey}},
+		{name: "unknown type omitted", caps: []sdk.Capability{{Type: "future-cap", ID: "x"}}, want: nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			set := clientPluginSet(tc.caps)
+			if len(set) != len(tc.want) {
+				t.Fatalf("clientPluginSet = %d entries %v, want %d %v", len(set), set, len(tc.want), tc.want)
+			}
+			for _, k := range tc.want {
+				if _, ok := set[k]; !ok {
+					t.Errorf("clientPluginSet missing key %q (got %v)", k, set)
+				}
+			}
+		})
+	}
+
+	// INV-ac3: base-scanner's set is exactly {scanner: *sdk.ScannerPlugin}.
+	base := clientPluginSet(scannerOnly)
+	if len(base) != 1 {
+		t.Fatalf("base-scanner set has %d entries, want 1 (%v)", len(base), base)
+	}
+	if _, ok := base[scannerPluginKey].(*sdk.ScannerPlugin); !ok {
+		t.Fatalf("base-scanner set[scanner] = %T, want *sdk.ScannerPlugin", base[scannerPluginKey])
+	}
+
+	// metadata_source adapter type check (tv-parser dispense target).
+	meta := clientPluginSet(metaOnly)
+	if _, ok := meta[metadataSourcePluginKey].(*sdk.MetadataSourcePlugin); !ok {
+		t.Fatalf("tv-parser set[metadata_source] = %T, want *sdk.MetadataSourcePlugin", meta[metadataSourcePluginKey])
 	}
 }

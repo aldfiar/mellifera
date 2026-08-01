@@ -16,7 +16,9 @@ import (
 // TestScan_EndToEnd drives scannerImpl.Scan over a temp library root and asserts
 // the three load-bearing ACs together:
 //   - AC-1: a TV media file is discovered with an ffprobe blob, and Identify
-//     parses title/season/episode from its path.
+//     emits media-type-agnostic BASE fields (relative_path/extension) only — the
+//     TV parse (title/season/episode) is produced by the tv-parser plugin
+//     downstream (parseTV extraction, Task 06/07).
 //   - AC-4: a symlink escaping the root is never emitted (never probed).
 //   - AC-6: a zero-byte (unprobeable) media file is still emitted with empty
 //     ffprobe_json + a warning.
@@ -92,17 +94,23 @@ func TestScan_EndToEnd(t *testing.T) {
 	if res.GetFileId() != tf.GetFileId() {
 		t.Fatalf("Identify file_id = %q, want %q", res.GetFileId(), tf.GetFileId())
 	}
-	if got := strField(res.GetParsed(), "title"); got != "Breaking Bad" {
-		t.Fatalf("parsed title = %q, want Breaking Bad", got)
+	// base-scanner is media-type-agnostic (AC-1 extraction): base fields only —
+	// the TV parse (title/season/episode) now lives in the tv-parser plugin.
+	if res.GetParserName() != "base" {
+		t.Fatalf("parser_name = %q, want base (TV parse extracted to tv-parser)", res.GetParserName())
 	}
-	if got := numField(res.GetParsed(), "season"); got != 1 {
-		t.Fatalf("parsed season = %d, want 1", got)
+	if got := strField(res.GetParsed(), "relative_path"); got != "Breaking Bad/Season 1/Breaking Bad S01E01.mkv" {
+		t.Fatalf("parsed relative_path = %q, want the TV file's relative path", got)
 	}
-	if got := numField(res.GetParsed(), "episode"); got != 1 {
-		t.Fatalf("parsed episode = %d, want 1", got)
+	if got := strField(res.GetParsed(), "extension"); got != ".mkv" {
+		t.Fatalf("parsed extension = %q, want .mkv", got)
 	}
-	if res.GetParserName() != "tv-filename" {
-		t.Fatalf("parser_name = %q, want tv-filename", res.GetParserName())
+	// No TV-specific fields leak from base-scanner (the parseTV split, AC-1).
+	if _, ok := res.GetParsed().GetFields()["season"]; ok {
+		t.Fatal("base-scanner Identify must not emit season (parseTV extracted to tv-parser)")
+	}
+	if _, ok := res.GetParsed().GetFields()["episode"]; ok {
+		t.Fatal("base-scanner Identify must not emit episode (parseTV extracted to tv-parser)")
 	}
 }
 

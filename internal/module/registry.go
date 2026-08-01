@@ -34,11 +34,13 @@ const listModulesSQL = `SELECT id, media_type, config_json, schema_version
   FROM modules WHERE enabled = 1 ORDER BY id`
 
 // tvConfigJSON is the architecture §2.4.1 TV module config, as JSON. The
-// metadata_sources are carried verbatim as config data (the core does not act
-// on them this feature); document_schema is omitted because document
-// validation is a deferred feature and module does not read it. The scanner
-// binding is what this feature resolves via Get("tv"). display_name carries
-// Russian first-class (arch §1.2).
+// metadata_sources chain is now modeled into Module.MetadataSources: tv-parser
+// (priority 1) is the local parser that runs in Phase A; kinopoisk (2) and
+// tmdb (3) are the designed external enrichers, soft-failed in Phase A because
+// their plugins are not loaded (AC-6). document_schema is omitted because
+// document validation is a deferred feature and module does not read it. The
+// scanner binding is what scan resolves via Get("tv"). display_name carries
+// Russian first-class (arch §1.2). tv-parser is a local parser: no auth_mode.
 const tvConfigJSON = `{
   "id": "tv",
   "schema_version": 1,
@@ -55,13 +57,18 @@ const tvConfigJSON = `{
   },
   "metadata_sources": [
     {
+      "plugin_id": "tv-parser", "capability_id": "default",
+      "priority": 1, "enabled": true,
+      "options": {}
+    },
+    {
       "plugin_id": "kinopoisk", "capability_id": "default",
-      "priority": 1, "enabled": true, "auth_mode": "CLIENT",
+      "priority": 2, "enabled": true, "auth_mode": "CLIENT",
       "options": {"language": "ru"}
     },
     {
       "plugin_id": "tmdb", "capability_id": "default",
-      "priority": 2, "enabled": true, "auth_mode": "SERVER",
+      "priority": 3, "enabled": true, "auth_mode": "SERVER",
       "options": {"language": "en-US", "include_image_types": ["poster", "backdrop", "logo"]}
     }
   ],
@@ -82,10 +89,11 @@ type Registry struct {
 // Module is one module config entity. media_type is a string the core carries
 // and never branches on.
 type Module struct {
-	ID            string
-	MediaType     string
-	SchemaVersion int
-	Scanner       ScannerBinding
+	ID              string
+	MediaType       string
+	SchemaVersion   int
+	Scanner         ScannerBinding          // scan-side capability slot
+	MetadataSources []MetadataSourceBinding // enrichment chain, config order
 }
 
 // ScannerBinding is the scanner capability slot a module binds: which plugin
@@ -94,6 +102,20 @@ type Module struct {
 type ScannerBinding struct {
 	PluginID     string
 	CapabilityID string
+	Options      json.RawMessage
+}
+
+// MetadataSourceBinding is one enrichment-source config slot: which plugin +
+// capability serves it, its chain priority (lower runs first), whether it is
+// active, its auth mode (opaque config string; Phase B interprets SERVER /
+// CLIENT), and the opaque options forwarded to its RPCs. Core selection reads
+// this slice from config and never branches on media type (AC-4).
+type MetadataSourceBinding struct {
+	PluginID     string
+	CapabilityID string
+	Priority     int
+	Enabled      bool
+	AuthMode     string
 	Options      json.RawMessage
 }
 
@@ -155,10 +177,15 @@ func (r *Registry) List() ([]Module, error) {
 	return out, nil
 }
 
-// parseModule decodes a config_json blob into a Module, extracting only the
-// scanner slot this feature resolves. The remaining config (metadata_sources,
-// display, ...) is intentionally not modeled in Go (arch §2.4.2: options are
+// parseModule decodes a config_json blob into a Module, extracting the scanner
+// slot and the ordered metadata_sources enrichment chain. The remaining config
+// (display, ...) is intentionally not modeled in Go (arch §2.4.2: options are
 // opaque pass-through; module is a config entity, not a typed schema).
+//
+// The metadata_sources are modeled verbatim in CONFIG order: Enabled is carried
+// (not filtered) so the binding stays lossless; the enrich orchestrator
+// (internal/enrich) sorts/runs by Priority and skips disabled sources
+// (INV-config-driven, AC-4). The tiebreak for equal priorities is this order.
 func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (Module, error) {
 	var cfg struct {
 		Scanner struct {
@@ -166,11 +193,19 @@ func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (M
 			CapabilityID string          `json:"capability_id"`
 			Options      json.RawMessage `json:"options"`
 		} `json:"scanner"`
+		MetadataSources []struct {
+			PluginID     string          `json:"plugin_id"`
+			CapabilityID string          `json:"capability_id"`
+			Priority     int             `json:"priority"`
+			Enabled      bool            `json:"enabled"`
+			AuthMode     string          `json:"auth_mode"`
+			Options      json.RawMessage `json:"options"`
+		} `json:"metadata_sources"`
 	}
 	if err := json.Unmarshal(configBytes, &cfg); err != nil {
 		return Module{}, fmt.Errorf("module %q: parse config_json: %w", id, err)
 	}
-	return Module{
+	m := Module{
 		ID:            id,
 		MediaType:     mediaType,
 		SchemaVersion: schemaVersion,
@@ -179,5 +214,17 @@ func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (M
 			CapabilityID: cfg.Scanner.CapabilityID,
 			Options:      cfg.Scanner.Options,
 		},
-	}, nil
+	}
+	m.MetadataSources = make([]MetadataSourceBinding, len(cfg.MetadataSources))
+	for i, src := range cfg.MetadataSources {
+		m.MetadataSources[i] = MetadataSourceBinding{
+			PluginID:     src.PluginID,
+			CapabilityID: src.CapabilityID,
+			Priority:     src.Priority,
+			Enabled:      src.Enabled,
+			AuthMode:     src.AuthMode,
+			Options:      src.Options,
+		}
+	}
+	return m, nil
 }

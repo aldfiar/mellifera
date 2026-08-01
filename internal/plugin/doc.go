@@ -12,12 +12,16 @@
 // and the Manager restarts it with backoff or marks it failed.
 //
 // Capability routing is by TYPE, never by plugin identity: the core asks for a
-// Scanner for a given (plugin_id, capability_id) and receives a typed
-// sdk.Scanner wrapping the live gRPC connection. There is no reflect, no
-// protobuf.Any, no generic Call — the scanner accessor is per-capability and
-// typed (architecture §7.2, §2.4 binding semantics).
+// Scanner (or MetadataSource) for a given (plugin_id, capability_id) and
+// receives a typed client wrapping the live gRPC connection. There is no
+// reflect, no protobuf.Any, no generic Call — each capability gets its own
+// typed accessor (architecture §7.2, §2.4 binding semantics). The launch path
+// builds the go-plugin client PluginSet ONLY from the plugin's DECLARED
+// capabilities, so a scanner-only plugin (base-scanner) dispenses exactly the
+// scanner client it always did, and a metadata_source plugin dispenses a
+// MetadataSource — caps-driven, never hardcoded.
 //
-// # Public API (9 symbols — WARN >8, justified, <12; see INV5)
+// # Public API (10 symbols — WARN >8, justified, <12; see INV5)
 //
 //   - Manager: the per-pluginID client map + capability registry + restart state.
 //   - Deps: the magic-cookie pair + core version the Manager launches against.
@@ -28,12 +32,14 @@
 //   - Stop: sends the Shutdown RPC + SIGTERM with a 10s grace period.
 //   - Status: returns the plugin's current Health (polled state + restart count).
 //   - Scanner: the typed capability accessor returning a live sdk.Scanner.
+//   - MetadataSource: the typed capability accessor returning a live sdk.MetadataSource.
 //
 // # Invariants
 //
-//   - INV1: Scanner is a TYPED accessor. No reflect, no protobuf.Any. The module
-//     map's generic "Call" is realized as one typed accessor per capability
-//     type; this is the scanner one (decision log).
+//   - INV1: Scanner and MetadataSource are TYPED accessors. No reflect, no
+//     protobuf.Any. The module map's generic "Call" is realized as one typed
+//     accessor per capability type — Scanner for the scanner capability,
+//     MetadataSource for the metadata_source capability (decision log).
 //   - INV2: Minimal restart (§7.3). On unexpected subprocess exit the Manager
 //     marks capabilities unavailable, exponential-backoff restarts (initial 1s,
 //     factor 2, cap 60s, jittered), and after 3 consecutive failed restart
@@ -49,7 +55,8 @@
 //     plugin validates it before serving — §2.2.1); a mismatch is fatal. The
 //     domain Plugin.Handshake (§2.2.2) is a second layer the Manager runs after
 //     the substrate succeeds.
-//   - INV5: 9 exported symbols (3 types + Open + Load/Start/Stop/Status/Scanner).
-//     WARN (>8) but under the 12 hard-fail ceiling, pre-justified (R10). The
-//     plugin lifecycle is one cohesive responsibility; splitting fragments it.
+//   - INV5: 10 exported symbols (3 types + Open + Load/Start/Stop/Status +
+//     Scanner/MetadataSource). WARN (>8) but under the 12 hard-fail ceiling,
+//     pre-justified (R10). The plugin lifecycle is one cohesive responsibility;
+//     splitting fragments it.
 package plugin

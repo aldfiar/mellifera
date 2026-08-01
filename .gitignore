@@ -10,6 +10,7 @@
 # Go build artifacts
 /bin/
 /base-scanner
+/tv-parser
 /mellifera
 *.exe
 *.test

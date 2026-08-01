@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/store"
@@ -105,6 +106,16 @@ type recordingResolver struct {
 func (r *recordingResolver) resolve(pluginID, capabilityID string) (sdk.Scanner, error) {
 	r.pluginID, r.capabilityID, r.called = pluginID, capabilityID, true
 	return r.scanner, nil
+}
+
+// passthroughEnricher returns the base document unchanged with status "new" —
+// the scan-orchestration tests exercise the scan drain/assemble/put flow in
+// isolation (enrich behavior is covered by TestRunScan_EnrichIntegration, which
+// injects a behavior-controlling fake via the same seam S6).
+func passthroughEnricher() enricher {
+	return func(_ context.Context, _ module.Module, doc map[string]any, _ *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
+		return doc, "new", enrich.Result{}, nil
+	}
 }
 
 func mkFile(fileID, rel string, ffprobe []byte, warnings []string) *scannerv1.DiscoveredFile {
@@ -307,7 +318,7 @@ func TestRunScan_Orchestration(t *testing.T) {
 				resolve = rr.resolve
 			}
 
-			res, err := runScan(context.Background(), s, r, resolve, libID)
+			res, err := runScan(context.Background(), s, r, resolve, passthroughEnricher(), libID)
 			if tc.expected.wantErr && err == nil {
 				t.Fatalf("runScan: want error, got nil (res=%+v)", res)
 			}
@@ -350,7 +361,7 @@ func TestRunScan_Orchestration(t *testing.T) {
 			}
 
 			if tc.expected.check != nil {
-				items, qerr := s.QueryItems(context.Background(), libID, 100, 0)
+				items, qerr := s.QueryItems(context.Background(), libID, "", 100, 0)
 				if qerr != nil {
 					t.Fatalf("QueryItems: %v", qerr)
 				}
@@ -383,7 +394,7 @@ func TestRunScan_OptionsForwarded(t *testing.T) {
 		identify: map[string]*scannerv1.IdentifyResult{"f1": mkIdentified("f1", `{"title":"X"}`)},
 	}
 	rr := &recordingResolver{scanner: sc}
-	if _, err := runScan(context.Background(), s, r, rr.resolve, libID); err != nil {
+	if _, err := runScan(context.Background(), s, r, rr.resolve, passthroughEnricher(), libID); err != nil {
 		t.Fatalf("runScan: %v", err)
 	}
 	if sc.gotReq == nil || sc.gotReq.Options == nil {
@@ -434,7 +445,7 @@ func TestRunScan_ContextCancellation(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := runScan(ctx, s, r, rr.resolve, libID)
+		_, err := runScan(ctx, s, r, rr.resolve, passthroughEnricher(), libID)
 		done <- err
 	}()
 
@@ -443,7 +454,7 @@ func TestRunScan_ContextCancellation(t *testing.T) {
 	// the polling query.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if items, _ := s.QueryItems(context.Background(), libID, 100, 0); len(items) >= 1 {
+		if items, _ := s.QueryItems(context.Background(), libID, "", 100, 0); len(items) >= 1 {
 			break
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -460,7 +471,7 @@ func TestRunScan_ContextCancellation(t *testing.T) {
 	}
 
 	// B6: the partial item remains; idempotent re-scan will resume. f2 never ran.
-	items, err := s.QueryItems(context.Background(), libID, 100, 0)
+	items, err := s.QueryItems(context.Background(), libID, "", 100, 0)
 	if err != nil {
 		t.Fatalf("QueryItems: %v", err)
 	}
@@ -470,4 +481,129 @@ func TestRunScan_ContextCancellation(t *testing.T) {
 	if items[0].FileID != "f1" {
 		t.Errorf("persisted FileID = %q, want f1", items[0].FileID)
 	}
+}
+
+// TestRunScan_EnrichIntegration is the joint test for seams S6 (scan→enrich) and
+// S7 (scan→store status). It injects a behavior-controlling fake enricher and
+// asserts scan drives enrich per item between Identify and PutItem, persists the
+// enriched document + the status enrich returned, merges enrich's soft warnings
+// into the scan Result, and propagates enrich's hard error with ctx precedence.
+func TestRunScan_EnrichIntegration(t *testing.T) {
+	sc := &fakeScanner{
+		files: []*scannerv1.DiscoveredFile{
+			mkFile("f1", "Show/S01E01.mkv", []byte(`{"format":{"duration":"120.5"}}`), nil),
+		},
+		identify: map[string]*scannerv1.IdentifyResult{
+			"f1": mkIdentified("f1", `{"title":"Breaking Bad","season":1,"episode":1}`),
+		},
+	}
+
+	t.Run("enriched_document_and_status_persisted", func(t *testing.T) {
+		s, r, libID := setupStore(t)
+		rr := &recordingResolver{scanner: sc}
+		enrich := func(_ context.Context, _ module.Module, doc map[string]any, _ *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
+			sources, _ := doc["sources"].(map[string]any)
+			if sources == nil {
+				sources = map[string]any{}
+			}
+			sources["tv-parser"] = map[string]any{"title": "Breaking Bad", "season": 1, "episode": 1}
+			doc["sources"] = sources
+			return doc, "enriched", enrich.Result{Stages: 1, Succeeded: 1}, nil
+		}
+		res, err := runScan(context.Background(), s, r, rr.resolve, enrich, libID)
+		if err != nil {
+			t.Fatalf("runScan: %v", err)
+		}
+		if res.Persisted != 1 {
+			t.Fatalf("Persisted = %d, want 1", res.Persisted)
+		}
+		items, qerr := s.QueryItems(context.Background(), libID, "", 100, 0)
+		if qerr != nil {
+			t.Fatalf("QueryItems: %v", qerr)
+		}
+		if len(items) != 1 || items[0].FileID != "f1" {
+			t.Fatalf("persisted items = %+v, want one f1", items)
+		}
+		if items[0].Status != "enriched" {
+			t.Errorf("Status = %q, want enriched (S7)", items[0].Status)
+		}
+		var d struct {
+			Sources map[string]map[string]any `json:"sources"`
+		}
+		if err := json.Unmarshal(items[0].Document, &d); err != nil {
+			t.Fatalf("decode document: %v", err)
+		}
+		if d.Sources["tv-parser"]["title"] != "Breaking Bad" {
+			t.Errorf("sources.tv-parser.title = %v, want Breaking Bad (S6 enriched doc)", d.Sources["tv-parser"])
+		}
+	})
+
+	t.Run("soft_fail_warnings_merged", func(t *testing.T) {
+		s, r, libID := setupStore(t)
+		rr := &recordingResolver{scanner: sc}
+		enrich := func(_ context.Context, _ module.Module, doc map[string]any, _ *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
+			return doc, "parsed", enrich.Result{Warnings: []string{"source kinopoisk: rpc unavailable"}}, nil
+		}
+		res, err := runScan(context.Background(), s, r, rr.resolve, enrich, libID)
+		if err != nil {
+			t.Fatalf("runScan: want nil error, got %v (soft-fail must not abort)", err)
+		}
+		if res.Persisted != 1 {
+			t.Errorf("Persisted = %d, want 1 (scan continues past soft-fail)", res.Persisted)
+		}
+		found := false
+		for _, w := range res.Warnings {
+			if strings.Contains(w, "kinopoisk") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Warnings %v do not include the enrich soft-fail", res.Warnings)
+		}
+	})
+
+	t.Run("hard_error_ctx_precedence", func(t *testing.T) {
+		s, r, libID := setupStore(t)
+		rr := &recordingResolver{scanner: sc}
+		ctx, cancel := context.WithCancel(context.Background())
+		enrich := func(c context.Context, _ module.Module, doc map[string]any, _ *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
+			cancel() // simulate enrich detecting a cancelled context mid-chain (Phase A's only hard failure)
+			return doc, "failed", enrich.Result{}, c.Err()
+		}
+		_, err := runScan(ctx, s, r, rr.resolve, enrich, libID)
+		if err == nil {
+			t.Fatal("runScan: want error (enrich hard failure must propagate), got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("runScan error = %v, want a context.Canceled wrap (ctx precedence)", err)
+		}
+	})
+
+	t.Run("no_sources_passthrough", func(t *testing.T) {
+		s, r, libID := setupStore(t)
+		rr := &recordingResolver{scanner: sc}
+		enrich := func(_ context.Context, _ module.Module, doc map[string]any, _ *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
+			return doc, "new", enrich.Result{}, nil // empty chain: start status unchanged (INV-status-passthrough)
+		}
+		if _, err := runScan(context.Background(), s, r, rr.resolve, enrich, libID); err != nil {
+			t.Fatalf("runScan: %v", err)
+		}
+		items, qerr := s.QueryItems(context.Background(), libID, "", 100, 0)
+		if qerr != nil {
+			t.Fatalf("QueryItems: %v", qerr)
+		}
+		if len(items) != 1 {
+			t.Fatalf("persisted items = %d, want 1", len(items))
+		}
+		if items[0].Status != "new" {
+			t.Errorf("Status = %q, want new (no metadata sources engaged)", items[0].Status)
+		}
+		d := decodeDoc(t, items[0].Document)
+		if d.FileID != "f1" {
+			t.Errorf("document file_id = %q, want f1", d.FileID)
+		}
+		if d.Parsed["title"] != "Breaking Bad" {
+			t.Errorf("parsed.title = %v, want Breaking Bad (base doc intact)", d.Parsed["title"])
+		}
+	})
 }

@@ -17,7 +17,9 @@
 // # Public API (11 symbols — WARN >8, <12; pre-justified, R10)
 //
 //   - Store: wraps *sql.DB; the single SQLite connection owner.
-//   - Item: a persisted media item (document + denormalized query fields).
+//   - Item: a persisted media item (document + denormalized query fields +
+//     a core-managed lifecycle status; the canonical set new/pending/parsed/
+//     enriched/failed/deleted is owned by internal/enrich, not store).
 //   - Library: a configured scan root bound to a module.
 //   - Open: opens SQLite, sets WAL, runs idempotent migrations, returns *Store.
 //   - Close: releases the database handle.
@@ -26,7 +28,8 @@
 //   - GetLibrary: loads a library by id.
 //   - GetItem: loads an item by id.
 //   - PutItem: upserts an item keyed by file_id (idempotent re-scan).
-//   - QueryItems: lists items for a library with LIMIT/OFFSET.
+//   - QueryItems: lists items for a library with LIMIT/OFFSET; a non-empty
+//     status arg filters by exact lifecycle-state match (empty = all statuses).
 //
 // # Invariants
 //

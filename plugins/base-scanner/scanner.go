@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"google.golang.org/protobuf/types/known/structpb"
+
 	"github.com/mellifera/mellifera/pkg/sdk"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
 )
@@ -22,6 +24,12 @@ var _ sdk.Scanner = (*scannerImpl)(nil)
 // and streams DiscoveredFile; Identify is a pure parse of one discovered file.
 // All state is per-call (the scanner is stateless between RPCs, arch §0.2).
 type scannerImpl struct{}
+
+// baseConfidence is the neutral confidence base-scanner stamps on its
+// media-type-agnostic base fields. It is weaker than a parser's structured
+// confidence (the TV parse now lives in tv-parser) but non-zero: the base
+// filename decomposition is a real, if generic, signal.
+const baseConfidence = 0.5
 
 // Scan resolves + validates the library root, then streams one DiscoveredFile per
 // media file found under it. The root resolution failure is the only hard error;
@@ -39,18 +47,28 @@ func (s *scannerImpl) Scan(ctx context.Context, req *scannerv1.ScanRequest) (<-c
 	return walk(ctx, absRoot, req.GetOptions()), nil
 }
 
-// Identify is the pure unary parse of one discovered file into a structured
-// guess. It runs parseTV on the file's library-relative path and returns the
-// parsed Struct + confidence + parser name. No I/O beyond the request (arch §3.1).
+// Identify is the pure unary parse of one discovered file into media-type-
+// agnostic BASE fields. It decomposes the filename into the relative path + the
+// extension ONLY — no structured TV metadata: that filename parse was extracted
+// to the tv-parser metadata_source plugin (Task 06/07, AC-1), so base-scanner
+// stays a discovery + base-info scanner. The configured parser chain (tv-parser)
+// runs over these base fields in the downstream enrich stage. No I/O beyond the
+// request (arch §3.1). The scanner.v1.IdentifyResult WIRE SHAPE is unchanged
+// (AC-3, deprecate-don't-delete): only the Parsed CONTENT shrinks and ParserName
+// is "base" (the old parser name is retired with the extraction).
 func (s *scannerImpl) Identify(_ context.Context, req *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error) {
 	file := req.GetFile()
-	parsed, confidence, parser := parseTV(file.GetRelativePath())
+	relPath := file.GetRelativePath()
+	parsed, _ := structpb.NewStruct(map[string]any{
+		"relative_path": relPath,
+		"extension":     filepath.Ext(relPath),
+	})
 	return &scannerv1.IdentifyResult{
 		FileId:     file.GetFileId(),
 		MediaType:  req.GetModuleType(),
 		Parsed:     parsed,
-		Confidence: confidence,
-		ParserName: parser,
+		Confidence: baseConfidence,
+		ParserName: "base",
 	}, nil
 }
 

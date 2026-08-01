@@ -4,9 +4,18 @@
 > initial vertical: Go module, protos, `pkg/sdk`, `internal/{store,module,plugin,
 > scan,api}`, `plugins/base-scanner`, `cmd/mellifera`, and the integration test.
 > The module map in `docs/ai-architecture.md` §4 is now grounded in real code.
-> Deferred packages (`internal/enrich`, `internal/stream`, `internal/janitor`)
-> are marked below. Design-doc parents: `docs/architecture.md`,
-> `docs/ai-architecture.md`, `docs/prior-art.md`, `docs/open-questions.md`.
+> Design-doc parents: `docs/architecture.md`, `docs/ai-architecture.md`,
+> `docs/prior-art.md`, `docs/open-questions.md`.
+>
+> **Phase A (`plugin-pipeline`) layered on top — additive.** Realizes
+> `internal/enrich` (the metadata-side serial orchestrator), adds the
+> `plugins/tv-parser` `metadata_source` subprocess, makes `base-scanner`
+> media-type-agnostic (parseTV extracted into tv-parser), and adds the
+> `items.status` lifecycle column. Zero new protos — tv-parser and the enrich
+> chain implement the already-generated `metadata.v1.MetadataSource`. The
+> scan-library wire contract is unchanged (deprecate-don't-delete). Phase B
+> (external TMDB enricher + `AuthContext` + async queue) and Phase C (post-action)
+> remain **deferred/outlined**. Feature record: `docs/plugin-pipeline/`.
 
 ## Overview
 
@@ -31,9 +40,11 @@ The differentiator versus the Jellyfin/Emby lineage is **subprocess plugin isola
 
 CGO is avoided (pure-Go SQLite chosen to fit single-binary + cross-compile). No DI framework. No `reflect` (depguard-denied).
 
-## Module layout (implemented by `scan-library`)
+## Module layout (foundational slice `scan-library` + `plugin-pipeline` Phase A)
 
-Directory tree as realized by the foundational slice (grounded in `docs/ai-architecture.md` §4 module map + `docs/architecture.md` §10):
+Directory tree as realized by the foundational slice PLUS the additive Phase A
+layer (grounded in `docs/ai-architecture.md` §4 module map + `docs/architecture.md`
+§10; symbol counts are exported symbols, `WARN` = >8 but ≤12):
 
 ```
 mellifera/
@@ -44,34 +55,37 @@ mellifera/
 ├── proto/mellifera/                # generated *.pb.go + *_grpc.pb.go committed
 │   ├── common/v1/                  # MediaDocument, AuthContext, Provenance, ... (arch §2.1.1)
 │   ├── scanner/v1/                 # Scanner service: Scan(stream), Identify (arch §2.1.2)
-│   ├── metadata/v1/                # MetadataSource (generated; NOT exercised this feature)
+│   ├── metadata/v1/                # MetadataSource (generated; EXERCISED in Phase A by tv-parser + sdk + enrich)
 │   └── plugin/v1/                  # Plugin service: Handshake, Health, Shutdown (arch §2.2.2)
-├── pkg/sdk/                        # plugin SDK: Serve + Scanner + ScannerPlugin + Capability + HandshakeConfig (5)
+├── pkg/sdk/                        # plugin SDK (7): + MetadataSource + MetadataSourcePlugin in Phase A
 ├── internal/
-│   ├── store/                      # SQLite: documents + control tables + reserved tables (11 WARN)
-│   ├── plugin/                     # subprocess lifecycle + gRPC clients + capability routing (9 WARN)
-│   ├── module/                     # config-driven module registry (6)
-│   ├── scan/                       # scan-side orchestrator: Run/Deps/Result (3) — NEW
-│   ├── api/                        # chi router — PURE DELEGATION, zero logic (3)
-│   ├── enrich/                     # DEFERRED (not built this feature)
+│   ├── store/                      # SQLite: documents + control tables + reserved tables (11 WARN; +items.status column, not symbols)
+│   ├── plugin/                     # subprocess lifecycle + gRPC clients + capability routing (10 WARN; +MetadataSource accessor)
+│   ├── module/                     # config-driven module registry (7; +MetadataSourceBinding, tv-parser seed)
+│   ├── scan/                       # scan-side orchestrator: Run/Deps/Result (3; Deps.Enrich drives enrich)
+│   ├── api/                        # chi router — PURE DELEGATION, zero logic (3; itemDTO.Status + ?status=)
+│   ├── enrich/                     # metadata-side serial orchestrator: Enrich/Deps/Result (3) — REALIZED in Phase A
 │   ├── stream/                     # DEFERRED
 │   └── janitor/                    # DEFERRED
 ├── plugins/
-│   └── base-scanner/               # subprocess binary (MAIN module for MVP): walk + ffprobe + TV parse + withinRoot
+│   ├── base-scanner/               # scanner subprocess: walk + ffprobe + withinRoot (media-type-agnostic; parseTV extracted)
+│   └── tv-parser/                  # metadata_source subprocess: parseTV moved here verbatim; serves metadata.v1.MetadataSource
 ├── cmd/
-│   └── mellifera/                  # flat main.go — constructor wiring only
-├── integration_test.go             # AC-1 golden end-to-end scan (stdlib-only black-box)
-└── qa_*_test.go                    # QA-1/QA-2 independent acceptance + regression
+│   └── mellifera/                  # flat main.go — constructor wiring (loads base-scanner + tv-parser; builds enrich.Deps)
+├── integration_test.go             # scan-library AC-1 golden end-to-end scan (stdlib-only black-box)
+├── integration_pipeline_test.go    # Phase A AC-1 golden end-to-end enrich pipeline (stdlib-only black-box)
+└── qa_*_test.go                    # independent acceptance + regression (scan-library + Phase A)
 ```
 
-Dependency direction points **down only**: `api → scan → {module, plugin} → store` (scan inserted between api and {module, plugin}). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4).
+Dependency direction points **down only**: `api → scan → enrich → {module, plugin} → store` (enrich sits between scan and {module, plugin}; scan calls enrich between Identify and PutItem). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4).
 
 ## Entry points
 
 | Binary | Path | Role |
 |---|---|---|
-| Server | `cmd/mellifera/main.go` | Flat constructor wiring (no DI, no reflect). Reads config, opens store, loads plugins, wires module registry, starts HTTP server. |
-| Scanner plugin | `plugins/base-scanner/main.go` | Separate subprocess binary using `pkg/sdk.Serve(...)`. Walks configured library root, runs `ffprobe` via arg slice, parses TV filenames (`SxxExx` + show title; strips resolution/group tags), emits `DiscoveredFile`/`IdentifiedItem`. Path-traversal guard on every discovered path. |
+| Server | `cmd/mellifera/main.go` | Flat constructor wiring (no DI, no reflect). Reads config, opens store, loads **both** plugins (base-scanner + tv-parser), constructs `enrich.Deps`, wires module registry, starts HTTP server. |
+| Scanner plugin | `plugins/base-scanner/main.go` | Separate subprocess binary using `pkg/sdk.Serve(...)`. **Media-type-agnostic** (Phase A): walks configured library root, runs `ffprobe` via arg slice, emits ONLY base fields (`relative_path`/`extension` + the verbatim ffprobe blob). TV parsing no longer lives here (extracted to tv-parser). Path-traversal guard (`withinRoot`) on every discovered path. |
+| Metadata-source plugin | `plugins/tv-parser/main.go` | Phase A. Separate subprocess binary; the first `metadata_source` capability plugin. Houses `parseTV` (moved verbatim from base-scanner) and serves `metadata.v1.MetadataSource` (Match→BuildRequest→Convert→Merge) on one shared gRPC server via `pkg/sdk.Serve`. |
 
 ## Conventions snapshot (enforced by `.claude/skills/mellifera-build/` + `.golangci.yml`)
 
@@ -120,19 +134,64 @@ All DECIDED or DEFAULTED in `docs/open-questions.md`; none OPEN. Load-bearing fo
 
 Q1–Q28 carry reversible defaults with named revisit triggers (see `docs/open-questions.md`). Risk register R1–R14 lives there too.
 
-## What exists now (after `scan-library`)
+## What exists now (after `scan-library` + `plugin-pipeline` Phase A)
 
-The foundational slice is implemented and all five verification gates + `go vet` are green (reviewer/health-check/QA all PROCEED):
+The foundational slice plus the additive Phase A layer are implemented and all
+verification gates + `go vet` are green (reviewer PROCEED, health-check HEALTHY,
+QA green — 13/13 tasks; `completed_count=13` pre-docs):
 
-- `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0) + `go.sum`.
-- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api}/`, `pkg/sdk/`, `plugins/base-scanner/`, compiled `proto/mellifera/*/v1/*.pb.go`.
-- `mellifera` binary (server) + `base-scanner` binary via `make build` / `make build-plugin`.
-- `integration_test.go` (AC-1 golden e2e) + `qa_*_test.go` (independent acceptance + regression).
+- `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0) + `go.sum` (**unchanged** in Phase A — additive, no new deps).
+- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged** — `metadata.v1` now exercised).
+- `mellifera` binary (server) + `base-scanner` + `tv-parser` binaries via `make build` / `make build-plugin`.
+- `integration_test.go` (scan-library AC-1 golden e2e) + `integration_pipeline_test.go` (Phase A AC-1 golden enrich pipeline) + `qa_*_test.go` (independent acceptance + regression for both slices).
 - Inputs, still read-only: `docs/{architecture,ai-architecture,prior-art,open-questions}.md`, `.claude/skills/mellifera-build/`, `.golangci.yml`.
 
-**Still NOT built** (deferred past this slice): `internal/enrich` (metadata-side queue/dispatch), `internal/stream` (range-request file serving), `internal/janitor` (cleanup cron); metadata plugins (`tmdb`, `kinopoisk`); `go:embed` first-run plugin extraction (dev-mode filesystem-path loading is used instead — D11/Q20); session-based multi-user auth (single admin token for MVP — D18/Q15); store methods for reserved tables (`RecordProgress`/`GetResume` — tables exist, methods deferred).
+### Phase A additions (additive — `plugin-pipeline`)
 
-The `scan-library` enhanced objective lives at `mellifera/docs/scan-library/.phase_cache/enhanced_objective.md`.
+Phase A realizes the metadata-side pipeline WITHOUT touching the scan-library
+wire contract (AC-3: zero proto edits; `scanner.v1`/`plugin.v1`/`sdk.Scanner`/`sdk.Serve`
+byte-identical; base-scanner launch path byte-identical). Key additions:
+
+- **`internal/enrich` (3 symbols: `Enrich`, `Deps`, `Result`).** The metadata-side analog of `internal/scan`. An inline, serial orchestrator that, per configured `metadata_source`, runs the 4-RPC chain **Match→BuildRequest→Convert→Merge** over `metadata.v1.MetadataSource` (RPCs stubbed fetch; `AuthContext` empty — Phase B). Owns a pure `nextState` transition function (every legal + illegal transition encoded + unit-tested) that advances the `items.status` lifecycle, and authoritative per-field `_provenance` + recomputable `_view` assembly. Plugin sees only an empty document and writes its `sources.<id>` namespace (namespace isolation enforced — a foreign write is rejected+reverted; arch §3.2 L2, §3.3).
+- **`plugins/tv-parser` (subprocess; no exported symbols).** The first `metadata_source` plugin. `parseTV`/`cleanTitle`/`parentDir`/`atoi` + 4 regexes moved **verbatim** from `plugins/base-scanner/tvparse.go`; base-scanner Identify now stamps only base fields (media-type-agnostic). Serves `metadata.v1.MetadataSource` on one shared gRPC server via `sdk.Serve` + `sdk.MetadataSourcePlugin`.
+- **`pkg/sdk` (5→7: `MetadataSource` interface + `MetadataSourcePlugin` dispense).** The capability-2 adapter, mirroring `Scanner`/`ScannerPlugin`.
+- **`internal/plugin` (9→10 WARN: `Manager.MetadataSource(pluginID, capabilityID)` accessor).** Plugin launch is now **capability-driven** — the client-plugin set is built from each plugin's declared `[]sdk.Capability` (base-scanner's set is byte-identical to scan-library's hardcoded set; AC-3 preserved).
+- **`internal/module` (6→7: `MetadataSourceBinding` + `Module.MetadataSources[]`).** The `metadata_sources` enrichment chain is modeled in config order; the `tv` module seeds `tv-parser` (priority 1).
+- **`internal/store` (stays 11; `items.status` is a column, not symbols).** New indexed `status` column (default `"new"`); `QueryItems` gained an additive `status` filter param (`""` ⇒ all statuses); `Item.Status` field.
+- **`internal/scan` (stays 3: `Run`/`Deps`/`Result`).** New `Deps.Enrich enrich.Deps` field — scan calls enrich **between Identify and PutItem** (an exported field, not a 4th symbol).
+- **`internal/api` (stays 3).** Additive `itemDTO.Status` (`json:"status"`) response field + optional `?status=` query filter.
+- **`cmd/mellifera`.** Loads tv-parser alongside base-scanner and constructs `enrich.Deps` (env `MELLIFERA_TV_PARSER`, default `bin/tv-parser`).
+
+#### Lifecycle + document schema (V5 hybrid)
+
+Every persisted `Item` carries an indexed `status` in `{new, pending, parsed, enriched, failed, deleted}`
+(core-managed like `file_id`; media-type-agnostic pipeline-stage names — arch §0 #1 holds). The
+orchestrator advances `new→pending→parsed→pending→enriched` on success, `→failed` on hard error
+(`→pending` on retry), `→deleted` on soft-delete; `enriched` requires ≥1 source succeeded ∧ 0 failed
+(a partial run stays at the furthest-valid state). The `document` gains (arch §3.1):
+`sources.<plugin_id>` (lossless per-source namespace), `_provenance.<field_path>` (per-field source
+audit), `_view.<field>` (recomputable view; Phase-A last-writer), and `_stages[]` (per-stage progress,
+`stage:"metadata_source"`). **Full state machine, status meanings, and provenance-reading** ->
+[`docs/plugin-pipeline/api_reference.md`](plugin-pipeline/api_reference.md); state set/machine source
+of truth: `docs/plugin-pipeline/acceptance.md` AC-7.
+
+### Capability model
+
+Two capability types now ship (the open-set the core knows): `scanner` (base-scanner) and
+`metadata_source` (tv-parser + future enrichers). Phase A MAPS the user's parser/enricher categories
+onto these two capabilities with **zero new protos** (decision D-1): tv-parser and any enricher
+implement `metadata.v1.MetadataSource`. Plugin selection is driven strictly by `module.MetadataSources[]`
+(config), never by `if mediaType == "tv"` (AC-4 — media-type literals appear only in `internal/module` seed config).
+
+**Still NOT built** (deferred): `internal/stream` (range-request file serving), `internal/janitor`
+(cleanup cron); **Phase B** — external enrichers (`tmdb`/`kinopoisk`), `AuthContext` population, async
+enrichment queue, `_view` arbitration, `ready`/`stale` lifecycle states; **Phase C** — post-actions
+(needs arch design). Also: `go:embed` first-run plugin extraction (dev-mode filesystem-path loading is
+used instead — D11/Q20); session-based multi-user auth (single admin token for MVP — D18/Q15); store
+methods for reserved tables (`RecordProgress`/`GetResume` — tables exist, methods deferred).
+
+The `scan-library` enhanced objective lives at `mellifera/docs/scan-library/.phase_cache/enhanced_objective.md`;
+the Phase A feature record lives at `mellifera/docs/plugin-pipeline/` (plan, contracts, acceptance, reviews, audit).
 
 ## Open questions the planner must resolve
 

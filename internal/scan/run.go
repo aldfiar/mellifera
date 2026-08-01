@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/store"
@@ -18,11 +19,15 @@ import (
 
 // Deps are the collaborators Run orchestrates: the storage layer, the module
 // registry (resolves a library's scanner capability binding from its config),
-// and the plugin manager (dispenses the typed sdk.Scanner client for a binding).
+// the plugin manager (dispenses the typed sdk.Scanner client for a binding), and
+// the enrich collaborators (the metadata_source chain Run drives per item
+// between Identify and PutItem). Enrich is an exported field, not a symbol; the
+// composition root (cmd/mellifera) constructs enrich.Deps and sets it.
 type Deps struct {
 	Store   *store.Store
 	Plugins *plugin.Manager
 	Modules *module.Registry
+	Enrich  enrich.Deps
 }
 
 // Result is the outcome of one scan: how many files the scanner emitted, how
@@ -39,8 +44,9 @@ type Result struct {
 
 // Run orchestrates one scan of a library: GetLibrary → resolve the module →
 // resolve the scanner capability → stream DiscoveredFiles → Identify each →
-// assemble the §3.1 document → PutItem (upsert by file_id). It is the ONLY
-// function the api scan handler calls (pure-delegation rule, INV1).
+// assemble the base §3.1 document → enrich it (drive the metadata_source chain)
+// → PutItem (upsert by file_id). It is the ONLY function the api scan handler
+// calls (pure-delegation rule, INV1).
 //
 // Hard failures (return an error, partial Result): the library, module, or
 // scanner cannot be resolved, the scanner stream cannot be opened, or the
@@ -49,7 +55,7 @@ type Result struct {
 // ffprobe soft-fail), an Identify error, or a PutItem error — AC-6 philosophy:
 // one bad file never aborts the library.
 func Run(ctx context.Context, deps Deps, libraryID int64) (Result, error) {
-	return runScan(ctx, deps.Store, deps.Modules, deps.Plugins.Scanner, libraryID)
+	return runScan(ctx, deps.Store, deps.Modules, deps.Plugins.Scanner, prodEnricher(deps.Enrich), libraryID)
 }
 
 // scannerResolver obtains the typed scanner client for a module's capability
@@ -59,10 +65,27 @@ func Run(ctx context.Context, deps Deps, libraryID int64) (Result, error) {
 // not count toward the package's exported-symbol budget.
 type scannerResolver func(pluginID, capabilityID string) (sdk.Scanner, error)
 
+// enricher runs the metadata_source chain for one item, mirroring scannerResolver
+// as the enrich analog (seam S6). Run supplies the production closure
+// (prodEnricher over deps.Enrich); the in-package test injects a fake returning
+// canned documents/status/warnings without a real subprocess (R8). It is an
+// unexported test seam and does not count toward the package's exported-symbol
+// budget.
+type enricher func(ctx context.Context, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error)
+
+// prodEnricher returns the production enrich closure over deps.Enrich — the
+// enrich analog of *plugin.Manager.Scanner (the production scannerResolver).
+func prodEnricher(d enrich.Deps) enricher {
+	return func(ctx context.Context, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
+		return enrich.Enrich(ctx, d, mod, doc, base)
+	}
+}
+
 // runScan is the orchestrator body, factored out so the test can inject a fake
-// scanner resolver (the production *plugin.Manager cannot be faked from outside
-// the plugin package). Run is the verbatim contracts.md §7 entrypoint.
-func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolve scannerResolver, libraryID int64) (Result, error) {
+// scanner resolver and a fake enricher (the production *plugin.Manager cannot be
+// faked from outside the plugin package). Run is the verbatim contracts.md §7
+// entrypoint.
+func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolve scannerResolver, enrich enricher, libraryID int64) (Result, error) {
 	res := Result{LibraryID: libraryID, StartedAt: time.Now().UTC()}
 
 	lib, err := st.GetLibrary(ctx, libraryID)
@@ -101,25 +124,33 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 			}
 			res.Discovered++
 			res.Warnings = append(res.Warnings, f.GetWarnings()...)
-			if perr := persist(ctx, st, sc, f, mod, libraryID, &res); perr != nil {
+			if perr := persist(ctx, st, sc, f, mod, libraryID, enrich, &res); perr != nil {
 				return finish(res), perr
 			}
 		}
 	}
 }
 
-// persist identifies one discovered file, assembles its §3.1 document, and
-// upserts it into the store. Identify and PutItem failures are soft: a warning
-// is appended to res.Warnings and nil is returned so the scan continues (AC-6).
-// A cancelled context is returned as an error so runScan stops draining (B6) —
-// it takes precedence over any concurrent soft failure.
-func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, libraryID int64, res *Result) error {
+// persist identifies one discovered file, assembles its base §3.1 document,
+// enriches it (driving the metadata_source chain via the injected enricher), and
+// upserts it into the store with the status enrich returned. Identify, enrich,
+// and PutItem failures are soft: a warning is appended to res.Warnings and nil is
+// returned so the scan continues (AC-6). A cancelled context is returned as an
+// error so runScan stops draining (B6) — it takes precedence over any concurrent
+// soft failure.
+func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, libraryID int64, enrich enricher, res *Result) error {
 	identified, err := sc.Identify(ctx, &scannerv1.IdentifyRequest{File: f, ModuleType: mod.MediaType})
 	if err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("identify %q: %v", f.GetRelativePath(), err))
 		return ctx.Err()
 	}
-	if err := st.PutItem(ctx, newItem(f, identified, mod, libraryID)); err != nil {
+	doc, status, er, enrichErr := enrich(ctx, mod, assembleBaseDoc(f, identified, mod.MediaType, mod.SchemaVersion), identified)
+	if enrichErr != nil {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("enrich %q: %v", f.GetRelativePath(), enrichErr))
+		return ctx.Err()
+	}
+	res.Warnings = append(res.Warnings, er.Warnings...)
+	if err := st.PutItem(ctx, newItem(f, mod, libraryID, marshalDoc(doc), status)); err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("persist %q: %v", f.GetRelativePath(), err))
 		return ctx.Err()
 	}
@@ -127,10 +158,10 @@ func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.
 	return nil
 }
 
-// newItem builds the store.Item for one (file, identified) pair: struct
+// newItem builds the store.Item for one (file, document, status) tuple: struct
 // conversion at the package boundary (contracts.md §3). The scan-minted id is a
 // deterministic composite of (library, file_id) — see itemID.
-func newItem(f *scannerv1.DiscoveredFile, id *scannerv1.IdentifyResult, mod module.Module, libraryID int64) store.Item {
+func newItem(f *scannerv1.DiscoveredFile, mod module.Module, libraryID int64, document json.RawMessage, status string) store.Item {
 	return store.Item{
 		ID:            itemID(libraryID, f.GetFileId()),
 		ModuleID:      mod.ID,
@@ -138,8 +169,9 @@ func newItem(f *scannerv1.DiscoveredFile, id *scannerv1.IdentifyResult, mod modu
 		FileID:        f.GetFileId(),
 		RelativePath:  f.GetRelativePath(),
 		MediaType:     mod.MediaType,
-		Document:      assembleDocument(f, id, mod.MediaType, mod.SchemaVersion),
+		Document:      document,
 		SchemaVersion: mod.SchemaVersion,
+		Status:        status,
 	}
 }
 
@@ -173,8 +205,9 @@ func buildScanRequest(libraryPath, moduleType string, options json.RawMessage) (
 	return req, ""
 }
 
-// assembleDocument builds the architecture §3.1 dynamic-JSON document for one
-// discovered file. A freshly scanned item carries only the raw ffprobe blob
+// assembleBaseDoc builds the base architecture §3.1 document for one discovered
+// file as a mutable map, so enrich can extend it with sources/_provenance/
+// _view/_stages. A freshly scanned item carries only the raw ffprobe blob
 // (verbatim bytes), the filename-parsed fields (lossless), and the core-managed
 // identity fields — the per-source namespaces and computed view populate only as
 // metadata plugins enrich it (§3.1 "Simple by default"). Precision is preserved:
@@ -185,7 +218,7 @@ func buildScanRequest(libraryPath, moduleType string, options json.RawMessage) (
 // document: the store maintains them as authoritative columns (items.created_at
 // is preserved across re-scans by the PutItem upsert), and a document copy could
 // neither stay in sync nor preserve created_at on a re-scan.
-func assembleDocument(f *scannerv1.DiscoveredFile, id *scannerv1.IdentifyResult, moduleType string, schemaVersion int) json.RawMessage {
+func assembleBaseDoc(f *scannerv1.DiscoveredFile, id *scannerv1.IdentifyResult, moduleType string, schemaVersion int) map[string]any {
 	doc := map[string]any{
 		"file_id":        f.GetFileId(),
 		"module_type":    moduleType,
@@ -202,13 +235,17 @@ func assembleDocument(f *scannerv1.DiscoveredFile, id *scannerv1.IdentifyResult,
 	if raw := f.GetFfprobeJson(); len(raw) > 0 {
 		doc["ffprobe"] = json.RawMessage(raw) // verbatim (INV3)
 	}
-	b, err := json.Marshal(doc)
-	if err != nil {
-		// A map[string]any of strings + json.RawMessage never fails to marshal;
-		// fall back to a minimal valid document rather than returning nil.
-		return json.RawMessage(`{"module_type":"` + moduleType + `"}`)
+	return doc
+}
+
+// marshalDoc serializes the (possibly enriched) document map back to the opaque
+// json.RawMessage the store persists. A map of strings + json.RawMessage never
+// fails to marshal; the fallback keeps a minimal valid document rather than nil.
+func marshalDoc(doc map[string]any) json.RawMessage {
+	if b, err := json.Marshal(doc); err == nil {
+		return b
 	}
-	return b
+	return json.RawMessage(`{}`)
 }
 
 // finish stamps the run's end time. It takes res by value (the caller's res with

@@ -11,11 +11,14 @@
 // library's module to its ScannerBinding and forwards it to the plugin manager;
 // this package never branches on media_type and carries it only as a string.
 //
-// # Public API (6 symbols — under 8)
+// # Public API (7 symbols — under 8)
 //
 //   - Registry: the in-memory cache of module configs.
-//   - Module: one module config (id, media_type, schema_version, scanner slot).
+//   - Module: one module config (id, media_type, schema_version, scanner slot +
+//     ordered metadata_sources enrichment chain).
 //   - ScannerBinding: the (plugin_id, capability_id, options) slot scan uses.
+//   - MetadataSourceBinding: one enrichment-source slot (plugin, capability,
+//     priority, enabled, auth_mode, options) the enrich chain reads from config.
 //   - Open: seeds the built-in TV module, loads enabled modules, returns *Registry.
 //   - Get: cache-only lookup of one module by id.
 //   - List: cache-only snapshot of all enabled modules.
@@ -31,7 +34,8 @@
 //     internal/plugin, internal/scan, or internal/api (contracts.md §10 import
 //     map). It never calls sql.Open — store is the sole *sql.DB opener; module
 //     reads the modules table through store.DB().
-//   - INV4: 6 exported symbols (3 types + 3 funcs), under 8. (The task spec's
-//     prose "=5" is a miscount of its own 6-item enumeration; the 6 signatures
-//     are copied verbatim from contracts.md §6.)
+//   - INV4: 7 exported symbols (4 types + 3 funcs), under 8. MetadataSourceBinding
+//     models the metadata_sources config slot; the seeded TV module lists
+//     tv-parser at priority 1 so a fresh install runs the local parser (AC-1),
+//     with kinopoisk/tmdb retained as the designed Phase B sources.
 package module

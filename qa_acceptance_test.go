@@ -50,9 +50,10 @@ func TestQA_Acceptance(t *testing.T) {
 	tmp := t.TempDir()
 	serverBin := qaBuildBinary(t, tmp, "qa-mellifera-server", "./cmd/mellifera")
 	scannerBin := qaBuildBinary(t, tmp, "qa-base-scanner", "./plugins/base-scanner")
+	tvParserBin := qaBuildBinary(t, tmp, "qa-tv-parser", "./plugins/tv-parser")
 	fixtureRoot := qaWriteFixtures(t)
 	token := "qa-acceptance-token"
-	baseURL := qaStartServer(t, serverBin, scannerBin, tmp, token)
+	baseURL := qaStartServer(t, serverBin, scannerBin, tvParserBin, tmp, token)
 	client := &http.Client{Timeout: 60 * time.Second}
 
 	libID := qaCreateLibrary(t, client, baseURL, token, fixtureRoot)
@@ -94,41 +95,20 @@ func TestQA_Acceptance(t *testing.T) {
 	})
 }
 
-// qaExpected lists the EXACT parsed fields QA independently derives for each
-// fixture by tracing the tv-filename parser (SxxExx => season/episode; title is
-// the stem preceding the token after separator normalization; resolution from
-// the 720p/1080p token; release_group from the trailing -Token). These differ
-// from the coder's Breaking Bad / 1080p-EXAMPLE values on purpose.
+// qaExpected lists the base fields QA independently derives for each fixture
+// after the Task 07 extraction: the library-relative path (echoed in parsed) +
+// the extension. base-scanner is media-type-agnostic; the TV parse (title,
+// season/episode, resolution, release_group) is produced by the tv-parser plugin
+// (Task 06) and re-asserted at the full-pipeline level by the Task 11 golden.
 var qaExpected = []qaExpectedItem{
-	{
-		rel:     "Better Call Saul/Season 2/Better Call Saul S02E05.mkv",
-		title:   "Better Call Saul",
-		season:  2,
-		episode: 5,
-	},
-	{
-		rel:          "Better Call Saul S02E06 720p-RG.mkv",
-		title:        "Better Call Saul",
-		season:       2,
-		episode:      6,
-		resolution:   "720p",
-		releaseGroup: "RG",
-	},
-	{
-		rel:     "Чернобыль S01E03.mkv",
-		title:   "Чернобыль",
-		season:  1,
-		episode: 3,
-	},
+	{rel: "Better Call Saul/Season 2/Better Call Saul S02E05.mkv", ext: ".mkv"},
+	{rel: "Better Call Saul S02E06 720p-RG.mkv", ext: ".mkv"},
+	{rel: "Чернобыль S01E03.mkv", ext: ".mkv"},
 }
 
 type qaExpectedItem struct {
-	rel          string
-	title        string
-	season       int64
-	episode      int64
-	resolution   string
-	releaseGroup string
+	rel string
+	ext string
 }
 
 func qaAssertParsed(t *testing.T, byRel map[string]qaItem) {
@@ -140,20 +120,17 @@ func qaAssertParsed(t *testing.T, byRel map[string]qaItem) {
 			continue
 		}
 		doc := qaParseDoc(t, it)
-		if got := qaStr(doc.Parsed, "title"); got != want.title {
-			t.Errorf("QA AC-1 %q: title = %q, want %q", want.rel, got, want.title)
+		if got := qaStr(doc.Parsed, "relative_path"); got != want.rel {
+			t.Errorf("QA AC-1 %q: relative_path = %q, want %q", want.rel, got, want.rel)
 		}
-		if got := qaNum(doc.Parsed, "season"); got != want.season {
-			t.Errorf("QA AC-1 %q: season = %d, want %d", want.rel, got, want.season)
+		if got := qaStr(doc.Parsed, "extension"); got != want.ext {
+			t.Errorf("QA AC-1 %q: extension = %q, want %q", want.rel, got, want.ext)
 		}
-		if got := qaNum(doc.Parsed, "episode"); got != want.episode {
-			t.Errorf("QA AC-1 %q: episode = %d, want %d", want.rel, got, want.episode)
-		}
-		if want.resolution != "" && qaStr(doc.Parsed, "resolution") != want.resolution {
-			t.Errorf("QA AC-1 %q: resolution = %q, want %q", want.rel, qaStr(doc.Parsed, "resolution"), want.resolution)
-		}
-		if want.releaseGroup != "" && qaStr(doc.Parsed, "release_group") != want.releaseGroup {
-			t.Errorf("QA AC-1 %q: release_group = %q, want %q", want.rel, qaStr(doc.Parsed, "release_group"), want.releaseGroup)
+		// Structural/negative (AC-1 extraction): base-scanner emits no TV fields.
+		for _, bad := range []string{"title", "season", "episode"} {
+			if _, ok := doc.Parsed[bad]; ok {
+				t.Errorf("QA AC-1 %q: parsed must not carry %q (TV parse extracted to tv-parser)", want.rel, bad)
+			}
 		}
 		if doc.ModuleType != "tv" {
 			t.Errorf("QA AC-1 %q: module_type = %q, want tv", want.rel, doc.ModuleType)
@@ -334,7 +311,7 @@ func qaMakeMedia(t *testing.T, path string) {
 	}
 }
 
-func qaStartServer(t *testing.T, serverBin, scannerBin, tmp, token string) string {
+func qaStartServer(t *testing.T, serverBin, scannerBin, tvParserBin, tmp, token string) string {
 	t.Helper()
 	addr := net.JoinHostPort("127.0.0.1", qaFreePort(t))
 	dataDir := filepath.Join(tmp, "qa-data")
@@ -343,6 +320,7 @@ func qaStartServer(t *testing.T, serverBin, scannerBin, tmp, token string) strin
 		"MELLIFERA_DATA_DIR="+dataDir,
 		"MELLIFERA_ADMIN_TOKEN="+token,
 		"MELLIFERA_BASE_SCANNER="+scannerBin,
+		"MELLIFERA_TV_PARSER="+tvParserBin,
 		"MELLIFERA_LISTEN="+addr,
 	)
 	var log strings.Builder

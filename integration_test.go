@@ -44,8 +44,11 @@ const (
 // TestIntegrationScanLibrary is THE golden test for AC-1: it builds the real
 // base-scanner + server binaries, starts the server against a temp SQLite DB and
 // a fixture TV library, scans it through the real subprocess + real ffprobe, and
-// asserts the persisted items carry EXACT parsed title/season/episode (INV1) plus
-// a real ffprobe blob. It also covers AC-4 (escaping symlink rejected), AC-6
+// asserts the persisted items carry media-type-agnostic BASE parsed fields
+// (relative_path/extension) plus a real ffprobe blob. base-scanner no longer
+// emits TV-specific fields (the parseTV extraction, Task 06/07); the TV parse is
+// produced by the tv-parser plugin and re-asserted end-to-end by the Task 11
+// pipeline golden. This test also covers AC-4 (escaping symlink rejected), AC-6
 // (unprobeable file soft-fails + scan completes), and re-scan idempotency.
 func TestIntegrationScanLibrary(t *testing.T) {
 	if testing.Short() {
@@ -61,10 +64,11 @@ func TestIntegrationScanLibrary(t *testing.T) {
 	tmp := t.TempDir()
 	serverBin := buildBinary(t, tmp, "mellifera-server", "./cmd/mellifera")
 	scannerBin := buildBinary(t, tmp, "base-scanner", "./plugins/base-scanner")
+	tvParserBin := buildBinary(t, tmp, "tv-parser", "./plugins/tv-parser")
 	fixtureRoot := writeFixtures(t)
 
 	token := "test-admin-token-integration"
-	baseURL := startServer(t, serverBin, scannerBin, tmp, token)
+	baseURL := startServer(t, serverBin, scannerBin, tvParserBin, tmp, token)
 	client := &http.Client{Timeout: httpTimeout}
 
 	libID := createLibrary(t, client, baseURL, token, fixtureRoot)
@@ -185,10 +189,10 @@ func mustSymlink(t *testing.T, target, link string) {
 
 // startServer launches the real mellifera server subprocess configured for the
 // test: a temp data dir + temp SQLite DB, the given admin token, the built
-// base-scanner binary, and a random free port. It blocks until the server
-// answers HTTP, then returns the base URL. The server is stopped (SIGINT with a
-// SIGKILL fallback) and its combined log is dumped in a cleanup on test exit.
-func startServer(t *testing.T, serverBin, scannerBin, tmp, token string) string {
+// base-scanner + tv-parser binaries, and a random free port. It blocks until the
+// server answers HTTP, then returns the base URL. The server is stopped (SIGINT
+// with a SIGKILL fallback) and its combined log is dumped in a cleanup on exit.
+func startServer(t *testing.T, serverBin, scannerBin, tvParserBin, tmp, token string) string {
 	t.Helper()
 	addr := net.JoinHostPort("127.0.0.1", freePort(t))
 	dataDir := filepath.Join(tmp, "data")
@@ -198,6 +202,7 @@ func startServer(t *testing.T, serverBin, scannerBin, tmp, token string) string 
 		"MELLIFERA_DATA_DIR="+dataDir,
 		"MELLIFERA_ADMIN_TOKEN="+token,
 		"MELLIFERA_BASE_SCANNER="+scannerBin,
+		"MELLIFERA_TV_PARSER="+tvParserBin,
 		"MELLIFERA_LISTEN="+addr,
 	)
 	var log strings.Builder
@@ -347,6 +352,7 @@ type itemDTO struct {
 	RelativePath string          `json:"relative_path"`
 	MediaType    string          `json:"media_type"`
 	Document     json.RawMessage `json:"document"`
+	Status       string          `json:"status"`
 }
 
 type itemsResponse struct {
@@ -422,47 +428,31 @@ func pathsOf(m map[string]itemDTO) []string {
 	return out
 }
 
-// expectedItem is the reviewer-re-derivable exact parsed outcome for one fixture
-// (INV1: assert EXACT title/season/episode — not "some item was persisted").
+// expectedItem is the reviewer-re-derivable BASE-field outcome for one fixture.
+// After the Task 07 extraction base-scanner is media-type-agnostic: its parsed
+// Struct carries the relative path + extension ONLY — no title/season/episode
+// (the TV parse moved to the tv-parser plugin; full-pipeline re-assertion is the
+// Task 11 golden).
 type expectedItem struct {
-	rel          string
-	title        string
-	season       int64
-	episode      int64
-	resolution   string
-	releaseGroup string
+	rel string // the fixture's library-relative path (echoed in parsed.relative_path)
+	ext string // the parsed extension
 }
 
-// expectedParsedItems lists the exact parsed fields each fixture MUST produce.
-// These values are re-derived independently from the fixture filenames by the
-// tv-filename parser (season/episode from SxxExx, title from the preceding stem,
-// resolution/release-group from the post-token suffix). The Cyrillic entry
-// proves Russian-first-class parsing (conventions.md §Russian-language).
+// expectedParsedItems lists the base fields each fixture's parsed Struct MUST
+// carry after the extraction: the relative path (echoed verbatim) + the
+// extension. The TV-specific parse (title/season/episode/resolution/
+// release_group) is now produced by the tv-parser plugin (Task 06) and asserted
+// in its parser_test.go; the full discovery->tv-parser pipeline is re-asserted by
+// the Task 11 golden. The Cyrillic fixture stays in the set to prove it is still
+// discovered + base-identified (Cyrillic parse correctness lives in tv-parser).
 var expectedParsedItems = []expectedItem{
-	{
-		rel:     "Breaking Bad/Season 1/Breaking Bad S01E01.mkv",
-		title:   "Breaking Bad",
-		season:  1,
-		episode: 1,
-	},
-	{
-		rel:          "Breaking Bad S01E02 1080p-EXAMPLE.mkv",
-		title:        "Breaking Bad",
-		season:       1,
-		episode:      2,
-		resolution:   "1080p",
-		releaseGroup: "EXAMPLE",
-	},
-	{
-		rel:     "Игра престолов S01E01.mkv",
-		title:   "Игра престолов",
-		season:  1,
-		episode: 1,
-	},
+	{rel: "Breaking Bad/Season 1/Breaking Bad S01E01.mkv", ext: ".mkv"},
+	{rel: "Breaking Bad S01E02 1080p-EXAMPLE.mkv", ext: ".mkv"},
+	{rel: "Игра престолов S01E01.mkv", ext: ".mkv"},
 }
 
-// assertParsedItems checks the filename-parsing contract end-to-end (AC-1) for
-// every fixture whose parsed value is ffprobe-independent.
+// assertParsedItems checks the media-type-agnostic base-field contract (AC-1
+// post extraction) for every fixture.
 func assertParsedItems(t *testing.T, byRel map[string]itemDTO) {
 	t.Helper()
 	for _, want := range expectedParsedItems {
@@ -475,22 +465,22 @@ func assertParsedItems(t *testing.T, byRel map[string]itemDTO) {
 	}
 }
 
+// checkParsed asserts the base-field contract (AC-1 extraction): parsed carries
+// relative_path + extension and NO TV-specific fields, which now come from the
+// tv-parser plugin (Task 06) via enrich.
 func checkParsed(t *testing.T, want expectedItem, doc itemDoc) {
 	t.Helper()
-	if got := docString(doc.Parsed, "title"); got != want.title {
-		t.Errorf("%q: parsed title = %q, want %q", want.rel, got, want.title)
+	if got := docString(doc.Parsed, "relative_path"); got != want.rel {
+		t.Errorf("%q: parsed relative_path = %q, want %q", want.rel, got, want.rel)
 	}
-	if got := docNumber(doc.Parsed, "season"); got != want.season {
-		t.Errorf("%q: parsed season = %d, want %d", want.rel, got, want.season)
+	if got := docString(doc.Parsed, "extension"); got != want.ext {
+		t.Errorf("%q: parsed extension = %q, want %q", want.rel, got, want.ext)
 	}
-	if got := docNumber(doc.Parsed, "episode"); got != want.episode {
-		t.Errorf("%q: parsed episode = %d, want %d", want.rel, got, want.episode)
-	}
-	if want.resolution != "" && docString(doc.Parsed, "resolution") != want.resolution {
-		t.Errorf("%q: parsed resolution = %q, want %q", want.rel, docString(doc.Parsed, "resolution"), want.resolution)
-	}
-	if want.releaseGroup != "" && docString(doc.Parsed, "release_group") != want.releaseGroup {
-		t.Errorf("%q: parsed release_group = %q, want %q", want.rel, docString(doc.Parsed, "release_group"), want.releaseGroup)
+	// Structural/negative (AC-1 extraction): no TV fields leak from base-scanner.
+	for _, bad := range []string{"title", "season", "episode"} {
+		if _, ok := doc.Parsed[bad]; ok {
+			t.Errorf("%q: parsed must not carry %q (TV parse extracted to tv-parser)", want.rel, bad)
+		}
 	}
 	if doc.ModuleType != "tv" {
 		t.Errorf("%q: module_type = %q, want tv", want.rel, doc.ModuleType)

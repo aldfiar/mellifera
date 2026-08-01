@@ -167,6 +167,9 @@ func TestNew_Routes(t *testing.T) {
 		if len(ir.Items) != 1 || ir.Items[0].FileID != "fid-1" || ir.Items[0].MediaType != "tv" {
 			t.Fatalf("itemsResponse = %+v", ir)
 		}
+		if ir.Items[0].Status != "new" {
+			t.Errorf("items[0].Status = %q, want new (additive status field, column default)", ir.Items[0].Status)
+		}
 	})
 
 	t.Run("list_items_bad_library", func(t *testing.T) {
@@ -179,4 +182,77 @@ func TestNew_Routes(t *testing.T) {
 			t.Fatalf("error code = %q, want bad_request", eb.Error.Code)
 		}
 	})
+}
+
+// TestListItems_StatusFilter is the joint test for seam S11 (api ?status= ->
+// store.QueryItems status filter) + the additive status response field. It seeds
+// items of distinct statuses and asserts the optional ?status= filters at the
+// store boundary, absent/empty returns all (INV-empty-all), and every itemDTO
+// round-trips its status.
+func TestListItems_StatusFilter(t *testing.T) {
+	st := openAPIStore(t)
+	libID, err := st.CreateLibrary(context.Background(), "tv", "/media/tv", "TV")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	seedStatus := map[string]string{
+		"fid-enriched": "enriched",
+		"fid-new":      "new",
+		"fid-failed":   "failed",
+	}
+	for fid, status := range seedStatus {
+		if err := st.PutItem(context.Background(), store.Item{
+			ID: "itm_" + fid, ModuleID: "tv", LibraryID: libID, FileID: fid,
+			RelativePath: fid + ".mkv", MediaType: "tv",
+			Document: json.RawMessage(`{}`), SchemaVersion: 1, Status: status,
+		}); err != nil {
+			t.Fatalf("PutItem %s: %v", fid, err)
+		}
+	}
+	h := New(Deps{AdminToken: adminToken, Store: st, Scan: func(context.Context, int64) (scan.Result, error) {
+		return scan.Result{}, nil
+	}})
+
+	base := "/api/v1/items?library=" + strconv.FormatInt(libID, 10)
+	cases := []struct {
+		name string
+		path string
+		want map[string]string // fileID -> expected status (also the expected set)
+	}{
+		{"no_status_returns_all", base, seedStatus},
+		{"empty_status_returns_all", base + "&status=", seedStatus},
+		{"status_enriched_filters", base + "&status=enriched", map[string]string{"fid-enriched": "enriched"}},
+		{"status_failed_filters", base + "&status=failed", map[string]string{"fid-failed": "failed"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, h, http.MethodGet, tc.path, "", adminToken)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			var ir itemsResponse
+			if err := json.NewDecoder(resp.Body).Decode(&ir); err != nil {
+				t.Fatalf("decode itemsResponse: %v", err)
+			}
+			got := map[string]string{}
+			for _, it := range ir.Items {
+				got[it.FileID] = it.Status
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got items %v, want %v", got, tc.want)
+			}
+			for fid, wantStatus := range tc.want {
+				s, ok := got[fid]
+				if !ok {
+					t.Errorf("missing %q in response (got %v)", fid, got)
+					continue
+				}
+				if s != wantStatus {
+					t.Errorf("item %q status = %q, want %q (status field must round-trip)", fid, s, wantStatus)
+				}
+			}
+		})
+	}
 }

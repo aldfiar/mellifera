@@ -5,6 +5,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -21,23 +22,36 @@ type Item struct {
 	MediaType     string
 	Document      json.RawMessage
 	SchemaVersion int
+	Status        string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
 
+// defaultStatus is the items.status column default (declared in open.go DDL).
+// It is the ONLY status literal store owns: the lifecycle set/transitions live
+// in internal/enrich (INV-value-agnostic-store). PutItem applies it when a
+// caller omits Status so the column is never blank (AC-7 holds for every row).
+const defaultStatus = "new"
+
 // PutItem upserts an item keyed by file_id. Re-scanning a library yields
 // exactly one row per file: on conflict the row's id and created_at are
 // preserved (so item references survive) and the mutable fields are refreshed
-// with updated_at advanced (B3).
+// with updated_at advanced (B3). Status defaults to the column default 'new'
+// when a caller omits it; on conflict status is refreshed like the other
+// mutable fields (the orchestrator advances it; the store persists it).
 func (s *Store) PutItem(ctx context.Context, it Item) error {
 	created := formatTime(it.CreatedAt)
 	if it.CreatedAt.IsZero() {
 		created = formatTime(time.Now().UTC())
 	}
+	status := it.Status
+	if status == "" {
+		status = defaultStatus
+	}
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO items
-  (id, module_id, library_id, file_id, relative_path, media_type, document, schema_version, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  (id, module_id, library_id, file_id, relative_path, media_type, document, schema_version, status, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(file_id) DO UPDATE SET
   module_id     = excluded.module_id,
   library_id    = excluded.library_id,
@@ -45,9 +59,10 @@ ON CONFLICT(file_id) DO UPDATE SET
   media_type    = excluded.media_type,
   document      = excluded.document,
   schema_version= excluded.schema_version,
+  status        = excluded.status,
   updated_at    = excluded.updated_at`,
 		it.ID, it.ModuleID, it.LibraryID, it.FileID, it.RelativePath,
-		it.MediaType, string(it.Document), it.SchemaVersion, created, formatTime(time.Now().UTC()),
+		it.MediaType, string(it.Document), it.SchemaVersion, status, created, formatTime(time.Now().UTC()),
 	)
 	if err != nil {
 		return fmt.Errorf("store: put item %s: %w", it.FileID, err)
@@ -66,18 +81,32 @@ func (s *Store) GetItem(ctx context.Context, id string) (Item, error) {
 }
 
 // QueryItems lists items for a library, newest-row ordering, with LIMIT/OFFSET
-// pagination. limit<=0 returns no rows.
-func (s *Store) QueryItems(ctx context.Context, libraryID int64, limit, offset int) ([]Item, error) {
+// pagination. limit<=0 returns no rows. A non-empty status filters by exact
+// match (WHERE status = ?); an empty status returns items of ALL statuses (the
+// scan-library listing behavior, unchanged). The two query shapes are gated by
+// the empty check -- status is never interpolated into SQL (INV1).
+func (s *Store) QueryItems(ctx context.Context, libraryID int64, status string, limit, offset int) ([]Item, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := s.db.QueryContext(ctx,
-		itemColumns+" FROM items WHERE library_id = ? ORDER BY id LIMIT ? OFFSET ?",
-		libraryID, limit, offset,
+	var (
+		rows *sql.Rows
+		err  error
 	)
+	if status != "" {
+		rows, err = s.db.QueryContext(ctx,
+			itemColumns+" FROM items WHERE library_id = ? AND status = ? ORDER BY id LIMIT ? OFFSET ?",
+			libraryID, status, limit, offset,
+		)
+	} else {
+		rows, err = s.db.QueryContext(ctx,
+			itemColumns+" FROM items WHERE library_id = ? ORDER BY id LIMIT ? OFFSET ?",
+			libraryID, limit, offset,
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("store: query items lib %d: %w", libraryID, err)
 	}
@@ -99,7 +128,7 @@ func (s *Store) QueryItems(ctx context.Context, libraryID int64, limit, offset i
 // itemColumns is the canonical item column list for selects. The generated
 // columns are intentionally NOT selected here (INV3: the store does not parse
 // the document; tests query generated columns directly when needed).
-const itemColumns = "SELECT id, module_id, library_id, file_id, relative_path, media_type, document, schema_version, created_at, updated_at"
+const itemColumns = "SELECT id, module_id, library_id, file_id, relative_path, media_type, document, schema_version, status, created_at, updated_at"
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -115,7 +144,7 @@ func scanItem(sc scanner) (Item, error) {
 	)
 	if err := sc.Scan(
 		&it.ID, &it.ModuleID, &it.LibraryID, &it.FileID, &it.RelativePath,
-		&it.MediaType, &doc, &it.SchemaVersion, &createdText, &updatedText,
+		&it.MediaType, &doc, &it.SchemaVersion, &it.Status, &createdText, &updatedText,
 	); err != nil {
 		return Item{}, err
 	}

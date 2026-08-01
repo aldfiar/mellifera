@@ -157,7 +157,7 @@ func TestStore_Items(t *testing.T) {
 			}
 
 			// Idempotency: exactly one row for this library (public API, no db reach-in).
-			items, err := s.QueryItems(ctx, libID, 100, 0)
+			items, err := s.QueryItems(ctx, libID, "", 100, 0)
 			if err != nil {
 				t.Fatalf("QueryItems: %v", err)
 			}
@@ -236,7 +236,7 @@ func TestStore_QueryItems(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := s.QueryItems(ctx, libID, tc.limit, tc.offset)
+			got, err := s.QueryItems(ctx, libID, "", tc.limit, tc.offset)
 			if err != nil {
 				t.Fatalf("QueryItems(%d,%d): %v", tc.limit, tc.offset, err)
 			}
@@ -245,5 +245,122 @@ func TestStore_QueryItems(t *testing.T) {
 					libID, tc.limit, tc.offset, len(got), tc.want)
 			}
 		})
+	}
+}
+
+// TestStore_StatusColumn_Default covers T04 B1 (fresh DB): the items.status
+// column exists with DEFAULT 'new' (the AC-3/AC-7 probe). A raw insert omitting
+// status proves the column exists; the read-back proves the default is 'new'.
+// (Behavioral assertion: SQLite's PRAGMA dflt_value echoes the literal "'new'"
+// text; reading the applied value is the robust check.)
+func TestStore_StatusColumn_Default(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO items (id, module_id, library_id, file_id, relative_path, media_type, document, schema_version, created_at, updated_at)
+		 VALUES ('d', 'tv', 1, 'fd', 'r', 'tv', '{}', 1, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("raw insert (status omitted) failed -- column missing?: %v", err)
+	}
+	var status string
+	if err := s.db.QueryRowContext(ctx, "SELECT status FROM items WHERE id = 'd'").Scan(&status); err != nil {
+		t.Fatalf("select status: %v", err)
+	}
+	if status != "new" {
+		t.Fatalf("status default = %q, want 'new'", status)
+	}
+}
+
+// TestStore_ItemsStatus_RoundTrip covers T04 B2/B3: PutItem writes status (and
+// defaults an empty Status to 'new'); GetItem/QueryItems read it back; the
+// QueryItems status filter selects only matching rows while empty returns all.
+func TestStore_ItemsStatus_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	libID, err := s.CreateLibrary(ctx, "tv", "/data/status", "StatusLib")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	if err := s.PutItem(ctx, Item{
+		ID: "en1", ModuleID: "tv", LibraryID: libID, FileID: "fe1",
+		RelativePath: "e1", MediaType: "tv", Document: json.RawMessage(`{}`),
+		SchemaVersion: 1, Status: "enriched",
+	}); err != nil {
+		t.Fatalf("PutItem enriched: %v", err)
+	}
+	if err := s.PutItem(ctx, Item{
+		ID: "nw1", ModuleID: "tv", LibraryID: libID, FileID: "fn1",
+		RelativePath: "n1", MediaType: "tv", Document: json.RawMessage(`{}`),
+		SchemaVersion: 1, // Status omitted -> defaultStatus 'new'
+	}); err != nil {
+		t.Fatalf("PutItem new: %v", err)
+	}
+	en, err := s.GetItem(ctx, "en1")
+	if err != nil {
+		t.Fatalf("GetItem en1: %v", err)
+	}
+	if en.Status != "enriched" {
+		t.Fatalf("GetItem(en1).Status = %q, want 'enriched'", en.Status)
+	}
+	nw, _ := s.GetItem(ctx, "nw1")
+	if nw.Status != "new" {
+		t.Fatalf("GetItem(nw1).Status = %q, want 'new' (PutItem default)", nw.Status)
+	}
+	only, err := s.QueryItems(ctx, libID, "enriched", 100, 0)
+	if err != nil {
+		t.Fatalf("QueryItems(enriched): %v", err)
+	}
+	if len(only) != 1 || only[0].ID != "en1" {
+		t.Fatalf("QueryItems(enriched) = %+v, want [en1]", only)
+	}
+	all, err := s.QueryItems(ctx, libID, "", 100, 0)
+	if err != nil {
+		t.Fatalf("QueryItems(all): %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("QueryItems('') = %d items, want 2 (empty status = all)", len(all))
+	}
+}
+
+// TestStore_ItemsStatus_Migration covers T04 B1/INV-idempotent-migration: a
+// pre-status items table (the scan-library shape, simplified) gets the column
+// via ensureItemsStatus; the DEFAULT 'new' backfills the pre-existing row; and
+// re-running the migration is idempotent. ensureItemsStatus is exercised
+// directly because store.Open's full schemaSQL needs the generated columns this
+// minimal table omits.
+func TestStore_ItemsStatus_Migration(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "prestatus.db")
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`CREATE TABLE items (id TEXT PRIMARY KEY, library_id INTEGER NOT NULL, file_id TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create pre-status items: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO items (id, library_id, file_id) VALUES ('pre', 1, 'f-pre')`); err != nil {
+		t.Fatalf("insert pre-status row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+	db2, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db2.Close()
+	if err := ensureItemsStatus(ctx, db2); err != nil {
+		t.Fatalf("ensureItemsStatus on pre-status DB: %v", err)
+	}
+	var status string
+	if err := db2.QueryRowContext(ctx, "SELECT status FROM items WHERE id = 'pre'").Scan(&status); err != nil {
+		t.Fatalf("select status after migration: %v", err)
+	}
+	if status != "new" {
+		t.Fatalf("pre-existing row status = %q, want 'new' (ALTER DEFAULT backfill)", status)
+	}
+	if err := ensureItemsStatus(ctx, db2); err != nil {
+		t.Fatalf("ensureItemsStatus re-run (must be idempotent): %v", err)
 	}
 }

@@ -4,24 +4,25 @@
 // Package scan is the scan-side orchestrator: for one library it resolves the
 // library's module config (which names the scanner capability binding), obtains
 // the typed sdk.Scanner client, streams discovered files back from the scanner,
-// identifies each, assembles the architecture §3.1 dynamic-JSON document, and
-// upserts it into the store. This package exists so internal/api stays
-// pure-delegation: the scan handler does exactly ONE thing — call scan.Run.
-// scan.Run owns the store → module → plugin → store coordination that cannot
-// live in api/ (ai-arch §3 hard rule). It is the scan-side analog of the
-// deferred enrich package (the metadata-side orchestrator).
+// identifies each, assembles the base architecture §3.1 document, enriches it
+// (driving the metadata_source chain via internal/enrich), and upserts the
+// enriched document + lifecycle status into the store. This package exists so
+// internal/api stays pure-delegation: the scan handler does exactly ONE thing —
+// call scan.Run. scan.Run owns the store → module → plugin → enrich → store
+// coordination that cannot live in api/ (ai-arch §3 hard rule). It is the
+// scan-side analog of internal/enrich (the metadata-side orchestrator).
 //
 // # Public API (3 symbols — under the 8-symbol target)
 //
 //   - Deps: the collaborators Run orchestrates (store + module registry + plugin
-//     manager).
+//     manager + enrich.Deps, set by the composition root).
 //   - Result: the outcome of one scan (counts, soft warnings, time bounds).
 //   - Run: the orchestrator entrypoint — the only function api/ calls.
 //
 // # Invariants
 //
 //   - INV1: Run is the ONLY function the api scan handler calls (pure-delegation
-//     rule). It owns the store→module→plugin→store orchestration.
+//     rule). It owns the store→module→plugin→enrich→store orchestration.
 //   - INV2: The orchestrator NEVER branches on media_type (arch §0 principle 1).
 //     module_type flows from the module config into the ScanRequest/IdentifyRequest
 //     as an opaque string; no media-type literal appears in this package.
@@ -29,9 +30,15 @@
 //     Struct + core-managed fields per arch §3.1). The store treats Document as
 //     opaque (store INV3); this package never asks the store to parse it.
 //   - INV4: The scanner stream is drained at store-write speed — consume one
-//     DiscoveredFile, identify it, PutItem it, then take the next (R9). The sdk
-//     channel is bounded; nothing buffers the whole stream in memory.
-//   - INV5: scan MAY NOT import internal/api (contracts.md §10 import map). Its
-//     dependencies are strictly {store, module, plugin, pkg/sdk, scanner proto}.
-//   - INV6: 3 exported symbols (Deps, Result, Run). Under 8.
+//     DiscoveredFile, identify it, enrich it, PutItem it, then take the next (R9).
+//     The sdk channel is bounded; nothing buffers the whole stream in memory.
+//   - INV5: scan MAY NOT import internal/api (contracts.md §4 import map). Its
+//     dependencies are strictly {store, module, plugin, pkg/sdk, scanner proto,
+//     internal/enrich}. enrich is driven per item between Identify and PutItem
+//     (seam S6); enrich never imports scan (downward-only, no cycle).
+//   - INV6: scan persists the status string enrich returns unchanged (it does not
+//     compute/validate status — enrich owns nextState); a module with no
+//     metadata_sources advances the start status unchanged (INV-status-passthrough).
+//   - INV7: 3 exported symbols (Deps, Result, Run). Under 8. The Deps.Enrich
+//     field and the unexported enricher seam are not symbols.
 package scan

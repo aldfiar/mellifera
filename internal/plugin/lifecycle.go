@@ -235,10 +235,13 @@ func (m *Manager) clearRestarting(e *pluginEntry) {
 }
 
 // defaultLaunch is the production launchFunc: it spawns the plugin binary as a
-// subprocess via go-plugin (magic-cookie substrate handshake, gRPC dial),
-// dispenses the typed sdk.Scanner, and builds the domain Plugin service client
-// over the shared gRPC connection. The command is built with an arg slice and
-// never a shell (golang-security).
+// subprocess via go-plugin (magic-cookie substrate handshake, gRPC dial), and
+// dispenses the typed capability clients the plugin declared. The client
+// PluginSet is built ONLY from the plugin's declared capabilities
+// (INV-caps-driven): a scanner-only plugin (base-scanner) yields the same
+// {scanner: sdk.ScannerPlugin{}} set it always did (INV-ac3-base-scanner); a
+// metadata_source plugin yields {metadata_source: sdk.MetadataSourcePlugin{}}.
+// The command is built with an arg slice and never a shell (golang-security).
 func defaultLaunch(deps Deps) launchFunc {
 	return func(_ context.Context, e *pluginEntry) (*runningPlugin, error) {
 		cmd := exec.Command(e.binaryPath) // arg-slice only; go-plugin owns the process
@@ -248,12 +251,12 @@ func defaultLaunch(deps Deps) launchFunc {
 				MagicCookieKey:   deps.MagicCookieKey,
 				MagicCookieValue: deps.MagicCookieValue,
 			},
-			Plugins:          goplugin.PluginSet{scannerPluginKey: &sdk.ScannerPlugin{}},
+			Plugins:          clientPluginSet(e.caps),
 			Cmd:              cmd,
 			AllowedProtocols: []goplugin.Protocol{goplugin.ProtocolGRPC},
 			StartTimeout:     handshakeTimeout,
 		})
-		rp, err := dispense(cl)
+		rp, err := dispense(cl, e.caps)
 		if err != nil {
 			cl.Kill()
 			return nil, err
@@ -262,9 +265,39 @@ func defaultLaunch(deps Deps) launchFunc {
 	}
 }
 
+// clientPluginSet builds the go-plugin client PluginSet from a plugin's declared
+// capabilities: each declared capability type maps to its dual-side adapter
+// (scanner -> sdk.ScannerPlugin, metadata_source -> sdk.MetadataSourcePlugin).
+// One entry per type; the gRPC service is bound by its fully-qualified name, so
+// the dispense key is a per-type handle, not per-instance. Unknown types are
+// omitted (a plugin is never asked to serve a capability it did not declare).
+func clientPluginSet(caps []sdk.Capability) goplugin.PluginSet {
+	set := goplugin.PluginSet{}
+	for _, c := range caps {
+		if a := adapterFor(c.Type); a != nil {
+			set[c.Type] = a
+		}
+	}
+	return set
+}
+
+// adapterFor returns the zero-value client adapter for a capability type, or nil
+// if the type is not a known capability (the server-side Impl is unused on the
+// client side, exactly like the original scanner-only set).
+func adapterFor(capType string) goplugin.Plugin {
+	switch capType {
+	case scannerPluginKey:
+		return &sdk.ScannerPlugin{}
+	case metadataSourcePluginKey:
+		return &sdk.MetadataSourcePlugin{}
+	}
+	return nil
+}
+
 // dispense starts the subprocess (cl.Client auto-starts), asserts the gRPC
-// protocol, dispenses the scanner capability, and assembles the runningPlugin.
-func dispense(cl *goplugin.Client) (*runningPlugin, error) {
+// protocol, and dispenses each declared capability into the runningPlugin's
+// typed client field (scanner and/or metadata), leaving the rest nil.
+func dispense(cl *goplugin.Client, caps []sdk.Capability) (*runningPlugin, error) {
 	proto, err := cl.Client()
 	if err != nil {
 		return nil, fmt.Errorf("go-plugin client: %w", err)
@@ -273,20 +306,58 @@ func dispense(cl *goplugin.Client) (*runningPlugin, error) {
 	if !ok {
 		return nil, errors.New("go-plugin did not negotiate the gRPC protocol")
 	}
-	raw, err := proto.Dispense(scannerPluginKey)
-	if err != nil {
-		return nil, fmt.Errorf("dispense scanner: %w", err)
+	rp := &runningPlugin{
+		pconn:  pluginv1.NewPluginClient(gc.Conn),
+		exited: cl.Exited,
+		kill:   cl.Kill,
 	}
-	scanner, ok := raw.(sdk.Scanner)
-	if !ok {
-		return nil, fmt.Errorf("dispensed client %T is not an sdk.Scanner", raw)
+	seen := map[string]struct{}{}
+	for _, c := range caps {
+		if _, dup := seen[c.Type]; dup {
+			continue
+		}
+		seen[c.Type] = struct{}{}
+		if err := rp.assignCapability(proto, c.Type); err != nil {
+			return nil, err
+		}
 	}
-	return &runningPlugin{
-		scanner: scanner,
-		pconn:   pluginv1.NewPluginClient(gc.Conn),
-		exited:  cl.Exited,
-		kill:    cl.Kill,
-	}, nil
+	return rp, nil
+}
+
+// assignCapability dispenses one capability type from the go-plugin client and
+// stores its typed client. Unknown types are no-ops (clientPluginSet already
+// filtered them; defending dispense keeps the two callers consistent). A nil
+// current value guards against a duplicate-type declaration re-dispensing.
+func (rp *runningPlugin) assignCapability(proto goplugin.ClientProtocol, capType string) error {
+	switch capType {
+	case scannerPluginKey:
+		if rp.scanner != nil {
+			return nil
+		}
+		raw, err := proto.Dispense(scannerPluginKey)
+		if err != nil {
+			return fmt.Errorf("dispense scanner: %w", err)
+		}
+		sc, ok := raw.(sdk.Scanner)
+		if !ok {
+			return fmt.Errorf("dispensed client %T is not an sdk.Scanner", raw)
+		}
+		rp.scanner = sc
+	case metadataSourcePluginKey:
+		if rp.metadata != nil {
+			return nil
+		}
+		raw, err := proto.Dispense(metadataSourcePluginKey)
+		if err != nil {
+			return fmt.Errorf("dispense metadata_source: %w", err)
+		}
+		md, ok := raw.(sdk.MetadataSource)
+		if !ok {
+			return fmt.Errorf("dispensed client %T is not an sdk.MetadataSource", raw)
+		}
+		rp.metadata = md
+	}
+	return nil
 }
 
 // exponentialBackoff returns the §7.3 restart delay for a failed attempt index:
