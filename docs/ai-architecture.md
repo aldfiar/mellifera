@@ -40,19 +40,34 @@ No branching, no multi-call orchestration, no business rules. Logic lives in `st
 ## 4. Module map (authoritative — keep in sync with the skill)
 
 Realized by the `scan-library` feature (foundational slice) + the additive
-`plugin-pipeline` Phase A layer. Counts are exported symbols; `WARN` = >8 but
+`plugin-pipeline` Phase A layer + the `async-enrichment` **Phase B1** layer
+(the async substrate). Counts are exported symbols per `scripts/check.sh`, which
+counts **top-level** `func/type/var/const` decls only — method receivers (`func (r T) M`)
+are excluded, so a package's gate-count is its top-level surface; `WARN` = >8 but
 ≤12 (pre-justified R10); all others ≤8. Reserved-table methods
 (`RecordProgress`/`GetResume`) are deferred — the tables exist but no method
-ships yet. Phase A deltas are marked **[A]**.
+ships yet. Phase A deltas are marked **[A]**; Phase B1 deltas are marked **[B1]**.
+
+> **Phase B1 shipped (`async-enrichment`).** Enrichment is now ASYNCHRONOUS: a
+> derived in-process `enrich.Queue` + bounded worker pool drains pending
+> `(item, plugin)` work derived from `items` + document namespaces + the
+> `enrichment_failures` ledger (architecture §4.4 — there is **no** queue/claim/
+> lease table). `POST /scan` returns once items are persisted `pending`; workers
+> drain them to `enriched`/`ready` in the background. The plugin contract, the
+> API surface, and `scan.Result` are **unchanged** (additive — deprecate-don't-
+> delete). B2 (image+EXIF) + B3 (TMDB + `AuthContext`) remain **outlined** (they
+> are consumers of the B1 queue, not built here). Feature record:
+> `docs/async-enrichment/`; operator semantics:
+> [`docs/async-enrichment/api_reference.md`](async-enrichment/api_reference.md).
 
 | Package | Owns | Public API (≤8; WARN noted) | Depends on |
 |---|---|---|---|
-| `cmd/mellifera` | wiring (flat `main.go`) — **[A]** loads base-scanner + tv-parser, constructs `enrich.Deps` | — | all (read-only) |
-| `internal/store` | SQLite: documents + control tables + reserved `playback_progress`/`scan_jobs` — **[A]** + indexed `items.status` column (default `"new"`); `QueryItems` gained additive `status` filter (`""` ⇒ all) | `Open`, `Close`, `DB`, `CreateLibrary`, `GetLibrary`, `GetItem`, `PutItem`, `QueryItems` (+ `Store`/`Item`/`Library`) — **11 WARN** | — (bottom) |
+| `cmd/mellifera` | wiring (flat `main.go`) — **[A]** loads base-scanner + tv-parser, constructs `enrich.Deps`; **[B1]** constructs `enrich.NewQueue`, `Start`s the pool before serving, wires `scan.Deps.Notify` → `queue.Notify` (process ctx), `Stop`s on shutdown; reads `MELLIFERA_ENRICH_*` knobs | — | all (read-only) |
+| `internal/store` | SQLite: documents + control tables + reserved `playback_progress`/`scan_jobs` — **[A]** + indexed `items.status` column (default `"new"`); `QueryItems` additive `status` filter (`""` ⇒ all). **[B1]** +`ledger.go` (`FailureRow` + `RecordFailure`/`ClearFailure`/`ListFailures`; **no DDL** — `enrichment_failures` existed from Phase A) + pool-wide 5s `busy_timeout` PRAGMA in `Open`'s DSN (`withBusyTimeout`) | `Open`, `Close`, `DB`, `CreateLibrary`, `GetLibrary`, `GetItem`, `PutItem`, `QueryItems`, `RecordFailure`, `ClearFailure`, `ListFailures` (+ `Store`/`Item`/`Library`/`FailureRow`) — **gate count 5** (top-level: `Store`/`Open`/`Item`/`Library`/`FailureRow`; methods excluded by `check.sh` ⇒ green ≤8; the Phase-A "11 WARN" narrative counted methods) | — (bottom) |
 | `internal/plugin` | subprocess lifecycle + gRPC clients + capability routing — **[A]** caps-driven launch; `MetadataSource` accessor | `Open`, `Load`, `Start`, `Stop`, `Status`, `Scanner`, `MetadataSource` (+ `Manager`/`Deps`/`Health`) — **10 WARN** | proto, sdk |
 | `internal/module` | config-driven module registry — **[A]** `metadata_sources` chain (`Module.MetadataSources[]`); tv-parser seed | `Open`, `Get`, `List` (+ `Registry`/`Module`/`ScannerBinding`/`MetadataSourceBinding`) — **7** | store |
-| `internal/scan` | scan-side orchestration (resolve module → scanner → stream → identify → **[A]** enrich → PutItem) | `Run`, `Deps` (`.Enrich` field), `Result` | store, module, plugin, enrich |
-| `internal/enrich` | **[A] metadata-side serial orchestrator** (4-RPC chain Match→BuildRequest→Convert→Merge over `metadata.v1.MetadataSource`; pure `nextState`; provenance/`_view` assembly) | `Enrich`, `Deps`, `Result` — **3** | store, module, plugin |
+| `internal/scan` | scan-side orchestration (resolve module → scanner → stream → identify → PutItem). **[B1]** drops inline enrich; persists each item `pending` + calls `Notify(libraryID)` once post-drain so the queue derives/drains async. A re-scan whose base identity changed → `stale`; unchanged re-scan preserves status. `scan.Result` shape **unchanged** (timing only) | `Run`, `Deps` (`.Enrich` retained seam + **[B1]** `.Notify` field), `Result` — **3** | store, module, plugin, enrich |
+| `internal/enrich` | **[A]** metadata-side orchestrator + **[B1] async derived-queue dispatcher** (arch §4.4): `Queue` derives pending `(item, plugin)` work from `items`+namespaces+ledger (no work table), feeds a bounded channel, a worker pool drains it under per-item in-memory leases with retry/backoff + terminal-cooldown ledger writes. `Enrich` (sync per-item chain) is **preserved** (deprecate-don't-delete, AC-3) — the worker shares its helpers (`runSource`/`nextState`/`applyContribution`/`appendStage`) but does not call `Enrich` directly | `Enrich`, `Deps`, `Result` + **[B1]** `Queue`, `QueueConfig`, `Stats`, `NewQueue` — **7** (queue.go/worker.go/lease.go/retry.go) | store, module, plugin |
 | `internal/api` | HTTP (chi) — **pure delegation, no logic** — **[A]** additive `itemDTO.Status` + `?status=` filter | `New`, `Deps`, `Principal` | scan, store |
 | `pkg/sdk` | plugin SDK (ships in the MAIN Go module for MVP — R7) — **[A]** capability-2 adapter | `Serve`, `ScannerPlugin`, `Scanner`, `MetadataSourcePlugin`, `MetadataSource`, `HandshakeConfig`, `Capability` — **7** | proto, go-plugin |
 | `plugins/base-scanner` | one subprocess binary — **[A]** media-type-agnostic (walk + ffprobe + withinRoot; parseTV extracted to tv-parser) | per-capability (scanner.v1 + plugin.v1) | sdk, proto |
@@ -62,9 +77,13 @@ ships yet. Phase A deltas are marked **[A]**.
 
 `internal/enrich` is now realized as the metadata-side analog of `internal/scan`
 (both sit at the same level). Dependency direction points **down** only:
-`api → scan → enrich → {module, plugin} → store` (enrich between scan and
-{module, plugin}; scan calls enrich between Identify and PutItem). `proto/` and
-`pkg/sdk` are shared leaves. No cycles.
+`api → scan → enrich → {module, plugin} → store`. **[B1]** scan no longer calls
+enrich inline; after persisting items `pending` it hands the library to
+`enrich.Queue` via `Deps.Notify` (wired in `cmd/mellifera`). enrich still never
+imports scan (INV-downward preserved — `Notify` is called BY scan, never the
+reverse). The worker pool is a process-lifetime component (constructed + started
+before the server serves, stopped on shutdown). `proto/` and `pkg/sdk` are shared
+leaves. No cycles.
 
 **Accepted deviations realized by `plugin-pipeline` Phase A** (reviewer ACCEPT,
 health-check HEALTHY; see `docs/plugin-pipeline/reviews/review_coder.md` §4):
@@ -74,9 +93,42 @@ caps-driven (base-scanner's client set byte-identical to scan-library — AC-3);
 `_view` is Phase-A last-writer (Phase B adds arbitration); `_stages.stage` is
 `"metadata_source"` (the contract example `"parse"` was illustrative); parseTV
 moved verbatim (base-scanner Identify now media-type-agnostic); `enriched` = ≥1
-success ∧ 0 failed (partial stays at furthest-valid). Phase B (external TMDB
-enricher + `AuthContext` + async queue) and Phase C (post-action) remain
+success ∧ 0 failed (partial stays at furthest-valid). The async enrichment queue
+is now **realized in Phase B1**; only B2 (image+EXIF) + B3 (external TMDB
+enricher + `AuthContext` population) and Phase C (post-action) remain
 **deferred/outlined**.
+
+**Accepted deviations realized by `async-enrichment` Phase B1** (reviewer
+PROCEED-WITH-FIXES correctness; health-check ISSUES-FOUND PROCEED, no P0; QA
+green; see `docs/async-enrichment/{reviews,audit,qa}/`):
+- **D-Q1 (load-bearing):** a source is queueable iff `AuthMode != "CLIENT"`
+  (not the §4.4-literal `== SERVER`). Empty/local (tv-parser) and `SERVER`
+  (tmdb) are server-runnable and queued; only `CLIENT` (kinopoisk) needs user
+  credentials → Mode-B-only and is excluded from the background queue. The
+  seeded `tv` module reflects this: tv-parser (empty) + tmdb (`SERVER`) queued,
+  kinopoisk (`CLIENT`) skipped.
+- **Derived queue (§4.4):** `items` + the document `sources` namespaces + the
+  `enrichment_failures` ledger **ARE** the queue — a separate `enrichment_jobs`
+  table is forbidden. Pending work is re-derived from items on every `Start`/
+  `Notify`.
+- **Per-item leases are in-memory** (one per `item_id`; serialize-within-item,
+  parallelize-across-items); they vanish on restart and expire lazily — pending
+  work survives in items + the ledger. Bounded worker pool, default 4.
+- **Non-blocking `POST /scan`** returns immediately with items `pending`; the
+  pool drains them to `enriched`/`ready` async. `failed --retry--> pending` is
+  now exercised by the queue (it was defined-but-unused in Phase A).
+- **`ready`/`stale` states** added: `enriched --settled--> ready` (all queueable
+  sources terminal: done, in-ledger-cooldown, or ran-but-produced-no-work);
+  `* --stale--> stale` on a re-scan base change; `stale --rehydrate--> pending`.
+- **`busy_timeout` 5s** added to `Open`'s DSN (`withBusyTimeout`) — the root-cause
+  fix for pooled-connection write-lock errors under the async pool (pool-wide; a
+  per-connection setting, unlike the persistent WAL).
+- **C-01 fix applied:** `_stages` is normalized to `[]map[string]any` in
+  `decodeDoc` so the audit history survives a JSON store round-trip (closes the
+  unchecked type-assertion at `appendStage`/`attemptedNoWork`).
+- `Enrich` is preserved (AC-3 deprecate-don't-delete); the retained
+  `scan.Deps.Enrich`/`prodEnricher` seam is dead production wiring (cleanup-routable,
+  audit D-02) — the worker drives the chain via `runSource`, not `Enrich`.
 
 **Accepted deviations realized by scan-library** (reviewer/health-check ACCEPT;
 see `docs/scan-library/reviews/review_coder.md` §5):

@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	// Registers the "sqlite" driver (pure-Go, no CGO) with database/sql.
@@ -124,12 +125,12 @@ var schemaSQL = []string{
 	`CREATE INDEX IF NOT EXISTS items_module ON items(module_id, display_title)`,
 }
 
-// Open opens the SQLite database at dsn, sets WAL journal mode, runs the
-// idempotent schema migrations (all §9.1 tables + §9.2 generated columns and
-// indexes), and returns a *Store. It is safe to call Open on an existing
-// database: every migration statement is CREATE ... IF NOT EXISTS.
+// Open opens the SQLite database at dsn, sets WAL journal mode + a 5s
+// busy_timeout, runs the idempotent schema migrations (all §9.1 tables + §9.2
+// generated columns and indexes), and returns a *Store. It is safe to call Open
+// on an existing database: every migration statement is CREATE ... IF NOT EXISTS.
 func Open(ctx context.Context, dsn string) (*Store, error) {
-	db, err := sql.Open(sqliteDriver, dsn)
+	db, err := sql.Open(sqliteDriver, withBusyTimeout(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("store: open %q: %w", dsn, err)
 	}
@@ -148,6 +149,30 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// busyTimeoutPragma is the per-write-lock wait budget (milliseconds). 5s is the
+// §4.4 soft bound: long enough to ride out a neighboring write under the async
+// worker pool + concurrent scan PutItems / API reads, short enough never to stall
+// a request thread past the §7.6 RPC timeout window.
+const busyTimeoutPragma = 5000
+
+// withBusyTimeout appends the busy_timeout PRAGMA to the DSN as a modernc
+// _pragma query parameter. busy_timeout is a PER-CONNECTION setting (unlike
+// journal_mode=WAL, which is persistent on the DB file and so reaches every
+// connection via the ExecContext in Open). database/sql pools connections, and a
+// concurrent writer routed to a different pool connection would otherwise hit
+// "database is locked" immediately (modernc's default busy_timeout is 0). Setting
+// it through the DSN is the only way every pooled connection inherits it, so it
+// is the root-cause fix for the concurrent-write lock errors the async substrate
+// introduces (the queue's writeMu serializes only its own writes; scan PutItem +
+// the API are independent writers).
+func withBusyTimeout(dsn string) string {
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", dsn, sep, busyTimeoutPragma)
 }
 
 // ensureItemsStatus makes Open additive across scan-library databases: the

@@ -1,6 +1,8 @@
 {
   "last_commit": "",
-  "updated_at": "2026-07-21",
+  "last_commit_note": "feature/async-enrichment is UNCOMMITTED (B1 coder + docs pending commit decision); SHA recorded at commit time",
+  "updated_at": "2026-08-03",
+  "synced_feature": "async-enrichment (Phase B1) — project docs synced: ai-architecture.md §4, project_structure.md, .project_context.json src_layout; new feature runbook docs/async-enrichment/api_reference.md",
   "extracted_docs": [
     "mellifera/docs/architecture.md",
     "mellifera/docs/ai-architecture.md",

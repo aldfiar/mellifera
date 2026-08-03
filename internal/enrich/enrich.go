@@ -53,6 +53,13 @@ type Result struct {
 // still advances to the furthest state its successful stages justify (AC-6).
 // A cancelled context is the only hard failure (B8): it returns status=failed
 // with a _error record and the cause.
+//
+// In the async substrate (Phase B1) this is the SYNC per-item entry, now
+// worker-internal: the async Queue's per-item driver reuses the same factored
+// helpers (enrichDoc, runSource/runSourceRetryable, applyContribution,
+// orderedSources, nextState) but adds per-source retry + the ledger. Enrich is
+// preserved (deprecate-don't-delete, AC-3) for sync use and tests — its
+// signature and behavior are unchanged.
 func Enrich(ctx context.Context, deps Deps, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult) (map[string]any, string, Result, error) {
 	return enrichDoc(ctx, deps.Plugins.MetadataSource, mod, doc, base)
 }

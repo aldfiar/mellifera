@@ -65,6 +65,22 @@ func TestOpen(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = s2.Close() })
 	})
+
+	// busy_timeout (D-T05-2): set per-connection via the DSN so every pooled
+	// connection inherits it — the root-cause fix for the concurrent-write
+	// "database is locked" errors the async worker pool introduces. Asserted on
+	// an arbitrary pool connection (QueryRowContext may use any), which proves it
+	// is set pool-wide, not just on the migration connection.
+	t.Run("busy_timeout_set", func(t *testing.T) {
+		s := openStore(t)
+		var bt int
+		if err := s.db.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&bt); err != nil {
+			t.Fatalf("read busy_timeout: %v", err)
+		}
+		if bt != 5000 {
+			t.Fatalf("busy_timeout = %d, want 5000 (per-connection, set via DSN)", bt)
+		}
+	})
 }
 
 // TestStore_Library covers B2 (Library type + CreateLibrary/GetLibrary) and the

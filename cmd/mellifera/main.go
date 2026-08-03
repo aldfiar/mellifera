@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -95,6 +96,21 @@ func main() {
 		Plugins: mgr,
 		Enrich:  enrich.Deps{Store: st, Modules: reg, Plugins: mgr},
 	}
+	// Async enrich queue (arch §4.4): a bounded worker pool that derives pending
+	// (item, plugin) work from items + the ledger and drains it for the process
+	// lifetime. Constructed + started BEFORE the server serves so the first
+	// scan's Notify lands in a running pool (INV-start-before-serve). Flat
+	// constructor call — no DI, no reflect (INV-flat-wiring).
+	enrichQueue := enrich.NewQueue(scanDeps.Enrich, cfg.enrich)
+	fatalOn(enrichQueue.Start(ctx), "start enrich queue")
+	// scan hands the library to the queue after persisting items pending. The
+	// closure substitutes the PROCESS ctx (not the per-request scan ctx) so the
+	// queue's derive/feeder outlives the HTTP request — otherwise the feeder
+	// would abort the moment the scan handler returns and never drain
+	// (INV-context-shared: SIGINT/SIGTERM cancels pool + server together).
+	scanDeps.Notify = func(_ context.Context, libraryID int64) {
+		enrichQueue.Notify(ctx, libraryID)
+	}
 	handler := api.New(api.Deps{
 		AdminToken: cfg.adminToken,
 		Store:      st,
@@ -125,6 +141,11 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	logErr(srv.Shutdown(shutdownCtx), "shutdown http server")
+	// INV-shutdown-order: stop accepting HTTP, THEN stop the enrich pool, THEN
+	// stop plugin subprocesses. The pool stops before the plugin manager so
+	// in-flight RPCs can drain against still-live subprocesses (best-effort
+	// within shutdownTimeout). Stop is void: it cancels workers + waits.
+	enrichQueue.Stop()
 	logErr(mgr.Stop(shutdownCtx, "base-scanner"), "stop base-scanner")
 	logErr(mgr.Stop(shutdownCtx, "tv-parser"), "stop tv-parser")
 	// store.Close runs via the deferred st.Close() in main.
@@ -137,6 +158,7 @@ type config struct {
 	baseScannerPath string
 	tvParserPath    string
 	listenAddr      string
+	enrich          enrich.QueueConfig
 }
 
 // loadConfig reads configuration from the environment with sane MVP defaults.
@@ -158,7 +180,50 @@ func loadConfig() config {
 		baseScannerPath: envOr("MELLIFERA_BASE_SCANNER", "bin/base-scanner"),
 		tvParserPath:    envOr("MELLIFERA_TV_PARSER", "bin/tv-parser"),
 		listenAddr:      envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
+		// Async enrich queue knobs (arch §4.4). Every field has a §4.4 default;
+		// a missing/empty/malformed value falls back to it + logs a warning
+		// (INV-env-defaults: startup never aborts on an enrich knob). Only the
+		// admin token remains fail-fast.
+		enrich: enrich.QueueConfig{
+			Workers:       envInt("MELLIFERA_ENRICH_WORKERS", 4),
+			MaxAttempts:   envInt("MELLIFERA_ENRICH_MAX_ATTEMPTS", 3),
+			LeaseTTL:      envDuration("MELLIFERA_ENRICH_LEASE_TTL", 60*time.Second),
+			Backoff:       envDuration("MELLIFERA_ENRICH_BACKOFF", 2*time.Second),
+			ExhaustedCool: envDuration("MELLIFERA_ENRICH_EXHAUSTED_COOL", 7*24*time.Hour),
+			NoDataCool:    envDuration("MELLIFERA_ENRICH_NODATA_COOL", 30*24*time.Hour),
+			CoolCap:       envDuration("MELLIFERA_ENRICH_COOL_CAP", 365*24*time.Hour),
+		},
 	}
+}
+
+// envInt reads an integer env var, falling back to def (and logging a warning)
+// when it is unset/empty/malformed. Used for the enrich knobs (INV-env-defaults).
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		slog.Warn("invalid int env var; using default", "key", key, "value", v, "default", def, "error", err)
+		return def
+	}
+	return n
+}
+
+// envDuration reads a duration env var (time.ParseDuration syntax), falling back
+// to def (and logging a warning) when unset/empty/malformed (INV-env-defaults).
+func envDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		slog.Warn("invalid duration env var; using default", "key", key, "value", v, "default", def, "error", err)
+		return def
+	}
+	return d
 }
 
 // envOr returns the named env var or def when it is unset/empty.

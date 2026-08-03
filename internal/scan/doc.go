@@ -4,25 +4,31 @@
 // Package scan is the scan-side orchestrator: for one library it resolves the
 // library's module config (which names the scanner capability binding), obtains
 // the typed sdk.Scanner client, streams discovered files back from the scanner,
-// identifies each, assembles the base architecture §3.1 document, enriches it
-// (driving the metadata_source chain via internal/enrich), and upserts the
-// enriched document + lifecycle status into the store. This package exists so
-// internal/api stays pure-delegation: the scan handler does exactly ONE thing —
-// call scan.Run. scan.Run owns the store → module → plugin → enrich → store
-// coordination that cannot live in api/ (ai-arch §3 hard rule). It is the
-// scan-side analog of internal/enrich (the metadata-side orchestrator).
+// identifies each, assembles the base architecture §3.1 document, and upserts
+// each item into the store at status "pending" (carrying parsed + ffprobe so the
+// worker reconstructs the per-item base without a re-probe). After the stream
+// drains it calls the injected Notify(ctx, libraryID) hook so internal/enrich's
+// async queue derives the library's pending (item, plugin) work and drains it on
+// its worker pool. Enrichment is NOT awaited here (AC-async): scan returns once
+// items are persisted pending; the serial enricher seam is retained for sync/
+// test (B6, deprecate-don't-delete) but no longer invoked from persist. This
+// package exists so internal/api stays pure-delegation: the scan handler does
+// exactly ONE thing — call scan.Run. scan.Run owns the store → module → plugin →
+// store + post-drain Notify coordination that cannot live in api/ (ai-arch §3
+// hard rule).
 //
 // # Public API (3 symbols — under the 8-symbol target)
 //
 //   - Deps: the collaborators Run orchestrates (store + module registry + plugin
-//     manager + enrich.Deps, set by the composition root).
+//     manager + enrich.Deps + the Notify hook, set by the composition root).
 //   - Result: the outcome of one scan (counts, soft warnings, time bounds).
 //   - Run: the orchestrator entrypoint — the only function api/ calls.
 //
 // # Invariants
 //
 //   - INV1: Run is the ONLY function the api scan handler calls (pure-delegation
-//     rule). It owns the store→module→plugin→enrich→store orchestration.
+//     rule). It owns the store→module→plugin→store + post-drain Notify
+//     orchestration.
 //   - INV2: The orchestrator NEVER branches on media_type (arch §0 principle 1).
 //     module_type flows from the module config into the ScanRequest/IdentifyRequest
 //     as an opaque string; no media-type literal appears in this package.
@@ -30,15 +36,16 @@
 //     Struct + core-managed fields per arch §3.1). The store treats Document as
 //     opaque (store INV3); this package never asks the store to parse it.
 //   - INV4: The scanner stream is drained at store-write speed — consume one
-//     DiscoveredFile, identify it, enrich it, PutItem it, then take the next (R9).
+//     DiscoveredFile, identify it, PutItem it pending, then take the next (R9).
 //     The sdk channel is bounded; nothing buffers the whole stream in memory.
 //   - INV5: scan MAY NOT import internal/api (contracts.md §4 import map). Its
 //     dependencies are strictly {store, module, plugin, pkg/sdk, scanner proto,
-//     internal/enrich}. enrich is driven per item between Identify and PutItem
-//     (seam S6); enrich never imports scan (downward-only, no cycle).
-//   - INV6: scan persists the status string enrich returns unchanged (it does not
-//     compute/validate status — enrich owns nextState); a module with no
-//     metadata_sources advances the start status unchanged (INV-status-passthrough).
-//   - INV7: 3 exported symbols (Deps, Result, Run). Under 8. The Deps.Enrich
-//     field and the unexported enricher seam are not symbols.
+//     internal/enrich}. enrich never imports scan (downward-only, no cycle).
+//   - INV6: scan persists "pending" for a fresh item and "stale" for a changed
+//     re-scan (the minimal B1 basis); it does not drive enrichment inline. The
+//     status literals are owned by internal/enrich (INV-status-owner); scan emits
+//     the literals it needs (AC-states, AC-async).
+//   - INV7: 3 exported symbols (Deps, Result, Run). Under 8. The Deps.Enrich and
+//     Deps.Notify fields and the unexported enricher/notifier seams are not
+//     symbols.
 package scan

@@ -13,9 +13,21 @@
 > media-type-agnostic (parseTV extracted into tv-parser), and adds the
 > `items.status` lifecycle column. Zero new protos — tv-parser and the enrich
 > chain implement the already-generated `metadata.v1.MetadataSource`. The
-> scan-library wire contract is unchanged (deprecate-don't-delete). Phase B
-> (external TMDB enricher + `AuthContext` + async queue) and Phase C (post-action)
-> remain **deferred/outlined**. Feature record: `docs/plugin-pipeline/`.
+> scan-library wire contract is unchanged (deprecate-don't-delete). Feature record:
+> `docs/plugin-pipeline/`.
+>
+> **Phase B1 (`async-enrichment`) layered on top — additive.** Enrichment is now
+> ASYNC (architecture §4.4): `internal/enrich` gains a derived in-process
+> `Queue` + bounded worker pool that drains pending `(item, plugin)` work derived
+> from `items` + document namespaces + the `enrichment_failures` ledger (**no**
+> queue/claim/lease table) under per-item in-memory leases with retry/backoff.
+> `POST /scan` returns once items are persisted `pending`; workers drain to
+> `enriched`/`ready` in the background. Additive: zero new protos, `go.mod`
+> unchanged, plugin contract + API surface + `scan.Result` unchanged
+> (deprecate-don't-delete). enrich 3→7, store 4→5 (both green ≤8). B2 (image+EXIF)
+> + B3 (TMDB + `AuthContext`) remain **outlined** (consumers of the B1 queue).
+> Feature record: `docs/async-enrichment/`; operator runbook:
+> [`docs/async-enrichment/api_reference.md`](async-enrichment/api_reference.md).
 
 ## Overview
 
@@ -40,11 +52,13 @@ The differentiator versus the Jellyfin/Emby lineage is **subprocess plugin isola
 
 CGO is avoided (pure-Go SQLite chosen to fit single-binary + cross-compile). No DI framework. No `reflect` (depguard-denied).
 
-## Module layout (foundational slice `scan-library` + `plugin-pipeline` Phase A)
+## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1)
 
 Directory tree as realized by the foundational slice PLUS the additive Phase A
-layer (grounded in `docs/ai-architecture.md` §4 module map + `docs/architecture.md`
-§10; symbol counts are exported symbols, `WARN` = >8 but ≤12):
+and Phase B1 layers (grounded in `docs/ai-architecture.md` §4 module map +
+`docs/architecture.md` §10). Symbol counts are exported symbols per
+`scripts/check.sh`, which counts **top-level** `func/type/var/const` decls only
+(method receivers excluded); `WARN` = >8 but ≤12:
 
 ```
 mellifera/
@@ -59,31 +73,32 @@ mellifera/
 │   └── plugin/v1/                  # Plugin service: Handshake, Health, Shutdown (arch §2.2.2)
 ├── pkg/sdk/                        # plugin SDK (7): + MetadataSource + MetadataSourcePlugin in Phase A
 ├── internal/
-│   ├── store/                      # SQLite: documents + control tables + reserved tables (11 WARN; +items.status column, not symbols)
+│   ├── store/                      # SQLite: docs + control + reserved tables (5 top-level; +ledger.go FailureRow + busy_timeout in B1; methods excluded by check.sh)
 │   ├── plugin/                     # subprocess lifecycle + gRPC clients + capability routing (10 WARN; +MetadataSource accessor)
 │   ├── module/                     # config-driven module registry (7; +MetadataSourceBinding, tv-parser seed)
-│   ├── scan/                       # scan-side orchestrator: Run/Deps/Result (3; Deps.Enrich drives enrich)
+│   ├── scan/                       # scan-side orchestrator: Run/Deps/Result (3; B1: persists pending + Notify(libraryID), drops inline enrich; re-scan→stale)
 │   ├── api/                        # chi router — PURE DELEGATION, zero logic (3; itemDTO.Status + ?status=)
-│   ├── enrich/                     # metadata-side serial orchestrator: Enrich/Deps/Result (3) — REALIZED in Phase A
+│   ├── enrich/                     # metadata-side orchestrator + async derived-queue: Enrich/Deps/Result + Queue/QueueConfig/Stats/NewQueue (7; B1: queue.go/worker.go/lease.go/retry.go)
 │   ├── stream/                     # DEFERRED
 │   └── janitor/                    # DEFERRED
 ├── plugins/
 │   ├── base-scanner/               # scanner subprocess: walk + ffprobe + withinRoot (media-type-agnostic; parseTV extracted)
 │   └── tv-parser/                  # metadata_source subprocess: parseTV moved here verbatim; serves metadata.v1.MetadataSource
 ├── cmd/
-│   └── mellifera/                  # flat main.go — constructor wiring (loads base-scanner + tv-parser; builds enrich.Deps)
+│   └── mellifera/                  # flat main.go — constructor wiring (loads base-scanner + tv-parser; builds enrich.Deps; B1: enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs)
 ├── integration_test.go             # scan-library AC-1 golden end-to-end scan (stdlib-only black-box)
 ├── integration_pipeline_test.go    # Phase A AC-1 golden end-to-end enrich pipeline (stdlib-only black-box)
-└── qa_*_test.go                    # independent acceptance + regression (scan-library + Phase A)
+├── integration_async_test.go       # Phase B1 AC-1 golden: scan→pending→async drain→ready (stdlib-only black-box)
+└── qa_*_test.go                    # independent acceptance + regression (scan-library + Phase A + Phase B1)
 ```
 
-Dependency direction points **down only**: `api → scan → enrich → {module, plugin} → store` (enrich sits between scan and {module, plugin}; scan calls enrich between Identify and PutItem). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4).
+Dependency direction points **down only**: `api → scan → enrich → {module, plugin} → store`. Phase B1: scan no longer calls enrich inline — after persisting items `pending` it hands the library to the `enrich.Queue` via `Deps.Notify` (wired in `cmd/mellifera`); enrich still never imports scan. The worker pool is a process-lifetime component (started before serving, stopped on shutdown). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4).
 
 ## Entry points
 
 | Binary | Path | Role |
 |---|---|---|
-| Server | `cmd/mellifera/main.go` | Flat constructor wiring (no DI, no reflect). Reads config, opens store, loads **both** plugins (base-scanner + tv-parser), constructs `enrich.Deps`, wires module registry, starts HTTP server. |
+| Server | `cmd/mellifera/main.go` | Flat constructor wiring (no DI, no reflect). Reads config, opens store, loads **both** plugins (base-scanner + tv-parser), constructs `enrich.Deps`, constructs + starts the async `enrich.Queue` (before serving) and wires `scan.Deps.Notify` → `queue.Notify` (process ctx); stops pool → plugins → store on shutdown. Reads `MELLIFERA_ENRICH_*` knobs. |
 | Scanner plugin | `plugins/base-scanner/main.go` | Separate subprocess binary using `pkg/sdk.Serve(...)`. **Media-type-agnostic** (Phase A): walks configured library root, runs `ffprobe` via arg slice, emits ONLY base fields (`relative_path`/`extension` + the verbatim ffprobe blob). TV parsing no longer lives here (extracted to tv-parser). Path-traversal guard (`withinRoot`) on every discovered path. |
 | Metadata-source plugin | `plugins/tv-parser/main.go` | Phase A. Separate subprocess binary; the first `metadata_source` capability plugin. Houses `parseTV` (moved verbatim from base-scanner) and serves `metadata.v1.MetadataSource` (Match→BuildRequest→Convert→Merge) on one shared gRPC server via `pkg/sdk.Serve`. |
 
@@ -134,16 +149,18 @@ All DECIDED or DEFAULTED in `docs/open-questions.md`; none OPEN. Load-bearing fo
 
 Q1–Q28 carry reversible defaults with named revisit triggers (see `docs/open-questions.md`). Risk register R1–R14 lives there too.
 
-## What exists now (after `scan-library` + `plugin-pipeline` Phase A)
+## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1)
 
-The foundational slice plus the additive Phase A layer are implemented and all
-verification gates + `go vet` are green (reviewer PROCEED, health-check HEALTHY,
-QA green — 13/13 tasks; `completed_count=13` pre-docs):
+The foundational slice plus the additive Phase A and Phase B1 layers are
+implemented and all verification gates are green — `gofmt`/`build`/`vet`/`test`/
+`-race`/`lint`/`check.sh` all PASS (no data races; reviewer PROCEED-WITH-FIXES
+correctness, health-check ISSUES-FOUND PROCEED with no P0, QA green; B1
+`completed_count=13` = 9 coder + 2 QA + 2 docs):
 
-- `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0) + `go.sum` (**unchanged** in Phase A — additive, no new deps).
-- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged** — `metadata.v1` now exercised).
+- `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0) + `go.sum` (**unchanged** across Phase A and B1 — additive, no new deps).
+- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged**).
 - `mellifera` binary (server) + `base-scanner` + `tv-parser` binaries via `make build` / `make build-plugin`.
-- `integration_test.go` (scan-library AC-1 golden e2e) + `integration_pipeline_test.go` (Phase A AC-1 golden enrich pipeline) + `qa_*_test.go` (independent acceptance + regression for both slices).
+- `integration_test.go` (scan-library) + `integration_pipeline_test.go` (Phase A) + `integration_async_test.go` (Phase B1 AC-1 async golden) + `qa_*_test.go` (independent acceptance + regression for all three slices).
 - Inputs, still read-only: `docs/{architecture,ai-architecture,prior-art,open-questions}.md`, `.claude/skills/mellifera-build/`, `.golangci.yml`.
 
 ### Phase A additions (additive — `plugin-pipeline`)
@@ -162,18 +179,39 @@ byte-identical; base-scanner launch path byte-identical). Key additions:
 - **`internal/api` (stays 3).** Additive `itemDTO.Status` (`json:"status"`) response field + optional `?status=` query filter.
 - **`cmd/mellifera`.** Loads tv-parser alongside base-scanner and constructs `enrich.Deps` (env `MELLIFERA_TV_PARSER`, default `bin/tv-parser`).
 
+### Phase B1 additions (additive — `async-enrichment`)
+
+Phase B1 realizes the async enrichment substrate (architecture §4.4) WITHOUT
+touching the plugin contract, the API surface, or the `scan.Result` shape (AC-3:
+proto/SDK/plugins/API diff empty vs `6507277`; `func Enrich(` preserved). Key
+additions:
+
+- **`internal/enrich` (3→7: + `Queue`, `QueueConfig`, `Stats`, `NewQueue`).** The async derived-queue dispatcher (arch §4.4). `Queue` derives pending `(item, plugin)` work from `items` + the document `sources` namespaces + the `enrichment_failures` ledger (no queue/claim/lease table — INV-derived-not-stored), feeds a bounded channel (`Workers*4`), and a worker pool drains it under per-item in-memory leases (serialize-within-item, parallelize-across-items). Per-source in-memory retry/backoff (`retry.go`); terminal failure writes a ledger row + cooldown (loop-safety), a later success clears it (reset-on-success). New files: `queue.go`, `worker.go`, `lease.go`, `retry.go`. `Enrich` (sync per-item chain) is preserved (deprecate-don't-delete, AC-3); the worker shares its helpers (`runSource`/`nextState`/`applyContribution`/`appendStage`) but does not call `Enrich` directly.
+- **`internal/store` (4→5 top-level: + `FailureRow`).** New `ledger.go` with `FailureRow` + `RecordFailure`/`ClearFailure`/`ListFailures` (the `enrichment_failures` ledger escape hatch — no DDL; the table existed from Phase A). New pool-wide **5s `busy_timeout`** PRAGMA in `Open`'s DSN (`withBusyTimeout`) — the root-cause fix for pooled-connection write-lock errors under the async pool. (The methods are excluded from the ≤8 budget by `check.sh`; the Phase-A "11" narrative counted them.)
+- **`internal/scan` (stays 3).** Drops inline enrich: persists each item `pending` and, once the scanner stream drains, calls `Notify(ctx, libraryID)` once (new `Deps.Notify` func field, nil-safe). A re-scan whose base identity (`parsed`+`ffprobe`) changed → `stale`; an unchanged re-scan preserves the prior status (a `ready` item is not regressed). `scan.Result` shape is unchanged — only timing (scan returns before enrichment drains).
+- **`internal/api` (stays 3).** Unchanged surface; `?status=` now meaningfully filters the new `pending`/`ready`/`stale` states (passes any value through; empty = all).
+- **`cmd/mellifera`.** Constructs `enrich.NewQueue`, `Start`s it before the server serves (so the first scan's `Notify` lands in a running pool), wires `scan.Deps.Notify` → `queue.Notify` over the **process** ctx (not the per-request ctx), and `Stop`s on shutdown (HTTP → pool → plugins → store). Reads `MELLIFERA_ENRICH_*` knobs (defaults: workers 4, max-attempts 3, lease-TTL 60s, backoff 2s, exhausted-cool 7d, no-data-cool 30d, cool-cap 365d).
+- **`integration_async_test.go`.** The B1 AC-1 async golden: scan → items `pending` → bounded poll until the async drain settles TV items to `ready` (tv-parser namespace + tmdb attempted-but-unavailable ⇒ `allSourcesTerminal` ⇒ settled), Cyrillic preserved, `?status=ready` filter asserted.
+
+**D-Q1 (load-bearing deviation):** a source is queueable iff `AuthMode != "CLIENT"` (not the §4.4-literal `== SERVER`). The seeded `tv` module reflects this: `tv-parser` (empty `auth_mode`, queued), `tmdb` (`SERVER`, queued but unloaded in B1 → runs-but-unavailable ⇒ terminal-at-settle), `kinopoisk` (`CLIENT`, excluded from the background queue — Mode-B-only).
+
 #### Lifecycle + document schema (V5 hybrid)
 
-Every persisted `Item` carries an indexed `status` in `{new, pending, parsed, enriched, failed, deleted}`
+Every persisted `Item` carries an indexed `status` in `{new, pending, parsed, enriched, failed, deleted, ready, stale}`
 (core-managed like `file_id`; media-type-agnostic pipeline-stage names — arch §0 #1 holds). The
 orchestrator advances `new→pending→parsed→pending→enriched` on success, `→failed` on hard error
 (`→pending` on retry), `→deleted` on soft-delete; `enriched` requires ≥1 source succeeded ∧ 0 failed
-(a partial run stays at the furthest-valid state). The `document` gains (arch §3.1):
+(a partial run stays at the furthest-valid state). **Phase B1** adds `enriched --settled--> ready`
+(all queueable sources terminal: done, in-ledger-cooldown, or ran-but-produced-no-work) and the re-scan
+transitions `* --stale--> stale`, `stale --rehydrate--> pending`; `failed --retry--> pending` is now
+exercised by the queue (defined-but-unused in Phase A). The `document` gains (arch §3.1):
 `sources.<plugin_id>` (lossless per-source namespace), `_provenance.<field_path>` (per-field source
 audit), `_view.<field>` (recomputable view; Phase-A last-writer), and `_stages[]` (per-stage progress,
 `stage:"metadata_source"`). **Full state machine, status meanings, and provenance-reading** ->
-[`docs/plugin-pipeline/api_reference.md`](plugin-pipeline/api_reference.md); state set/machine source
-of truth: `docs/plugin-pipeline/acceptance.md` AC-7.
+[`docs/plugin-pipeline/api_reference.md`](plugin-pipeline/api_reference.md); **async lifecycle, env
+knobs, and the non-blocking-scan runbook** -> [`docs/async-enrichment/api_reference.md`](async-enrichment/api_reference.md);
+state set/machine source of truth: `docs/plugin-pipeline/acceptance.md` AC-7 (+ B1 `ready`/`stale` in
+`docs/async-enrichment/acceptance.md`).
 
 ### Capability model
 
@@ -184,14 +222,19 @@ implement `metadata.v1.MetadataSource`. Plugin selection is driven strictly by `
 (config), never by `if mediaType == "tv"` (AC-4 — media-type literals appear only in `internal/module` seed config).
 
 **Still NOT built** (deferred): `internal/stream` (range-request file serving), `internal/janitor`
-(cleanup cron); **Phase B** — external enrichers (`tmdb`/`kinopoisk`), `AuthContext` population, async
-enrichment queue, `_view` arbitration, `ready`/`stale` lifecycle states; **Phase C** — post-actions
-(needs arch design). Also: `go:embed` first-run plugin extraction (dev-mode filesystem-path loading is
-used instead — D11/Q20); session-based multi-user auth (single admin token for MVP — D18/Q15); store
-methods for reserved tables (`RecordProgress`/`GetResume` — tables exist, methods deferred).
+(cleanup cron); **Phase B2** — image+EXIF enrichment (consumes the B1 queue unchanged); **Phase B3** —
+external enrichers (`tmdb`/`kinopoisk` real fetch), `AuthContext` population, `_view` arbitration;
+**Phase C** — post-actions (needs arch design). Also: `go:embed` first-run plugin extraction (dev-mode
+filesystem-path loading is used instead — D11/Q20); session-based multi-user auth (single admin token
+for MVP — D18/Q15); store methods for reserved tables (`RecordProgress`/`GetResume` — tables exist,
+methods deferred); an admin HTTP route over `store.ListFailures` (the method ships in B1; the route is
+deferred — B1-light). Realized in B1 (no longer deferred): the **async enrichment queue** + worker pool
++ per-item leases + the `enrichment_failures` ledger + `failed→pending` retry + the `ready`/`stale`
+lifecycle states + the pool-wide `busy_timeout`.
 
 The `scan-library` enhanced objective lives at `mellifera/docs/scan-library/.phase_cache/enhanced_objective.md`;
-the Phase A feature record lives at `mellifera/docs/plugin-pipeline/` (plan, contracts, acceptance, reviews, audit).
+the Phase A feature record lives at `mellifera/docs/plugin-pipeline/`; the Phase B1 feature record
+lives at `mellifera/docs/async-enrichment/` (plan, contracts, acceptance, reviews, audit, qa).
 
 ## Open questions the planner must resolve
 

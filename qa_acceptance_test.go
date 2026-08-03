@@ -331,11 +331,12 @@ func qaStartServer(t *testing.T, serverBin, scannerBin, tvParserBin, tmp, token 
 	}
 	baseURL := "http://" + addr
 	t.Cleanup(func() {
-		t.Logf("QA server log:\n%s", log.String())
-		if srv.ProcessState != nil {
-			return
+		// Wait joins the process AND its stdout/stderr copier goroutines (which
+		// write log) before the log dump — reading log.String() earlier races the
+		// pipe copiers (a real data race under -race on the root integration tests).
+		if srv.ProcessState == nil {
+			_ = srv.Process.Signal(os.Interrupt)
 		}
-		_ = srv.Process.Signal(os.Interrupt)
 		done := make(chan struct{})
 		go func() { _ = srv.Wait(); close(done) }()
 		select {
@@ -344,6 +345,7 @@ func qaStartServer(t *testing.T, serverBin, scannerBin, tvParserBin, tmp, token 
 			_ = srv.Process.Kill()
 			<-done
 		}
+		t.Logf("QA server log:\n%s", log.String())
 	})
 	if !qaWaitReady(baseURL) {
 		t.Fatalf("QA server not ready at %s; log:\n%s", baseURL, log.String())

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -110,12 +111,58 @@ func (r *recordingResolver) resolve(pluginID, capabilityID string) (sdk.Scanner,
 
 // passthroughEnricher returns the base document unchanged with status "new" —
 // the scan-orchestration tests exercise the scan drain/assemble/put flow in
-// isolation (enrich behavior is covered by TestRunScan_EnrichIntegration, which
-// injects a behavior-controlling fake via the same seam S6).
+// isolation. Post-B1 it is the retained serial seam (B6): runScan still accepts
+// an enricher so the serial path stays wired, but persist no longer invokes it
+// (TestRunScan_AsyncEnqueue asserts non-invocation).
 func passthroughEnricher() enricher {
 	return func(_ context.Context, _ module.Module, doc map[string]any, _ *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
 		return doc, "new", enrich.Result{}, nil
 	}
+}
+
+// forbiddingEnricher counts inline invocations of the serial seam. Post-B1 scan
+// MUST NOT drive enrichment inline (B1/AC-async): a non-zero count fails the
+// test. The returned status is irrelevant (persist ignores the enricher now).
+func forbiddingEnricher(called *int) enricher {
+	return func(context.Context, module.Module, map[string]any, *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
+		*called++
+		return nil, "", enrich.Result{}, nil
+	}
+}
+
+// recordingNotifier is the fake Notify seam (S5): it records the libraryID of
+// each call and, via the store, how many items were already persisted AT CALL
+// TIME — so a test can assert Notify fires post-drain (all items persisted),
+// not mid-stream. Mutex-guarded so it is safe under -race.
+type recordingNotifier struct {
+	mu      sync.Mutex
+	calls   []int64
+	atCount []int // items persisted at each call
+	store   *store.Store
+}
+
+func (n *recordingNotifier) notify(_ context.Context, libraryID int64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	items, _ := n.store.QueryItems(context.Background(), libraryID, "", 10000, 0)
+	n.calls = append(n.calls, libraryID)
+	n.atCount = append(n.atCount, len(items))
+}
+
+func (n *recordingNotifier) count() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.calls)
+}
+
+// snapshot returns defensive copies of the recorded calls + per-call persisted
+// counts, so a test can assert post-drain ordering without racing a later call.
+func (n *recordingNotifier) snapshot() (calls []int64, atCount []int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	calls = append(calls, n.calls...)
+	atCount = append(atCount, n.atCount...)
+	return calls, atCount
 }
 
 func mkFile(fileID, rel string, ffprobe []byte, warnings []string) *scannerv1.DiscoveredFile {
@@ -318,7 +365,7 @@ func TestRunScan_Orchestration(t *testing.T) {
 				resolve = rr.resolve
 			}
 
-			res, err := runScan(context.Background(), s, r, resolve, passthroughEnricher(), libID)
+			res, err := runScan(context.Background(), s, r, resolve, passthroughEnricher(), nil, libID)
 			if tc.expected.wantErr && err == nil {
 				t.Fatalf("runScan: want error, got nil (res=%+v)", res)
 			}
@@ -394,7 +441,7 @@ func TestRunScan_OptionsForwarded(t *testing.T) {
 		identify: map[string]*scannerv1.IdentifyResult{"f1": mkIdentified("f1", `{"title":"X"}`)},
 	}
 	rr := &recordingResolver{scanner: sc}
-	if _, err := runScan(context.Background(), s, r, rr.resolve, passthroughEnricher(), libID); err != nil {
+	if _, err := runScan(context.Background(), s, r, rr.resolve, passthroughEnricher(), nil, libID); err != nil {
 		t.Fatalf("runScan: %v", err)
 	}
 	if sc.gotReq == nil || sc.gotReq.Options == nil {
@@ -442,10 +489,11 @@ func TestRunScan_ContextCancellation(t *testing.T) {
 		blockAfter: 1, // emit f1, then block until ctx is cancelled
 	}
 	rr := &recordingResolver{scanner: sc}
+	notify := &recordingNotifier{store: s}
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := runScan(ctx, s, r, rr.resolve, passthroughEnricher(), libID)
+		_, err := runScan(ctx, s, r, rr.resolve, passthroughEnricher(), notify.notify, libID)
 		done <- err
 	}()
 
@@ -481,129 +529,162 @@ func TestRunScan_ContextCancellation(t *testing.T) {
 	if items[0].FileID != "f1" {
 		t.Errorf("persisted FileID = %q, want f1", items[0].FileID)
 	}
+	// B7: a cancelled drain did NOT complete, so Notify is NOT called (no
+	// half-drained handoff to the queue).
+	if n := notify.count(); n != 0 {
+		t.Errorf("Notify called %d times on cancelled drain, want 0", n)
+	}
 }
 
-// TestRunScan_EnrichIntegration is the joint test for seams S6 (scan→enrich) and
-// S7 (scan→store status). It injects a behavior-controlling fake enricher and
-// asserts scan drives enrich per item between Identify and PutItem, persists the
-// enriched document + the status enrich returned, merges enrich's soft warnings
-// into the scan Result, and propagates enrich's hard error with ctx precedence.
-func TestRunScan_EnrichIntegration(t *testing.T) {
+// TestRunScan_AsyncEnqueue is the joint test for seam S5 (scan→Notify) and the
+// B1 serial→async migration: it injects a forbidding enricher (must NOT be
+// invoked — inline enrich is gone) + a recording notifier, and asserts scan
+// persists items "pending" with the base document (parsed present for the
+// worker's reconstruction, D-Q2/S7), then hands the library to the queue via
+// Notify exactly once AFTER the drain completes. The async drain itself is the
+// queue's job (covered by queue_test.go + the T08 golden).
+func TestRunScan_AsyncEnqueue(t *testing.T) {
 	sc := &fakeScanner{
 		files: []*scannerv1.DiscoveredFile{
 			mkFile("f1", "Show/S01E01.mkv", []byte(`{"format":{"duration":"120.5"}}`), nil),
+			mkFile("f2", "Show/S01E02.mkv", []byte(`{"format":{"duration":"125.0"}}`), nil),
 		},
 		identify: map[string]*scannerv1.IdentifyResult{
 			"f1": mkIdentified("f1", `{"title":"Breaking Bad","season":1,"episode":1}`),
+			"f2": mkIdentified("f2", `{"title":"Breaking Bad","season":1,"episode":2}`),
 		},
 	}
 
-	t.Run("enriched_document_and_status_persisted", func(t *testing.T) {
-		s, r, libID := setupStore(t)
-		rr := &recordingResolver{scanner: sc}
-		enrich := func(_ context.Context, _ module.Module, doc map[string]any, _ *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
-			sources, _ := doc["sources"].(map[string]any)
-			if sources == nil {
-				sources = map[string]any{}
+	s, r, libID := setupStore(t)
+	rr := &recordingResolver{scanner: sc}
+	notify := &recordingNotifier{store: s}
+	var enrichCalls int
+	enr := forbiddingEnricher(&enrichCalls)
+
+	res, err := runScan(context.Background(), s, r, rr.resolve, enr, notify.notify, libID)
+	if err != nil {
+		t.Fatalf("runScan: %v", err)
+	}
+	if res.Persisted != 2 {
+		t.Fatalf("Persisted = %d, want 2", res.Persisted)
+	}
+	// B1/AC-async: scan persisted both items and did NOT enrich inline.
+	if enrichCalls != 0 {
+		t.Errorf("inline enricher invoked %d times; scan must not enrich inline", enrichCalls)
+	}
+	// AC-1/AC-async: items persisted pending with the base doc (parsed present).
+	items, qerr := s.QueryItems(context.Background(), libID, "", 100, 0)
+	if qerr != nil {
+		t.Fatalf("QueryItems: %v", qerr)
+	}
+	if len(items) != 2 {
+		t.Fatalf("persisted items = %d, want 2", len(items))
+	}
+	for _, it := range items {
+		if it.Status != "pending" {
+			t.Errorf("item %q Status = %q, want pending (worker advances async)", it.FileID, it.Status)
+		}
+		d := decodeDoc(t, it.Document)
+		if d.Parsed == nil {
+			t.Errorf("item %q parsed = nil, want present (worker reconstructs base, D-Q2/S7)", it.FileID)
+		}
+	}
+	// S5: Notify fired exactly once, post-drain, for the right library, AFTER
+	// both items were persisted (atCount==2 proves the drain completed first).
+	calls, atCount := notify.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("Notify calls = %d, want 1 (post-drain handoff)", len(calls))
+	}
+	if calls[0] != libID {
+		t.Errorf("Notify libraryID = %d, want %d", calls[0], libID)
+	}
+	if len(atCount) != 1 || atCount[0] != 2 {
+		t.Errorf("Notify atCount = %v, want [2] (called after both items persisted)", atCount)
+	}
+	// AC-3: scan.Result shape unchanged (only timing changed — items pending).
+	if res.LibraryID != libID || res.Discovered != 2 {
+		t.Errorf("Result = {Lib:%d Disc:%d}, want {Lib:%d Disc:2}", res.LibraryID, res.Discovered, libID)
+	}
+	if res.StartedAt.IsZero() || res.FinishedAt.IsZero() {
+		t.Errorf("timestamps not set: started=%v finished=%v", res.StartedAt, res.FinishedAt)
+	}
+}
+
+// TestRunScan_StaleOnRescan is the S2(scan) joint test for AC-states(c): a
+// re-scan of a file whose base identity changed advances the item to "stale"
+// (minimal B1 basis — compare parsed+ffprobe); an unchanged re-scan preserves
+// the prior status so a settled item is not regressed to pending.
+func TestRunScan_StaleOnRescan(t *testing.T) {
+	file := mkFile("f1", "Show/S01E01.mkv", []byte(`{"format":{"duration":"120.5"}}`), nil)
+	identifyA := mkIdentified("f1", `{"title":"Breaking Bad","season":1,"episode":1}`)
+	// baseA is exactly what persist's assembleBaseDoc produces for (file, A) —
+	// pre-seeding it makes an unchanged re-scan compare byte-equal (no spurious
+	// stale), so the only variable between cases is the re-scan's identity.
+	baseA := assembleBaseDoc(file, identifyA, "tv", 1)
+
+	cases := []struct {
+		name       string
+		priorStat  string
+		reidentify *scannerv1.IdentifyResult // nil => replay identifyA (unchanged)
+		wantStatus string
+	}{
+		{
+			name:       "changed_parsed_to_stale",
+			priorStat:  "pending",
+			reidentify: mkIdentified("f1", `{"title":"Better Call Saul","season":1,"episode":1}`),
+			wantStatus: "stale",
+		},
+		{
+			name:       "unchanged_preserves_pending",
+			priorStat:  "pending",
+			reidentify: nil, // replay A -> unchanged -> prior preserved
+			wantStatus: "pending",
+		},
+		{
+			// Preserve-prior prevents regression: a ready item re-scanned unchanged
+			// is NOT knocked back to pending (would otherwise strand it — the queue
+			// only settles enriched items, so a pending-with-all-namespaces item
+			// would never re-advance).
+			name:       "unchanged_preserves_ready_no_regression",
+			priorStat:  "ready",
+			reidentify: nil,
+			wantStatus: "ready",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			s, r, libID := setupStore(t)
+			ctx := context.Background()
+			if err := s.PutItem(ctx, store.Item{
+				ID: itemID(libID, "f1"), ModuleID: "tv", LibraryID: libID, FileID: "f1",
+				RelativePath: "Show/S01E01.mkv", MediaType: "tv",
+				Document: marshalDoc(baseA), SchemaVersion: 1, Status: tc.priorStat,
+			}); err != nil {
+				t.Fatalf("seed PutItem: %v", err)
 			}
-			sources["tv-parser"] = map[string]any{"title": "Breaking Bad", "season": 1, "episode": 1}
-			doc["sources"] = sources
-			return doc, "enriched", enrich.Result{Stages: 1, Succeeded: 1}, nil
-		}
-		res, err := runScan(context.Background(), s, r, rr.resolve, enrich, libID)
-		if err != nil {
-			t.Fatalf("runScan: %v", err)
-		}
-		if res.Persisted != 1 {
-			t.Fatalf("Persisted = %d, want 1", res.Persisted)
-		}
-		items, qerr := s.QueryItems(context.Background(), libID, "", 100, 0)
-		if qerr != nil {
-			t.Fatalf("QueryItems: %v", qerr)
-		}
-		if len(items) != 1 || items[0].FileID != "f1" {
-			t.Fatalf("persisted items = %+v, want one f1", items)
-		}
-		if items[0].Status != "enriched" {
-			t.Errorf("Status = %q, want enriched (S7)", items[0].Status)
-		}
-		var d struct {
-			Sources map[string]map[string]any `json:"sources"`
-		}
-		if err := json.Unmarshal(items[0].Document, &d); err != nil {
-			t.Fatalf("decode document: %v", err)
-		}
-		if d.Sources["tv-parser"]["title"] != "Breaking Bad" {
-			t.Errorf("sources.tv-parser.title = %v, want Breaking Bad (S6 enriched doc)", d.Sources["tv-parser"])
-		}
-	})
-
-	t.Run("soft_fail_warnings_merged", func(t *testing.T) {
-		s, r, libID := setupStore(t)
-		rr := &recordingResolver{scanner: sc}
-		enrich := func(_ context.Context, _ module.Module, doc map[string]any, _ *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
-			return doc, "parsed", enrich.Result{Warnings: []string{"source kinopoisk: rpc unavailable"}}, nil
-		}
-		res, err := runScan(context.Background(), s, r, rr.resolve, enrich, libID)
-		if err != nil {
-			t.Fatalf("runScan: want nil error, got %v (soft-fail must not abort)", err)
-		}
-		if res.Persisted != 1 {
-			t.Errorf("Persisted = %d, want 1 (scan continues past soft-fail)", res.Persisted)
-		}
-		found := false
-		for _, w := range res.Warnings {
-			if strings.Contains(w, "kinopoisk") {
-				found = true
+			identify := tc.reidentify
+			if identify == nil {
+				identify = identifyA
 			}
-		}
-		if !found {
-			t.Errorf("Warnings %v do not include the enrich soft-fail", res.Warnings)
-		}
-	})
-
-	t.Run("hard_error_ctx_precedence", func(t *testing.T) {
-		s, r, libID := setupStore(t)
-		rr := &recordingResolver{scanner: sc}
-		ctx, cancel := context.WithCancel(context.Background())
-		enrich := func(c context.Context, _ module.Module, doc map[string]any, _ *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
-			cancel() // simulate enrich detecting a cancelled context mid-chain (Phase A's only hard failure)
-			return doc, "failed", enrich.Result{}, c.Err()
-		}
-		_, err := runScan(ctx, s, r, rr.resolve, enrich, libID)
-		if err == nil {
-			t.Fatal("runScan: want error (enrich hard failure must propagate), got nil")
-		}
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("runScan error = %v, want a context.Canceled wrap (ctx precedence)", err)
-		}
-	})
-
-	t.Run("no_sources_passthrough", func(t *testing.T) {
-		s, r, libID := setupStore(t)
-		rr := &recordingResolver{scanner: sc}
-		enrich := func(_ context.Context, _ module.Module, doc map[string]any, _ *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error) {
-			return doc, "new", enrich.Result{}, nil // empty chain: start status unchanged (INV-status-passthrough)
-		}
-		if _, err := runScan(context.Background(), s, r, rr.resolve, enrich, libID); err != nil {
-			t.Fatalf("runScan: %v", err)
-		}
-		items, qerr := s.QueryItems(context.Background(), libID, "", 100, 0)
-		if qerr != nil {
-			t.Fatalf("QueryItems: %v", qerr)
-		}
-		if len(items) != 1 {
-			t.Fatalf("persisted items = %d, want 1", len(items))
-		}
-		if items[0].Status != "new" {
-			t.Errorf("Status = %q, want new (no metadata sources engaged)", items[0].Status)
-		}
-		d := decodeDoc(t, items[0].Document)
-		if d.FileID != "f1" {
-			t.Errorf("document file_id = %q, want f1", d.FileID)
-		}
-		if d.Parsed["title"] != "Breaking Bad" {
-			t.Errorf("parsed.title = %v, want Breaking Bad (base doc intact)", d.Parsed["title"])
-		}
-	})
+			sc := &fakeScanner{
+				files:    []*scannerv1.DiscoveredFile{file},
+				identify: map[string]*scannerv1.IdentifyResult{"f1": identify},
+			}
+			rr := &recordingResolver{scanner: sc}
+			if _, err := runScan(ctx, s, r, rr.resolve, passthroughEnricher(), nil, libID); err != nil {
+				t.Fatalf("runScan: %v", err)
+			}
+			items, err := s.QueryItems(ctx, libID, "", 100, 0)
+			if err != nil {
+				t.Fatalf("QueryItems: %v", err)
+			}
+			if len(items) != 1 {
+				t.Fatalf("persisted items = %d, want 1 (upsert by file_id)", len(items))
+			}
+			if items[0].Status != tc.wantStatus {
+				t.Errorf("re-scan status = %q, want %q", items[0].Status, tc.wantStatus)
+			}
+		})
+	}
 }

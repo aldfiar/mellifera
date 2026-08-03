@@ -225,11 +225,14 @@ func startServer(t *testing.T, serverBin, scannerBin, tvParserBin, tmp, token st
 // log is always dumped (Go shows t.Logf output for failed tests).
 func stopServer(t *testing.T, srv *exec.Cmd, log *strings.Builder) {
 	t.Helper()
-	t.Logf("server log:\n%s", log.String())
-	if srv.ProcessState != nil {
-		return
+	// Wait joins the process AND its stdout/stderr copier goroutines (which write
+	// log). The log dump MUST come after Wait returns, otherwise log.String() races
+	// the pipe copiers (a real data race surfaced once -race covered the root
+	// integration tests). If Wait already returned (ProcessState set) a second Wait
+	// returns the cached state immediately; the copiers were joined by the first.
+	if srv.ProcessState == nil {
+		_ = srv.Process.Signal(os.Interrupt)
 	}
-	_ = srv.Process.Signal(os.Interrupt)
 	done := make(chan struct{})
 	go func() { _ = srv.Wait(); close(done) }()
 	select {
@@ -238,6 +241,7 @@ func stopServer(t *testing.T, srv *exec.Cmd, log *strings.Builder) {
 		_ = srv.Process.Kill()
 		<-done
 	}
+	t.Logf("server log:\n%s", log.String())
 }
 
 // waitForReady polls the server until it answers any HTTP request — even a 401

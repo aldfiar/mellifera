@@ -300,6 +300,18 @@ func TestNextState(t *testing.T) {
 		{statusEnriched, statusDeleted, evDeleted},
 		{statusFailed, statusPending, evRetry},
 		{statusFailed, statusDeleted, evDeleted},
+		// B1 new transitions: async settlement, re-scan stale, rehydrate, and the
+		// * --deleted--> soft-delete applied to the new live states (ready, stale).
+		{statusEnriched, statusReady, evSettled},
+		{statusNew, statusStale, evStale},
+		{statusPending, statusStale, evStale},
+		{statusParsed, statusStale, evStale},
+		{statusEnriched, statusStale, evStale},
+		{statusReady, statusStale, evStale},
+		{statusFailed, statusStale, evStale},
+		{statusStale, statusPending, evRehydrate},
+		{statusStale, statusDeleted, evDeleted},
+		{statusReady, statusDeleted, evDeleted},
 	}
 	for _, tc := range legal {
 		got, err := nextState(tc.from, tc.ev)
@@ -308,8 +320,8 @@ func TestNextState(t *testing.T) {
 		}
 	}
 
-	states := []string{statusNew, statusPending, statusParsed, statusEnriched, statusFailed, statusDeleted}
-	events := []enrichEvent{evBegin, evParsed, evEnriched, evFailed, evRetry, evDeleted}
+	states := []string{statusNew, statusPending, statusParsed, statusEnriched, statusFailed, statusDeleted, statusReady, statusStale}
+	events := []enrichEvent{evBegin, evParsed, evEnriched, evFailed, evRetry, evDeleted, evSettled, evStale, evRehydrate}
 	legalSet := make(map[string]bool, len(legal))
 	for _, tc := range legal {
 		legalSet[tc.from+"|"+string(tc.ev)] = true
@@ -328,6 +340,12 @@ func TestNextState(t *testing.T) {
 	}
 	if illegal == 0 {
 		t.Fatal("no illegal transitions enumerated")
+	}
+
+	// B5: ready is terminal-success -- the enrichment events must not advance it.
+	// (Covered by the loop above, but asserted explicitly as the named probe.)
+	if _, err := nextState(statusReady, evParsed); err == nil {
+		t.Fatalf("nextState(ready, parsed) unexpectedly succeeded; ready is terminal-success")
 	}
 }
 

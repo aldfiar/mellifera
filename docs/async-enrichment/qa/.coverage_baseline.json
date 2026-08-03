@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-08-03T19:40:00Z",
+  "feature": "async-enrichment",
+  "phase": "qa",
+  "qa_tests_added": [
+    "mellifera/qa_async_acceptance_test.go (pkg mellifera_test, e2e AC re-derivation, DIFFERENT fixtures)",
+    "mellifera/internal/enrich/qa_c01_stages_roundtrip_test.go (pkg enrich, C-01 round-trip verification)"
+  ],
+  "gate_results": {
+    "gofmt": "clean (only out-of-scope .claude/skills template)",
+    "build": "exit 0 (CGO_ENABLED=0 go build ./...)",
+    "vet": "clean (go vet ./...)",
+    "test": "all 11 pkgs PASS (go test ./...)",
+    "race": "PASS no data races (go test -race ./...)",
+    "lint": "exit 0 (golangci-lint run ./...)",
+    "check_sh": "check.sh: OK (enrich 7 <=8, store 5 <=8 exported)"
+  },
+  "joint_coverage": {
+    "scan->PutItem(pending)->Notify (S5 non-blocking)": { "covered": true, "covered_by": ["run_test.go TestRunScan_AsyncEnqueue", "qa_async_acceptance AC-async"] },
+    "worker->tv-parser chain (S7/S-integration)": { "covered": true, "covered_by": ["integration_async_test.go golden", "qa_async_acceptance (different fixtures)"] },
+    "derivation<->items+namespaces+ledger (S4->S1)": { "covered": true, "covered_by": ["queue_test.go TestDerivation"] },
+    "lease<->dispatch (S4 mutual exclusion)": { "covered": true, "covered_by": ["queue_test.go TestQueue_LeaseNoDouble (-race)"] },
+    "retry<->ledger (S3->S1 loop-safety)": { "covered": true, "covered_by": ["queue_test.go TestQueue_RetryToLedger"] },
+    "reset-on-success (ClearFailure)": { "covered": true, "covered_by": ["queue_test.go TestQueue_ResetOnSuccess"] },
+    "restart-resume (R-3)": { "covered": true, "covered_by": ["queue_test.go TestQueue_RestartResume"] },
+    "reconstructBase<->persisted doc (S7)": { "covered": true, "covered_by": ["queue_test.go TestReconstructBase_DrivesMatch"] },
+    "state machine ready/stale/retry/settled (S2)": { "covered": true, "covered_by": ["state_test.go", "worker_test.go", "qa_async_acceptance AC-states"] },
+    "settle enriched->ready (attemptedNoWork)": { "covered": true, "covered_by": ["worker_test.go allSourcesTerminal", "qa_async_acceptance (ready e2e)"] },
+    "_stages store round-trip (C-01)": { "covered": true, "covered_by": ["qa_c01_stages_roundtrip_test.go"], "note": "VERIFIED as a REAL defect (appendStage data loss + latent attemptedNoWork); see debug_brief.md. Test pins actual behavior." }
+  },
+  "boundary_coverage": {
+    "unprobeable_file_AC6_softfail": { "error_paths_covered": 1, "total_error_paths": 1, "covered_by": ["golden asyncAssertSoftFail", "qa_async_acceptance qasyncAssertSoftFail"] },
+    "state_machine_illegal_transitions": { "error_paths_covered": 3, "total_error_paths": 3, "covered_by": ["state_test.go (ready--parsed, stale--parsed, ...)"] },
+    "parseTV_split_structural_negative": { "error_paths_covered": 1, "total_error_paths": 1, "covered_by": ["golden", "qa_async_acceptance (incl release_group)"] },
+    "cyrillic_non_ascii_survival": { "error_paths_covered": 1, "total_error_paths": 1, "covered_by": ["golden", "qa_async_acceptance"] }
+  },
+  "additive_compat_AC3": {
+    "proto_internal_api_plugins_diff_vs_6507277": "EMPTY",
+    "go_mod_go_sum_diff_vs_6507277": "EMPTY",
+    "func_Enrich_present": true,
+    "queue_tables_in_internal": 0,
+    "reflect_in_new_qa_code": 0,
+    "note": "lone reflect import is pre-existing Phase A enrich_test.go (depguard-accepted, not this feature)"
+  },
+  "c01_verdict": {
+    "real_bug": true,
+    "severity": "P1",
+    "manifesting": "appendStage drops _stages history on every re-derive (data loss)",
+    "latent": "attemptedNoWork cannot read round-tripped stages (masked: driveSources re-runs the source each pass)",
+    "blocking": false,
+    "fix": "normalize _stages to []map[string]any in decodeDoc (worker.go:153) or assert []any + convert at both sites",
+    "debug_brief": "docs/async-enrichment/qa/debug_brief.md"
+  },
+  "uncovered_behaviors": [],
+  "uncovered_joints": []
+}

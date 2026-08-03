@@ -4,6 +4,7 @@
 package scan
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,15 +20,25 @@ import (
 
 // Deps are the collaborators Run orchestrates: the storage layer, the module
 // registry (resolves a library's scanner capability binding from its config),
-// the plugin manager (dispenses the typed sdk.Scanner client for a binding), and
-// the enrich collaborators (the metadata_source chain Run drives per item
-// between Identify and PutItem). Enrich is an exported field, not a symbol; the
-// composition root (cmd/mellifera) constructs enrich.Deps and sets it.
+// the plugin manager (dispenses the typed sdk.Scanner client for a binding), the
+// enrich collaborators (the serial seam, retained for sync/test — B6), and the
+// async-enqueue hook Notify. Scan no longer drives the metadata_source chain
+// inline between Identify and PutItem (AC-async): it persists each item "pending"
+// with the base §3.1 document, then — once the stream has drained — calls
+// Notify(ctx, libraryID) so the enrich queue (re)derives the library's pending
+// work and drains it on its worker pool. Enrich/Notify are exported fields, not
+// symbols; the composition root (cmd/mellifera) constructs enrich.Deps and wires
+// queue.Notify into Notify.
 type Deps struct {
 	Store   *store.Store
 	Plugins *plugin.Manager
 	Modules *module.Registry
 	Enrich  enrich.Deps
+	// Notify is the async-enqueue hook runScan calls once after it has persisted
+	// a library's items (post-drain). cmd/mellifera wires enrich.Queue.Notify
+	// here; an in-package test injects a fake. Nil is safe: runScan skips the
+	// call, so the seam degrades gracefully when unwired (no panic).
+	Notify func(ctx context.Context, libraryID int64)
 }
 
 // Result is the outcome of one scan: how many files the scanner emitted, how
@@ -44,9 +55,11 @@ type Result struct {
 
 // Run orchestrates one scan of a library: GetLibrary → resolve the module →
 // resolve the scanner capability → stream DiscoveredFiles → Identify each →
-// assemble the base §3.1 document → enrich it (drive the metadata_source chain)
-// → PutItem (upsert by file_id). It is the ONLY function the api scan handler
-// calls (pure-delegation rule, INV1).
+// assemble the base §3.1 document → PutItem (upsert by file_id) at status
+// "pending" → after the stream drains, Notify(ctx, libraryID) so the enrich
+// queue derives the library's pending work and drains it async. It is the ONLY
+// function the api scan handler calls (pure-delegation rule, INV1). Enrichment
+// is NOT awaited here (AC-async): scan returns once items are persisted pending.
 //
 // Hard failures (return an error, partial Result): the library, module, or
 // scanner cannot be resolved, the scanner stream cannot be opened, or the
@@ -55,7 +68,8 @@ type Result struct {
 // ffprobe soft-fail), an Identify error, or a PutItem error — AC-6 philosophy:
 // one bad file never aborts the library.
 func Run(ctx context.Context, deps Deps, libraryID int64) (Result, error) {
-	return runScan(ctx, deps.Store, deps.Modules, deps.Plugins.Scanner, prodEnricher(deps.Enrich), libraryID)
+	return runScan(ctx, deps.Store, deps.Modules, deps.Plugins.Scanner,
+		prodEnricher(deps.Enrich), notifier(deps.Notify), libraryID)
 }
 
 // scannerResolver obtains the typed scanner client for a module's capability
@@ -81,11 +95,22 @@ func prodEnricher(d enrich.Deps) enricher {
 	}
 }
 
+// notifier is the async-enqueue seam: runScan calls it once after it has drained
+// the scanner stream and persisted the library's items, so the enrich queue
+// (re)derives their pending (item, plugin) work. It is the Notify analog of the
+// enricher seam (S5). Run supplies the production notifier (deps.Notify, wired
+// to enrich.Queue.Notify by cmd/mellifera); the in-package test injects a fake
+// that records the call. Unexported test seam; it does not count toward the
+// package's exported-symbol budget.
+type notifier func(ctx context.Context, libraryID int64)
+
 // runScan is the orchestrator body, factored out so the test can inject a fake
-// scanner resolver and a fake enricher (the production *plugin.Manager cannot be
-// faked from outside the plugin package). Run is the verbatim contracts.md §7
-// entrypoint.
-func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolve scannerResolver, enrich enricher, libraryID int64) (Result, error) {
+// scanner resolver, a fake enricher (the retained serial seam, B6), and a fake
+// notifier (the async-enqueue seam, S5). Run is the verbatim contracts.md §7
+// entrypoint. enrich is the retained serial-path seam — scan no longer invokes
+// it from persist (enrichment is async via notify); it stays wired so the serial
+// path remains available and tests can assert it is NOT called inline.
+func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolve scannerResolver, enrich enricher, notify notifier, libraryID int64) (Result, error) {
 	res := Result{LibraryID: libraryID, StartedAt: time.Now().UTC()}
 
 	lib, err := st.GetLibrary(ctx, libraryID)
@@ -114,48 +139,136 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 	// Drain at store-write speed (INV4, R9). The select on ctx.Done() lets a
 	// cancelled context abort even while blocked waiting for the next file
 	// (B6); the scanner subprocess observes the same ctx and closes up cleanly.
+	// notify fires ONLY after a clean drain (the !ok branch) — a cancelled
+	// context returns before notify, so a half-drained scan never signals the
+	// queue (B7: Notify is NOT called on ctx cancel).
 	for {
 		select {
 		case <-ctx.Done():
 			return finish(res), ctx.Err()
 		case f, ok := <-ch:
 			if !ok {
+				// Stream drained: non-blocking handoff to the enrich queue
+				// (AC-async / S5). The queue feeds its own bounded channel;
+				// notify does not await the async drain.
+				if notify != nil {
+					notify(ctx, libraryID)
+				}
 				return finish(res), nil
 			}
 			res.Discovered++
 			res.Warnings = append(res.Warnings, f.GetWarnings()...)
-			if perr := persist(ctx, st, sc, f, mod, libraryID, enrich, &res); perr != nil {
+			if perr := persist(ctx, st, sc, f, mod, libraryID, &res); perr != nil {
 				return finish(res), perr
 			}
 		}
 	}
 }
 
-// persist identifies one discovered file, assembles its base §3.1 document,
-// enriches it (driving the metadata_source chain via the injected enricher), and
-// upserts it into the store with the status enrich returned. Identify, enrich,
-// and PutItem failures are soft: a warning is appended to res.Warnings and nil is
-// returned so the scan continues (AC-6). A cancelled context is returned as an
-// error so runScan stops draining (B6) — it takes precedence over any concurrent
-// soft failure.
-func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, libraryID int64, enrich enricher, res *Result) error {
+// persist identifies one discovered file, assembles its base §3.1 document, and
+// upserts it into the store at status "pending" (the async worker advances it).
+// Enrichment is NO LONGER driven inline (B1/AC-async): scan persists the base
+// document — carrying parsed + ffprobe so the worker reconstructs the per-item
+// base WITHOUT a re-probe (D-Q2 / S7, INV-persist-base) — and hands the library
+// to the queue via runScan's post-drain notify. The retained serial enricher
+// seam (B6) is not invoked here. A re-scan of a file whose base identity changed
+// advances the item to "stale" (AC-states(c)); an unchanged re-scan preserves the
+// prior status so a settled item is not regressed. Identify/PutItem failures are
+// soft (AC-6); a cancelled context is returned as an error so runScan stops
+// draining (B6) and takes precedence over any concurrent soft failure.
+func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, libraryID int64, res *Result) error {
 	identified, err := sc.Identify(ctx, &scannerv1.IdentifyRequest{File: f, ModuleType: mod.MediaType})
 	if err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("identify %q: %v", f.GetRelativePath(), err))
 		return ctx.Err()
 	}
-	doc, status, er, enrichErr := enrich(ctx, mod, assembleBaseDoc(f, identified, mod.MediaType, mod.SchemaVersion), identified)
-	if enrichErr != nil {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("enrich %q: %v", f.GetRelativePath(), enrichErr))
-		return ctx.Err()
-	}
-	res.Warnings = append(res.Warnings, er.Warnings...)
-	if err := st.PutItem(ctx, newItem(f, mod, libraryID, marshalDoc(doc), status)); err != nil {
+	base := assembleBaseDoc(f, identified, mod.MediaType, mod.SchemaVersion)
+	status := nextScanStatus(ctx, st, libraryID, f.GetFileId(), base, res)
+	if err := st.PutItem(ctx, newItem(f, mod, libraryID, marshalDoc(base), status)); err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("persist %q: %v", f.GetRelativePath(), err))
 		return ctx.Err()
 	}
 	res.Persisted++
 	return nil
+}
+
+// scanStatusPending/scanStatusStale are the lifecycle values scan writes for a
+// persisted item. They are owned by internal/enrich (state.go INV-status-owner);
+// scan emits the literals it needs rather than importing enrich's unexported
+// consts (exporting them would breach the enrich <=8 exported-symbol budget).
+// The async worker/queue consume these verbatim; scan never produces the other
+// lifecycle values (failed/parsed/enriched/ready) post-B1.
+const (
+	scanStatusPending = "pending"
+	scanStatusStale   = "stale"
+)
+
+// nextScanStatus decides the lifecycle status scan persists for one file:
+// "pending" for a first scan (no prior row) or an unreadable prior; "stale" for
+// a re-scan whose base identity changed (AC-states(c), minimal B1 basis); and
+// the prior status preserved for an unchanged re-scan (so a settled/ready item
+// is not regressed back to pending). A GetItem error is soft (AC-6): it falls
+// back to "pending" — the queue re-derives either way, and a transient read
+// failure must never abort the scan.
+func nextScanStatus(ctx context.Context, st *store.Store, libraryID int64, fileID string, refreshed map[string]any, res *Result) string {
+	prior, err := st.GetItem(ctx, itemID(libraryID, fileID))
+	if err != nil {
+		return scanStatusPending // no prior row (first scan) or unreadable -> re-queue
+	}
+	if baseChanged(prior.Document, refreshed) {
+		return scanStatusStale
+	}
+	return prior.Status // unchanged re-scan: preserve (don't regress ready/enriched)
+}
+
+// baseChanged is the minimal B1 stale-on-rescan basis (R-stale): it reports
+// whether the identity-bearing base fields (parsed + ffprobe) of a re-scan
+// differ from the previously-persisted document. file_id/module_type/schema_
+// version are stable for a re-scan of the same file in the same module, so they
+// are excluded (including them would only re-detect "same file, same module").
+// Both sides are normalized via canonicalJSON so comparison is byte-stable
+// regardless of JSON key order (a scanner/plugin may emit parsed/ffprobe keys in
+// any order; Go sorts map keys on marshal).
+func baseChanged(priorRaw json.RawMessage, refreshed map[string]any) bool {
+	var prior map[string]any
+	if len(priorRaw) > 0 {
+		_ = json.Unmarshal(priorRaw, &prior) // best-effort; unparseable -> nil map -> treated as changed
+	}
+	return !bytes.Equal(
+		canonicalJSON(baseSignature(refreshed)),
+		canonicalJSON(baseSignature(prior)),
+	)
+}
+
+// baseSignature projects a document down to its identity-bearing base fields
+// (parsed + ffprobe) for the stale comparison. A field absent from the source is
+// encoded as nil, so a field vanishing across a re-scan counts as a change.
+func baseSignature(doc map[string]any) map[string]any {
+	return map[string]any{
+		"parsed":  doc["parsed"],
+		"ffprobe": doc["ffprobe"],
+	}
+}
+
+// canonicalJSON returns a key-sorted JSON encoding of v: it marshals v, then
+// round-trips the bytes through unmarshal+marshal so every nested object's keys
+// land in Go's sorted order. This makes byte comparison independent of the
+// source's key order (a scanner may emit ffprobe keys unordered), which the
+// stale-on-rescan basis requires. A marshal/unmarshal failure yields the best
+// single-pass bytes (never panics).
+func canonicalJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var dec any
+	if json.Unmarshal(b, &dec) != nil {
+		return b
+	}
+	if out, err := json.Marshal(dec); err == nil {
+		return out
+	}
+	return b
 }
 
 // newItem builds the store.Item for one (file, document, status) tuple: struct

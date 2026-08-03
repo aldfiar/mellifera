@@ -15,6 +15,8 @@ const (
 	statusEnriched = "enriched"
 	statusFailed   = "failed"
 	statusDeleted  = "deleted"
+	statusReady    = "ready" // B1: async settlement -- all queueable sources terminal (done or in-ledger-cooldown)
+	statusStale    = "stale" // B1: re-scan detected the file changed since its last good scan -> re-enrich
 )
 
 // enrichEvent is a state-machine event fed to nextState. Unexported: enrichment
@@ -22,12 +24,15 @@ const (
 type enrichEvent string
 
 const (
-	evBegin    enrichEvent = "begin"    // a stage is starting (new|parsed -> pending)
-	evParsed   enrichEvent = "parsed"   // a source wrote its namespace (pending -> parsed)
-	evEnriched enrichEvent = "enriched" // the run completed with success (pending|parsed -> enriched)
-	evFailed   enrichEvent = "failed"   // a hard failure (* -> failed)
-	evRetry    enrichEvent = "retry"    // Phase B retry (failed -> pending)
-	evDeleted  enrichEvent = "deleted"  // scan-level soft-delete (* -> deleted)
+	evBegin     enrichEvent = "begin"     // a stage is starting (new|parsed -> pending)
+	evParsed    enrichEvent = "parsed"    // a source wrote its namespace (pending -> parsed)
+	evEnriched  enrichEvent = "enriched"  // the run completed with success (pending|parsed -> enriched)
+	evFailed    enrichEvent = "failed"    // a hard failure (* -> failed)
+	evRetry     enrichEvent = "retry"     // Phase B retry (failed -> pending); exercised by the queue (B1)
+	evDeleted   enrichEvent = "deleted"   // scan-level soft-delete (* -> deleted)
+	evSettled   enrichEvent = "settled"   // B1: async settlement (enriched -> ready)
+	evStale     enrichEvent = "stale"     // B1: re-scan change detected (* -> stale)
+	evRehydrate enrichEvent = "rehydrate" // B1: re-enrich after re-scan change (stale -> pending)
 )
 
 // transition is a (from-state, event) pair — the key into the transition table.
@@ -44,26 +49,42 @@ type transition struct {
 //	pending  --parsed---> parsed
 //	parsed   --begin----> pending   (next source in the chain)
 //	pending  --enriched-> enriched
-//	parsed   --enriched-> enriched  (terminal-success for Phase A)
+//	parsed   --enriched-> enriched
 //	new|pending|parsed|enriched --failed--> failed
-//	failed   --retry----> pending   (Phase B; defined, not exercised in Phase A)
+//	failed   --retry----> pending   (Phase B retry; exercised by the async queue in B1)
 //	*        --deleted--> deleted   (scan-level soft-delete; enrich never initiates)
+//
+//	B1 (async substrate):
+//	enriched  --settled---> ready   (all queueable sources terminal: done or in-ledger-cooldown)
+//	new|pending|parsed|enriched|ready|failed --stale--> stale   (re-scan detected a file change)
+//	stale     --rehydrate-> pending (re-enrich the changed file; queue re-derives its work)
+//	stale     --deleted---> deleted
 var transitions = map[transition]string{
 	{statusNew, evBegin}:        statusPending,
 	{statusNew, evFailed}:       statusFailed,
 	{statusNew, evDeleted}:      statusDeleted,
+	{statusNew, evStale}:        statusStale,
 	{statusPending, evParsed}:   statusParsed,
 	{statusPending, evEnriched}: statusEnriched,
 	{statusPending, evFailed}:   statusFailed,
 	{statusPending, evDeleted}:  statusDeleted,
+	{statusPending, evStale}:    statusStale,
 	{statusParsed, evBegin}:     statusPending,
 	{statusParsed, evEnriched}:  statusEnriched,
 	{statusParsed, evFailed}:    statusFailed,
 	{statusParsed, evDeleted}:   statusDeleted,
+	{statusParsed, evStale}:     statusStale,
 	{statusEnriched, evFailed}:  statusFailed,
 	{statusEnriched, evDeleted}: statusDeleted,
+	{statusEnriched, evSettled}: statusReady,
+	{statusEnriched, evStale}:   statusStale,
+	{statusReady, evStale}:      statusStale,
+	{statusReady, evDeleted}:    statusDeleted,
 	{statusFailed, evRetry}:     statusPending,
 	{statusFailed, evDeleted}:   statusDeleted,
+	{statusFailed, evStale}:     statusStale,
+	{statusStale, evRehydrate}:  statusPending,
+	{statusStale, evDeleted}:    statusDeleted,
 }
 
 // nextState is the PURE state-machine step: it returns the next status for a
