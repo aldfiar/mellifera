@@ -44,7 +44,7 @@ func (s *scannerImpl) Scan(ctx context.Context, req *scannerv1.ScanRequest) (<-c
 	if err != nil {
 		return nil, fmt.Errorf("scanner: resolve library root: %w", err)
 	}
-	return walk(ctx, absRoot, req.GetOptions()), nil
+	return walk(ctx, absRoot, req.GetModuleType(), req.GetOptions()), nil
 }
 
 // Identify is the pure unary parse of one discovered file into media-type-

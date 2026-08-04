@@ -26,8 +26,16 @@ lint:
 check:
 	bash .claude/skills/mellifera-build/scripts/check.sh
 
+# Runtime deps (operators install these; they are NOT Go module deps and are
+# NOT required at build time): ffmpeg/ffprobe (video probe — base-scanner) and
+# exiftool (image EXIF — image-enricher). exiftool: `brew install exiftool`
+# (macOS) / `apt install libimage-exiftool-perl` (Debian). A missing exiftool
+# is a per-source SOFT-FAIL at enrichment, not a startup/build failure.
+# See docs/architecture.md §1.2 (runtime deps) + the operator runbook.
 # build-plugin: build every plugin binary. base-scanner is wired in T08;
-# tv-parser (the first metadata_source plugin) in T06.
+# tv-parser (the first metadata_source plugin) in T06; image-enricher (EXIF
+# via the system exiftool subprocess) in B2/Task 06.
 build-plugin:
 	CGO_ENABLED=0 go build -o bin/base-scanner ./plugins/base-scanner
 	CGO_ENABLED=0 go build -o bin/tv-parser ./plugins/tv-parser
+	CGO_ENABLED=0 go build -o bin/image-enricher ./plugins/image-enricher

@@ -51,9 +51,10 @@ func TestQA_Acceptance(t *testing.T) {
 	serverBin := qaBuildBinary(t, tmp, "qa-mellifera-server", "./cmd/mellifera")
 	scannerBin := qaBuildBinary(t, tmp, "qa-base-scanner", "./plugins/base-scanner")
 	tvParserBin := qaBuildBinary(t, tmp, "qa-tv-parser", "./plugins/tv-parser")
+	imageEnricherBin := qaBuildBinary(t, tmp, "qa-image-enricher", "./plugins/image-enricher")
 	fixtureRoot := qaWriteFixtures(t)
 	token := "qa-acceptance-token"
-	baseURL := qaStartServer(t, serverBin, scannerBin, tvParserBin, tmp, token)
+	baseURL := qaStartServer(t, serverBin, scannerBin, tvParserBin, imageEnricherBin, tmp, token)
 	client := &http.Client{Timeout: 60 * time.Second}
 
 	libID := qaCreateLibrary(t, client, baseURL, token, fixtureRoot)
@@ -311,7 +312,7 @@ func qaMakeMedia(t *testing.T, path string) {
 	}
 }
 
-func qaStartServer(t *testing.T, serverBin, scannerBin, tvParserBin, tmp, token string) string {
+func qaStartServer(t *testing.T, serverBin, scannerBin, tvParserBin, imageEnricherBin, tmp, token string) string {
 	t.Helper()
 	addr := net.JoinHostPort("127.0.0.1", qaFreePort(t))
 	dataDir := filepath.Join(tmp, "qa-data")
@@ -321,6 +322,7 @@ func qaStartServer(t *testing.T, serverBin, scannerBin, tvParserBin, tmp, token 
 		"MELLIFERA_ADMIN_TOKEN="+token,
 		"MELLIFERA_BASE_SCANNER="+scannerBin,
 		"MELLIFERA_TV_PARSER="+tvParserBin,
+		"MELLIFERA_IMAGE_ENRICHER="+imageEnricherBin,
 		"MELLIFERA_LISTEN="+addr,
 	)
 	var log strings.Builder

@@ -86,9 +86,10 @@ func TestQA_AsyncAcceptance(t *testing.T) {
 	serverBin := buildBinary(t, tmp, "qasync-server", "./cmd/mellifera")
 	scannerBin := buildBinary(t, tmp, "qasync-base-scanner", "./plugins/base-scanner")
 	tvParserBin := buildBinary(t, tmp, "qasync-tv-parser", "./plugins/tv-parser")
+	imageEnricherBin := buildBinary(t, tmp, "qasync-image-enricher", "./plugins/image-enricher")
 	fixtureRoot := qasyncWriteFixtures(t)
 
-	baseURL := startServer(t, serverBin, scannerBin, tvParserBin, tmp, qasyncToken)
+	baseURL := startServer(t, serverBin, scannerBin, tvParserBin, imageEnricherBin, tmp, qasyncToken)
 	client := &http.Client{Timeout: httpTimeout}
 	libID := createLibrary(t, client, baseURL, qasyncToken, fixtureRoot)
 

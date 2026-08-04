@@ -65,10 +65,11 @@ func TestIntegrationScanLibrary(t *testing.T) {
 	serverBin := buildBinary(t, tmp, "mellifera-server", "./cmd/mellifera")
 	scannerBin := buildBinary(t, tmp, "base-scanner", "./plugins/base-scanner")
 	tvParserBin := buildBinary(t, tmp, "tv-parser", "./plugins/tv-parser")
+	imageEnricherBin := buildBinary(t, tmp, "image-enricher", "./plugins/image-enricher")
 	fixtureRoot := writeFixtures(t)
 
 	token := "test-admin-token-integration"
-	baseURL := startServer(t, serverBin, scannerBin, tvParserBin, tmp, token)
+	baseURL := startServer(t, serverBin, scannerBin, tvParserBin, imageEnricherBin, tmp, token)
 	client := &http.Client{Timeout: httpTimeout}
 
 	libID := createLibrary(t, client, baseURL, token, fixtureRoot)
@@ -189,10 +190,17 @@ func mustSymlink(t *testing.T, target, link string) {
 
 // startServer launches the real mellifera server subprocess configured for the
 // test: a temp data dir + temp SQLite DB, the given admin token, the built
-// base-scanner + tv-parser binaries, and a random free port. It blocks until the
-// server answers HTTP, then returns the base URL. The server is stopped (SIGINT
-// with a SIGKILL fallback) and its combined log is dumped in a cleanup on exit.
-func startServer(t *testing.T, serverBin, scannerBin, tvParserBin, tmp, token string) string {
+// base-scanner + tv-parser + image-enricher binaries, and a random free port. It
+// blocks until the server answers HTTP, then returns the base URL. The server is
+// stopped (SIGINT with a SIGKILL fallback) and its combined log is dumped in a
+// cleanup on exit.
+//
+// image-enricher is built and pointed at explicitly (MELLIFERA_IMAGE_ENRICHER)
+// so the harness is HERMETIC: the server loads image-enricher at startup
+// (mandatory since Task 05 — fatalOn if absent) and must not fall back to the
+// non-hermetic repo-local bin/image-enricher artifact. The three plugins are all
+// real go-plugin subprocesses on the hot path (no in-process fakes).
+func startServer(t *testing.T, serverBin, scannerBin, tvParserBin, imageEnricherBin, tmp, token string) string {
 	t.Helper()
 	addr := net.JoinHostPort("127.0.0.1", freePort(t))
 	dataDir := filepath.Join(tmp, "data")
@@ -203,6 +211,7 @@ func startServer(t *testing.T, serverBin, scannerBin, tvParserBin, tmp, token st
 		"MELLIFERA_ADMIN_TOKEN="+token,
 		"MELLIFERA_BASE_SCANNER="+scannerBin,
 		"MELLIFERA_TV_PARSER="+tvParserBin,
+		"MELLIFERA_IMAGE_ENRICHER="+imageEnricherBin,
 		"MELLIFERA_LISTEN="+addr,
 	)
 	var log strings.Builder

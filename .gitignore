@@ -11,6 +11,7 @@
 /bin/
 /base-scanner
 /tv-parser
+/image-enricher
 /mellifera
 *.exe
 *.test

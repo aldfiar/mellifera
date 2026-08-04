@@ -1,0 +1,59 @@
+{
+  "timestamp": "2026-08-04T18:10:00+03:00",
+  "tool": "go test ./... (no -cover in default invocation per coverage-policy; joint/boundary map is behavior-based)",
+  "merge_base": "e2a7562",
+  "qa_test_files": [
+    "mellifera/qa_image_e2e_test.go",
+    "mellifera/qa_image_fixtures_test.go",
+    "mellifera/qa_image_regression_test.go"
+  ],
+  "qa_test_file_note": "qa_image_e2e_test.go (tests + AC assertions, 350 lines) + qa_image_fixtures_test.go (fixture generation + harness + independent exiftool oracle, 363 lines — split per auditor S-03 to stay under the 500-line file budget) + qa_image_regression_test.go (196 lines). All three under the 500-line hard limit.",
+  "suite_result": "ALL 12 packages PASS (go test ./... -count=1); root package 73.4s incl. 3 new binary-building e2e QA tests",
+  "joint_coverage": {
+    "S1 base-scanner->walk(module-type ext selection)": { "covered": true, "covered_lines": "both directions (image-lib gates .mp4; TV-lib gates .jpg/.png)", "coder_test": "integration_image_test.go + plugins/base-scanner/image_test.go", "qa_test": "TestB2_TVNoCoverArtRegression + TestQAImage_E2EIndependentRederive" },
+    "S2 base-scanner->probeImage (stdlib dims vs ffprobe)": { "covered": true, "covered_lines": "jpeg/png dims at pending; corrupt empty", "coder_test": "plugins/base-scanner/image_test.go", "qa_test": "TestQAImage_E2EIndependentRederive + TestQAImage_ExiftoolMissingSoftFail" },
+    "S3 image-enricher->sources.image-enricher (Match/Convert/Merge)": { "covered": true, "covered_lines": "EXIF field-by-field via INDEPENDENT oracle; namespace isolation; empty-namespace soft-fail", "coder_test": "plugins/image-enricher/enricher_test.go + integration_image_test.go", "qa_test": "TestQAImage_E2EIndependentRederive (AC1_EXIF_oracle_rederive) + TestQAImage_ExiftoolMissingSoftFail" },
+    "S4 scan->parsed.absolute_path->enricher": { "covered": true, "covered_lines": "EXIF lands via stamped absolute_path (different fixture)", "coder_test": "internal/scan/parsed_abs_test.go + integration_image_test.go", "qa_test": "TestQAImage_E2EIndependentRederive" },
+    "S5 module seed->Get(image)/List": { "covered": true, "covered_lines": "REDUNDANT — proven by coder registry tests", "coder_test": "internal/module/registry_test.go (TestOpen_ImageSeeded, TestOpen_IdempotentSeedImage)", "qa_test": "DROPPED redundant (gate #6)" },
+    "S6 cmd->image-enricher subprocess (load/start/stop)": { "covered": true, "covered_lines": "subprocess loaded end-to-end; soft-fails under stripped PATH", "coder_test": "integration_image_test.go", "qa_test": "TestQAImage_E2EIndependentRederive + TestQAImage_ExiftoolMissingSoftFail" },
+    "S7 Makefile build-plugin (3 binaries)": { "covered": true, "covered_lines": "CGO_ENABLED=0 build of 3 plugins + server (hermetic)", "coder_test": "Task 06 + integration_image_test.go", "qa_test": "TestB2_PluginsBuildPureGo" },
+    "S8 no-Go-dep (exiftool=os/exec external)": { "covered": true, "covered_lines": "go.mod/go.sum diff empty; CGO_ENABLED=0 build OK", "coder_test": "Task 01 exiftool.go", "qa_test": "TestB2_Ac3Additive + TestB2_PluginsBuildPureGo" }
+  },
+  "boundary_coverage": {
+    "exiftool subprocess": {
+      "error_paths_covered": 5,
+      "total_error_paths": 5,
+      "paths": ["missing (LookPath) [QA integration sim]", "non-zero exit", "timeout", "non-JSON", "no-EXIF clean success"],
+      "qa_test": "TestQAImage_ExiftoolMissingSoftFail (INFO-2 full integration sim)"
+    },
+    "base-scanner stdlib decode": {
+      "error_paths_covered": 2,
+      "total_error_paths": 2,
+      "paths": ["undecodable/corrupt soft-fail", "HEIC/webp no-stdlib-decoder soft-fail"],
+      "qa_test": "TestQAImage_E2EIndependentRederive (AC_softfail_corrupt_persisted, AC_image_HEIC)"
+    },
+    "Unicode (filename + EXIF)": {
+      "error_paths_covered": 1,
+      "total_error_paths": 1,
+      "paths": ["non-ASCII preserved verbatim (Cyrillic)"],
+      "qa_test": "TestQAImage_E2EIndependentRederive (AC_unicode_cyrillic)"
+    },
+    "ffprobe subprocess (TV regression)": {
+      "error_paths_covered": 1,
+      "total_error_paths": 1,
+      "paths": ["TV video path unchanged (no cover-art leak)"],
+      "qa_test": "TestB2_TVNoCoverArtRegression"
+    }
+  },
+  "ac_gates": {
+    "AC-1_golden": "PASS — TestQAImage_E2EIndependentRederive (independent oracle re-derivation)",
+    "AC-2_build_purego": "PASS — TestB2_PluginsBuildPureGo + gofmt/build/vet/lint/check.sh/test all exit 0",
+    "AC-3_additive": "PASS — TestB2_Ac3Additive (proto/api/enrich/sdk + go.mod diff empty)",
+    "AC-image": "PASS — gating both directions + HEIC",
+    "AC-queue": "PASS — TestB2_Ac3Additive (internal/enrich stat empty) + idempotent rescan",
+    "AC-softfail": "PASS — TestQAImage_ExiftoolMissingSoftFail (INFO-2) + no-EXIF clean + corrupt persisted",
+    "AC-unicode": "PASS — TestQAImage_E2EIndependentRederive (Снимок.jpg / Камера)"
+  },
+  "uncovered_joints": [],
+  "uncovered_boundaries": []
+}

@@ -9,6 +9,21 @@ Mellifera is built by AI agents, including small and medium models. The codebase
 
 Companion docs: `docs/architecture.md` (contracts), `docs/ai-architecture.md` (why this structure), `docs/prior-art.md` (lessons). Composes with the general `contracts`, `coding-principles`, and `software-design` skills — those carry the theory; this skill carries Mellifera-specifics.
 
+## Runtime dependencies (operators)
+
+These are NOT Go module dependencies and are NOT required to BUILD Mellifera
+(the binary is pure-Go, `CGO_ENABLED=0`). They are required at RUNTIME by plugin
+subprocesses (invoked via `os/exec` arg-slice — never a shell):
+
+- `ffmpeg`/`ffprobe` 7.1.1 — video probe (base-scanner). Install: `brew install ffmpeg` (macOS) / `apt install ffmpeg` (Debian).
+- `exiftool` — image EXIF (image-enricher, Phase B2). Install: `brew install exiftool` (macOS) / `apt install libimage-exiftool-perl` (Debian/Ubuntu).
+
+A missing binary is a per-source SOFT-FAIL (empty metadata → B1 `no_data` →
+settle); the scan always succeeds and the build is unaffected. See
+`docs/architecture.md` §1.2 and the operator runbook
+(`docs/image-enrichment/operator_runbook.md`); the Makefile `build-plugin` target
+also documents these.
+
 ## The module map
 
 Realized by the `scan-library` feature. Counts are exported symbols; `WARN` = >8
@@ -23,7 +38,9 @@ but <12 (pre-justified R10); all others ≤8.
 | `internal/scan` | scan-side orchestration (resolve module → scanner → stream → identify → PutItem) | `Run`, `Deps`, `Result` | store, module, plugin |
 | `internal/api` | HTTP (chi) — **PURE DELEGATION, no logic** | `New`, `Deps`, `Principal` | scan, store |
 | `pkg/sdk` | plugin SDK (ships in the MAIN Go module for MVP — R7) | `Serve`, `ScannerPlugin`, `Scanner`, `HandshakeConfig`, `Capability` | proto, go-plugin |
-| `plugins/base-scanner` | one subprocess binary (walk + ffprobe + TV parse) | per-capability | sdk, proto |
+| `plugins/base-scanner` | one subprocess binary (walk + ffprobe (video) + stdlib image base info; module-type-gated discovery; parseTV extracted to tv-parser) | per-capability | sdk, proto |
+| `plugins/tv-parser` | `metadata_source` subprocess (parseTV moved here verbatim); serves `metadata.v1.MetadataSource` | per-capability | sdk, proto |
+| `plugins/image-enricher` | `metadata_source` subprocess (EXIF via the system `exiftool` binary — `os/exec` arg-slice, no Go dep); structural mirror of tv-parser; serves `metadata.v1.MetadataSource` | per-capability | sdk, proto |
 | `internal/enrich` | queue + dispatch (Match→Build→Convert→Merge) — **DEFERRED** (not built this feature) | — | — |
 | `internal/stream` | range-request file serving — **DEFERRED** | — | — |
 | `internal/janitor` | cleanup cron (orphaned data, drafts, ledger) — **DEFERRED** | — | — |

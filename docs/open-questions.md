@@ -421,6 +421,20 @@ All three are admin-Principal-gated (§11.5). No per-user variant in MVP. They f
 
 ---
 
+## Q29. `exiftool` responsibility & failure modes (image EXIF) — **DEFAULTED (B2 realized)**
+
+**Question:** who runs `exiftool` for image EXIF, and what happens if it is missing? (Sibling of Q6, the ffprobe pattern.)
+
+**Default:** the **image-enricher plugin** runs `exiftool` (`exec.CommandContext` arg-slice, `-j -n <selected tags> <absPath>` — NEVER a shell); the **core never invokes exiftool**. The plugin calls `exec.LookPath("exiftool")` on every `Convert`; a missing / non-zero / timeout / non-JSON / empty result is a **per-source SOFT-FAIL** (empty metadata → B1 `no_data` terminal → 30-day cooldown → settle — AC-6). It is NEVER a startup or build failure. This keeps "the only external runtime dep for the CORE is ffmpeg/ffprobe" true (exiftool is the *image-enricher plugin's* dep, exactly as ffmpeg/ffprobe is the *base-scanner plugin's* — Q6 framing). Install: `brew install exiftool` (macOS) / `apt install libimage-exiftool-perl` (Debian/Ubuntu). Operator runbook: `docs/image-enrichment/operator_runbook.md`.
+
+**Replaces** the earlier pure-Go `bep/imagemagick` / `imagemeta` direction (user plan-review decision): exiftool supplies HEIC/RAW natively and adds NO Go module dependency (AC-2/S8), preserving the pure-Go / no-CGO guarantee.
+
+**Risk (low):** a host without exiftool gets image items with no EXIF provenance (they still discover + carry jpeg/png stdlib base dims + settle via cooldown). Mitigated by the soft-fail + the runbook. RAW discovery (`.cr2/.nef/.arw/.dng`) is deferred — exiftool reads RAW natively, so adding the extensions to `imageMime` is the only change needed.
+
+**Revisit:** if a pure-Go EXIF path is later desired to drop the runtime dep, or when RAW discovery is added.
+
+---
+
 ## Risk register (summary)
 
 | # | Risk | Severity | Likelihood | Mitigation |
@@ -466,11 +480,12 @@ All three are admin-Principal-gated (§11.5). No per-user variant in MVP. They f
 | D18 | Auth: single admin token for MVP; Principal abstraction grounds Phase 2 multi-user | DECIDED | 2026-07-20 | Q15 / arch §11.5 |
 | D19 | Mode B is CLIENT-only for MVP; SERVER sources run Mode A | DECIDED | 2026-07-20 | Q5 / arch §4.3 |
 | D20 | Playback progress & resume: `playback_progress` table + GET/POST endpoints (prior-art: Kodi `bookmark` / Jellyfin `UserData`) | DECIDED | 2026-07-21 | arch §5.5, §9.1 / prior-art.md |
+| D21 | Image EXIF via the system `exiftool` subprocess (os/exec arg-slice, no CGO, no Go module dep); HEIC read natively; missing exiftool soft-fails per-source | DECIDED | 2026-07-30 | Q29 / arch §1.2 / image-enrichment D-2 |
 
 ---
 
 ## Next step
 
-This document is a living companion to `architecture.md`. **Q1–Q20 are DECIDED or DEFAULTED — none OPEN.** Q21–Q27 (2026-07-20 reconciliation pass) surface edges *implied by* the locked decisions; **Q28** (2026-07-21 prior-art pass) covers image handling (direct URLs vs proxy/cache). All are DEFAULTED with named revisit triggers; none block the §2 foundational contracts from freezing, and none reopen D1–D19.
+This document is a living companion to `architecture.md`. **Q1–Q20 are DECIDED or DEFAULTED — none OPEN.** Q21–Q27 (2026-07-20 reconciliation pass) surface edges *implied by* the locked decisions; **Q28** (2026-07-21 prior-art pass) covers image handling (direct URLs vs proxy/cache); **Q29** (2026-07-30, `image-enrichment` Phase B2) records the `exiftool` runtime-dep decision (sibling of Q6). All are DEFAULTED with named revisit triggers; none block the §2 foundational contracts from freezing, and none reopen D1–D19 (D21 is additive — B2 EXIF via exiftool).
 
 **HALT for review of both documents.**

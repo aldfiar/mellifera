@@ -28,10 +28,26 @@
 > + B3 (TMDB + `AuthContext`) remain **outlined** (consumers of the B1 queue).
 > Feature record: `docs/async-enrichment/`; operator runbook:
 > [`docs/async-enrichment/api_reference.md`](async-enrichment/api_reference.md).
+>
+> **Phase B2 (`image-enrichment`) layered on top — additive.** Lands the image
+> media type + EXIF enrichment as the SECOND consumer of the B1 queue: a new
+> `plugins/image-enricher` `metadata_source` subprocess (structural mirror of
+> tv-parser; reads EXIF via the system `exiftool` binary — `os/exec` arg-slice,
+> NO new Go dep), module-type-gated image discovery in `plugins/base-scanner`
+> (`image.go`), an `absolute_path` stamp in `internal/scan`, and an `image`
+> module seed in `internal/module`. Additive: zero new protos, `go.mod` unchanged,
+> plugin contract + API surface + `scan.Result` + the B1 queue unchanged
+> (deprecate-don't-delete). `metadata_source` now ships tv-parser + image-enricher
+> (still ZERO new capability types — `image_provider` stays reserved). `exiftool`
+> is a RUNTIME dep (like ffmpeg/ffprobe); a missing exiftool soft-fails image
+> enrichment per-source (the scan always succeeds). B3 (TMDB + `AuthContext`)
+> + Phase C (post-action) remain **outlined**. Feature record:
+> `docs/image-enrichment/`; operator runbook:
+> [`docs/image-enrichment/operator_runbook.md`](image-enrichment/operator_runbook.md).
 
 ## Overview
 
-Mellifera is a modular, plugin-based, self-hostable media server (Jellyfin/Plex class in scope, deliberately not a clone) shipped as a **single Go binary**. Storage is embedded SQLite with JSON columns (`json_extract`, generated columns). The only external core runtime dependency is `ffmpeg`/`ffprobe`, invoked via `os/exec`. Plugins are `hashicorp/go-plugin` gRPC subprocesses — crash-isolated and cross-language-capable — embedded into the core binary via `go:embed` and extracted to a data directory on first run (D11 / Q20). Media documents are **dynamic JSON** (`google.protobuf.Struct` / `json.RawMessage`), explicitly not 357 typed DTOs (D2).
+Mellifera is a modular, plugin-based, self-hostable media server (Jellyfin/Plex class in scope, deliberately not a clone) shipped as a **single Go binary**. Storage is embedded SQLite with JSON columns (`json_extract`, generated columns). The only external CORE runtime dependency is `ffmpeg`/`ffprobe`, invoked via `os/exec`; the image-enricher plugin additionally requires `exiftool` (both invoked via `os/exec` arg-slice, never a shell). A missing `exiftool` soft-fails image enrichment per-source — the scan always succeeds (see the operator runbook). Plugins are `hashicorp/go-plugin` gRPC subprocesses — crash-isolated and cross-language-capable — embedded into the core binary via `go:embed` and extracted to a data directory on first run (D11 / Q20). Media documents are **dynamic JSON** (`google.protobuf.Struct` / `json.RawMessage`), explicitly not 357 typed DTOs (D2).
 
 The differentiator versus the Jellyfin/Emby lineage is **subprocess plugin isolation**: a plugin crash never takes down the server, and the plugin contract is open to any gRPC-capable language (Q1, prior-art.md §3). The core is an **orchestrator, not a domain engine**: it knows capability *types* (gRPC service interfaces), never specific media types or plugin names. The strings `"movie"`, `"tv"`, `"tmdb"` appear in **config**, not in core code (architecture §0, design principle 1).
 
@@ -46,16 +62,17 @@ The differentiator versus the Jellyfin/Emby lineage is **subprocess plugin isola
 | RPC | `google.golang.org/grpc` + `google.golang.org/protobuf` | arch §2 |
 | Codegen | `protoc` 29.3 (generated `*.pb.go` committed; `buf` not installed — protoc fallback) | arch §2; enhanced_obj §1 |
 | Media probe | `ffmpeg`/`ffprobe` 7.1.1 via `os/exec` (arg slice, never shell) | arch §1.2; enhanced_obj §7 |
+| Image metadata | `exiftool` via `os/exec` (arg slice, never shell) — RUNTIME dep (plugin-scoped); install: `brew install exiftool` / `apt install libimage-exiftool-perl` | image-enricher plugin (Phase B2); arch §1.2; operator runbook |
 | Linter | `golangci-lint` v1.64.8 | `.golangci.yml` |
 | Build | `go build` | conventions |
 | Test | `go test` (table-driven per exported symbol) | mellifera-build skill |
 
 CGO is avoided (pure-Go SQLite chosen to fit single-binary + cross-compile). No DI framework. No `reflect` (depguard-denied).
 
-## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1)
+## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2)
 
-Directory tree as realized by the foundational slice PLUS the additive Phase A
-and Phase B1 layers (grounded in `docs/ai-architecture.md` §4 module map +
+Directory tree as realized by the foundational slice PLUS the additive Phase A,
+Phase B1, and Phase B2 layers (grounded in `docs/ai-architecture.md` §4 module map +
 `docs/architecture.md` §10). Symbol counts are exported symbols per
 `scripts/check.sh`, which counts **top-level** `func/type/var/const` decls only
 (method receivers excluded); `WARN` = >8 but ≤12:
@@ -75,21 +92,23 @@ mellifera/
 ├── internal/
 │   ├── store/                      # SQLite: docs + control + reserved tables (5 top-level; +ledger.go FailureRow + busy_timeout in B1; methods excluded by check.sh)
 │   ├── plugin/                     # subprocess lifecycle + gRPC clients + capability routing (10 WARN; +MetadataSource accessor)
-│   ├── module/                     # config-driven module registry (7; +MetadataSourceBinding, tv-parser seed)
-│   ├── scan/                       # scan-side orchestrator: Run/Deps/Result (3; B1: persists pending + Notify(libraryID), drops inline enrich; re-scan→stale)
+│   ├── module/                     # config-driven module registry (7; +MetadataSourceBinding; tv-parser seed [A] + image-enricher image-module seed [B2])
+│   ├── scan/                       # scan-side orchestrator: Run/Deps/Result (3; B1: persists pending + Notify(libraryID), drops inline enrich, re-scan→stale; B2: stamps absolute_path into parsed for all items)
 │   ├── api/                        # chi router — PURE DELEGATION, zero logic (3; itemDTO.Status + ?status=)
-│   ├── enrich/                     # metadata-side orchestrator + async derived-queue: Enrich/Deps/Result + Queue/QueueConfig/Stats/NewQueue (7; B1: queue.go/worker.go/lease.go/retry.go)
+│   ├── enrich/                     # metadata-side orchestrator + async derived-queue: Enrich/Deps/Result + Queue/QueueConfig/Stats/NewQueue (7; B1: queue.go/worker.go/lease.go/retry.go) — UNCHANGED in B2
 │   ├── stream/                     # DEFERRED
 │   └── janitor/                    # DEFERRED
 ├── plugins/
-│   ├── base-scanner/               # scanner subprocess: walk + ffprobe + withinRoot (media-type-agnostic; parseTV extracted)
-│   └── tv-parser/                  # metadata_source subprocess: parseTV moved here verbatim; serves metadata.v1.MetadataSource
+│   ├── base-scanner/               # scanner subprocess: walk + ffprobe + withinRoot (media-type-agnostic; parseTV extracted); B2: image.go — module-type-gated image discovery + stdlib base info (jpeg/png dims; webp/heic soft-fail)
+│   ├── tv-parser/                  # metadata_source subprocess: parseTV moved here verbatim; serves metadata.v1.MetadataSource
+│   └── image-enricher/             # metadata_source subprocess [B2]: EXIF via the system exiftool (os/exec arg-slice); structural mirror of tv-parser; serves metadata.v1.MetadataSource
 ├── cmd/
-│   └── mellifera/                  # flat main.go — constructor wiring (loads base-scanner + tv-parser; builds enrich.Deps; B1: enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs)
+│   └── mellifera/                  # flat main.go — constructor wiring (loads base-scanner + tv-parser + image-enricher [B2]; builds enrich.Deps; B1: enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs; B2: MELLIFERA_IMAGE_ENRICHER env)
 ├── integration_test.go             # scan-library AC-1 golden end-to-end scan (stdlib-only black-box)
 ├── integration_pipeline_test.go    # Phase A AC-1 golden end-to-end enrich pipeline (stdlib-only black-box)
 ├── integration_async_test.go       # Phase B1 AC-1 golden: scan→pending→async drain→ready (stdlib-only black-box)
-└── qa_*_test.go                    # independent acceptance + regression (scan-library + Phase A + Phase B1)
+├── integration_image_test.go       # Phase B2 AC-1 golden: image scan→pending→async drain→ready + real-EXIF provenance (stdlib-only black-box)
+└── qa_*_test.go                    # independent acceptance + regression (scan-library + Phase A + Phase B1 + Phase B2)
 ```
 
 Dependency direction points **down only**: `api → scan → enrich → {module, plugin} → store`. Phase B1: scan no longer calls enrich inline — after persisting items `pending` it hands the library to the `enrich.Queue` via `Deps.Notify` (wired in `cmd/mellifera`); enrich still never imports scan. The worker pool is a process-lifetime component (started before serving, stopped on shutdown). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4).
@@ -98,9 +117,10 @@ Dependency direction points **down only**: `api → scan → enrich → {module,
 
 | Binary | Path | Role |
 |---|---|---|
-| Server | `cmd/mellifera/main.go` | Flat constructor wiring (no DI, no reflect). Reads config, opens store, loads **both** plugins (base-scanner + tv-parser), constructs `enrich.Deps`, constructs + starts the async `enrich.Queue` (before serving) and wires `scan.Deps.Notify` → `queue.Notify` (process ctx); stops pool → plugins → store on shutdown. Reads `MELLIFERA_ENRICH_*` knobs. |
+| Server | `cmd/mellifera/main.go` | Flat constructor wiring (no DI, no reflect). Reads config, opens store, loads **all three** plugins (base-scanner + tv-parser + image-enricher), constructs `enrich.Deps`, constructs + starts the async `enrich.Queue` (before serving) and wires `scan.Deps.Notify` → `queue.Notify` (process ctx); stops pool → plugins → store on shutdown. Reads `MELLIFERA_ENRICH_*` knobs (and `MELLIFERA_IMAGE_ENRICHER` — Phase B2). |
 | Scanner plugin | `plugins/base-scanner/main.go` | Separate subprocess binary using `pkg/sdk.Serve(...)`. **Media-type-agnostic** (Phase A): walks configured library root, runs `ffprobe` via arg slice, emits ONLY base fields (`relative_path`/`extension` + the verbatim ffprobe blob). TV parsing no longer lives here (extracted to tv-parser). Path-traversal guard (`withinRoot`) on every discovered path. |
 | Metadata-source plugin | `plugins/tv-parser/main.go` | Phase A. Separate subprocess binary; the first `metadata_source` capability plugin. Houses `parseTV` (moved verbatim from base-scanner) and serves `metadata.v1.MetadataSource` (Match→BuildRequest→Convert→Merge) on one shared gRPC server via `pkg/sdk.Serve`. |
+| Metadata-source plugin (image) | `plugins/image-enricher/main.go` | Phase B2. Separate subprocess binary; the second `metadata_source` capability plugin. A structural mirror of tv-parser (only the capability body differs: EXIF extraction via the system `exiftool` binary — `os/exec` arg-slice, never a shell — vs filename parse). `Match` applies for `module_type=="image"` or an image extension; `Convert` runs exiftool on `absolute_path` (carried by `Match`); `Merge` writes `sources["image-enricher"]` only. A missing/failing exiftool is a per-source SOFT-FAIL. |
 
 ## Conventions snapshot (enforced by `.claude/skills/mellifera-build/` + `.golangci.yml`)
 
@@ -149,18 +169,18 @@ All DECIDED or DEFAULTED in `docs/open-questions.md`; none OPEN. Load-bearing fo
 
 Q1–Q28 carry reversible defaults with named revisit triggers (see `docs/open-questions.md`). Risk register R1–R14 lives there too.
 
-## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1)
+## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2)
 
-The foundational slice plus the additive Phase A and Phase B1 layers are
+The foundational slice plus the additive Phase A, Phase B1, and Phase B2 layers are
 implemented and all verification gates are green — `gofmt`/`build`/`vet`/`test`/
-`-race`/`lint`/`check.sh` all PASS (no data races; reviewer PROCEED-WITH-FIXES
-correctness, health-check ISSUES-FOUND PROCEED with no P0, QA green; B1
-`completed_count=13` = 9 coder + 2 QA + 2 docs):
+`-race`/`lint`/`check.sh` all PASS (no data races; reviewer PROCEED, health-check
+HEALTHY PROCEED (P0/P1: 0), QA green; B1 `completed_count=13`; B2 `completed_count=11`
+= 7 coder + 2 QA + 2 docs):
 
-- `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0) + `go.sum` (**unchanged** across Phase A and B1 — additive, no new deps).
-- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged**).
-- `mellifera` binary (server) + `base-scanner` + `tv-parser` binaries via `make build` / `make build-plugin`.
-- `integration_test.go` (scan-library) + `integration_pipeline_test.go` (Phase A) + `integration_async_test.go` (Phase B1 AC-1 async golden) + `qa_*_test.go` (independent acceptance + regression for all three slices).
+- `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0) + `go.sum` (**unchanged** across Phase A, B1, and B2 — additive, no new deps; `exiftool` is a runtime dep, not a Go dep).
+- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser,image-enricher}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged**).
+- `mellifera` binary (server) + `base-scanner` + `tv-parser` + `image-enricher` binaries via `make build` / `make build-plugin` (3 plugin binaries).
+- `integration_test.go` (scan-library) + `integration_pipeline_test.go` (Phase A) + `integration_async_test.go` (Phase B1 AC-1 async golden) + `integration_image_test.go` (Phase B2 AC-1 async image golden) + `qa_*_test.go` (independent acceptance + regression for all four slices).
 - Inputs, still read-only: `docs/{architecture,ai-architecture,prior-art,open-questions}.md`, `.claude/skills/mellifera-build/`, `.golangci.yml`.
 
 ### Phase A additions (additive — `plugin-pipeline`)
@@ -213,28 +233,49 @@ knobs, and the non-blocking-scan runbook** -> [`docs/async-enrichment/api_refere
 state set/machine source of truth: `docs/plugin-pipeline/acceptance.md` AC-7 (+ B1 `ready`/`stale` in
 `docs/async-enrichment/acceptance.md`).
 
+### Phase B2 additions (additive — `image-enrichment`)
+
+Phase B2 lands the image media type + EXIF enrichment WITHOUT touching the plugin
+contract, the API surface, the B1 queue, or `scan.Result` (AC-3: `proto/`/
+`internal/api/`/`internal/enrich/`/`pkg/sdk/`/`go.mod` diff empty vs `e2a7562`). Key
+additions:
+
+- **`plugins/image-enricher` (subprocess; 0 exported symbols).** The second `metadata_source` plugin — a structural mirror of `plugins/tv-parser` (only the capability body differs). `Convert` reads EXIF by invoking the **system `exiftool`** binary via `os/exec` arg-slice (`-j -n <selected tags> <absPath>`, never a shell — mirrors `ffprobe.go`); maps `{ImageWidth→width, ImageHeight→height, FileType→format, Make→make, Model→model, DateTimeOriginal→date_taken, Orientation→orientation, GPSLatitude→gps_lat, GPSLongitude→gps_lon}`. `Match` applies for `module_type=="image"` or an image extension and carries `absolute_path`; `Merge` writes `sources["image-enricher"]` only. Every exiftool failure is a per-source SOFT-FAIL → empty namespace → B1 `no_data` → settle (AC-6). **NO new Go dep** — `exiftool` is a runtime dep (see the operator runbook).
+- **`plugins/base-scanner` (+`image.go`).** Module-type-**gated** discovery (not a union): `walk` selects `imageMime` (jpg/jpeg/png/webp/heic/heif) only when `module_type=="image"`, else the video `mediaMime` (a union filter would discover TV cover-art jpgs — R-I4). `probeImage` decodes jpeg/png dims via stdlib `image.DecodeConfig`; webp/heic/heif/RAW base-info soft-fails (no stdlib decoder — exiftool supplies their data at enrichment). ffprobe is NEVER invoked for images.
+- **`internal/scan` (stays 3).** `assembleBaseDoc` stamps `absolute_path = filepath.Join(root, rel)` into `doc["parsed"]` for EVERY item (media-type-agnostic — INV2; no `module_type` branch). This is the only file-location channel into the enricher chain (the B1 chain passes an empty Merge doc). Additive — tv-parser ignores it (TV goldens pass).
+- **`internal/module` (stays 7).** Second idempotent seed: an `image` module config row binding base-scanner + image-enricher (priority 1, local/no `auth_mode`, no `filename_format`). `imageConfigJSON` is an unexported const → no new exported symbol.
+- **`cmd/mellifera`.** Loads + starts + stops the image-enricher subprocess (3rd plugin), started before the server serves (INV-start-before-serve). `config.imageEnricherPath = envOr("MELLIFERA_IMAGE_ENRICHER", "bin/image-enricher")`. No new import.
+- **`Makefile`.** `build-plugin` now builds 3 binaries (base-scanner, tv-parser, image-enricher); a runtime-deps comment documents ffmpeg/ffprobe + exiftool.
+- **`integration_image_test.go`.** The B2 AC-1 golden: real server + 3 plugin subprocesses + REAL exiftool over stdlib-encoded image fixtures (jpeg/png + exiftool-stamped EXIF + ffmpeg webp + sips heic); scan non-blocking → items `pending` → bounded poll until settled `ready`; `sources."image-enricher"` carries real EXIF + `_provenance`/`_view`/`_stages`; soft-fail + Cyrillic + HEIC + stray-`.mkv`-gated-out asserted.
+
+**Image lifecycle = the B1 lifecycle, unchanged.** Image items consume the SAME async queue as TV: scan persists each item `pending` (non-blocking) → the worker pool drains `(item, image-enricher)` → `enriched --settled--> ready`. EXIF provenance, soft-fail, and runtime-dep posture: **[`docs/image-enrichment/operator_runbook.md`](image-enrichment/operator_runbook.md)**; state machine: `docs/image-enrichment/acceptance.md`.
+
 ### Capability model
 
 Two capability types now ship (the open-set the core knows): `scanner` (base-scanner) and
-`metadata_source` (tv-parser + future enrichers). Phase A MAPS the user's parser/enricher categories
-onto these two capabilities with **zero new protos** (decision D-1): tv-parser and any enricher
+`metadata_source` (tv-parser + image-enricher — two shipping plugins, still ZERO new capability types;
+`image_provider` stays reserved). Phase A MAPS the user's parser/enricher categories
+onto these two capabilities with **zero new protos** (decision D-1): tv-parser, image-enricher, and any enricher
 implement `metadata.v1.MetadataSource`. Plugin selection is driven strictly by `module.MetadataSources[]`
-(config), never by `if mediaType == "tv"` (AC-4 — media-type literals appear only in `internal/module` seed config).
+(config), never by `if mediaType == "..."` (AC-4 — media-type literals appear only in `internal/module` seed config).
 
 **Still NOT built** (deferred): `internal/stream` (range-request file serving), `internal/janitor`
-(cleanup cron); **Phase B2** — image+EXIF enrichment (consumes the B1 queue unchanged); **Phase B3** —
-external enrichers (`tmdb`/`kinopoisk` real fetch), `AuthContext` population, `_view` arbitration;
-**Phase C** — post-actions (needs arch design). Also: `go:embed` first-run plugin extraction (dev-mode
-filesystem-path loading is used instead — D11/Q20); session-based multi-user auth (single admin token
-for MVP — D18/Q15); store methods for reserved tables (`RecordProgress`/`GetResume` — tables exist,
-methods deferred); an admin HTTP route over `store.ListFailures` (the method ships in B1; the route is
-deferred — B1-light). Realized in B1 (no longer deferred): the **async enrichment queue** + worker pool
-+ per-item leases + the `enrichment_failures` ledger + `failed→pending` retry + the `ready`/`stale`
-lifecycle states + the pool-wide `busy_timeout`.
+(cleanup cron); **Phase B3** — external enrichers (`tmdb`/`kinopoisk` real fetch + `AuthContext`
+population, `_view` arbitration); **Phase C** — post-actions (needs arch design). Also: `go:embed`
+first-run plugin extraction (dev-mode filesystem-path loading is used instead — D11/Q20); session-based
+multi-user auth (single admin token for MVP — D18/Q15); store methods for reserved tables
+(`RecordProgress`/`GetResume` — tables exist, methods deferred); an admin HTTP route over
+`store.ListFailures` (the method ships in B1; the route is deferred — B1-light). Realized in B1 (no
+longer deferred): the **async enrichment queue** + worker pool + per-item leases + the
+`enrichment_failures` ledger + `failed→pending` retry + the `ready`/`stale` lifecycle states + the
+pool-wide `busy_timeout`. **Realized in B2 (no longer deferred):** image+EXIF enrichment (image media
+type + the `image-enricher` `metadata_source` subprocess + module-type-gated image discovery); RAW image
+discovery (`.cr2/.nef/.arw/.dng`) remains deferred (exiftool reads RAW natively — cheap to add to `imageMime` later).
 
 The `scan-library` enhanced objective lives at `mellifera/docs/scan-library/.phase_cache/enhanced_objective.md`;
 the Phase A feature record lives at `mellifera/docs/plugin-pipeline/`; the Phase B1 feature record
-lives at `mellifera/docs/async-enrichment/` (plan, contracts, acceptance, reviews, audit, qa).
+lives at `mellifera/docs/async-enrichment/`; the Phase B2 feature record lives at
+`mellifera/docs/image-enrichment/` (plan, contracts, acceptance, reviews, audit, qa, operator runbook).
 
 ## Open questions the planner must resolve
 

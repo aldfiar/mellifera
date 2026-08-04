@@ -44,10 +44,21 @@ var mediaMime = map[string]string{
 // a probe failure yields empty ffprobe_json + a warning (AC-6). ctx cancellation
 // stops the walk and closes the channel.
 //
+// moduleType selects the extension map (module-type-gated discovery — D-1):
+// "image" → image extensions (jpg/jpeg/png/webp/heic/heif); any other value
+// (incl. empty) → the video mediaMime. A UNION filter is rejected — it would
+// discover TV cover-art jpgs as junk (R-I4). Module-type guidance is sanctioned
+// by scanner.proto ("Module type … Guides the scanner's parsing heuristics").
+//
 // opts carries the advisory scanner options from ScanRequest.options (per
 // scanner.proto they are advisory, not required); they are accepted for
 // forward-compat and deferred for MVP, so the parameter is intentionally unused.
-func walk(ctx context.Context, root string, _ *structpb.Struct) <-chan *scannerv1.DiscoveredFile {
+func walk(ctx context.Context, root, moduleType string, _ *structpb.Struct) <-chan *scannerv1.DiscoveredFile {
+	imageMode := moduleType == "image"
+	extMap := mediaMime
+	if imageMode {
+		extMap = imageMime
+	}
 	ch := make(chan *scannerv1.DiscoveredFile, walkChanBound)
 	go func() {
 		defer close(ch)
@@ -61,14 +72,14 @@ func walk(ctx context.Context, root string, _ *structpb.Struct) <-chan *scannerv
 			if d.IsDir() || !d.Type().IsRegular() {
 				return nil
 			}
-			if !isMedia(path) {
+			if !extHas(extMap, path) {
 				return nil
 			}
 			if !withinRoot(root, path) {
 				return nil // AC-4: never probe a path that escapes root
 			}
 			select {
-			case ch <- toDiscovered(ctx, root, path, d):
+			case ch <- toDiscovered(ctx, root, path, d, extMap, imageMode):
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -79,9 +90,12 @@ func walk(ctx context.Context, root string, _ *structpb.Struct) <-chan *scannerv
 }
 
 // toDiscovered builds the DiscoveredFile for one media file: a stable file_id
-// derived from its relative path, the library-relative path, size, guessed MIME
-// type, and the verbatim ffprobe JSON (empty + a warning on soft-fail, AC-6).
-func toDiscovered(ctx context.Context, root, path string, d fs.DirEntry) *scannerv1.DiscoveredFile {
+// derived from its relative path, the library-relative path, size, the MIME type
+// from the SELECTED extension map, and the probe JSON (empty + a warning on
+// soft-fail, AC-6). image files use probeImage (stdlib header decode); video
+// files use probe (ffprobe) — ffprobe is NEVER invoked for images (B04). The
+// opaque probe field carries {width,height,format} for images into FfprobeJson.
+func toDiscovered(ctx context.Context, root, path string, d fs.DirEntry, extMap map[string]string, imageMode bool) *scannerv1.DiscoveredFile {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		rel = path
@@ -90,12 +104,18 @@ func toDiscovered(ctx context.Context, root, path string, d fs.DirEntry) *scanne
 	if info, e := d.Info(); e == nil {
 		size = info.Size()
 	}
-	data, warning, _ := probe(ctx, path) // err is reserved/always-nil (INV3 soft-fail)
+	var data []byte
+	var warning string
+	if imageMode {
+		data, warning, _ = probeImage(ctx, path) // stdlib base info; HEIC/unknown soft-fail (INV3)
+	} else {
+		data, warning, _ = probe(ctx, path) // ffprobe (video) — err reserved/always-nil (INV3)
+	}
 	f := &scannerv1.DiscoveredFile{
 		FileId:       fileID(rel),
 		RelativePath: rel,
 		SizeBytes:    size,
-		MimeType:     mimeType(path),
+		MimeType:     mimeOf(extMap, path),
 		FfprobeJson:  data,
 	}
 	if warning != "" {
@@ -111,13 +131,16 @@ func fileID(rel string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// isMedia reports whether path has a known media extension.
-func isMedia(path string) bool {
-	_, ok := mediaMime[strings.ToLower(filepath.Ext(path))]
+// extHas reports whether path's lowercased dotted extension is in the selected
+// extension map (the module-type-gated media filter). The lowercasing touches the
+// ASCII dotted extension only; a non-ASCII stem is untouched (AC-unicode).
+func extHas(extMap map[string]string, path string) bool {
+	_, ok := extMap[strings.ToLower(filepath.Ext(path))]
 	return ok
 }
 
-// mimeType returns the MIME type for path's extension ("" if unknown).
-func mimeType(path string) string {
-	return mediaMime[strings.ToLower(filepath.Ext(path))]
+// mimeOf returns the MIME type for path's extension from the selected map ("" if
+// the extension is absent from it).
+func mimeOf(extMap map[string]string, path string) string {
+	return extMap[strings.ToLower(filepath.Ext(path))]
 }

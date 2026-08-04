@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/mellifera/mellifera/internal/enrich"
@@ -158,7 +159,7 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 			}
 			res.Discovered++
 			res.Warnings = append(res.Warnings, f.GetWarnings()...)
-			if perr := persist(ctx, st, sc, f, mod, libraryID, &res); perr != nil {
+			if perr := persist(ctx, st, sc, f, mod, lib.RootPath, libraryID, &res); perr != nil {
 				return finish(res), perr
 			}
 		}
@@ -176,13 +177,13 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 // prior status so a settled item is not regressed. Identify/PutItem failures are
 // soft (AC-6); a cancelled context is returned as an error so runScan stops
 // draining (B6) and takes precedence over any concurrent soft failure.
-func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, libraryID int64, res *Result) error {
+func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, rootPath string, libraryID int64, res *Result) error {
 	identified, err := sc.Identify(ctx, &scannerv1.IdentifyRequest{File: f, ModuleType: mod.MediaType})
 	if err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("identify %q: %v", f.GetRelativePath(), err))
 		return ctx.Err()
 	}
-	base := assembleBaseDoc(f, identified, mod.MediaType, mod.SchemaVersion)
+	base := assembleBaseDoc(f, identified, mod.MediaType, mod.SchemaVersion, rootPath)
 	status := nextScanStatus(ctx, st, libraryID, f.GetFileId(), base, res)
 	if err := st.PutItem(ctx, newItem(f, mod, libraryID, marshalDoc(base), status)); err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("persist %q: %v", f.GetRelativePath(), err))
@@ -327,28 +328,53 @@ func buildScanRequest(libraryPath, moduleType string, options json.RawMessage) (
 // nothing is averaged or collapsed. The parsed Struct is read via its generated
 // json marshaler (no structpb import); ffprobe bytes are embedded verbatim.
 //
+// rootPath is the resolved library root (store.Library.RootPath): when non-empty,
+// parsed gains absolute_path = filepath.Join(rootPath, rel) for EVERY item (D-6)
+// — the ONLY channel through which the image-enricher can open the file (the B1
+// chain passes an empty Merge document and reconstructs the base from doc["parsed"]
+// only, chain.go:115-122). Generic and media-type-agnostic (INV2): tv-parser
+// ignores the new key; existing parsed keys are preserved. The stamp is
+// deterministic for (rootPath, rel), so baseChanged (stale-on-rescan) is unaffected.
+//
 // created_at / updated_at are intentionally NOT duplicated into the opaque
 // document: the store maintains them as authoritative columns (items.created_at
 // is preserved across re-scans by the PutItem upsert), and a document copy could
 // neither stay in sync nor preserve created_at on a re-scan.
-func assembleBaseDoc(f *scannerv1.DiscoveredFile, id *scannerv1.IdentifyResult, moduleType string, schemaVersion int) map[string]any {
+func assembleBaseDoc(f *scannerv1.DiscoveredFile, id *scannerv1.IdentifyResult, moduleType string, schemaVersion int, rootPath string) map[string]any {
 	doc := map[string]any{
 		"file_id":        f.GetFileId(),
 		"module_type":    moduleType,
 		"schema_version": schemaVersion,
 	}
+	var parsedBytes json.RawMessage
 	if p := id.GetParsed(); p != nil {
 		if b, err := json.Marshal(p); err == nil {
-			doc["parsed"] = json.RawMessage(b)
+			parsedBytes = json.RawMessage(b)
 		}
 	}
-	if doc["parsed"] == nil {
-		doc["parsed"] = json.RawMessage(`{}`)
-	}
+	doc["parsed"] = parsedWithAbsolutePath(parsedBytes, rootPath, f.GetRelativePath())
 	if raw := f.GetFfprobeJson(); len(raw) > 0 {
 		doc["ffprobe"] = json.RawMessage(raw) // verbatim (INV3)
 	}
 	return doc
+}
+
+// parsedWithAbsolutePath returns the parsed JSON document (the base-scanner base
+// fields) carrying the additional absolute_path key when rootPath is non-empty.
+// It best-effort unmarshals the incoming parsed bytes ({} on failure, matching the
+// prior behavior) and re-marshals after stamping. Re-marshal sorts keys (as the
+// prior direct json.Marshal of the Struct did), so the result is byte-stable for a
+// given (parsed, rootPath, rel). Factored out so assembleBaseDoc stays focused.
+func parsedWithAbsolutePath(parsedBytes json.RawMessage, rootPath, rel string) json.RawMessage {
+	m := map[string]any{}
+	if len(parsedBytes) > 0 {
+		_ = json.Unmarshal(parsedBytes, &m) // best-effort; {} on failure (existing behavior)
+	}
+	if rootPath != "" {
+		m["absolute_path"] = filepath.Join(rootPath, rel)
+	}
+	b, _ := json.Marshal(m)
+	return json.RawMessage(b)
 }
 
 // marshalDoc serializes the (possibly enriched) document map back to the opaque

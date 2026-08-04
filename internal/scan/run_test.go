@@ -619,8 +619,10 @@ func TestRunScan_StaleOnRescan(t *testing.T) {
 	identifyA := mkIdentified("f1", `{"title":"Breaking Bad","season":1,"episode":1}`)
 	// baseA is exactly what persist's assembleBaseDoc produces for (file, A) —
 	// pre-seeding it makes an unchanged re-scan compare byte-equal (no spurious
-	// stale), so the only variable between cases is the re-scan's identity.
-	baseA := assembleBaseDoc(file, identifyA, "tv", 1)
+	// stale), so the only variable between cases is the re-scan's identity. The
+	// rootPath is libRoot: scan stamps absolute_path=Join(libRoot, rel) into
+	// parsed for all items (D-6), and runScan threads lib.RootPath (== libRoot).
+	baseA := assembleBaseDoc(file, identifyA, "tv", 1, libRoot)
 
 	cases := []struct {
 		name       string

@@ -74,9 +74,10 @@ func TestIntegrationAsyncPipeline(t *testing.T) {
 	serverBin := buildBinary(t, tmp, "async-server", "./cmd/mellifera")
 	scannerBin := buildBinary(t, tmp, "async-base-scanner", "./plugins/base-scanner")
 	tvParserBin := buildBinary(t, tmp, "async-tv-parser", "./plugins/tv-parser")
+	imageEnricherBin := buildBinary(t, tmp, "async-image-enricher", "./plugins/image-enricher")
 	fixtureRoot := asyncWriteFixtures(t)
 
-	baseURL := startServer(t, serverBin, scannerBin, tvParserBin, tmp, asyncToken)
+	baseURL := startServer(t, serverBin, scannerBin, tvParserBin, imageEnricherBin, tmp, asyncToken)
 	client := &http.Client{Timeout: httpTimeout}
 	libID := createLibrary(t, client, baseURL, asyncToken, fixtureRoot)
 

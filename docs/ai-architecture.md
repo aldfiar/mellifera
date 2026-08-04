@@ -46,7 +46,8 @@ counts **top-level** `func/type/var/const` decls only — method receivers (`fun
 are excluded, so a package's gate-count is its top-level surface; `WARN` = >8 but
 ≤12 (pre-justified R10); all others ≤8. Reserved-table methods
 (`RecordProgress`/`GetResume`) are deferred — the tables exist but no method
-ships yet. Phase A deltas are marked **[A]**; Phase B1 deltas are marked **[B1]**.
+ships yet. Phase A deltas are marked **[A]**; Phase B1 deltas are marked **[B1]**;
+Phase B2 deltas are marked **[B2]**.
 
 > **Phase B1 shipped (`async-enrichment`).** Enrichment is now ASYNCHRONOUS: a
 > derived in-process `enrich.Queue` + bounded worker pool drains pending
@@ -55,23 +56,37 @@ ships yet. Phase A deltas are marked **[A]**; Phase B1 deltas are marked **[B1]*
 > lease table). `POST /scan` returns once items are persisted `pending`; workers
 > drain them to `enriched`/`ready` in the background. The plugin contract, the
 > API surface, and `scan.Result` are **unchanged** (additive — deprecate-don't-
-> delete). B2 (image+EXIF) + B3 (TMDB + `AuthContext`) remain **outlined** (they
-> are consumers of the B1 queue, not built here). Feature record:
+> delete). Feature record:
 > `docs/async-enrichment/`; operator semantics:
 > [`docs/async-enrichment/api_reference.md`](async-enrichment/api_reference.md).
 
+> **Phase B2 shipped (`image-enrichment`).** Image media type + EXIF enrichment
+> land as the SECOND consumer of the B1 queue: a new `plugins/image-enricher`
+> `metadata_source` subprocess (a structural mirror of `tv-parser`; reads EXIF via
+> the system `exiftool` binary — `os/exec` arg-slice, NO new Go dep), module-type-
+> gated image discovery in `plugins/base-scanner` (`image.go`), an `absolute_path`
+> stamp in `internal/scan` (the only file-location channel into the enricher
+> chain), and an `image` module seed in `internal/module`. **Additive** (proto/
+> api/enrich/sdk/`go.mod` diff empty — AC-3); `metadata_source` now ships TWO
+> plugins (tv-parser + image-enricher) with **zero new capability types**
+> (`image_provider` stays reserved — D-1 holds). B3 (external TMDB + `AuthContext`)
+> + Phase C (post-action) remain **deferred**. Feature record:
+> `docs/image-enrichment/`; operator runbook:
+> [`docs/image-enrichment/operator_runbook.md`](image-enrichment/operator_runbook.md).
+
 | Package | Owns | Public API (≤8; WARN noted) | Depends on |
 |---|---|---|---|
-| `cmd/mellifera` | wiring (flat `main.go`) — **[A]** loads base-scanner + tv-parser, constructs `enrich.Deps`; **[B1]** constructs `enrich.NewQueue`, `Start`s the pool before serving, wires `scan.Deps.Notify` → `queue.Notify` (process ctx), `Stop`s on shutdown; reads `MELLIFERA_ENRICH_*` knobs | — | all (read-only) |
+| `cmd/mellifera` | wiring (flat `main.go`) — **[A]** loads base-scanner + tv-parser, constructs `enrich.Deps`; **[B1]** constructs `enrich.NewQueue`, `Start`s the pool before serving, wires `scan.Deps.Notify` → `queue.Notify` (process ctx), `Stop`s on shutdown; reads `MELLIFERA_ENRICH_*` knobs; **[B2]** loads/stops the image-enricher subprocess (3rd plugin; `MELLIFERA_IMAGE_ENRICHER` env, default `bin/image-enricher`) | — | all (read-only) |
 | `internal/store` | SQLite: documents + control tables + reserved `playback_progress`/`scan_jobs` — **[A]** + indexed `items.status` column (default `"new"`); `QueryItems` additive `status` filter (`""` ⇒ all). **[B1]** +`ledger.go` (`FailureRow` + `RecordFailure`/`ClearFailure`/`ListFailures`; **no DDL** — `enrichment_failures` existed from Phase A) + pool-wide 5s `busy_timeout` PRAGMA in `Open`'s DSN (`withBusyTimeout`) | `Open`, `Close`, `DB`, `CreateLibrary`, `GetLibrary`, `GetItem`, `PutItem`, `QueryItems`, `RecordFailure`, `ClearFailure`, `ListFailures` (+ `Store`/`Item`/`Library`/`FailureRow`) — **gate count 5** (top-level: `Store`/`Open`/`Item`/`Library`/`FailureRow`; methods excluded by `check.sh` ⇒ green ≤8; the Phase-A "11 WARN" narrative counted methods) | — (bottom) |
 | `internal/plugin` | subprocess lifecycle + gRPC clients + capability routing — **[A]** caps-driven launch; `MetadataSource` accessor | `Open`, `Load`, `Start`, `Stop`, `Status`, `Scanner`, `MetadataSource` (+ `Manager`/`Deps`/`Health`) — **10 WARN** | proto, sdk |
-| `internal/module` | config-driven module registry — **[A]** `metadata_sources` chain (`Module.MetadataSources[]`); tv-parser seed | `Open`, `Get`, `List` (+ `Registry`/`Module`/`ScannerBinding`/`MetadataSourceBinding`) — **7** | store |
-| `internal/scan` | scan-side orchestration (resolve module → scanner → stream → identify → PutItem). **[B1]** drops inline enrich; persists each item `pending` + calls `Notify(libraryID)` once post-drain so the queue derives/drains async. A re-scan whose base identity changed → `stale`; unchanged re-scan preserves status. `scan.Result` shape **unchanged** (timing only) | `Run`, `Deps` (`.Enrich` retained seam + **[B1]** `.Notify` field), `Result` — **3** | store, module, plugin, enrich |
+| `internal/module` | config-driven module registry — **[A]** `metadata_sources` chain (`Module.MetadataSources[]`); tv-parser seed; **[B2]** `image` module seed (base-scanner + image-enricher priority 1) — now tv + image | `Open`, `Get`, `List` (+ `Registry`/`Module`/`ScannerBinding`/`MetadataSourceBinding`) — **7** (`imageConfigJSON` is an unexported const; no new symbol) | store |
+| `internal/scan` | scan-side orchestration (resolve module → scanner → stream → identify → PutItem). **[B1]** drops inline enrich; persists each item `pending` + calls `Notify(libraryID)` once post-drain so the queue derives/drains async. **[B2]** stamps `absolute_path = filepath.Join(root, rel)` into `doc["parsed"]` for EVERY item (media-type-agnostic — INV2; the only file-location channel into the enricher chain, D-6). A re-scan whose base identity changed → `stale`; unchanged re-scan preserves status. `scan.Result` shape **unchanged** (timing only) | `Run`, `Deps` (`.Enrich` retained seam + **[B1]** `.Notify` field), `Result` — **3** | store, module, plugin, enrich |
 | `internal/enrich` | **[A]** metadata-side orchestrator + **[B1] async derived-queue dispatcher** (arch §4.4): `Queue` derives pending `(item, plugin)` work from `items`+namespaces+ledger (no work table), feeds a bounded channel, a worker pool drains it under per-item in-memory leases with retry/backoff + terminal-cooldown ledger writes. `Enrich` (sync per-item chain) is **preserved** (deprecate-don't-delete, AC-3) — the worker shares its helpers (`runSource`/`nextState`/`applyContribution`/`appendStage`) but does not call `Enrich` directly | `Enrich`, `Deps`, `Result` + **[B1]** `Queue`, `QueueConfig`, `Stats`, `NewQueue` — **7** (queue.go/worker.go/lease.go/retry.go) | store, module, plugin |
 | `internal/api` | HTTP (chi) — **pure delegation, no logic** — **[A]** additive `itemDTO.Status` + `?status=` filter | `New`, `Deps`, `Principal` | scan, store |
 | `pkg/sdk` | plugin SDK (ships in the MAIN Go module for MVP — R7) — **[A]** capability-2 adapter | `Serve`, `ScannerPlugin`, `Scanner`, `MetadataSourcePlugin`, `MetadataSource`, `HandshakeConfig`, `Capability` — **7** | proto, go-plugin |
-| `plugins/base-scanner` | one subprocess binary — **[A]** media-type-agnostic (walk + ffprobe + withinRoot; parseTV extracted to tv-parser) | per-capability (scanner.v1 + plugin.v1) | sdk, proto |
+| `plugins/base-scanner` | one subprocess binary — **[A]** media-type-agnostic (walk + ffprobe + withinRoot; parseTV extracted to tv-parser); **[B2]** module-type-gated discovery (`module_type=="image"` → image extensions, else video — D-1; a union filter is rejected to avoid TV cover-art junk, R-I4) + stdlib image base info (`image.go`: `imageMime` 6 exts incl. heic/heif; `probeImage` decodes jpeg/png dims via `image.DecodeConfig`; webp/heic/heif/RAW base-info soft-fails — exiftool supplies their data at enrichment) | per-capability (scanner.v1 + plugin.v1) | sdk, proto |
 | `plugins/tv-parser` | **[A]** first `metadata_source` subprocess binary (parseTV moved here verbatim; serves `metadata.v1.MetadataSource`) | per-capability (metadata.v1 + plugin.v1) | sdk, proto |
+| `plugins/image-enricher` | **[B2]** second `metadata_source` subprocess binary (a structural mirror of tv-parser; only the capability body differs — EXIF extraction vs filename parse). Serves `metadata.v1.MetadataSource`; reads EXIF via the **system `exiftool`** subprocess (`os/exec` arg-slice — no CGO, no Go module dep; `exec.LookPath` every Convert, 30s per-file timeout). Every exiftool failure is a per-source SOFT-FAIL → empty namespace → B1 `no_data` terminal → settle (AC-6) | per-capability (metadata.v1 + plugin.v1); package main — **0** non-test exports | sdk, proto |
 | `internal/stream` | range-request file serving — **DEFERRED** | — | — |
 | `internal/janitor` | cleanup cron — **DEFERRED** | — | — |
 
@@ -94,9 +109,9 @@ caps-driven (base-scanner's client set byte-identical to scan-library — AC-3);
 `"metadata_source"` (the contract example `"parse"` was illustrative); parseTV
 moved verbatim (base-scanner Identify now media-type-agnostic); `enriched` = ≥1
 success ∧ 0 failed (partial stays at furthest-valid). The async enrichment queue
-is now **realized in Phase B1**; only B2 (image+EXIF) + B3 (external TMDB
-enricher + `AuthContext` population) and Phase C (post-action) remain
-**deferred/outlined**.
+is **realized in Phase B1**; B2 (image+EXIF) is **realized in Phase B2** (see
+below); only B3 (external TMDB enricher + `AuthContext` population) and Phase C
+(post-action) remain **deferred/outlined**.
 
 **Accepted deviations realized by `async-enrichment` Phase B1** (reviewer
 PROCEED-WITH-FIXES correctness; health-check ISSUES-FOUND PROCEED, no P0; QA
@@ -129,6 +144,35 @@ green; see `docs/async-enrichment/{reviews,audit,qa}/`):
 - `Enrich` is preserved (AC-3 deprecate-don't-delete); the retained
   `scan.Deps.Enrich`/`prodEnricher` seam is dead production wiring (cleanup-routable,
   audit D-02) — the worker drives the chain via `runSource`, not `Enrich`.
+
+**Accepted deviations realized by `image-enrichment` Phase B2** (reviewer PROCEED,
+health-check HEALTHY PROCEED (P0/P1: 0), QA green; see
+`docs/image-enrichment/{reviews,audit,qa}/`):
+- **EXIF via system `exiftool` subprocess (D-2 / D21).** The enricher invokes the
+  system `exiftool` binary via `os/exec` arg-slice (`-j -n <selected tags> <absPath>`,
+  NEVER a shell — mirrors `ffprobe.go`). `exiftool` is a RUNTIME dep (like
+  ffmpeg/ffprobe), NOT a Go-module dep and NOT a build dep — `go.mod` is unchanged. A
+  missing/failing/timeout/non-JSON exiftool is a per-source SOFT-FAIL (empty metadata
+  → B1 `no_data` terminal → 30-day cooldown → settle — AC-6). This replaces an earlier
+  pure-Go `bep/imagemagick`/`imagemeta` direction (user plan-review decision).
+- **Module-type-gated discovery (D-1 / R-I4), not a union filter.** `walk` selects the
+  image extension map ONLY when `module_type=="image"`, else the video map. A union
+  filter would discover TV cover-art jpgs as junk items. The core never branches on
+  media type (INV2 holds — confirmed by grep: no `module_type` branch in `internal/scan`).
+- **`absolute_path` is the only file-location channel (D-6).** `internal/scan` stamps
+  `absolute_path = filepath.Join(root, rel)` into `doc["parsed"]` for ALL items
+  (media-type-agnostic); the B1 chain passes an empty Merge doc, so the enricher reads
+  the file via the Match-carried Query. tv-parser ignores it (additive — TV goldens pass).
+- **webp/heic/heif stdlib base-info soft-fails (spec_error reconciled — INFO-1).**
+  `image/webp` is NOT a stdlib package in Go 1.25; `golang.org/x/image/webp` is
+  third-party (forbidden by the no-new-dep AC-2). webp stays DISCOVERED (`imageMime`)
+  but, like HEIC/RAW, its stdlib base-info soft-fails at discovery — only jpeg/png get
+  stdlib base dims. exiftool supplies full webp/heic data at enrichment. No feature
+  loss (the end-to-end webp item reaches `ready`).
+- **Additive (AC-3) + pure-Go (AC-2).** `proto/`/`internal/api/`/`internal/enrich/`/
+  `pkg/sdk/`/`go.mod`/`go.sum` diff empty vs `e2a7562`; no `import "C"`; `image-enricher`
+  package main ships 0 non-test exports; `internal/module` stays at 7. B3 (external TMDB
+  fetch + `AuthContext`) + Phase C (post-action) remain **deferred**.
 
 **Accepted deviations realized by scan-library** (reviewer/health-check ACCEPT;
 see `docs/scan-library/reviews/review_coder.md` §5):

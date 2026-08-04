@@ -4,15 +4,16 @@
 // Command mellifera is the composition root: a flat, top-to-bottom constructor
 // list that wires the whole app graph in one file. It reads configuration from
 // the environment, opens the store, loads and starts the base-scanner (scanner)
-// and tv-parser (metadata_source) plugin subprocesses, constructs enrich.Deps
+// and tv-parser + image-enricher (metadata_source) plugin subprocesses, constructs enrich.Deps
 // and wires it into the scan orchestrator, assembles the HTTP edge, and serves
 // until SIGINT/SIGTERM. There is no DI container and no reflection wiring —
 // every dependency is an explicit constructor call (ai-architecture §2 principle
 // 5; mellifera-build skill; depguard denies reflect + DI frameworks).
 //
 // Dev-mode plugin loading: each plugin binary is loaded from a configurable
-// filesystem path (env MELLIFERA_BASE_SCANNER / MELLIFERA_TV_PARSER, defaults
-// bin/base-scanner / bin/tv-parser from `make build-plugin`). go:embed
+// filesystem path (env MELLIFERA_BASE_SCANNER / MELLIFERA_TV_PARSER /
+// MELLIFERA_IMAGE_ENRICHER, defaults bin/base-scanner / bin/tv-parser /
+// bin/image-enricher from `make build-plugin`). go:embed
 // first-run extraction is deferred to release packaging (D11/Q20).
 package main
 
@@ -38,7 +39,8 @@ import (
 )
 
 // Launch-consent + identity constants shared with the plugin subprocess. The
-// magic-cookie pair MUST match the values base-scanner AND tv-parser validate
+// magic-cookie pair MUST match the values base-scanner, tv-parser, AND
+// image-enricher validate
 // (MELLIFERA_MAGIC_COOKIE / mellifera-plugin-v1); a mismatch is a fatal
 // substrate-handshake failure. coreVersion mirrors the plugins' min_core.
 const (
@@ -89,6 +91,17 @@ func main() {
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
 	}), "load tv-parser")
 	fatalOn(mgr.Start(ctx, "tv-parser"), "start tv-parser")
+
+	// image-enricher is the image metadata_source plugin (EXIF via the system
+	// exiftool subprocess — Task 01). Same dev-mode pattern + cookie pair +
+	// capability declaration as tv-parser; its Handshake advertises the same
+	// metadata_source capability (Task 01). Loaded/started BEFORE the server
+	// serves (INV-start-before-serve) so the first image scan's B1 queue finds a
+	// live enricher.
+	fatalOn(mgr.Load("image-enricher", cfg.imageEnricherPath, []sdk.Capability{
+		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
+	}), "load image-enricher")
+	fatalOn(mgr.Start(ctx, "image-enricher"), "start image-enricher")
 
 	scanDeps := scan.Deps{
 		Store:   st,
@@ -148,17 +161,19 @@ func main() {
 	enrichQueue.Stop()
 	logErr(mgr.Stop(shutdownCtx, "base-scanner"), "stop base-scanner")
 	logErr(mgr.Stop(shutdownCtx, "tv-parser"), "stop tv-parser")
+	logErr(mgr.Stop(shutdownCtx, "image-enricher"), "stop image-enricher")
 	// store.Close runs via the deferred st.Close() in main.
 }
 
 // config is the resolved startup configuration read from the environment.
 type config struct {
-	dsn             string
-	adminToken      string
-	baseScannerPath string
-	tvParserPath    string
-	listenAddr      string
-	enrich          enrich.QueueConfig
+	dsn               string
+	adminToken        string
+	baseScannerPath   string
+	tvParserPath      string
+	imageEnricherPath string
+	listenAddr        string
+	enrich            enrich.QueueConfig
 }
 
 // loadConfig reads configuration from the environment with sane MVP defaults.
@@ -175,11 +190,12 @@ func loadConfig() config {
 		os.Exit(1)
 	}
 	return config{
-		dsn:             filepath.Join(dataDir, "mellifera.db"),
-		adminToken:      adminToken,
-		baseScannerPath: envOr("MELLIFERA_BASE_SCANNER", "bin/base-scanner"),
-		tvParserPath:    envOr("MELLIFERA_TV_PARSER", "bin/tv-parser"),
-		listenAddr:      envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
+		dsn:               filepath.Join(dataDir, "mellifera.db"),
+		adminToken:        adminToken,
+		baseScannerPath:   envOr("MELLIFERA_BASE_SCANNER", "bin/base-scanner"),
+		tvParserPath:      envOr("MELLIFERA_TV_PARSER", "bin/tv-parser"),
+		imageEnricherPath: envOr("MELLIFERA_IMAGE_ENRICHER", "bin/image-enricher"),
+		listenAddr:        envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
 		// Async enrich queue knobs (arch §4.4). Every field has a §4.4 default;
 		// a missing/empty/malformed value falls back to it + logs a warning
 		// (INV-env-defaults: startup never aborts on an enrich knob). Only the

@@ -80,6 +80,39 @@ const tvConfigJSON = `{
   }
 }`
 
+// imageConfigJSON is the architecture §2.4.1 image module config, as JSON. It is a
+// CONFIG ENTITY (INV1/INV2) — data, not code — mirroring tvConfigJSON. It binds
+// base-scanner (scanner) + image-enricher (priority 1) under media_type "image",
+// schema_version 1. image-enricher is a LOCAL EXIF parser: no auth_mode (so it is
+// queueable per D-Q1) and NO filename-date fallback (images have no reliable
+// filename convention analogous to TV's SxxExx — D-4; a no-EXIF image keeps base
+// info only). exclude_patterns is advisory (base-scanner defers enforcement,
+// walk.go:48-49) and intentionally does NOT exclude *.jpg. No display block —
+// image has no display-priority sources in B2. display_name carries Russian
+// first-class (arch §1.2). One metadata_source (image-enricher) — RAW/external
+// enrichers are deferred (B3).
+const imageConfigJSON = `{
+  "id": "image",
+  "schema_version": 1,
+  "display_name": {"ru": "Фотографии", "en": "Photos"},
+  "media_type": "image",
+  "scanner": {
+    "plugin_id": "base-scanner",
+    "capability_id": "default",
+    "options": {
+      "exclude_patterns": ["*.thm", "*.xmp"],
+      "follow_symlinks": false
+    }
+  },
+  "metadata_sources": [
+    {
+      "plugin_id": "image-enricher", "capability_id": "default",
+      "priority": 1, "enabled": true,
+      "options": {}
+    }
+  ]
+}`
+
 // Registry is the in-memory cache of module configs, loaded once at Open.
 type Registry struct {
 	ordered []Module
@@ -128,6 +161,14 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 		"tv", "tv", tvConfigJSON, 1, 1, seedCreatedAt, seedCreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("module: seed: %w", err)
+	}
+	// Second idempotent seed: the image module (base-scanner + image-enricher).
+	// modules.media_type UNIQUE accepts "image" (distinct from "tv"); INSERT OR
+	// IGNORE makes Open safe to run repeatedly (no error, no duplicate rows).
+	if _, err := db.ExecContext(ctx, seedModulesSQL,
+		"image", "image", imageConfigJSON, 1, 1, seedCreatedAt, seedCreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("module: seed image: %w", err)
 	}
 	rows, err := db.QueryContext(ctx, listModulesSQL)
 	if err != nil {

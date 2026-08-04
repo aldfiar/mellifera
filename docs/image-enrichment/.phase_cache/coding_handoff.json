@@ -1,0 +1,94 @@
+{
+  "status": "done",
+  "feature": "image-enrichment",
+  "phase": "coder",
+  "phase_complete": true,
+  "tasks_completed": ["T01", "T02", "T03", "T04", "T05", "T06", "T07"],
+  "tasks_this_handoff": ["T07"],
+  "completed_count": 7,
+  "total_tasks": 11,
+  "coder_tasks_total": 7,
+  "summary": "T07 (image AC-1 golden e2e + AC-2/AC-3 gate probes) DONE — the coder capstone. NEW mellifera/integration_image_test.go is a REAL end-to-end golden (real go-plugin subprocesses + real system exiftool + real image fixtures + real HTTP) that drives POST /libraries{module_id:image} -> POST /scan -> bounded poll GET /items?status= until settled, asserting the async image model + real EXIF provenance. Existing root goldens RECONCILED to build image-enricher into tmp + set MELLIFERA_IMAGE_ENRICHER (T05 made it mandatory at startup). Full gate + structural probes ALL green. completed_count 6->7. CODER PHASE COMPLETE (7/7 coder tasks). Next: wf-reviewer.",
+  "files_created": [
+    {"path": "mellifera/integration_image_test.go", "task": "T07", "lines": 503, "change": "package mellifera_test, stdlib-only black-box. TestImageE2E_GoldenReady (the AC-1 golden) + 5 sub-test assertion groups + real fixture generators (stdlib jpeg/png encode + exiftool -n EXIF stamp + ffmpeg libwebp webp + sips heic). Reuses the scan-library harness (buildBinary/startServer/scanLibrary/listItems/indexByPath) + B1 golden doc navigation (parseAsyncDoc/asyncStr/asyncStageHas). Adds 0 exported symbols."}
+  ],
+  "files_modified": [
+    {"path": "mellifera/integration_test.go", "task": "T07", "change": "startServer signature gained imageEnricherBin param + MELLIFERA_IMAGE_ENRICHER env (hermetic — no fallback to repo-local bin/); the local caller builds image-enricher into tmp. NO existing assertion changed.", "lines_added": 4},
+    {"path": "mellifera/integration_async_test.go", "task": "T07", "change": "caller builds image-enricher into tmp + passes it to startServer (reconciliation).", "lines_added": 2},
+    {"path": "mellifera/qa_async_acceptance_test.go", "task": "T07", "change": "caller builds image-enricher into tmp + passes it to startServer (reconciliation).", "lines_added": 2},
+    {"path": "mellifera/qa_acceptance_test.go", "task": "T07", "change": "qaStartServer signature gained imageEnricherBin param + MELLIFERA_IMAGE_ENRICHER env; caller builds image-enricher into tmp + passes it (reconciliation).", "lines_added": 4}
+  ],
+  "golden_e2e_confirmation": {
+    "real_image_enricher": true,
+    "real_exiftool": true,
+    "real_images": true,
+    "real_http": true,
+    "no_in_process_fakes_on_hot_path": true,
+    "polled_to_settle": true,
+    "drain_terminal": "every discovered image item settles enriched->ready via the B1 predicate (image-enricher writes sources.image-enricher -> allSourcesTerminal -> settle)",
+    "asserted": [
+      "AC-1 EXIF: sources.image-enricher width/height/format + make=Apple/model=iPhone 15/date_taken=2024-07-30T14:21:05Z/orientation=6/gps_lat~55.7558/gps_lon~37.6173 (recon-verified vs exiftool 13.55 -n output)",
+      "AC-1 provenance: _provenance.<field>.plugin_id=image-enricher (+ non-empty version); >=1 _view entry sources image-enricher; _stages{image-enricher,status:ok}",
+      "AC-1 states: items reach status=ready (polled via ?status=); non-empty base ffprobe (stdlib discovery dims) for the decodable jpeg",
+      "AC-image gating: not_video.mkv NOT discovered by the image module (module-type-gated discovery); Discovered/Persisted == image-fixture count",
+      "AC-queue: scan non-blocking (>=1 item still in-flight the instant scan returned; the HTTP response carrying counts is the structural proof)",
+      "AC-softfail: photo.png (no EXIF) = CLEAN success {width,height,format} (NOT a spurious no_data) -> ready; truncated.jpg persisted with empty base ffprobe (scan not aborted)",
+      "AC-unicode: Фото.jpg (Cyrillic) discovered + sources.image-enricher.model == Фотоаппарат preserved verbatim",
+      "AC-image HEIC: sips-generated HEIC -> sources.image-enricher.width non-null + format=heic (exiftool supplies full HEIC data; stdlib discovery soft-fails)"
+    ],
+    "test_result": "TestImageE2E_GoldenReady PASS (7.00s) — all 5 sub-tests green"
+  },
+  "existing_goldens_reconciled": {
+    "note": "T05 made image-enricher mandatory at startup (fatalOn if absent). The 4 root test files that exec the real server previously left MELLIFERA_IMAGE_ENRICHER unset (defaulting to the non-hermetic repo-local bin/image-enricher artifact). All 4 now build image-enricher into the test tmp dir + set MELLIFERA_IMAGE_ENRICHER explicitly (hermetic). No existing assertion weakened — all 3 TV goldens (integration_test.go, integration_async_test.go, qa_async_acceptance_test.go, qa_acceptance_test.go) still pass.",
+    "helpers_updated": ["startServer (integration_test.go)", "qaStartServer (qa_acceptance_test.go)"],
+    "callers_updated": ["integration_test.go:72", "integration_async_test.go:80", "qa_async_acceptance_test.go:92", "qa_acceptance_test.go:57"]
+  },
+  "ac3_additive_diff": {
+    "git_base": "e2a7562",
+    "proto_internal_api_internal_enrich_pkg_sdk": "EMPTY (0 modified + 0 untracked in protected trees — authoritative repo-root check)",
+    "internal_enrich_queue": "EMPTY (AC-queue — B1 queue source untouched)",
+    "go_mod_go_sum": "EMPTY (AC-2 — no new Go dependency; exiftool is a system runtime dep via os/exec)"
+  },
+  "ac2_gates": {
+    "gofmt": "clean",
+    "go_build": "CGO_ENABLED=0 go build ./... exit 0",
+    "make_build_plugin": "exit 0; produces bin/base-scanner + bin/tv-parser + bin/image-enricher (all 3 executable)",
+    "go_test": "go test ./... exit 0; 12 packages all pass (root pkg 34.5s incl the image golden + 3 reconciled TV goldens)",
+    "golangci_lint": "exit 0 (funlen/gocognit/gocyclo/lll/depguard/dupl clean — helpers stay under funlen-60)",
+    "go_vet": "exit 0",
+    "check_sh": "OK (exit 0) — exported-symbol budget green (test file adds 0 exported symbols)",
+    "no_cgo": "grep 'import \"C\"' plugins/image-enricher/ + plugins/base-scanner/ = 0 hits (pure-Go binaries)"
+  },
+  "acceptance": {
+    "acceptance_md_present": true,
+    "acceptance_path": "mellifera/integration_image_test.go",
+    "scenarios_verified": {
+      "AC-1": "PASS — TestImageE2E_GoldenReady (golden e2e, real subprocesses + real exiftool + real images + real HTTP, polled-to-settle, real EXIF provenance/states)",
+      "AC-2": "PASS — full bash gate green (build/vet/lint/check.sh/test + no-CGO + go.mod untouched)",
+      "AC-3": "PASS — additive diff empty (proto/internal/api/internal/enrich/pkg/sdk untouched, authoritative repo-root check)",
+      "AC-image": "PASS — module-type gating (.mkv absent, image exts present) + HEIC width non-null, in the golden",
+      "AC-queue": "PASS — non-blocking scan + settle in the golden; internal/enrich diff empty (bash)",
+      "AC-softfail": "PASS — no-EXIF clean success + corrupt persisted, in the golden",
+      "AC-unicode": "PASS — Cyrillic filename + non-ASCII Model preserved, in the golden"
+    },
+    "note": "The acceptance test is the in-package Go golden mellifera/integration_image_test.go (where it MUST live to build real binaries + reuse the harness). No docs/image-enrichment/tests/ dir exists — matching the B1 precedent (docs/async-enrichment/tests/ also absent; its integration_async_test.go is its AC-1 vehicle). Behavioral ACs (AC-1/image/softfail/unicode) verified by the golden; structural ACs (AC-2/3/queue) verified by the bash gate."
+  },
+  "grounding": {
+    "exiftool_field_mapping_verified": "enricher.go mapExif maps ImageWidth->width, ImageHeight->height, FileType->format(lowercased), Make->make, Model->model, DateTimeOriginal->date_taken(RFC3339), Orientation->orientation, GPSLatitude->gps_lat, GPSLongitude->gps_lon — assertions match these exact keys",
+    "exiftool_output_recon_verified": "exiftool 13.55 -j -n readback of a stamped JPEG returned ImageWidth=64/ImageHeight=48/FileType=JPEG/Make=Apple/Model='iPhone 15'/DateTimeOriginal='2024:07:30 14:21:05'/Orientation=6/GPSLatitude=55.7558/GPSLongitude=37.6173 (Orientation write required -n to stick; the test stamps with -n)",
+    "base_info_landing_verified": "probeImage (image.go) writes {width,height,format} JSON into FfprobeJson (the opaque probe field) — asserted via asyncDoc.Ffprobe non-empty for the jpeg",
+    "image_enricher_mandatory_at_startup_verified": "cmd/mellifera/main.go:101-104 mgr.Load+Start('image-enricher') with fatalOn -> the reconciliation (build into tmp + set MELLIFERA_IMAGE_ENRICHER) is REQUIRED, not optional",
+    "hevc_heif_muxer_absent_verified": "host ffmpeg 7.1.1 has libx265 but NO heif muxer ('Requested output format heif is not known') -> HEIC fixture uses macOS sips instead (guarded on sips LookPath)",
+    "webp_encoder_present_verified": "host ffmpeg has libwebp -> WEBP fixture generated via ffmpeg (guarded on ffmpeg LookPath); webp is discovered but its stdlib base-info soft-fails (no stdlib decoder) -> exiftool supplies webp data at enrichment"
+  },
+  "deviations": [
+    {"kind": "line_budget_overrun", "severity": "P2", "task": "T07", "subject": "integration_image_test.go is 503 lines vs the 300 (flex 1.3 = 390) estimate", "detail": "TIGHT-BUT-CLEAN: every line is a real AC assertion or real fixture/harness (no padding). The accepted B1 async golden (integration_async_test.go) is 433 lines and covers LESS fixture variety (3 TV files vs 6 image types incl webp/heic + EXIF stamping). The specifier's 300 estimate under-counted: 6 fixture generators (stdlib jpeg/png + exiftool EXIF stamp + ffmpeg webp + sips heic + corrupt + stray-mkv) + 6 AC assertion groups + the poll-to-settle harness mirroring the B1 golden. The file adds 0 exported symbols (test file). Reviewer: accept as tight-but-clean or request a split."},
+    {"kind": "structural_probes_via_bash_not_go_test", "severity": "P3", "task": "T07", "subject": "AC-2/AC-3 probes (B08-B11) verified via the delegation's bash gate, not as a Go test", "detail": "The task spec marked the in-test structural probes OPTIONAL ('(optional) a small TestB2StructuralProbes ... OR fold into the e2e test file'). They are git/grep probes by nature; the authoritative verification is the task's own verify block (bash), which I ran green. QA2 (qa/qa_02_structural_regression.md) owns TestB2_Ac3Additive/TestB2_NoCgoNoDep as the durable Go-test regression. The golden e2e focuses on the behavioral ACs (its core job)."},
+    {"kind": "heic_fixture_uses_sips_macos_only", "severity": "P3", "task": "T07", "subject": "HEIC fixture generation uses macOS sips (host ffmpeg has no heif muxer)", "detail": "Recon: ffmpeg 7.1.1 on this host lacks the heif muxer; sips (macOS) produces a valid HEIC that exiftool reads (width/height/FileType=HEIC). Guarded on exec.LookPath('sips') -> graceful t.Skip if absent (the jpg/png/webp golden stands; HEIC AC-image coverage also lives in QA1). Not a portability concern for the SHIPPED code (the enricher uses exiftool, not sips); only the test's fixture generation is sips-dependent."},
+    {"kind": "acceptance_test_location", "severity": "P3", "task": "T07", "subject": "Acceptance test lives at mellifera/integration_image_test.go, not docs/image-enrichment/tests/", "detail": "Go integration tests that build real binaries + reuse the subprocess harness MUST live in-package (package mellifera_test, repo root). docs/image-enrichment/tests/ is not a Go package. This matches the B1 precedent (no tests/ dir; integration_async_test.go is its AC-1 vehicle). All 7 acceptance scenarios verified (behavioral by the golden; structural by the bash gate)."}
+  ],
+  "next_hint": "Coder phase COMPLETE (7/7 coder tasks). Next: wf-reviewer — validate T01-T07 against their specs (re-derive expected EXIF fields from the fixture; run the gate + additive-diff probes independently; confirm the root goldens reconciliation weakened no assertion). Then wf-qa (QA1 behavior re-derivation + QA2 structural regression).",
+  "next_task_file": "",
+  "blockers": [],
+  "verify_passed": true
+}

@@ -87,7 +87,7 @@ func TestRegistry_List_CacheOnly(t *testing.T) {
 		t.Fatalf("insert movies: %v", err)
 	}
 
-	r, err := Open(ctx, s) // seeds tv + loads tv and movies
+	r, err := Open(ctx, s) // seeds tv + image, loads image + movies + tv
 	if err != nil {
 		t.Fatalf("module.Open: %v", err)
 	}
@@ -96,11 +96,12 @@ func TestRegistry_List_CacheOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(list) != 2 {
-		t.Fatalf("List = %d modules, want 2 (tv+movies): %+v", len(list), list)
+	if len(list) != 3 {
+		t.Fatalf("List = %d modules, want 3 (image+movies+tv): %+v", len(list), list)
 	}
-	if list[0].ID != "movies" || list[1].ID != "tv" { // id-ordered
-		t.Fatalf("List order = %s, %s; want movies, tv", list[0].ID, list[1].ID)
+	// id-ordered: "image" < "movies" < "tv".
+	if list[0].ID != "image" || list[1].ID != "movies" || list[2].ID != "tv" {
+		t.Fatalf("List order = %s, %s, %s; want image, movies, tv", list[0].ID, list[1].ID, list[2].ID)
 	}
 
 	// INV2: wipe the table; the cache must keep serving with no DB read.
@@ -111,7 +112,89 @@ func TestRegistry_List_CacheOnly(t *testing.T) {
 		t.Fatalf("Get(tv) after DB wipe = %v; cache must be independent of the DB (INV2)", err)
 	}
 	list2, err := r.List()
-	if err != nil || len(list2) != 2 {
-		t.Fatalf("List after DB wipe = %d (err=%v); want 2 (cache-only, INV2)", len(list2), err)
+	if err != nil || len(list2) != 3 {
+		t.Fatalf("List after DB wipe = %d (err=%v); want 3 (cache-only, INV2)", len(list2), err)
 	}
+}
+
+// TestOpen_ImageSeeded covers the B2 image module seed (B01/B03): Open seeds an
+// "image" module whose scanner binds base-scanner/default and whose
+// metadata_sources contains exactly image-enricher (priority 1, enabled, local —
+// no auth_mode). Get("image") resolves it; it is distinct from "tv".
+func TestOpen_ImageSeeded(t *testing.T) {
+	r, _ := openRegistry(t)
+
+	m, err := r.Get("image")
+	if err != nil {
+		t.Fatalf("Get(image): %v", err)
+	}
+	if m.ID != "image" || m.MediaType != "image" || m.SchemaVersion != 1 {
+		t.Fatalf("Get(image) = %+v, want id=image media_type=image schema_version=1", m)
+	}
+	if m.Scanner.PluginID != "base-scanner" || m.Scanner.CapabilityID != "default" {
+		t.Fatalf("scanner binding = %+v, want base-scanner/default", m.Scanner)
+	}
+	if len(m.MetadataSources) != 1 {
+		t.Fatalf("metadata_sources len = %d, want 1 (image-enricher only)", len(m.MetadataSources))
+	}
+	src := m.MetadataSources[0]
+	if src.PluginID != "image-enricher" || src.CapabilityID != "default" {
+		t.Errorf("metadata_source[0] = %+v, want image-enricher/default", src)
+	}
+	if src.Priority != 1 || !src.Enabled {
+		t.Errorf("metadata_source[0] priority=%d enabled=%v, want priority=1 enabled=true", src.Priority, src.Enabled)
+	}
+	if src.AuthMode != "" {
+		t.Errorf("metadata_source[0] auth_mode = %q, want empty (local parser; auth_mode would make it non-queueable per D-Q1)", src.AuthMode)
+	}
+
+	// TV module regression: the image seed did not alter the tv row (INSERT OR IGNORE).
+	tv, err := r.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv): %v", err)
+	}
+	if tv.ID != "tv" || tv.MediaType != "tv" {
+		t.Fatalf("Get(tv) = %+v, want tv (image seed must not alter the tv row)", tv)
+	}
+}
+
+// TestOpen_IdempotentSeedImage covers B04: running Open twice on the same store
+// does not error and does not duplicate the image row (INSERT OR IGNORE).
+func TestOpen_IdempotentSeedImage(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	r1, err := Open(ctx, s)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	before := mustListLen(t, r1)
+
+	if _, err := Open(ctx, s); err != nil {
+		t.Fatalf("second Open: %v (INSERT OR IGNORE must keep re-Open error-free)", err)
+	}
+	r2, err := Open(ctx, s) // re-open the cache from the same rows
+	if err != nil {
+		t.Fatalf("third Open: %v", err)
+	}
+	if after := mustListLen(t, r2); after != before {
+		t.Fatalf("List len after re-Open = %d, want %d (no duplicate seed rows)", after, before)
+	}
+	if _, err := r2.Get("image"); err != nil {
+		t.Fatalf("Get(image) after re-Open = %v", err)
+	}
+}
+
+// mustListLen returns the length of r.List (fails the test on error). Test helper.
+func mustListLen(t *testing.T, r *Registry) int {
+	t.Helper()
+	list, err := r.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	return len(list)
 }
