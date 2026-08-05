@@ -35,6 +35,7 @@ import (
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
+	"github.com/mellifera/mellifera/internal/web"
 	"github.com/mellifera/mellifera/pkg/sdk"
 )
 
@@ -78,6 +79,11 @@ func main() {
 		MagicCookieValue: magicCookieValue,
 		CoreVersion:      coreVersion,
 	})
+	// pluginIDs is the canonical set of plugin IDs loaded + started below AND
+	// iterated by the Deps.Status closure. Defined ONCE here (DRY) so the load
+	// sites and the status closure cannot diverge. A Phase-2+ Manager.List()
+	// would replace this literal (INV-known-plugin-set).
+	pluginIDs := []string{"base-scanner", "tv-parser", "image-enricher"}
 	fatalOn(mgr.Load("base-scanner", cfg.baseScannerPath, []sdk.Capability{
 		{Type: "scanner", ID: "default", ProtoService: scannerService},
 	}), "load base-scanner")
@@ -124,13 +130,59 @@ func main() {
 	scanDeps.Notify = func(_ context.Context, libraryID int64) {
 		enrichQueue.Notify(ctx, libraryID)
 	}
-	handler := api.New(api.Deps{
+	// Deps.Status closure (arch §4.4 best-effort liveness; INV2 anti-corruption
+	// seam — built HERE in cmd/mellifera so api imports neither plugin nor
+	// enrich, mirroring the Deps.Scan func-field above). Iterates the canonical
+	// pluginIDs set, maps plugin.Health→api.PluginHealth (RFC3339 at the edge —
+	// INV-time-format-at-edge), and reads enrichQueue.Stats()→api.EnrichStats.
+	// A per-plugin Status error omits that one entry but does NOT fail the whole
+	// snapshot (B3 best-effort) — it returns the healthy plugins + the enrich
+	// snapshot rather than 500ing /admin/status over one bad plugin.
+	statusClosure := func(ctx context.Context) (api.AdminStatus, error) {
+		plugins := make([]api.PluginHealth, 0, len(pluginIDs))
+		for _, id := range pluginIDs {
+			h, err := mgr.Status(id)
+			if err != nil {
+				slog.Warn("admin status: plugin status unavailable", "plugin", id, "error", err)
+				continue
+			}
+			checkedAt := ""
+			if !h.LastCheckedAt.IsZero() {
+				checkedAt = h.LastCheckedAt.Format(time.RFC3339)
+			}
+			plugins = append(plugins, api.PluginHealth{
+				ID:        id,
+				State:     h.State,
+				Restarts:  h.Restarts,
+				CheckedAt: checkedAt,
+			})
+		}
+		es := enrichQueue.Stats()
+		return api.AdminStatus{
+			Plugins: plugins,
+			Enrich: api.EnrichStats{
+				Pending:  es.Pending,
+				InFlight: es.InFlight,
+				Done:     es.Done,
+				Failed:   es.Failed,
+			},
+		}, nil
+	}
+
+	apiHandler := api.New(api.Deps{
 		AdminToken: cfg.adminToken,
 		Store:      st,
 		Scan: func(ctx context.Context, libraryID int64) (scan.Result, error) {
 			return scan.Run(ctx, scanDeps, libraryID)
 		},
+		Status: statusClosure,
 	})
+
+	// Single top-level http.Handler: web.Handler composes the api router
+	// (mounted at /api/* inside web.Handler) with the embedded SPA + Swagger
+	// surface (INV-single-handler — no second http.Server). DevMode loosens the
+	// cache headers for the Vite dev proxy (MELLIFERA_WEB_DEV).
+	handler := web.Handler(apiHandler, web.Options{DevMode: cfg.webDev})
 
 	srv := &http.Server{
 		Addr:              cfg.listenAddr,
@@ -173,6 +225,7 @@ type config struct {
 	tvParserPath      string
 	imageEnricherPath string
 	listenAddr        string
+	webDev            bool
 	enrich            enrich.QueueConfig
 }
 
@@ -196,6 +249,10 @@ func loadConfig() config {
 		tvParserPath:      envOr("MELLIFERA_TV_PARSER", "bin/tv-parser"),
 		imageEnricherPath: envOr("MELLIFERA_IMAGE_ENRICHER", "bin/image-enricher"),
 		listenAddr:        envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
+		// webDev=true loosens the SPA cache headers (no-cache everywhere) so the
+		// Vite dev proxy :5173 can hot-reload alongside this server. Default
+		// false (production: immutable /assets/* + no-cache index.html).
+		webDev: envBool("MELLIFERA_WEB_DEV", false),
 		// Async enrich queue knobs (arch §4.4). Every field has a §4.4 default;
 		// a missing/empty/malformed value falls back to it + logs a warning
 		// (INV-env-defaults: startup never aborts on an enrich knob). Only the
@@ -248,6 +305,23 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envBool reads a boolean env var (1/t/T/true/TRUE/True → true; everything else
+// → def). It mirrors strconv.ParseBool's accepted set; an unset/empty/invalid
+// value falls back to def (INV-env-defaults: startup never aborts on a webDev
+// knob). Used for MELLIFERA_WEB_DEV.
+func envBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		slog.Warn("invalid bool env var; using default", "key", key, "value", v, "default", def, "error", err)
+		return def
+	}
+	return b
 }
 
 // fatalOn aborts the process if err is non-nil. Used for startup wiring, where a

@@ -57,3 +57,40 @@ func (s *Store) GetLibrary(ctx context.Context, id int64) (Library, error) {
 	l.CreatedAt = created
 	return l, nil
 }
+
+// ListLibraries returns every library row ordered id ASC. It takes no filter
+// arguments: GET /libraries lists ALL configured scan roots (AC-3). The query
+// has no user-supplied args, so the ORDER BY is the only clause (INV1:
+// parameterized SQL; nothing is interpolated). A libraries table with zero
+// rows yields a non-nil empty slice so the api handler serializes
+// {"items":[]} rather than {"items":null} (the JSON contract the admin panel
+// library list relies on).
+func (s *Store) ListLibraries(ctx context.Context) ([]Library, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id, module_id, root_path, display_name, created_at FROM libraries ORDER BY id",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list libraries: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Library, 0)
+	for rows.Next() {
+		var (
+			l           Library
+			createdText string
+		)
+		if err := rows.Scan(&l.ID, &l.ModuleID, &l.RootPath, &l.DisplayName, &createdText); err != nil {
+			return nil, fmt.Errorf("store: list libraries scan: %w", err)
+		}
+		created, err := parseTime(createdText)
+		if err != nil {
+			return nil, fmt.Errorf("store: list libraries parse time: %w", err)
+		}
+		l.CreatedAt = created
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list libraries: %w", err)
+	}
+	return out, nil
+}

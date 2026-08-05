@@ -44,6 +44,24 @@
 > + Phase C (post-action) remain **outlined**. Feature record:
 > `docs/image-enrichment/`; operator runbook:
 > [`docs/image-enrichment/operator_runbook.md`](image-enrichment/operator_runbook.md).
+>
+> **web-ui Phase 1 layered on top — additive.** Lands the Go-side UI foundation:
+> a NEW `internal/web` package (`Handler`+`Options`) composes the chi `/api/*`
+> router with the embedded SPA (`//go:embed all:dist` — the first real `go:embed`
+> here), the code-generated OpenAPI spec (`/openapi.{yaml,json}`, embedded committed
+> bytes), and Swagger UI (`/docs/` via `github.com/swaggo/http-swagger` — the first
+> new Go runtime dep; NOTICE-documented; `swag` stays a dev/CI CLI like `protoc`).
+> `internal/api` widens to role-aware auth (`Principal{Role}` + `Role` + two
+> `requireRole` groups) + 3 additive GETs (`/libraries`, `/items/{id}`,
+> `/admin/status` via a `Deps.Status` closure built in `cmd/mellifera` — INV2
+> preserved). Additive: proto/sdk/scan/enrich/plugin/module byte-identical vs
+> `58a1130`. api 3→7 (≤8); `internal/web` = 2. The Go gate (`make build`/`check`/
+> `test`/`lint`) is **node-free**; `make web-build` is the only node/swag target
+> (dev/CI-only). The public surface widens (R-2): `/`, `/assets/*`, `/openapi.*`,
+> `/docs` are unauthenticated static (no data); all data stays role-gated. React
+> app + client panels + B3 (TMDB) + Phase C (post-action) remain **deferred**
+> (Phase 2+). Feature record: `docs/web-ui/`; operator runbook:
+> [`docs/web-ui/operator-runbook.md`](web-ui/operator-runbook.md).
 
 ## Overview
 
@@ -58,6 +76,8 @@ The differentiator versus the Jellyfin/Emby lineage is **subprocess plugin isola
 | Language | Go 1.25.0 (toolchain `go1.25.3`) | `go.mod`; enhanced_objective.md §2 |
 | Storage | SQLite via `modernc.org/sqlite` (pure-Go, no CGO) + JSON columns | arch §1.2; enhanced_obj §4 (recommended; planner confirms) |
 | HTTP router | `chi` v5 | ai-arch §3, module map |
+| Web composition | `github.com/swaggo/http-swagger` v1.3.4 (Swagger UI at `/docs/`) — first runtime dep added by web-ui Phase 1; NOTICE-documented | ai-arch §4 `[web-ui]` row |
+| OpenAPI codegen | `swaggo/swag` CLI (dev/CI only — like `protoc`; NOT a `go.mod` runtime dep) | Makefile `web-build`; operator runbook |
 | Plugin transport | `hashicorp/go-plugin` v1.8.0 (gRPC subprocess) | arch §1.2, §2; D1 |
 | RPC | `google.golang.org/grpc` + `google.golang.org/protobuf` | arch §2 |
 | Codegen | `protoc` 29.3 (generated `*.pb.go` committed; `buf` not installed — protoc fallback) | arch §2; enhanced_obj §1 |
@@ -69,11 +89,11 @@ The differentiator versus the Jellyfin/Emby lineage is **subprocess plugin isola
 
 CGO is avoided (pure-Go SQLite chosen to fit single-binary + cross-compile). No DI framework. No `reflect` (depguard-denied).
 
-## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2)
+## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1)
 
 Directory tree as realized by the foundational slice PLUS the additive Phase A,
-Phase B1, and Phase B2 layers (grounded in `docs/ai-architecture.md` §4 module map +
-`docs/architecture.md` §10). Symbol counts are exported symbols per
+Phase B1, Phase B2, and web-ui Phase 1 layers (grounded in `docs/ai-architecture.md`
+§4 module map + `docs/architecture.md` §10). Symbol counts are exported symbols per
 `scripts/check.sh`, which counts **top-level** `func/type/var/const` decls only
 (method receivers excluded); `WARN` = >8 but ≤12:
 
@@ -94,8 +114,9 @@ mellifera/
 │   ├── plugin/                     # subprocess lifecycle + gRPC clients + capability routing (10 WARN; +MetadataSource accessor)
 │   ├── module/                     # config-driven module registry (7; +MetadataSourceBinding; tv-parser seed [A] + image-enricher image-module seed [B2])
 │   ├── scan/                       # scan-side orchestrator: Run/Deps/Result (3; B1: persists pending + Notify(libraryID), drops inline enrich, re-scan→stale; B2: stamps absolute_path into parsed for all items)
-│   ├── api/                        # chi router — PURE DELEGATION, zero logic (3; itemDTO.Status + ?status=)
-│   ├── enrich/                     # metadata-side orchestrator + async derived-queue: Enrich/Deps/Result + Queue/QueueConfig/Stats/NewQueue (7; B1: queue.go/worker.go/lease.go/retry.go) — UNCHANGED in B2
+│   ├── api/                        # chi router — PURE DELEGATION, zero logic (7 [web-ui]: +Role +AdminStatus/PluginHealth/EnrichStats; role-aware auth Principal{Role}+requireRole; 3 GETs /libraries /items/{id} /admin/status via Deps.Status closure; swag annotations)
+│   ├── web/                        # [web-ui] embedding + composition layer (2: Handler+Options) — //go:embed all:dist (SPA) + embedded openapi.{yaml,json} + /docs (Swagger UI via swaggo/http-swagger); SPA fallback + immutable /assets cache; public surface (/, /assets, /openapi, /docs) unauthenticated
+│   ├── enrich/                     # metadata-side orchestrator + async derived-queue: Enrich/Deps/Result + Queue/QueueConfig/Stats/NewQueue (7; B1: queue.go/worker.go/lease.go/retry.go) — UNCHANGED in B2/web-ui
 │   ├── stream/                     # DEFERRED
 │   └── janitor/                    # DEFERRED
 ├── plugins/
@@ -103,7 +124,7 @@ mellifera/
 │   ├── tv-parser/                  # metadata_source subprocess: parseTV moved here verbatim; serves metadata.v1.MetadataSource
 │   └── image-enricher/             # metadata_source subprocess [B2]: EXIF via the system exiftool (os/exec arg-slice); structural mirror of tv-parser; serves metadata.v1.MetadataSource
 ├── cmd/
-│   └── mellifera/                  # flat main.go — constructor wiring (loads base-scanner + tv-parser + image-enricher [B2]; builds enrich.Deps; B1: enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs; B2: MELLIFERA_IMAGE_ENRICHER env)
+│   └── mellifera/                  # flat main.go — constructor wiring (loads base-scanner + tv-parser + image-enricher [B2]; builds enrich.Deps; B1: enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs; B2: MELLIFERA_IMAGE_ENRICHER env; [web-ui]: composes web.Handler(api.New(deps),opts) as sole handler + builds Deps.Status closure + MELLIFERA_WEB_DEV)
 ├── integration_test.go             # scan-library AC-1 golden end-to-end scan (stdlib-only black-box)
 ├── integration_pipeline_test.go    # Phase A AC-1 golden end-to-end enrich pipeline (stdlib-only black-box)
 ├── integration_async_test.go       # Phase B1 AC-1 golden: scan→pending→async drain→ready (stdlib-only black-box)
@@ -111,13 +132,13 @@ mellifera/
 └── qa_*_test.go                    # independent acceptance + regression (scan-library + Phase A + Phase B1 + Phase B2)
 ```
 
-Dependency direction points **down only**: `api → scan → enrich → {module, plugin} → store`. Phase B1: scan no longer calls enrich inline — after persisting items `pending` it hands the library to the `enrich.Queue` via `Deps.Notify` (wired in `cmd/mellifera`); enrich still never imports scan. The worker pool is a process-lifetime component (started before serving, stopped on shutdown). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4).
+Dependency direction points **down only**: `web → api → scan → enrich → {module, plugin} → store` (web-ui Phase 1: `internal/web` composes `internal/api`; api does not import web). Phase B1: scan no longer calls enrich inline — after persisting items `pending` it hands the library to the `enrich.Queue` via `Deps.Notify` (wired in `cmd/mellifera`); enrich still never imports scan. The worker pool is a process-lifetime component (started before serving, stopped on shutdown). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4).
 
 ## Entry points
 
 | Binary | Path | Role |
 |---|---|---|
-| Server | `cmd/mellifera/main.go` | Flat constructor wiring (no DI, no reflect). Reads config, opens store, loads **all three** plugins (base-scanner + tv-parser + image-enricher), constructs `enrich.Deps`, constructs + starts the async `enrich.Queue` (before serving) and wires `scan.Deps.Notify` → `queue.Notify` (process ctx); stops pool → plugins → store on shutdown. Reads `MELLIFERA_ENRICH_*` knobs (and `MELLIFERA_IMAGE_ENRICHER` — Phase B2). |
+| Server | `cmd/mellifera/main.go` | Flat constructor wiring (no DI, no reflect). Reads config, opens store, loads **all three** plugins (base-scanner + tv-parser + image-enricher), constructs `enrich.Deps`, constructs + starts the async `enrich.Queue` (before serving) and wires `scan.Deps.Notify` → `queue.Notify` (process ctx); stops pool → plugins → store on shutdown. Reads `MELLIFERA_ENRICH_*` knobs (and `MELLIFERA_IMAGE_ENRICHER` — Phase B2). **web-ui Phase 1:** composes `web.Handler(api.New(deps), opts)` as the sole top-level handler; builds the `Deps.Status` closure over `mgr.Status` + `enrichQueue.Stats` (INV2 seam); reads `MELLIFERA_WEB_DEV`. |
 | Scanner plugin | `plugins/base-scanner/main.go` | Separate subprocess binary using `pkg/sdk.Serve(...)`. **Media-type-agnostic** (Phase A): walks configured library root, runs `ffprobe` via arg slice, emits ONLY base fields (`relative_path`/`extension` + the verbatim ffprobe blob). TV parsing no longer lives here (extracted to tv-parser). Path-traversal guard (`withinRoot`) on every discovered path. |
 | Metadata-source plugin | `plugins/tv-parser/main.go` | Phase A. Separate subprocess binary; the first `metadata_source` capability plugin. Houses `parseTV` (moved verbatim from base-scanner) and serves `metadata.v1.MetadataSource` (Match→BuildRequest→Convert→Merge) on one shared gRPC server via `pkg/sdk.Serve`. |
 | Metadata-source plugin (image) | `plugins/image-enricher/main.go` | Phase B2. Separate subprocess binary; the second `metadata_source` capability plugin. A structural mirror of tv-parser (only the capability body differs: EXIF extraction via the system `exiftool` binary — `os/exec` arg-slice, never a shell — vs filename parse). `Match` applies for `module_type=="image"` or an image extension; `Convert` runs exiftool on `absolute_path` (carried by `Match`); `Merge` writes `sources["image-enricher"]` only. A missing/failing exiftool is a per-source SOFT-FAIL. |
@@ -169,16 +190,16 @@ All DECIDED or DEFAULTED in `docs/open-questions.md`; none OPEN. Load-bearing fo
 
 Q1–Q28 carry reversible defaults with named revisit triggers (see `docs/open-questions.md`). Risk register R1–R14 lives there too.
 
-## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2)
+## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1)
 
-The foundational slice plus the additive Phase A, Phase B1, and Phase B2 layers are
-implemented and all verification gates are green — `gofmt`/`build`/`vet`/`test`/
-`-race`/`lint`/`check.sh` all PASS (no data races; reviewer PROCEED, health-check
-HEALTHY PROCEED (P0/P1: 0), QA green; B1 `completed_count=13`; B2 `completed_count=11`
-= 7 coder + 2 QA + 2 docs):
+The foundational slice plus the additive Phase A, Phase B1, Phase B2, and web-ui
+Phase 1 layers are implemented and all verification gates are green —
+`gofmt`/`build`/`vet`/`test`/`-race`/`lint`/`check.sh` all PASS (no data races;
+reviewer PROCEED, health-check HEALTHY PROCEED (P0/P1: 0), QA green; B1
+`completed_count=13`; B2 `completed_count=11`; web-ui `completed_count=21`):
 
-- `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0) + `go.sum` (**unchanged** across Phase A, B1, and B2 — additive, no new deps; `exiftool` is a runtime dep, not a Go dep).
-- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser,image-enricher}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged**).
+- `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0). **Unchanged** across Phase A/B1/B2 (additive). web-ui Phase 1 adds the first new Go runtime dep — `github.com/swaggo/http-swagger v1.3.4` (+ transitives) for the Swagger UI at `/docs/`; NOTICE-documented. `swag`/`swagfmt` stay dev/CI CLIs (not in `go.mod` as runtime).
+- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich,web}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser,image-enricher}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged**).
 - `mellifera` binary (server) + `base-scanner` + `tv-parser` + `image-enricher` binaries via `make build` / `make build-plugin` (3 plugin binaries).
 - `integration_test.go` (scan-library) + `integration_pipeline_test.go` (Phase A) + `integration_async_test.go` (Phase B1 AC-1 async golden) + `integration_image_test.go` (Phase B2 AC-1 async image golden) + `qa_*_test.go` (independent acceptance + regression for all four slices).
 - Inputs, still read-only: `docs/{architecture,ai-architecture,prior-art,open-questions}.md`, `.claude/skills/mellifera-build/`, `.golangci.yml`.
@@ -250,6 +271,22 @@ additions:
 
 **Image lifecycle = the B1 lifecycle, unchanged.** Image items consume the SAME async queue as TV: scan persists each item `pending` (non-blocking) → the worker pool drains `(item, image-enricher)` → `enriched --settled--> ready`. EXIF provenance, soft-fail, and runtime-dep posture: **[`docs/image-enrichment/operator_runbook.md`](image-enrichment/operator_runbook.md)**; state machine: `docs/image-enrichment/acceptance.md`.
 
+### web-ui Phase 1 additions (additive — `web-ui`)
+
+web-ui Phase 1 lands the Go-side UI foundation WITHOUT touching the plugin contract,
+the enrich queue, `scan.Result`, or proto/sdk (additive: `proto/`/`pkg/sdk`/
+`internal/{scan,enrich,plugin,module}` byte-identical vs `58a1130`). Key additions:
+
+- **`internal/web` (NEW; 2 symbols: `Handler`, `Options`).** The embedding + composition layer. `Handler(apiHandler, Options)` builds one chi router mounting `/api/*` → the passed-in api handler (nil-safe — tests serve SPA/swagger alone), `/openapi.{yaml,json}` → the embedded committed spec bytes, `/docs/*` → Swagger UI (`github.com/swaggo/http-swagger`), and `/` + `/assets/*` + SPA-fallback → the embedded SPA (`//go:embed all:dist` — the first real `go:embed` in the codebase). `/assets/*` (hashed filenames) → `Cache-Control: public, max-age=31536000, immutable`; `index.html` → `no-cache`; broken hashed assets 404 (fail fast). `Options.DevMode` collapses both to `no-cache` (for the Vite dev proxy). The public surface is intentionally unauthenticated; `/api/v1/*` carries its own role-gating. Owns NO domain logic — does not import plugin/enrich/module/scan/store.
+- **`internal/api` (3→7: +`Role`, +`AdminStatus`, +`PluginHealth`, +`EnrichStats`).** Role-aware auth arrives as a TYPE not a bool: `Role` (`RoleAdmin` minted, `RoleClient` gated — the Phase-2 swap point), `Principal{Role}` with `IsAdmin()`, and two `requireRole` route groups (browse = admin+client read-only; admin = admin-only mutating + liveness). Handlers never fork on `Role` — the group is the only authZ gate (arch §11.5). 3 additive GETs ship (`/libraries`, `/items/{id}`, `/admin/status`); `/admin/status` reads a `Deps.Status` closure (built in `cmd/mellifera` over `mgr.Status`+`enrichQueue.Stats`) — the INV2 anti-corruption seam that keeps api free of plugin/enrich imports (mirrors `Deps.Scan`). `AdminStatus`/`PluginHealth`/`EnrichStats` are the exported seam-input wire types (INV4). swag annotations on all 6 handlers (comment-only metadata; INV1 preserved). `IsAdmin()` is a method → excluded from the `check.sh` count; 7 ≤ 8 green.
+- **`internal/store` (stays 5; +`ListLibraries` method).** `ListLibraries(ctx) ([]Library, error)` — parameterized SQL (`?`-bound, `ORDER BY id ASC`); a method, excluded from the symbol budget.
+- **`cmd/mellifera`.** Composes `web.Handler(api.New(deps), web.Options{DevMode: cfg.webDev})` as the SOLE top-level `http.Handler` (no second `http.Server`). Builds the `Deps.Status` closure (iterates the canonical `pluginIDs` set, maps `plugin.Health`→`api.PluginHealth` RFC3339-at-the-edge, reads `enrichQueue.Stats()`→`api.EnrichStats`; best-effort — a per-plugin error omits one entry, does not fail the snapshot). Reads `MELLIFERA_WEB_DEV` (`envBool`, default `false`).
+- **`Makefile`.** New `web-build` target — DEV/CI-only (`swag init -g internal/api/doc.go -o internal/web/api -ot json,yaml`; a commented Phase-2 `npm ci && npm run build`). NOT a prerequisite of `build`/`check`/`lint`/`test` (INV-node-free-gate).
+- **`NOTICE`.** Records the bundled Swagger UI (Apache-2.0) served via `github.com/swaggo/http-swagger` + the code-generated OpenAPI spec.
+- **`integration_web_test.go` + `qa_*_test.go`.** AC-1..AC-7 keystone (roles, swagger, list, item, admin-status, embed/delivery, build-gate node-free) + independent QA (browse-group default-deny, DTO-accuracy drift catcher, INV4 library wire key-set, empty-name asset guard, AC-7 node-free dry-run). Health-check P0/P1: 0; the two P2 cleanups (dead `Principal.Admin()` removed; byte-identical `libraryResponse`/`libraryDTO` collapsed) and two P3 doc-reconciliation notes (A-01/A-02) are folded into `docs/web-ui/conventions.md`.
+
+**Build-gate story (AC-7).** The Go gate (`make build`/`check`/`lint`/`test`) NEVER invokes `node`/`npm`/`swag` — it embeds COMMITTED artifacts (`internal/web/dist/*` placeholder now; `internal/web/api/openapi.{json,yaml}`). `make web-build` is the only node/swag-touching target (dev/CI). **Public-surface widens (R-2):** `/`, `/assets/*`, `/openapi.*`, `/docs` are now unauthenticated (static only — no data); all data stays behind role-gated `/api/v1/*`. Build-gate + R-2 posture + env knobs: **[`docs/web-ui/operator-runbook.md`](web-ui/operator-runbook.md)**.
+
 ### Capability model
 
 Two capability types now ship (the open-set the core knows): `scanner` (base-scanner) and
@@ -271,11 +308,19 @@ longer deferred): the **async enrichment queue** + worker pool + per-item leases
 pool-wide `busy_timeout`. **Realized in B2 (no longer deferred):** image+EXIF enrichment (image media
 type + the `image-enricher` `metadata_source` subprocess + module-type-gated image discovery); RAW image
 discovery (`.cr2/.nef/.arw/.dng`) remains deferred (exiftool reads RAW natively — cheap to add to `imageMime` later).
+**Realized in web-ui Phase 1 (no longer deferred):** the Go-side UI foundation — `internal/web` (SPA +
+Swagger composition via `go:embed`) + role-aware auth (`Principal{Role}`/`requireRole`) + 3 additive
+GETs + the `Deps.Status` liveness closure + the `make web-build` regen path (the `Principal` abstraction
+grounds the deferred session-based multi-user auth, D18/Q15). **Still deferred (web-ui Phase 2+):** the
+real React app (`web/src/` + `package.json` + `vite.config.ts`) — today only a placeholder
+`internal/web/dist/` shell is embedded; client panels; the `RoleClient` resolver (type exists, no minter yet).
 
 The `scan-library` enhanced objective lives at `mellifera/docs/scan-library/.phase_cache/enhanced_objective.md`;
 the Phase A feature record lives at `mellifera/docs/plugin-pipeline/`; the Phase B1 feature record
 lives at `mellifera/docs/async-enrichment/`; the Phase B2 feature record lives at
-`mellifera/docs/image-enrichment/` (plan, contracts, acceptance, reviews, audit, qa, operator runbook).
+`mellifera/docs/image-enrichment/` (plan, contracts, acceptance, reviews, audit, qa, operator runbook);
+the web-ui Phase 1 feature record lives at `mellifera/docs/web-ui/` (plan, contracts, conventions,
+acceptance, reviews, audit, qa, operator runbook).
 
 ## Open questions the planner must resolve
 

@@ -4,6 +4,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -82,12 +83,12 @@ func TestNew_Routes(t *testing.T) {
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
 		}
-		var lr libraryResponse
+		var lr libraryDTO
 		if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
-			t.Fatalf("decode libraryResponse: %v", err)
+			t.Fatalf("decode libraryDTO: %v", err)
 		}
 		if lr.ID <= 0 || lr.ModuleID != "tv" || lr.RootPath != "/media/tv" || lr.DisplayName != "TV" {
-			t.Fatalf("libraryResponse = %+v", lr)
+			t.Fatalf("libraryDTO = %+v", lr)
 		}
 		// The one domain call persisted: the library row is in the store.
 		lib, err := st.GetLibrary(context.Background(), lr.ID)
@@ -180,6 +181,149 @@ func TestNew_Routes(t *testing.T) {
 		}
 		if eb := decodeError(t, resp); eb.Error.Code != "bad_request" {
 			t.Fatalf("error code = %q, want bad_request", eb.Error.Code)
+		}
+	})
+
+	t.Run("list_libraries", func(t *testing.T) {
+		// Two freshly created libraries with distinct (module_id, root_path)
+		// pairs (the table has a UNIQUE constraint on that pair, and earlier
+		// subtests already seeded ("tv","/media/tv") and ("tv","/media/seed")).
+		idA, err := st.CreateLibrary(context.Background(), "tv", "/media/tv/list", "TV List")
+		if err != nil {
+			t.Fatalf("CreateLibrary A: %v", err)
+		}
+		idB, err := st.CreateLibrary(context.Background(), "film", "/media/film", "Film")
+		if err != nil {
+			t.Fatalf("CreateLibrary B: %v", err)
+		}
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/libraries", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var lr librariesResponse
+		if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+			t.Fatalf("decode librariesResponse: %v", err)
+		}
+		// The two created here must round-trip with full fields. (Earlier
+		// subtests seeded more, so Items has at least these two.)
+		byID := map[int64]libraryDTO{}
+		for _, l := range lr.Items {
+			byID[l.ID] = l
+		}
+		for _, want := range []libraryDTO{{ID: idA, ModuleID: "tv", RootPath: "/media/tv/list", DisplayName: "TV List"},
+			{ID: idB, ModuleID: "film", RootPath: "/media/film", DisplayName: "Film"}} {
+			got, ok := byID[want.ID]
+			if !ok {
+				t.Fatalf("library id %d missing from response items %v", want.ID, lr.Items)
+			}
+			if got.ModuleID != want.ModuleID || got.RootPath != want.RootPath || got.DisplayName != want.DisplayName {
+				t.Errorf("library id %d = %+v, want %+v (boundary round-trip)", want.ID, got, want)
+			}
+		}
+		// Ordering guarantee from store.ListLibraries: id ASC end-to-end.
+		for i := 1; i < len(lr.Items); i++ {
+			if lr.Items[i-1].ID >= lr.Items[i].ID {
+				t.Fatalf("libraries not id ASC: %+v", lr.Items)
+			}
+		}
+	})
+
+	t.Run("list_libraries_empty", func(t *testing.T) {
+		// A fresh store yields the empty-list JSON contract: {"items":[]}
+		// (INV-empty-items-array), NOT {"items":null}.
+		emptySt := openAPIStore(t)
+		emptyH := New(Deps{AdminToken: adminToken, Store: emptySt, Scan: func(context.Context, int64) (scan.Result, error) {
+			return scan.Result{}, nil
+		}})
+		resp := doRequest(t, emptyH, http.MethodGet, "/api/v1/libraries", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		// Raw decode into a map to assert the JSON literal is `[]` not `null`.
+		var raw map[string]json.RawMessage
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode raw: %v", err)
+		}
+		items, ok := raw["items"]
+		if !ok {
+			t.Fatalf("response missing items key: %v", raw)
+		}
+		if string(items) != "[]" {
+			t.Fatalf("empty-store items = %s, want [] (not null)", string(items))
+		}
+	})
+
+	t.Run("get_item_full_document", func(t *testing.T) {
+		// Seed a ready item with a full §3.1-shaped document (sources/<plugin>,
+		// _view, _provenance, _stages) and assert the detail endpoint returns
+		// the FULL document byte-for-byte (INV-full-document — no field dropped,
+		// precision preserved). id is a string UUID, NOT integer-parsed.
+		libID, err := st.CreateLibrary(context.Background(), "tv", "/media/get-item", "GetItem")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		const itemID = "itm-get-item-full"
+		doc := json.RawMessage(`{
+  "sources": {"base-scanner": {"title": "Show", "year": 2024}},
+  "_view": {"title": "Show (2024)"},
+  "_provenance": {"base-scanner": {"stage": "identify", "at": "2026-08-05T00:00:00Z"}},
+  "_stages": ["identify"]
+}`)
+		if err := st.PutItem(context.Background(), store.Item{
+			ID: itemID, ModuleID: "tv", LibraryID: libID, FileID: "fid-get-item",
+			RelativePath: "Show S01E01.mkv", MediaType: "tv",
+			Document: doc, SchemaVersion: 1,
+		}); err != nil {
+			t.Fatalf("PutItem: %v", err)
+		}
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/items/"+itemID, "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var ir itemResponse
+		if err := json.NewDecoder(resp.Body).Decode(&ir); err != nil {
+			t.Fatalf("decode itemResponse: %v", err)
+		}
+		if ir.Item.ID != itemID || ir.Item.FileID != "fid-get-item" || ir.Item.MediaType != "tv" {
+			t.Fatalf("itemResponse identity fields = %+v", ir.Item)
+		}
+		// Deep-equal on the document: re-marshal both sides to canonical JSON
+		// so key-order independence does not cause a false failure.
+		wantCanon, _ := json.Marshal(doc)
+		got, _ := json.Marshal(ir.Item.Document)
+		wantVal, gotVal := map[string]json.RawMessage{}, map[string]json.RawMessage{}
+		if err := json.Unmarshal(wantCanon, &wantVal); err != nil {
+			t.Fatalf("unmarshal want: %v", err)
+		}
+		if err := json.Unmarshal(got, &gotVal); err != nil {
+			t.Fatalf("unmarshal got: %v", err)
+		}
+		if len(wantVal) != len(gotVal) {
+			t.Fatalf("document top-level keys: got %d, want %d (full document)", len(gotVal), len(wantVal))
+		}
+		for k, wantV := range wantVal {
+			gotV, ok := gotVal[k]
+			if !ok {
+				t.Errorf("document key %q dropped (INV-full-document)", k)
+				continue
+			}
+			if !bytes.Equal(gotV, wantV) {
+				t.Errorf("document key %q = %s, want %s", k, gotV, wantV)
+			}
+		}
+	})
+
+	t.Run("get_item_not_found", func(t *testing.T) {
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/items/nonexistent-id", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+		}
+		if eb := decodeError(t, resp); eb.Error.Code != "not_found" {
+			t.Fatalf("error code = %q, want not_found", eb.Error.Code)
 		}
 	})
 }

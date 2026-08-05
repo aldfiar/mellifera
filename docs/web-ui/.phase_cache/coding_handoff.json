@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "phase": "coder",
+  "feature": "web-ui",
+  "status": "done",
+  "completed_count": 15,
+  "total_tasks": 21,
+  "summary": "BLK-T13-1 resolved via user-authorized Option A; T13 (cmd wiring) + T15 (integration capstone) implemented. All 15 coder tasks done; full suite green; Go build gate node-free; AC-7 additive diff empty. Coder phase COMPLETE.",
+  "blockers_resolved": ["BLK-T13-1 (spec_error) — Option A applied"],
+  "files_modified": [
+    {"path": "mellifera/internal/api/handlers.go", "change": "Exported PluginHealth + EnrichStats (carry JSON tags); deleted redundant unexported pluginHealthDTO/enrichStatsDTO; AdminStatus fields retyped to exported seam types; statusResponse (unexported envelope) references the exported types. Handler mapping line unchanged."},
+    {"path": "mellifera/internal/api/admin_status_test.go", "change": "Updated admin_status_happy to use exported PluginHealth/EnrichStats."},
+    {"path": "mellifera/internal/api/doc.go", "change": "INV5 + Public API block 4->7 symbols; INV4 wording updated."},
+    {"path": "mellifera/docs/web-ui/contracts.md", "change": "AdminStatus + api.Deps + DTO block updated for the exported seam types (Option A)."},
+    {"path": "mellifera/cmd/mellifera/main.go", "change": "T13: +internal/web import; pluginIDs slice defined once near load block; Deps.Status closure (INV2; iterates pluginIDs via mgr.Status -> api.PluginHealth RFC3339; enrichQueue.Stats -> api.EnrichStats; per-plugin error best-effort omit); web.Handler(api.New(+Status), Options{DevMode}) wraps api router (single http.Server); config.webDev + envBool + MELLIFERA_WEB_DEV."},
+    {"path": "mellifera/docs/web-ui/task_index.md", "change": "T13 + T15 marked [x]."},
+    {"path": "mellifera/docs/web-ui/state.json", "change": "completed_count 13->15; phase coder done; BLK-T13-1 cleared; phase_log appended."}
+  ],
+  "files_created": [
+    {"path": "mellifera/integration_web_test.go", "change": "T15 capstone: TestWeb_Integration black-box (package mellifera_test) with ac1_roles, ac2_swagger, ac3_list, ac4_item, ac5_admin_status, ac6_embed, ac7_gates sub-tests + deepEqualJSON helper."}
+  ],
+  "contract_tests": {
+    "task_13": "Verified end-to-end via T15 ac5_admin_status (closure seam) + ac6_embed (composition). No separate in-package test (package main; per T13 test_seed).",
+    "task_15": "integration_web_test.go — 7 sub-tests asserting AC-1..AC-7 at the HTTP edge through web.Handler(api.New(deps), opts)."
+  },
+  "validation": {
+    "gofmt": "clean (own code; .claude/skills/mellifera-build/module-template/doc.go is a pre-existing skill asset NOT in web-ui scope — left untouched, per T14 precedent)",
+    "build": "CGO_ENABLED=0 go build ./... OK (node-free gate)",
+    "build_plugin": "make build-plugin -> bin/{base-scanner,tv-parser,image-enricher} (3 binaries)",
+    "test": "CGO_ENABLED=0 go test ./... ALL PASS (incl. formerly-blocked TestQA_AdditiveContract_ProtoAndDepsUnchanged + TestB2_Ac3Additive)",
+    "lint": "golangci-lint run ./... exit 0",
+    "vet": "go vet ./... exit 0",
+    "check_sh": "check.sh OK (api=7 exported symbols <=8; internal/web=2)",
+    "ac7_additive": "git diff 58a1130 HEAD --stat -- proto/ pkg/sdk/ internal/scan/ internal/enrich/ internal/plugin/ internal/module/ EMPTY (additive verified)"
+  },
+  "deviations": [
+    "Option A (user-authorized): the unexported pluginHealthDTO/enrichStatsDTO were subsumed (deleted) by the exported PluginHealth/EnrichStats which carry the JSON tags — cleaner than the literal 'keep both' wording (the 'existing mapping works' line required statusResponse to reference the exported types, making the unexported DTOs redundant). Wire shape byte-identical; INV4 intact; statusResponse stays unexported.",
+    "T13: closure uses api.PluginHealth/api.EnrichStats (the spec existing_code_snapshot named the now-deleted api.pluginHealthDTO/api.enrichStatsDTO).",
+    "T15: internal/scan imported to build the Deps.Scan stub (structurally required; spec allowed_imports under-listed it — every sibling repo-root test imports it).",
+    "T15: AC-1 client-role 403 left to in-package role_gating_test.go (api.principalKey unexported; widening api's surface for a test-only injector would breach the <=8 budget). T15 asserts admin->all-6-routes + 401; the delegation's 'OR real admin' branch.",
+    "T15: AC-2 acceptance grep '>=6' miscounts (5 path keys / 6 operations); T15 asserts the true invariant (5 path keys + >=6 operationIds)."
+  ],
+  "invariants_held": ["INV1 api pure-delegation", "INV2 api imports neither plugin nor enrich (verified: only store+scan+stdlib+chi)", "INV4 no plugin.Health/enrich.Stats over the wire (plain api seam types)", "<=8 exported symbols (api=7)", "no reflect; no DI; single http.Server; parameterized SQL; Apache-2.0 headers"],
+  "next_hint": "wf-reviewer (coder phase COMPLETE — all 15 coder tasks done, full gates green)",
+  "git_commits": []
+}

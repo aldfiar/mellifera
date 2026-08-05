@@ -22,26 +22,81 @@ type Deps struct {
 	AdminToken string
 	Store      *store.Store
 	Scan       func(ctx context.Context, libraryID int64) (scan.Result, error)
+	// Status is the admin-panel liveness closure: built in cmd/mellifera over
+	// plugin.Manager.Status + enrich.Queue.Stats and returning the api-local
+	// AdminStatus. Nil-safe (the handler returns 503 when Status is nil) so
+	// existing callers that omit it compile and the endpoint degrades cleanly
+	// — this is the anti-corruption seam that keeps api free of plugin/enrich
+	// imports (INV2; mirrors the Deps.Scan func-field).
+	Status func(ctx context.Context) (AdminStatus, error)
 }
+
+// Role is the authorization role resolved from the credential. MVP issues
+// only RoleAdmin (the admin token); RoleClient is gated but not yet minted
+// (the future Phase-2 client resolver swap point). Values are lower-snake to
+// match the existing status literals. Handlers never fork on Role; authz lives
+// in the route group via requireRole (Task 04/08) — arch §11.5.
+type Role string
+
+const (
+	// RoleAdmin is the role every valid admin token resolves to today (both the
+	// admin and the browse panels work for it).
+	RoleAdmin Role = "admin"
+	// RoleClient is the client-panel role. It is defined but NOT minted by any
+	// resolver yet — it exists so Phase 2 can issue client principals behind
+	// the same middleware without a signature change (INV3).
+	RoleClient Role = "client"
+)
 
 // Principal is the authenticated caller the middleware resolves from a valid
-// admin token. For MVP Admin is always true; Phase 2 widens it with user_id,
-// roles, and library ACLs behind the same middleware (architecture §11.5).
+// credential. The widening from {Admin bool} to {Role Role} is the arch §11.5
+// anticipated Phase-2 evolution, arrived early: new roles are added as a Role
+// constant plus a requireRole(...) member, not a handler fork. INV3: Principal
+// is a TYPE (not a bool gate); handlers read it via the unexported context
+// helper, never by branching on the role.
 type Principal struct {
-	Admin bool
+	Role Role
 }
 
-// New builds the chi router: the admin-token middleware wraps every route, then
-// the three pure-delegation routes are mounted under /api/v1. The returned
-// http.Handler is the whole HTTP edge.
+// IsAdmin reports whether the principal carries RoleAdmin — the canonical
+// reader for admin-gated logic. New code uses this (or requireRole at the
+// route group); do not branch on p.Role inside a handler.
+func (p Principal) IsAdmin() bool { return p.Role == RoleAdmin }
+
+// New builds the chi router: authMiddleware (authN — resolves the Principal
+// from the admin token) wraps EVERY /api/v1/* route, then the routes are
+// grouped by authorization role (authZ) under /api/v1 via mountV1Routes. The
+// browse group admits admin+client (read-only views); the admin group admits
+// admin only (mutating + liveness). authN precedes authZ: a bad token 401s
+// before any requireRole runs; a good token with the wrong role 403s
+// (INV-authn-precedes-authz). Handlers never fork on Role — the group is the
+// only gate (arch §11.5).
 func New(deps Deps) http.Handler {
 	h := &app{deps: deps}
 	r := chi.NewRouter()
-	r.Use(adminMiddleware(deps.AdminToken))
-	r.Route("/api/v1", func(r chi.Router) {
+	r.Use(authMiddleware(deps.AdminToken))
+	r.Route("/api/v1", func(r chi.Router) { mountV1Routes(r, h) })
+	return r
+}
+
+// mountV1Routes wires the /api/v1 route table into two requireRole groups:
+// browse (admin+client — read-only library/item views) and admin (admin only —
+// library mutation, scan trigger, system status). Extracted so New (production,
+// behind authMiddleware) and the role-gating test (behind a synthetic-principal
+// injector) exercise the SAME wiring — the test proves the real group
+// composition, not a duplicate. No handler forks on Role here; the group is the
+// only authZ gate (INV-no-handler-fork; arch §11.5).
+func mountV1Routes(r chi.Router, h *app) {
+	r.Group(func(r chi.Router) {
+		r.Use(requireRole(RoleAdmin, RoleClient))
+		r.Get("/libraries", h.listLibraries)
+		r.Get("/items", h.listItems)
+		r.Get("/items/{id}", h.getItem)
+	})
+	r.Group(func(r chi.Router) {
+		r.Use(requireRole(RoleAdmin))
 		r.Post("/libraries", h.createLibrary)
 		r.Post("/libraries/{id}/scan", h.scanLibrary)
-		r.Get("/items", h.listItems)
+		r.Get("/admin/status", h.adminStatus)
 	})
-	return r
 }

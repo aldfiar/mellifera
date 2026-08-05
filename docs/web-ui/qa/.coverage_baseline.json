@@ -1,0 +1,35 @@
+{
+  "timestamp": "2026-08-05T00:00:00Z",
+  "baseline_run": {
+    "build": "exit 0",
+    "go_test_all": "all PASS (13 packages with tests; 4 proto pkgs no test files)",
+    "branch": "feature/web-ui",
+    "foundation": "58a1130"
+  },
+  "joint_coverage": {
+    "middleware_authN -> router_authZ": { "covered": true, "covered_by": "internal/api/middleware_test.go::TestAdminMiddleware_TokenMatrix + TestRequireRole", "covered_lines": "full token matrix + role matrix + next-not-called" },
+    "principalInjector -> mountV1Routes (admin/client)": { "covered": true, "covered_by": "internal/api/role_gating_test.go::TestNew_RoleGating", "covered_lines": "admin+client on browse; admin on admin-only; client 403 on admin" },
+    "real_New admin-token -> both route groups": { "covered": true, "covered_by": "role_gating_test.go (real_new_admin_token_passes_both_groups) + integration_web_test.go::ac1_roles", "covered_lines": "admin reaches all 6 routes; no/wrong token -> 401" },
+    "principalInjector -> mountV1Routes (unknown/empty role on BROWSE group)": { "covered": false, "covered_lines": 0, "gap": "default-deny on the permissive browse group never asserted through real route wiring (R-4 edge) -> QA1" },
+    "api-annotations -> generated spec (path keys + opIds)": { "covered": true, "covered_by": "integration_web_test.go::ac2_swagger", "covered_lines": "5 path keys + 6 operationIds" },
+    "api-annotations -> generated spec (DTO property shapes)": { "covered": false, "covered_lines": 0, "gap": "spec DTO property names never matched against handler DTOs (R-3 drift catcher at DTO level) -> QA2" },
+    "web/swagger embed -> served bytes (no runtime drift)": { "covered": false, "covered_lines": 0, "gap": "served spec never byte-compared to committed embedded file -> QA2" },
+    "web/swagger serve (yaml/json/docs public)": { "covered": true, "covered_by": "internal/web/web_test.go::TestHandler_Swagger + TestHandler_SwaggerNotFallback", "covered_lines": "200 + content-types + not-fallback" },
+    "store.ListLibraries -> api handler (ordering + empty)": { "covered": true, "covered_by": "internal/api/router_test.go::list_libraries + list_libraries_empty; integration ac3_list", "covered_lines": "id ASC + {items:[]}" },
+    "store.Library -> libraryDTO (INV4 exact wire key set)": { "covered": false, "covered_lines": 0, "gap": "existing tests decode into a struct that silently ignores extra fields; a created_at leak (INV4 breach) would pass -> QA3" },
+    "store.GetItem -> itemResponse (full document)": { "covered": true, "covered_by": "router_test.go::get_item_full_document; integration ac4_item", "covered_lines": "deep-equal full doc" },
+    "getItem 404 canonical body (code + retryable)": { "covered": "partial", "covered_lines": "code=not_found asserted; retryable=false NOT asserted", "gap": "retryable field skipped -> QA3" },
+    "Deps.Status closure -> statusResponse (happy/nil/error)": { "covered": true, "covered_by": "internal/api/admin_status_test.go::TestAdminStatus; integration ac5_admin_status", "covered_lines": "happy + nil->503 + error->500" },
+    "web embed -> SPA root/asset/fallback/cache": { "covered": true, "covered_by": "internal/web/web_test.go::TestHandler_SPAAndCache + TestHandler_DevMode; integration ac6_embed", "covered_lines": "root no-cache + asset immutable + fallback + missing-asset 404 + dev-mode" },
+    "serveAsset empty-name guard (/assets/ -> 404)": { "covered": false, "covered_lines": 0, "gap": "the name=='' guard (web.go:81-84) is not exercised; only /assets/missing.js (ReadFile-error path) is tested -> QA4" },
+    "Makefile build/check recipes -> node-free (dry run)": { "covered": false, "covered_lines": 0, "gap": "coder runs make build+check (pass because host HAS node); the dry-run recipe content is never asserted node-free -> QA4" },
+    "AC-7 additive probe (proto/sdk/scan/enrich/plugin/module byte-identical)": { "covered": true, "covered_by": "integration_web_test.go::ac7_gates", "covered_lines": "git diff --stat empty" },
+    "AC-7 symbol budget (check.sh exit 0)": { "covered": true, "covered_by": "integration ac7_gates runs make check (= check.sh)", "covered_lines": "exit 0" }
+  },
+  "boundary_coverage": {
+    "authN_boundary": { "error_paths_covered": 4, "total_error_paths": 4, "note": "no/wrong-scheme/wrong-token -> 401; correct -> 200 (TestAdminMiddleware_TokenMatrix)" },
+    "authZ_boundary": { "error_paths_covered": 4, "total_error_paths": 4, "note": "admin/client/unknown/empty + empty-allow-set -> 403 (TestRequireRole)" },
+    "getItem_404": { "error_paths_covered": 1, "total_error_paths": 2, "note": "code=not_found covered; retryable=false gap -> QA3" },
+    "adminStatus_nil": { "error_paths_covered": 2, "total_error_paths": 2, "note": "nil->503 unavailable; error->500 internal_error (TestAdminStatus)" }
+  }
+}

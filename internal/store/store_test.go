@@ -113,6 +113,74 @@ func TestStore_Library(t *testing.T) {
 			t.Fatalf("GetLibrary missing = %v, want sql.ErrNoRows", err)
 		}
 	})
+
+	// list_ordering_and_empty covers ListLibraries (T02 / AC-3): an empty
+	// table returns a non-nil empty slice ({"items":[]} not {"items":null}),
+	// and inserting N libraries in non-id-sorted order returns them id ASC
+	// with every field round-tripped. Same assertion shape as create_get.
+	t.Run("list_ordering_and_empty", func(t *testing.T) {
+		emptyStore := openStore(t)
+		got, err := emptyStore.ListLibraries(ctx)
+		if err != nil {
+			t.Fatalf("ListLibraries empty: %v", err)
+		}
+		if got == nil {
+			t.Fatalf("ListLibraries empty = nil, want non-nil empty slice (INV-empty-not-nil)")
+		}
+		if len(got) != 0 {
+			t.Fatalf("ListLibraries empty = %d rows, want 0", len(got))
+		}
+
+		// Insert 3 libraries in non-sorted order (module_id / root_path
+		// intentionally out of band); ListLibraries must return them id ASC.
+		// Uses a fresh store so the only rows are the 3 seeds (assertion is
+		// over the full returned slice, not a subset).
+		listStore := openStore(t)
+		seeds := []struct {
+			moduleID, rootPath, displayName string
+		}{
+			{"image", "/data/img", "Images"},
+			{"movie", "/data/movies", "Films"},
+			{"tv", "/data/tv-list", "TV List"},
+		}
+		var ids []int64
+		for _, seed := range seeds {
+			id, err := listStore.CreateLibrary(ctx, seed.moduleID, seed.rootPath, seed.displayName)
+			if err != nil {
+				t.Fatalf("CreateLibrary %q: %v", seed.displayName, err)
+			}
+			ids = append(ids, id)
+		}
+		list, err := listStore.ListLibraries(ctx)
+		if err != nil {
+			t.Fatalf("ListLibraries: %v", err)
+		}
+		if len(list) != len(seeds) {
+			t.Fatalf("ListLibraries = %d rows, want %d", len(list), len(seeds))
+		}
+		// Ascending id: each returned id strictly greater than the previous.
+		for i := 1; i < len(list); i++ {
+			if list[i].ID <= list[i-1].ID {
+				t.Fatalf("ListLibraries not id ASC at %d: %d <= %d", i, list[i].ID, list[i-1].ID)
+			}
+		}
+		// Each seeded library round-trips (module/root/name non-empty; time set).
+		byID := make(map[int64]Library, len(list))
+		for _, l := range list {
+			byID[l.ID] = l
+		}
+		for i, seed := range seeds {
+			l, ok := byID[ids[i]]
+			if !ok {
+				t.Fatalf("seeded id %d missing from ListLibraries", ids[i])
+			}
+			if l.ModuleID != seed.moduleID || l.RootPath != seed.rootPath ||
+				l.DisplayName != seed.displayName || l.CreatedAt.IsZero() {
+				t.Fatalf("library id=%d = %+v, want module=%s root=%s name=%s nonzero time",
+					ids[i], l, seed.moduleID, seed.rootPath, seed.displayName)
+			}
+		}
+	})
 }
 
 // TestStore_Items covers B2 (Item + GetItem/PutItem), B3 (PutItem upsert by

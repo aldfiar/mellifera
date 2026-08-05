@@ -1,0 +1,173 @@
+{
+  "schema_version": "1.0",
+  "feature": "web-ui",
+  "pipeline_type": "feature",
+  "phase": "docs",
+  "current_phase_idx": 5,
+  "status": "done",
+  "repo_root": "/Users/aldfiar/projects/go",
+  "workspace_root": "mellifera/docs/",
+  "project_scope": "mellifera",
+  "effective_cwd": "mellifera",
+  "branch": "feature/web-ui",
+  "branch_note": "Created off main (58a1130). UI/SPA + Swagger layer: React SPA (embedded via go:embed) + Swagger (code-generated from annotations) + role-aware auth (MVP admin token, swappable to client role) + library management + client/admin panels. node v24/npm 11 present (dev toolchain; runtime is go:embed).",
+  "model_tier": "large",
+  "worktree_mode": false,
+  "completed_count": 21,
+  "next_task_file": null,
+  "objectives": [
+    {
+      "id": "O1",
+      "goal": "UI for Mellifera: React SPA served from the Go binary (go:embed, cacheable) + Swagger/OpenAPI (code-generated from annotations) + role-aware auth (roles abstraction, MVP admin token, swappable to client role) + library management (local/NFS) + client (browse items w/ plugin metadata) and admin (libraries/scans/config) panels.",
+      "pipeline_type": "feature",
+      "status": "in_progress"
+    }
+  ],
+  "current_objective": "O1",
+  "compound_plan_reviewed": false,
+  "pipeline_tracker": [
+    {
+      "name": "init",
+      "status": "done"
+    },
+    {
+      "name": "planner",
+      "status": "done"
+    },
+    {
+      "name": "plan-review",
+      "status": "done"
+    },
+    {
+      "name": "specifier",
+      "status": "done"
+    },
+    {
+      "name": "coder",
+      "status": "done"
+    },
+    {
+      "name": "reviewer",
+      "status": "done"
+    },
+    {
+      "name": "health-check",
+      "status": "done"
+    },
+    {
+      "name": "qa",
+      "status": "done"
+    },
+    {
+      "name": "docs",
+      "status": "done"
+    },
+    {
+      "name": "complete",
+      "status": "pending"
+    }
+  ],
+  "total_tasks": 21,
+  "coder_tasks": 15,
+  "qa_tasks": 4,
+  "docs_tasks": 2,
+  "test_budget": {
+    "unit": 12,
+    "joint": 8,
+    "e2e": 2,
+    "total": 22
+  },
+  "key_decisions": {
+    "pipeline": "feature",
+    "compound_plan_reviewed": false,
+    "objective_enhancement": "user-directed (2026-08-04): UI/SPA + Swagger layer. See .phase_cache/enhanced_objective.md.",
+    "foundation": "main @ 58a1130 (scan-library + plugin-pipeline Phase A + async-enrichment Phase B1 + image-enrichment B2).",
+    "blk_t13_1_resolution": "User-authorized Option A applied (2026-08-05): exported api.PluginHealth + api.EnrichStats seam-input structs (carry the JSON tags); AdminStatus fields retyped; the unexported pluginHealthDTO/enrichStatsDTO were SUBSUMED (deleted) by the exported types (wire shape byte-identical, INV4 intact, statusResponse stays unexported). api exported symbols 5->7 (<=8). doc.go INV5 + contracts.md updated. AdminStatus now constructible cross-package (closure site + external test).",
+    "t13_deviation_plugin_ids_slice": "Spec B2/existing_code_snapshot referenced api.pluginHealthDTO/api.enrichStatsDTO inside the closure; grounded out (deleted post-Option-A) and replaced with api.PluginHealth/api.EnrichStats. pluginIDs slice defined ONCE near the load block (DRY) and iterated by the closure.",
+    "t15_deviation_scan_import": "integration_web_test.go imports internal/scan to build the Deps.Scan stub (scan.Result is the closure return type \u2014 cannot be named without the import). Every sibling repo-root test imports internal/scan for this; T15 allowed_imports under-listed it. Structural necessity, not an invented API.",
+    "t15_deviation_client_role": "AC-1 client-role 403 injection is NOT constructible from the external test (api.principalKey is unexported; no resolver mints RoleClient). Widening api's surface with a test-only injector would violate the <=8 budget. T15 asserts the externally-observable AC-1 slice (admin reaches all 6 routes; no/wrong token -> 401); the client-vs-admin 403 is covered in-package by internal/api/role_gating_test.go (T08). This is the 'OR real admin' branch the delegation authorized.",
+    "t15_deviation_ac2_probe": "acceptance.md's grep '>=6' probe miscounts (5 distinct path keys carry 6 operations). T15 asserts the true invariant: all 5 path keys + >=6 operationIds present.",
+    "selected_skills": [
+      "contracts",
+      "software-design",
+      "grounding",
+      "mellifera-build",
+      "agent-protocol"
+    ],
+    "workspace_resolution": "mellifera/docs/ (docs layer).",
+    "audit_health_check": "wf-auditor health-check (2026-08-05): changed-files scan vs 58a1130. Gates all green (gofmt/build/build-plugin/test/golangci-lint/check.sh); node-free confirmed; proto/pkg/sdk/scan/enrich byte-identical (additive). Findings P0:0 P1:0 P2:2 P3:2. P2 \u2014 D-01: deprecated Principal.Admin() has ZERO production callers (only roles_test.go:32 mirrors it); the 'lone legacy reader' justification is hollow (widening happened in-feature; internal/ pkg has no external surface) -> delete Admin() + mirroring test. P2 \u2014 R-01: libraryResponse and libraryDTO are byte-identical wire structs (DRY; itemResponse already reuses itemDTO as the non-dup pattern) -> collapse to one type. P3 \u2014 A-01: conventions.md s3 claims 'no new runtime Go deps / go.mod unchanged' but swaggo/http-swagger + ~9 transitives were added (deliberate, NOTICE-documented; AC-7 itself doesn't require go.mod unchanged) -> reconcile doc. P3 \u2014 A-02: conventions.md s4 says api 3->4 symbols but actual is 7 (doc.go INV5 correct; check.sh passes) -> update s4. No garbage/tautological tests. Verdict: PROCEED (no P0/P1, no negative-AC-intent match). Report: docs/web-ui/audit/health_report.md.",
+    "qa_strategy": "wf-qa (2026-08-05): REVIEWED coder integration_web_test.go (the AC-1..AC-7 keystone; solid, honestly-documented deviations) and AUGMENTED only the failure modes no existing test reaches (REDUNDANCY gate primary). The coder's in-package tests (middleware_test, role_gating_test, router_test, admin_status_test, web_test) + the external integration keystone together cover the happy paths + most error paths; QA targeted the structural blind spots: browse-group default-deny for unknown/empty role (only admin/client in existing matrix), spec DTO-shape accuracy + served==committed drift (existing tests count paths/opIds), INV4 library wire key-set EXACT (struct decode silently ignores extra fields), getItem-404 retryable=false field, serveAsset empty-name guard, and AC-7 node-free DRY RUN (host HAS node so make-build-passes does not prove recipe is node-free). 4 QA files, 2 joint + 3 boundary + 2 property, 0 redundant.",
+    "qa_d01_cleanup": "D-01 applied: deleted dead deprecated Principal.Admin() (internal/api/router.go:66-71) + its mirroring assertion (internal/api/roles_test.go:31-34) + doc.go INV5 'IsAdmin/Admin'->'IsAdmin'. grep '.Admin()' -> 0 hits. IsAdmin() is the sole reader; INV3 intact. Method was unexported -> api stays at 7 exported symbols (check.sh OK).",
+    "qa_r01_cleanup": "R-01 applied: collapsed byte-identical libraryResponse+libraryDTO into ONE libraryDTO type (internal/api/handlers.go: dropped libraryResponse; createLibrary writes libraryDTO; annotation @Success 201 {object} libraryDTO). router_test.go decode target updated. Committed spec advanced to the exact post-collapse state swag init would produce: openapi.{yaml,json} repoint POST /libraries 201 $ref -> api.libraryDTO and delete the duplicate api.libraryResponse definition block. swag CLI is NOT on PATH so the spec was hand-edited (mechanical, INV-preserving; wire shape byte-identical). TestQA_SpecDTOAccuracy proves api.libraryResponse ABSENT + POST refs api.libraryDTO. Both types were unexported -> api stays at 7 exported symbols.",
+    "qa_qa4_skips_explained": "qa_embed_buildgate_test.go::TestQA_BuildGateNodeFreeDryRun has 2 explained t.Skip guards: testing.Short() (build-gate exec probes conventionally -short-excluded; mirrors integration_web_test.go::ac7_gates) and exec.LookPath('make') absent (env-portability). Neither triggers under the full go test ./... validation gate (the test ran and PASSED). These are exec-dependent build-gate guards, NOT behavior skips or flake quarantines \u2014 consistent with code-quality 'Explained skips ALLOWED with a documented reason'."
+  },
+  "blockers": [],
+  "phase_log": [
+    {
+      "phase": "init",
+      "ts": "2026-08-04",
+      "note": "web-ui feature bootstrapped after image-enrichment B2 merged to main (58a1130)."
+    },
+    {
+      "phase": "planner",
+      "ts": "2026-08-05",
+      "note": "wf-planner completed Phase-1 plan. 7 deliverables. 6 risks (2 P1, 4 P2, 0 P0)."
+    },
+    {
+      "phase": "specifier",
+      "ts": "2026-08-05",
+      "note": "wf-specifier decomposed into 21 task files (15 coder + 4 QA + 2 docs)."
+    },
+    {
+      "phase": "coder",
+      "ts": "2026-08-05",
+      "note": "T01-T04 implemented."
+    },
+    {
+      "phase": "coder",
+      "ts": "2026-08-05",
+      "note": "T05-T08 implemented (API layer)."
+    },
+    {
+      "phase": "coder",
+      "ts": "2026-08-05",
+      "note": "T09-T12 implemented (Swagger + web layer). DEVIATIONS: no docs.go; swaggo/http-swagger module for UI."
+    },
+    {
+      "phase": "coder",
+      "ts": "2026-08-05",
+      "note": "T14 DONE + T13/T15 HALTED (BLK-T13-1 spec_error)."
+    },
+    {
+      "phase": "coder",
+      "ts": "2026-08-05",
+      "note": "BLK-T13-1 RESOLVED (Option A) + T13 implemented. cmd/mellifera/main.go: +internal/web; pluginIDs slice; Deps.Status closure (INV2; best-effort per-plugin); web.Handler composition; MELLIFERA_WEB_DEV + envBool. completed_count 13->14."
+    },
+    {
+      "phase": "coder",
+      "ts": "2026-08-05",
+      "note": "T15 implemented (capstone). CREATE integration_web_test.go (package mellifera_test, black-box) with TestWeb_Integration: ac1_roles (admin->all 6 routes; no/wrong token->401), ac2_swagger (yaml/json/docs public + 5 path keys + >=6 operationIds), ac3_list (2 libs id ASC + empty {items:[]}), ac4_item (full document deep-equal + 404 not_found), ac5_admin_status (3 plugins + enrich round-trip via the exported seam types + nil->503), ac6_embed (/ text/html no-cache; /assets/app.js immutable; SPA fallback; /assets/missing.js 404), ac7_gates (make build+check node-free + git diff additive probe empty). All 7 sub-tests PASS. GROUNDING-DRIVEN DEVIATIONS (3, documented in file header + key_decisions): (1) internal/scan import structurally required for Deps.Scan stub; (2) AC-1 client-role 403 left to in-package role_gating_test.go (principalKey unexported, would widen api surface); (3) AC-2 grep '>=6' miscounts path-key lines (5 paths / 6 ops) -> assert true invariant. FINAL GATES ALL GREEN: gofmt clean (own code; module-template/doc.go is a pre-existing skill asset NOT in web-ui scope), CGO_ENABLED=0 go build ./... OK, make build-plugin (3 binaries) OK, FULL go test ./... ALL PASS (incl. formerly-blocked TestQA_AdditiveContract + TestB2_Ac3Additive), golangci-lint exit 0, go vet exit 0, check.sh OK (api=7 symbols <=8). AC-7 additive probe: git diff 58a1130 HEAD over proto/pkg/sdk/internal/scan/internal/enrich/internal/plugin/internal/module EMPTY. completed_count 14->15. No git commits (per instruction). Coder phase COMPLETE."
+    },
+    {
+      "phase": "health-check",
+      "ts": "2026-08-05",
+      "note": "wf-auditor changed-files code-health scan. Gates all green + node-free + additive confirmed. P0:0 P1:0 P2:2 P3:2 (D-01 dead deprecated Principal.Admin; R-01 libraryResponse/libraryDTO DRY dup; A-01 go.mod convention drift; A-02 conventions symbol-count drift). No negative-AC-intent match -> PROCEED. Report: docs/web-ui/audit/health_report.md."
+    },
+    {
+      "phase": "qa",
+      "ts": "2026-08-05",
+      "note": "wf-qa DONE. QA1-QA4 independent acceptance re-derivation + 2 P2 cleanups (D-01, R-01) applied. QA files: internal/api/qa_roles_test.go (browse-group default-deny gap), internal/web/qa_swagger_test.go (DTO-accuracy drift catcher + served==committed + R-01 spec verify), qa_endpoints_test.go (INV4 library wire key-set exact + getItem-404 retryable=false), qa_embed_buildgate_test.go (empty-name asset guard + AC-7 node-free dry-run). REVIEWED coder integration_web_test.go (solid, kept) and AUGMENTED only uncovered failure modes (REDUNDANCY gate primary; 0 redundant tests). D-01: deleted dead deprecated Principal.Admin() + mirroring roles_test assertion + doc.go INV5 IsAdmin/Admin->IsAdmin. R-01: collapsed byte-identical libraryResponse+libraryDTO -> one libraryDTO (handlers + annotation + router_test decode + committed openapi.{yaml,json} advanced to the exact post-collapse state swag init would produce; swag CLI not on PATH so hand-edited). FINAL GATES ALL GREEN: gofmt clean, CGO_ENABLED=0 go build exit 0, go vet clean, FULL go test ./... ALL PASS (0 failures, 0 unexplained skips; the 2 QA4 skips are explained exec-gate guards that do NOT trigger under the full gate), golangci-lint exit 0, check.sh OK exit 0. INV2 (api no plugin/enrich/module/web imports) + AC-7 additive (proto/sdk/scan/enrich/module byte-identical vs 58a1130) + node-free dry-run + symbol budget (api=7 <=8) all re-verified. Both cleanups were unexported -> api stays at 7 exported. Coverage map: docs/web-ui/qa/.joint_coverage.md. Baseline: docs/web-ui/qa/.coverage_baseline.json. completed_count 15->19. No git commits (per instruction). Next: @wf-docs."
+    },
+    {
+      "phase": "docs",
+      "ts": "2026-08-05",
+      "note": "wf-docs DONE. DOCS1 module-map sync: ai-architecture.md \u00a74 (api 3->7 = New/Deps/Principal/Role/AdminStatus/PluginHealth/EnrichStats; NEW internal/web row = Handler+Options; cmd/mellifera [web-ui] composition note; [web-ui] header marker; dependency direction web->api) + a 'web-ui Phase 1 shipped' callout; project_structure.md (header callout + Stack swaggo row + tree api/web rows + cmd entry-point + Phase web-ui additions subsection + What-exists-now + deferred/Phase-2 notes + feature-record line); .project_context.json (src_layout api 7 + internal/web line + cmd MELLIFERA_WEB_DEV + framework swaggo + docs_index runbook + summary line + last_updated 2026-08-05). DOCS2 authored: docs/web-ui/operator-runbook.md (build-gate node-free Go gate story; make web-build regen path + swag/node dev-only + swaggo/http-swagger NOTICE exception; R-2 public-surface-widens mitigation table; roles; env knobs incl MELLIFERA_WEB_DEV + runtime ffmpeg/exiftool + dev node/swag; Phase-2 Vite dev workflow; verification probes). P3 reconciles folded in: conventions.md \u00a73 swaggo/http-swagger authorized runtime exception (A-01) + \u00a73 stale 'swagger-ui/ tree' corrected (UI served via the swaggo module, not hand-vendored); \u00a74 api 3->4 corrected to 3->7 (A-02, doc.go INV5 authoritative). Docs-only: no source/test changes. Re-confirmed gates green post-edit (docs are markdown/JSON \u2014 no Go gate touched). All grep verify probes pass (ai-arch internal/web>=1, 7-symbol api list=1, [web-ui]>=1; runbook load-bearing concepts 13>=4, regen/UI attribution 4>=2). feature/web-ui remains uncommitted; main @ 58a1130 unpushed. completed_count 19->21. Next: complete phase."
+    }
+  ],
+  "handoff_chain": [],
+  "rejection_history": [],
+  "pending_reviews": [],
+  "context_estimate_k": 78,
+  "active_loop": null,
+  "parallel_tasks": []
+}

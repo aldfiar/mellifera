@@ -47,7 +47,7 @@ are excluded, so a package's gate-count is its top-level surface; `WARN` = >8 bu
 ≤12 (pre-justified R10); all others ≤8. Reserved-table methods
 (`RecordProgress`/`GetResume`) are deferred — the tables exist but no method
 ships yet. Phase A deltas are marked **[A]**; Phase B1 deltas are marked **[B1]**;
-Phase B2 deltas are marked **[B2]**.
+Phase B2 deltas are marked **[B2]**; web-ui Phase 1 deltas are marked **[web-ui]**.
 
 > **Phase B1 shipped (`async-enrichment`).** Enrichment is now ASYNCHRONOUS: a
 > derived in-process `enrich.Queue` + bounded worker pool drains pending
@@ -74,15 +74,37 @@ Phase B2 deltas are marked **[B2]**.
 > `docs/image-enrichment/`; operator runbook:
 > [`docs/image-enrichment/operator_runbook.md`](image-enrichment/operator_runbook.md).
 
+> **web-ui Phase 1 shipped (`web-ui`).** The Go-side UI foundation lands as a NEW
+> `internal/web` package + an additive widening of `internal/api`: `web.Handler`
+> composes the chi `/api/*` router with the embedded SPA (`//go:embed all:dist` —
+> the first real `go:embed` in the codebase), the code-generated OpenAPI spec
+> (`/openapi.{yaml,json}`, embedded committed bytes), and Swagger UI (`/docs/` via
+> `github.com/swaggo/http-swagger` — the FIRST new Go runtime dep, NOTICE-documented;
+> `swag` itself stays a dev/CI CLI like `protoc`). Roles arrive as a TYPE not a bool
+> (`Principal{Role}` + `Role`/`RoleAdmin`/`RoleClient` + `requireRole` groups; arch
+> §11.5 anticipated evolution, arrived early), and 3 additive GETs ship
+> (`/libraries`, `/items/{id}`, `/admin/status` — the last via a `Deps.Status` closure
+> built in `cmd/mellifera`, the INV2 anti-corruption seam that keeps api free of
+> plugin/enrich imports). The Go build gate (`make build`/`check`/`test`/`lint`) is
+> **node-free** — it embeds committed artifacts; `make web-build` is the only
+> node/swag-touching target (dev/CI-only). The public surface widens (R-2): `/`,
+> `/assets/*`, `/openapi.*`, `/docs` are intentionally unauthenticated (static only —
+> no data); all data stays behind role-gated `/api/v1/*`. **Additive** (proto/sdk/
+> scan/enrich/plugin/module byte-identical vs `58a1130`). api 3→7 (under the 8 budget);
+> `internal/web` = 2. React app + client panels + B3 (TMDB) + Phase C (post-action)
+> remain **deferred** (Phase 2+). Feature record: `docs/web-ui/`; operator runbook:
+> [`docs/web-ui/operator-runbook.md`](web-ui/operator-runbook.md).
+
 | Package | Owns | Public API (≤8; WARN noted) | Depends on |
 |---|---|---|---|
-| `cmd/mellifera` | wiring (flat `main.go`) — **[A]** loads base-scanner + tv-parser, constructs `enrich.Deps`; **[B1]** constructs `enrich.NewQueue`, `Start`s the pool before serving, wires `scan.Deps.Notify` → `queue.Notify` (process ctx), `Stop`s on shutdown; reads `MELLIFERA_ENRICH_*` knobs; **[B2]** loads/stops the image-enricher subprocess (3rd plugin; `MELLIFERA_IMAGE_ENRICHER` env, default `bin/image-enricher`) | — | all (read-only) |
+| `cmd/mellifera` | wiring (flat `main.go`) — **[A]** loads base-scanner + tv-parser, constructs `enrich.Deps`; **[B1]** constructs `enrich.NewQueue`, `Start`s the pool before serving, wires `scan.Deps.Notify` → `queue.Notify` (process ctx), `Stop`s on shutdown; reads `MELLIFERA_ENRICH_*` knobs; **[B2]** loads/stops the image-enricher subprocess (3rd plugin; `MELLIFERA_IMAGE_ENRICHER` env, default `bin/image-enricher`); **[web-ui]** composes `web.Handler(api.New(deps), opts)` as the SOLE top-level handler (no second `http.Server`), builds the `Deps.Status` closure over `mgr.Status` + `enrichQueue.Stats` (the INV2 anti-corruption seam keeping api free of plugin/enrich imports — mirrors `Deps.Scan`), reads `MELLIFERA_WEB_DEV` | — | all (read-only) |
 | `internal/store` | SQLite: documents + control tables + reserved `playback_progress`/`scan_jobs` — **[A]** + indexed `items.status` column (default `"new"`); `QueryItems` additive `status` filter (`""` ⇒ all). **[B1]** +`ledger.go` (`FailureRow` + `RecordFailure`/`ClearFailure`/`ListFailures`; **no DDL** — `enrichment_failures` existed from Phase A) + pool-wide 5s `busy_timeout` PRAGMA in `Open`'s DSN (`withBusyTimeout`) | `Open`, `Close`, `DB`, `CreateLibrary`, `GetLibrary`, `GetItem`, `PutItem`, `QueryItems`, `RecordFailure`, `ClearFailure`, `ListFailures` (+ `Store`/`Item`/`Library`/`FailureRow`) — **gate count 5** (top-level: `Store`/`Open`/`Item`/`Library`/`FailureRow`; methods excluded by `check.sh` ⇒ green ≤8; the Phase-A "11 WARN" narrative counted methods) | — (bottom) |
 | `internal/plugin` | subprocess lifecycle + gRPC clients + capability routing — **[A]** caps-driven launch; `MetadataSource` accessor | `Open`, `Load`, `Start`, `Stop`, `Status`, `Scanner`, `MetadataSource` (+ `Manager`/`Deps`/`Health`) — **10 WARN** | proto, sdk |
 | `internal/module` | config-driven module registry — **[A]** `metadata_sources` chain (`Module.MetadataSources[]`); tv-parser seed; **[B2]** `image` module seed (base-scanner + image-enricher priority 1) — now tv + image | `Open`, `Get`, `List` (+ `Registry`/`Module`/`ScannerBinding`/`MetadataSourceBinding`) — **7** (`imageConfigJSON` is an unexported const; no new symbol) | store |
 | `internal/scan` | scan-side orchestration (resolve module → scanner → stream → identify → PutItem). **[B1]** drops inline enrich; persists each item `pending` + calls `Notify(libraryID)` once post-drain so the queue derives/drains async. **[B2]** stamps `absolute_path = filepath.Join(root, rel)` into `doc["parsed"]` for EVERY item (media-type-agnostic — INV2; the only file-location channel into the enricher chain, D-6). A re-scan whose base identity changed → `stale`; unchanged re-scan preserves status. `scan.Result` shape **unchanged** (timing only) | `Run`, `Deps` (`.Enrich` retained seam + **[B1]** `.Notify` field), `Result` — **3** | store, module, plugin, enrich |
 | `internal/enrich` | **[A]** metadata-side orchestrator + **[B1] async derived-queue dispatcher** (arch §4.4): `Queue` derives pending `(item, plugin)` work from `items`+namespaces+ledger (no work table), feeds a bounded channel, a worker pool drains it under per-item in-memory leases with retry/backoff + terminal-cooldown ledger writes. `Enrich` (sync per-item chain) is **preserved** (deprecate-don't-delete, AC-3) — the worker shares its helpers (`runSource`/`nextState`/`applyContribution`/`appendStage`) but does not call `Enrich` directly | `Enrich`, `Deps`, `Result` + **[B1]** `Queue`, `QueueConfig`, `Stats`, `NewQueue` — **7** (queue.go/worker.go/lease.go/retry.go) | store, module, plugin |
-| `internal/api` | HTTP (chi) — **pure delegation, no logic** — **[A]** additive `itemDTO.Status` + `?status=` filter | `New`, `Deps`, `Principal` | scan, store |
+| `internal/api` | HTTP (chi) — **pure delegation, no logic** — **[A]** additive `itemDTO.Status` + `?status=` filter; **[web-ui]** role-aware auth (`Principal{Role}`, `authMiddleware`+`requireRole`; browse group = admin+client read-only, admin group = admin-only mutating/liveness) + 3 additive GETs (`/libraries`, `/items/{id}`, `/admin/status` via the `Deps.Status` closure — INV2 preserved) + swag annotations on all 6 handlers (comment-only metadata; INV1 preserved). Handlers never fork on `Role` — the group is the only authZ gate | `New`, `Deps`, `Principal`, `Role`, `AdminStatus`, `PluginHealth`, `EnrichStats` — **7** (`IsAdmin()` is a method, excluded from the `check.sh` count) | scan, store |
+| `internal/web` | embedding + composition layer — **[web-ui]** `Handler(apiHandler, Options)` composes `/api/*` (chi) + `/openapi.{yaml,json}` (embedded committed spec bytes) + `/docs/` (Swagger UI via `github.com/swaggo/http-swagger` — the first new Go runtime dep; NOTICE-documented; `swag` is a dev/CI CLI like `protoc`) + `/` (embedded SPA via `//go:embed all:dist` — the first real `go:embed` in the codebase) with immutable `/assets/*` cache, `no-cache` index, SPA client-route fallback (broken hashed assets 404 — fail fast). Public surface (`/`, `/assets/*`, `/openapi.*`, `/docs`) intentionally unauthenticated (R-2: static only, no data); `/api/v1/*` carries its own role-gating | `Handler`, `Options` — **2** | api, stdlib `embed`/`io/fs`/`net/http` (does NOT import plugin/enrich/module/scan/store — no domain logic) |
 | `pkg/sdk` | plugin SDK (ships in the MAIN Go module for MVP — R7) — **[A]** capability-2 adapter | `Serve`, `ScannerPlugin`, `Scanner`, `MetadataSourcePlugin`, `MetadataSource`, `HandshakeConfig`, `Capability` — **7** | proto, go-plugin |
 | `plugins/base-scanner` | one subprocess binary — **[A]** media-type-agnostic (walk + ffprobe + withinRoot; parseTV extracted to tv-parser); **[B2]** module-type-gated discovery (`module_type=="image"` → image extensions, else video — D-1; a union filter is rejected to avoid TV cover-art junk, R-I4) + stdlib image base info (`image.go`: `imageMime` 6 exts incl. heic/heif; `probeImage` decodes jpeg/png dims via `image.DecodeConfig`; webp/heic/heif/RAW base-info soft-fails — exiftool supplies their data at enrichment) | per-capability (scanner.v1 + plugin.v1) | sdk, proto |
 | `plugins/tv-parser` | **[A]** first `metadata_source` subprocess binary (parseTV moved here verbatim; serves `metadata.v1.MetadataSource`) | per-capability (metadata.v1 + plugin.v1) | sdk, proto |
@@ -92,7 +114,8 @@ Phase B2 deltas are marked **[B2]**.
 
 `internal/enrich` is now realized as the metadata-side analog of `internal/scan`
 (both sit at the same level). Dependency direction points **down** only:
-`api → scan → enrich → {module, plugin} → store`. **[B1]** scan no longer calls
+`web → api → scan → enrich → {module, plugin} → store` (**[web-ui]** `internal/web`
+composes `internal/api` — never the reverse; api does not import web). **[B1]** scan no longer calls
 enrich inline; after persisting items `pending` it hands the library to
 `enrich.Queue` via `Deps.Notify` (wired in `cmd/mellifera`). enrich still never
 imports scan (INV-downward preserved — `Notify` is called BY scan, never the

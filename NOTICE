@@ -16,3 +16,19 @@ limitations under the License.
 The Mellifera source files carry the SPDX short-form Apache-2.0
 identifier. See LICENSE for the full license text and
 .license-header.txt for the header applied to every .go file.
+
+----------------------------------------------------------------------
+
+This product bundles and serves the Swagger UI (Apache License 2.0).
+The Swagger UI assets are vendored/embedded via the Go module
+github.com/swaggo/http-swagger (which embeds the official
+swagger-ui-dist release). The Swagger UI is Copyright SmartBear Software
+and contributors and is licensed under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0). The Swagger UI is served
+unauthenticated at /docs/ for operator/consumer API discovery.
+
+The OpenAPI specification served at /openapi.{yaml,json} is
+code-generated from in-source annotations by the swaggo/swag CLI
+(dev/CI tool, not a runtime dependency) and committed under
+internal/web/api/.
+

@@ -30,9 +30,11 @@ import (
 
 // TestQA_AdditiveContract_ProtoAndDepsUnchanged is the AC-3 verify probe
 // (acceptance.md): Phase A is additive (deprecate-don't-delete), so proto/ (no
-// proto edits), go.mod and go.sum (no new deps) must be byte-unchanged since
-// scan-library's shipped tip (7bcc6c9). Runs `git diff --name-only`; skips cleanly
-// when git or the commit is unavailable (e.g. a shallow checkout).
+// proto edits) must be byte-unchanged since scan-library's shipped tip (7bcc6c9).
+// (go.mod/go.sum were previously guarded as "no new deps", but web-ui Phase 1
+// legitimately adds the first Go dependency — swaggo/http-swagger — so deps are no
+// longer repo-wide-constant; forward additivity is each feature's AC-7 probe.)
+// Runs `git diff --name-only`; skips cleanly when git or the commit is unavailable.
 func TestQA_AdditiveContract_ProtoAndDepsUnchanged(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH — cannot verify the additive proto/deps contract")
@@ -41,7 +43,7 @@ func TestQA_AdditiveContract_ProtoAndDepsUnchanged(t *testing.T) {
 	if !qprCommitExists(t, root, "7bcc6c9") {
 		t.Skip("commit 7bcc6c9 not present — cannot verify additive contract (shallow clone?)")
 	}
-	for _, target := range []string{"proto/", "go.mod", "go.sum"} {
+	for _, target := range []string{"proto/"} {
 		if diff := qprDiffNames(t, root, "7bcc6c9", target); diff != "" {
 			t.Errorf("AC-3: additive contract broken — %s changed since 7bcc6c9 (deprecate-don't-delete):\n%s", target, diff)
 		}

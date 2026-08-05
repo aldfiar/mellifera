@@ -21,12 +21,15 @@ func principalFromContext(ctx context.Context) (Principal, bool) {
 	return p, ok
 }
 
-// adminMiddleware returns a chi-style middleware that resolves a Principal from
+// authMiddleware returns a chi-style middleware that resolves a Principal from
 // an `Authorization: Bearer <admin_token>` header. On a match it records
-// Principal{Admin:true} in the context and calls next; on any miss (no header,
-// wrong scheme, wrong token) it writes a 401 canonical body and does NOT invoke
-// next — so no handler ever runs without a resolved Principal (AC-5).
-func adminMiddleware(token string) func(http.Handler) http.Handler {
+// Principal{Role: RoleAdmin} in the context and calls next; on any miss (no
+// header, wrong scheme, wrong token) it writes a 401 canonical body and does
+// NOT invoke next — so no handler ever runs without a resolved Principal
+// (authN; S-roles). authMiddleware is the authN layer; per-route authZ lives in
+// requireRole (run after authMiddleware, inside the route group). Today every
+// valid token resolves to RoleAdmin; RoleClient is gated but not minted.
+func authMiddleware(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			creds := bearerCredentials(r.Header.Get("Authorization"))
@@ -35,8 +38,38 @@ func adminMiddleware(token string) func(http.Handler) http.Handler {
 					"missing or invalid admin token", false)
 				return
 			}
-			ctx := context.WithValue(r.Context(), principalKey{}, Principal{Admin: true})
+			ctx := context.WithValue(r.Context(), principalKey{}, Principal{Role: RoleAdmin})
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// requireRole returns a chi-style middleware that enforces per-route authZ. It
+// reads the Principal authMiddleware recorded; if the principal's Role is NOT in
+// roles it writes a 403 canonical body and does NOT invoke next. A request with
+// no/invalid token never reaches requireRole (authMiddleware's 401 short-circuits
+// first — INV-authn-then-authz). requireRole is a positive-membership check:
+// an empty/unknown role is denied admin routes (default-deny — INV-default-deny),
+// and an empty roles set fails closed (denies everyone). Handlers never call
+// requireRole and never read .Role; the gate is mounted only on route groups
+// (INV-no-handler-fork; arch §11.5).
+func requireRole(roles ...Role) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p, ok := principalFromContext(r.Context())
+			if !ok {
+				writeError(w, http.StatusForbidden, "forbidden",
+					"no authenticated principal", false)
+				return
+			}
+			for _, role := range roles {
+				if p.Role == role {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			writeError(w, http.StatusForbidden, "forbidden",
+				"role "+string(p.Role)+" not permitted", false)
 		})
 	}
 }

@@ -4,16 +4,19 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
-// TestAdminMiddleware_TokenMatrix is the S8 / AC-5 joint: the admin middleware
-// resolves Principal{Admin:true} only for a correct Bearer token and short-
-// circuits with a 401 canonical body otherwise — without ever invoking the
-// wrapped handler. Asserting the dummy next handler's call count proves the
-// side-effect gating (no handler, hence no domain call, runs on a miss).
+// TestAdminMiddleware_TokenMatrix is the S8 / AC-5 joint: the auth middleware
+// resolves Principal{Role: RoleAdmin} only for a correct Bearer token and
+// short-circuits with a 401 canonical body otherwise — without ever invoking
+// the wrapped handler. Asserting the dummy next handler's call count proves the
+// side-effect gating (no handler, hence no domain call, runs on a miss). The
+// matrix name is retained for test-stability across the admin->auth middleware
+// rename (S-roles).
 func TestAdminMiddleware_TokenMatrix(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -36,7 +39,7 @@ func TestAdminMiddleware_TokenMatrix(t *testing.T) {
 				principal, hasPrincipal = principalFromContext(r.Context())
 				w.WriteHeader(http.StatusOK)
 			})
-			wrapped := adminMiddleware(adminToken)(next)
+			wrapped := authMiddleware(adminToken)(next)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/items", nil)
 			if tc.auth != "" {
@@ -52,14 +55,67 @@ func TestAdminMiddleware_TokenMatrix(t *testing.T) {
 				t.Fatalf("wrapped handler called = %v, want %v", called, tc.wantCalled)
 			}
 			if tc.wantCalled {
-				if !hasPrincipal || !principal.Admin {
-					t.Fatalf("expected Principal{Admin:true} in context; got %+v (present=%v)", principal, hasPrincipal)
+				if !hasPrincipal || !principal.IsAdmin() {
+					t.Fatalf("expected Principal{Role:RoleAdmin} in context; got %+v (present=%v)", principal, hasPrincipal)
 				}
 				return
 			}
 			// 401 path: canonical error body present.
 			if eb := decodeError(t, rec.Result()); eb.Error.Code != "unauthenticated" {
 				t.Fatalf("error code = %q, want unauthenticated", eb.Error.Code)
+			}
+		})
+	}
+}
+
+// TestRequireRole covers the S-roles middleware-side authZ joint (T04 B2/B3):
+// requireRole admits a principal whose Role is in the allowed set and 403-denes
+// every other role, including unknown/empty (default-deny — INV-default-deny),
+// and fails closed when the allowed set is empty. The matrix is set over a
+// synthetic Principal injected straight into the request context (RoleClient is
+// test-only here — no resolver mints it yet). next-called is asserted on both
+// paths so the short-circuit is proven.
+func TestRequireRole(t *testing.T) {
+	cases := []struct {
+		name       string
+		role       Role
+		allow      []Role
+		wantStatus int
+		wantCalled bool
+	}{
+		{"admin_admitted_by_admin_only", RoleAdmin, []Role{RoleAdmin}, http.StatusOK, true},
+		{"client_denied_by_admin_only", RoleClient, []Role{RoleAdmin}, http.StatusForbidden, false},
+		{"admin_admitted_by_admin_client", RoleAdmin, []Role{RoleAdmin, RoleClient}, http.StatusOK, true},
+		{"client_admitted_by_admin_client", RoleClient, []Role{RoleAdmin, RoleClient}, http.StatusOK, true},
+		{"unknown_role_denied", Role("superuser"), []Role{RoleAdmin}, http.StatusForbidden, false},
+		{"empty_role_denied_default_deny", Role(""), []Role{RoleAdmin}, http.StatusForbidden, false},
+		{"empty_allow_set_fails_closed", RoleAdmin, []Role{}, http.StatusForbidden, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var called bool
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			})
+			wrapped := requireRole(tc.allow...)(next)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/status", nil)
+			ctx := context.WithValue(req.Context(), principalKey{}, Principal{Role: tc.role})
+			req = req.WithContext(ctx)
+			rec := httptest.NewRecorder()
+			wrapped.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			if called != tc.wantCalled {
+				t.Fatalf("next called = %v, want %v", called, tc.wantCalled)
+			}
+			if !tc.wantCalled {
+				if eb := decodeError(t, rec.Result()); eb.Error.Code != "forbidden" {
+					t.Fatalf("error code = %q, want forbidden", eb.Error.Code)
+				}
 			}
 		})
 	}

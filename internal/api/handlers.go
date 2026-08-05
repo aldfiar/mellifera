@@ -4,7 +4,9 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -35,12 +37,22 @@ type createLibraryRequest struct {
 	DisplayName string `json:"display_name"`
 }
 
-// libraryResponse is the wire shape for a library (no store.Library leaked).
-type libraryResponse struct {
+// libraryDTO is the ONE wire shape for a library (no store.Library leaked) —
+// the boundary conversion of store.Library used by BOTH the list and the create
+// responses (mirrors the itemResponse-reuses-itemDTO pattern: one type per wire
+// noun). CreatedAt is intentionally omitted, mirroring itemDTO time-omission
+// (the document is the source of truth; carrying time.Time here would force a
+// disallowed time import) — INV4.
+type libraryDTO struct {
 	ID          int64  `json:"id"`
 	ModuleID    string `json:"module_id"`
 	RootPath    string `json:"root_path"`
 	DisplayName string `json:"display_name"`
+}
+
+// librariesResponse is the wire shape for GET /libraries.
+type librariesResponse struct {
+	Items []libraryDTO `json:"items"`
 }
 
 // scanResponse is the wire shape for a scan result.
@@ -54,6 +66,60 @@ type scanResponse struct {
 // itemsResponse is the wire shape for an items listing.
 type itemsResponse struct {
 	Items []itemDTO `json:"items"`
+}
+
+// itemResponse is the wire shape for a single item detail view (GET /items/{id}).
+// It reuses itemDTO as-is — itemDTO.Document already carries the FULL §3.1
+// document opaque (INV-full-document; no projection/filtering).
+type itemResponse struct {
+	Item itemDTO `json:"item"`
+}
+
+// PluginHealth is the seam-input shape for one plugin's liveness, built by the
+// cmd/mellifera Deps.Status closure from plugin.Health. Exported so the closure
+// (which lives in package main, external to api) can construct populated values
+// — the unexported DTO this replaced could not be named cross-package, which is
+// what BLK-T13-1 fixed. CheckedAt is an RFC3339 string (not time.Time) so the
+// api DTOs stay free of a time import; the closure formats
+// plugin.Health.LastCheckedAt. INV4: no plugin.Health over the wire — this is a
+// plain api-local struct.
+type PluginHealth struct {
+	ID        string `json:"id"`
+	State     string `json:"state"`
+	Restarts  int    `json:"restarts"`
+	CheckedAt string `json:"checked_at"`
+}
+
+// EnrichStats is the seam-input shape for the async-enrichment queue snapshot,
+// built by the cmd/mellifera Deps.Status closure from enrich.Stats. Exported so
+// the closure can construct populated values (BLK-T13-1). INV4: no enrich.Stats
+// over the wire — this is a plain api-local struct.
+type EnrichStats struct {
+	Pending  int `json:"pending"`
+	InFlight int `json:"in_flight"`
+	Done     int `json:"done"`
+	Failed   int `json:"failed"`
+}
+
+// AdminStatus is the api-local aggregate the Deps.Status closure returns. It is
+// defined HERE (not in plugin/enrich) so api never imports those packages
+// (INV2). cmd/mellifera (Task 13) builds the closure that maps plugin.Health +
+// enrich.Stats into these api-local types. The field types are exported so
+// AdminStatus is constructible from outside package api (the closure site,
+// cmd/mellifera package main, and the external integration test).
+type AdminStatus struct {
+	Plugins []PluginHealth
+	Enrich  EnrichStats
+}
+
+// statusResponse is the wire envelope for GET /admin/status. It stays
+// unexported (INV4: the wire envelope is api-package-local). Its field types are
+// the exported seam-input structs, so the handler maps AdminStatus→
+// statusResponse without a per-field copy — the closure already built the
+// wire-shaped values, and the JSON tags live on the exported types.
+type statusResponse struct {
+	Plugins []PluginHealth `json:"plugins"`
+	Enrich  EnrichStats    `json:"enrich"`
 }
 
 // itemDTO is the wire shape for one item. store.Item is converted here at the
@@ -73,7 +139,16 @@ type itemDTO struct {
 }
 
 // createLibrary: parse createLibraryRequest → store.CreateLibrary → write
-// libraryResponse. One domain call.
+// libraryDTO. One domain call.
+//
+// @Summary      Create a scan library
+// @Tags         libraries
+// @ID           create-library
+// @Router       /libraries [post]
+// @Param        request body createLibraryRequest true "library to create"
+// @Success      201 {object} libraryDTO
+// @Failure      400 {object} errorBody
+// @Failure      500 {object} errorBody
 func (a *app) createLibrary(w http.ResponseWriter, r *http.Request) {
 	var req createLibraryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -85,7 +160,7 @@ func (a *app) createLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusCreated, libraryResponse{
+	writeJSON(w, http.StatusCreated, libraryDTO{
 		ID:          id,
 		ModuleID:    req.ModuleID,
 		RootPath:    req.RootPath,
@@ -94,6 +169,15 @@ func (a *app) createLibrary(w http.ResponseWriter, r *http.Request) {
 }
 
 // scanLibrary: parse {id} → deps.Scan → write scanResponse. One domain call.
+//
+// @Summary      Trigger a scan for a library
+// @Tags         libraries
+// @ID           scan-library
+// @Router       /libraries/{id}/scan [post]
+// @Param        id path int true "library id"
+// @Success      200 {object} scanResponse
+// @Failure      400 {object} errorBody
+// @Failure      500 {object} errorBody
 func (a *app) scanLibrary(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -117,6 +201,18 @@ func (a *app) scanLibrary(w http.ResponseWriter, r *http.Request) {
 // write itemsResponse. One domain call. An absent/empty ?status= passes "" so all
 // statuses are returned (INV-empty-all); api does not validate the status set
 // (store/enrich own it — pure delegation).
+//
+// @Summary      List items (optionally filtered by library + status)
+// @Tags         items
+// @ID           list-items
+// @Router       /items [get]
+// @Param        library query int    false "library id filter"
+// @Param        status  query string false "status filter (empty = all)"
+// @Param        limit   query int    false "page size (default 50, max 200)"
+// @Param        offset  query int    false "page offset"
+// @Success      200 {object} itemsResponse
+// @Failure      400 {object} errorBody
+// @Failure      500 {object} errorBody
 func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.URL.Query().Get("library"), 10, 64)
 	if err != nil {
@@ -131,6 +227,79 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, itemsResponse{Items: toItemDTOs(items)})
+}
+
+// listLibraries: store.ListLibraries → write librariesResponse. One domain
+// call (pure delegation, INV1). No request parsing — GET /libraries lists ALL
+// configured scan roots (AC-3). store.ListLibraries returns a non-nil empty
+// slice when there are no rows, so the handler emits {"items":[]} not null.
+//
+// @Summary      List scan libraries
+// @Tags         libraries
+// @ID           list-libraries
+// @Router       /libraries [get]
+// @Success      200 {object} librariesResponse
+// @Failure      500 {object} errorBody
+func (a *app) listLibraries(w http.ResponseWriter, r *http.Request) {
+	libs, err := a.deps.Store.ListLibraries(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, librariesResponse{Items: toLibraryDTOs(libs)})
+}
+
+// getItem: parse {id} → store.GetItem → write itemResponse. One domain call
+// (pure delegation, INV1). The id is a string UUID (store.Item.ID), so it is
+// NOT integer-parsed — chi.URLParam returns the raw string. A missing row
+// surfaces from store as a wrapped sql.ErrNoRows → 404 not_found
+// (INV-full-document: itemDTO.Document carries the full §3.1 document opaque).
+//
+// @Summary      Get a single item with its full document
+// @Tags         items
+// @ID           get-item
+// @Router       /items/{id} [get]
+// @Param        id path string true "item id (UUID)"
+// @Success      200 {object} itemResponse
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	it, err := a.deps.Store.GetItem(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "item "+id+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, itemResponse{Item: toItemDTO(it)})
+}
+
+// adminStatus: deps.Status → write statusResponse. One closure call (pure
+// delegation, INV1). A nil Deps.Status means the endpoint is disabled (the api
+// package never imports plugin/enrich, so a nil closure is the disabled state)
+// → 503 unavailable (INV-nil-safe). A non-nil closure returning an error → 500.
+//
+// @Summary      Admin liveness snapshot (plugins + enrich queue)
+// @Tags         admin
+// @ID           admin-status
+// @Router       /admin/status [get]
+// @Success      200 {object} statusResponse
+// @Failure      503 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) adminStatus(w http.ResponseWriter, r *http.Request) {
+	if a.deps.Status == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "status endpoint disabled", false)
+		return
+	}
+	st, err := a.deps.Status(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, statusResponse{Plugins: st.Plugins, Enrich: st.Enrich})
 }
 
 // parsePagination normalizes the limit/offset query params to sane values. It is
@@ -156,16 +325,37 @@ func parsePagination(r *http.Request) (limit, offset int) {
 func toItemDTOs(items []store.Item) []itemDTO {
 	out := make([]itemDTO, len(items))
 	for i, it := range items {
-		out[i] = itemDTO{
-			ID:            it.ID,
-			ModuleID:      it.ModuleID,
-			LibraryID:     it.LibraryID,
-			FileID:        it.FileID,
-			RelativePath:  it.RelativePath,
-			MediaType:     it.MediaType,
-			Document:      it.Document,
-			SchemaVersion: it.SchemaVersion,
-			Status:        it.Status,
+		out[i] = toItemDTO(it)
+	}
+	return out
+}
+
+// toItemDTO maps a single store.Item to its wire shape. Factored out so the
+// list and detail handlers share one conversion (DRY).
+func toItemDTO(it store.Item) itemDTO {
+	return itemDTO{
+		ID:            it.ID,
+		ModuleID:      it.ModuleID,
+		LibraryID:     it.LibraryID,
+		FileID:        it.FileID,
+		RelativePath:  it.RelativePath,
+		MediaType:     it.MediaType,
+		Document:      it.Document,
+		SchemaVersion: it.SchemaVersion,
+		Status:        it.Status,
+	}
+}
+
+// toLibraryDTOs performs the boundary struct conversion (INV4): every
+// store.Library becomes a libraryDTO before it leaves the package.
+func toLibraryDTOs(libs []store.Library) []libraryDTO {
+	out := make([]libraryDTO, len(libs))
+	for i, l := range libs {
+		out[i] = libraryDTO{
+			ID:          l.ID,
+			ModuleID:    l.ModuleID,
+			RootPath:    l.RootPath,
+			DisplayName: l.DisplayName,
 		}
 	}
 	return out

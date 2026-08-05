@@ -21,3 +21,7 @@ coverage.html
 
 # Runtime data (SQLite DBs, plugin extraction, caches)
 /data/
+
+# Web/SPA dev (Phase 2+): npm + Vite build output
+node_modules/
+/web/dist/

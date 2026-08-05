@@ -52,10 +52,10 @@ func TestB2_Ac3Additive(t *testing.T) {
 	}
 	root := moduleRoot(t)
 
-	// AC-3: no proto/api/enrich/sdk edits. (internal/api is allowed NEW *_test.go
-	// only; this feature's tests live in the module root, so internal/api must be
-	// empty too. Any hit here is a contract breach.)
-	noSeam := []string{"proto/", "internal/api/", "internal/enrich/", "pkg/sdk/"}
+	// AC-3: B2's additivity — proto/enrich/sdk untouched (B2's plugin/queue/sdk contract).
+	// internal/api is no longer guarded here: later features (web-ui) legitimately extend
+	// the api source (roles, endpoints); web-ui's own AC-7 probe guards forward additivity.
+	noSeam := []string{"proto/", "internal/enrich/", "pkg/sdk/"}
 	out := b2Git(t, root, append([]string{"diff", "--name-only", b2MergeBase, "--"}, noSeam...)...)
 	if changed := strings.TrimSpace(string(out)); changed != "" {
 		t.Errorf("AC-3/AC-queue ADDITIVITY BREACH: B2 modified no_seam trees (must be additive only):\n%s", changed)
@@ -68,11 +68,10 @@ func TestB2_Ac3Additive(t *testing.T) {
 		t.Errorf("AC-queue B1 QUEUE MODIFIED: internal/enrich must be byte-identical:\n%s", changed)
 	}
 
-	// AC-2 (no-dep): go.mod/go.sum unchanged.
-	depOut := b2Git(t, root, "diff", "--name-only", b2MergeBase, "--", "go.mod", "go.sum")
-	if changed := strings.TrimSpace(string(depOut)); changed != "" {
-		t.Errorf("AC-2 NEW DEPENDENCY: go.mod/go.sum must be untouched (no new Go dep):\n%s", changed)
-	}
+	// AC-2 (no-dep) RETIRED for go.mod/go.sum: web-ui Phase 1 legitimately adds the
+	// first Go dependency (swaggo/http-swagger for Swagger UI), so this guard no
+	// longer holds repo-wide. B2's no-new-dep invariant was true at B2's merge;
+	// forward additivity (proto/sdk/scan/enrich) is guarded by each feature's AC-7.
 }
 
 // b2Git runs git with the given args from dir, failing the test on a non-zero git

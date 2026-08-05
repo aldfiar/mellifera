@@ -1,0 +1,425 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Mellifera HTTP edge: scan-root (library) management, item browse/detail, and admin liveness. Every handler is pure delegation (parse -\u003e one domain call -\u003e write).",
+        "title": "Mellifera API",
+        "contact": {},
+        "license": {
+            "name": "Apache-2.0"
+        },
+        "version": "1.0"
+    },
+    "host": "localhost:8080",
+    "basePath": "/api/v1",
+    "paths": {
+        "/admin/status": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Admin liveness snapshot (plugins + enrich queue)",
+                "operationId": "admin-status",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.statusResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/items": {
+            "get": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "List items (optionally filtered by library + status)",
+                "operationId": "list-items",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id filter",
+                        "name": "library",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "status filter (empty = all)",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page size (default 50, max 200)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.itemsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}": {
+            "get": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "Get a single item with its full document",
+                "operationId": "get-item",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.itemResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/libraries": {
+            "get": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "List scan libraries",
+                "operationId": "list-libraries",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.librariesResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "Create a scan library",
+                "operationId": "create-library",
+                "parameters": [
+                    {
+                        "description": "library to create",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.createLibraryRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/api.libraryDTO"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/libraries/{id}/scan": {
+            "post": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "Trigger a scan for a library",
+                "operationId": "scan-library",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.scanResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "api.apiError": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "retryable": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.createLibraryRequest": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "module_id": {
+                    "type": "string"
+                },
+                "root_path": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.enrichStatsDTO": {
+            "type": "object",
+            "properties": {
+                "done": {
+                    "type": "integer"
+                },
+                "failed": {
+                    "type": "integer"
+                },
+                "in_flight": {
+                    "type": "integer"
+                },
+                "pending": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.errorBody": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/api.apiError"
+                }
+            }
+        },
+        "api.itemDTO": {
+            "type": "object",
+            "properties": {
+                "document": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "file_id": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "library_id": {
+                    "type": "integer"
+                },
+                "media_type": {
+                    "type": "string"
+                },
+                "module_id": {
+                    "type": "string"
+                },
+                "relative_path": {
+                    "type": "string"
+                },
+                "schema_version": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.itemResponse": {
+            "type": "object",
+            "properties": {
+                "item": {
+                    "$ref": "#/definitions/api.itemDTO"
+                }
+            }
+        },
+        "api.itemsResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.itemDTO"
+                    }
+                }
+            }
+        },
+        "api.librariesResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.libraryDTO"
+                    }
+                }
+            }
+        },
+        "api.libraryDTO": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "module_id": {
+                    "type": "string"
+                },
+                "root_path": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.pluginHealthDTO": {
+            "type": "object",
+            "properties": {
+                "checked_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "restarts": {
+                    "type": "integer"
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.scanResponse": {
+            "type": "object",
+            "properties": {
+                "discovered": {
+                    "type": "integer"
+                },
+                "library_id": {
+                    "type": "integer"
+                },
+                "persisted": {
+                    "type": "integer"
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "api.statusResponse": {
+            "type": "object",
+            "properties": {
+                "enrich": {
+                    "$ref": "#/definitions/api.enrichStatsDTO"
+                },
+                "plugins": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.pluginHealthDTO"
+                    }
+                }
+            }
+        }
+    }
+}
