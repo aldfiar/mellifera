@@ -7,9 +7,29 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path"
 	"strings"
 	"testing"
 )
+
+// firstJSAsset reads dist/assets/ at test time and returns the URL path of the
+// first .js file found. This makes the test agnostic to Vite's content-hashed
+// filenames (Phase 2a replaced the placeholder app.js with hashed builds).
+func firstJSAsset(t *testing.T) string {
+	t.Helper()
+	entries, err := os.ReadDir("dist/assets")
+	if err != nil {
+		t.Fatalf("read dist/assets: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".js") {
+			return "/assets/" + e.Name()
+		}
+	}
+	t.Fatal("no .js file in dist/assets — did the SPA build run?")
+	return ""
+}
 
 // TestHandler_SPAAndCache exercises the S-web-embed joint: the embedded SPA is
 // served with the correct cache headers, client-route fallback returns
@@ -19,6 +39,7 @@ import (
 // router (INV1).
 func TestHandler_SPAAndCache(t *testing.T) {
 	h := Handler(nil, Options{})
+	jsAsset := firstJSAsset(t) // discovered at test time (content-hashed)
 
 	tests := []struct {
 		name            string
@@ -34,15 +55,14 @@ func TestHandler_SPAAndCache(t *testing.T) {
 			name:            "root_serves_index_no_cache",
 			target:          "/",
 			wantStatus:      http.StatusOK,
-			wantInBody:      `<script src="/assets/app.js">`,
+			wantInBody:      `<div id="root"`, // React mount point (Vite build)
 			wantContentType: "text/html",
 			wantCache:       "no-cache",
 		},
 		{
 			name:            "hashed_asset_immutable",
-			target:          "/assets/app.js",
+			target:          jsAsset,
 			wantStatus:      http.StatusOK,
-			wantInBody:      "Mellifera SPA placeholder",
 			wantContentType: "application/javascript",
 			wantCache:       "immutable",
 			notWantCache:    "no-cache",
@@ -51,7 +71,7 @@ func TestHandler_SPAAndCache(t *testing.T) {
 			name:            "client_route_falls_back_to_index",
 			target:          "/some/client/route",
 			wantStatus:      http.StatusOK,
-			wantInBody:      `<script src="/assets/app.js">`,
+			wantInBody:      `<div id="root"`,
 			wantContentType: "text/html",
 			wantCache:       "no-cache",
 		},
@@ -72,7 +92,7 @@ func TestHandler_SPAAndCache(t *testing.T) {
 			}
 			body, _ := io.ReadAll(rec.Body)
 			if tc.wantInBody != "" && !strings.Contains(string(body), tc.wantInBody) {
-				t.Errorf("body missing %q; body=%q", tc.wantInBody, string(body))
+				t.Errorf("body missing %q; body=%q", tc.wantInBody, string(body)[:min(120, len(body))])
 			}
 			ct := rec.Header().Get("Content-Type")
 			if tc.wantContentType != "" && !strings.HasPrefix(ct, tc.wantContentType) {
@@ -104,7 +124,7 @@ func TestHandler_SPAAndCache(t *testing.T) {
 // asset header (sends no-cache everywhere) — the Vite dev-proxy path.
 func TestHandler_DevMode(t *testing.T) {
 	h := Handler(nil, Options{DevMode: true})
-	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req := httptest.NewRequest(http.MethodGet, firstJSAsset(t), nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -193,3 +213,6 @@ func TestHandler_SwaggerNotFallback(t *testing.T) {
 		t.Fatalf("/openapi.yaml Content-Type = %q, want application/yaml", rec.Header().Get("Content-Type"))
 	}
 }
+
+// Ensure path import is used (for potential future asset-path construction).
+var _ = path.Base

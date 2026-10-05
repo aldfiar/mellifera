@@ -1,8 +1,8 @@
 {
   "last_commit": "",
-  "last_commit_note": "feature/async-enrichment is UNCOMMITTED (B1 coder + docs pending commit decision); SHA recorded at commit time",
-  "updated_at": "2026-08-03",
-  "synced_feature": "async-enrichment (Phase B1) — project docs synced: ai-architecture.md §4, project_structure.md, .project_context.json src_layout; new feature runbook docs/async-enrichment/api_reference.md",
+  "last_commit_note": "feature/web-ui-phase-2 (web-ui Phase 2a) is UNCOMMITTED — all work sits on the working tree at HEAD=47f276e, pipeline at reviewer (review_coder.md verdict PROCEED); SHA recorded at commit time",
+  "updated_at": "2026-08-31",
+  "synced_feature": "web-ui-phase-2 (Phase 2a, in progress) — project docs synced to the working tree: project_structure.md (Phase 2a blockquote + additions section + capability model), .project_context.json (web_spa + web_dev_toolchain stack entries, web/ src_layout, docs_index). Note: ai-architecture.md §4 module-map note for web/ is the phase's pending DOCS-01 task; docs/web-ui/operator-runbook.md regen-path update is the pending DOCS-02 task",
   "extracted_docs": [
     "mellifera/docs/architecture.md",
     "mellifera/docs/ai-architecture.md",

@@ -4,6 +4,15 @@
 run:
   timeout: 5m
 
+issues:
+  # The web/ subproject ships a JS dependency tree (Phase 2a). Some npm
+  # packages include stray .go example files (e.g. flatted/golang); golangci-lint
+  # must not analyze third-party JS deps. node_modules/ is gitignored, so this
+  # only affects dev/CI hosts that ran `npm install` — the node-less gate host
+  # never sees it (AC-6).
+  exclude-dirs:
+    - (^|/)node_modules(/|$)
+
 linters:
   disable-all: true
   enable:

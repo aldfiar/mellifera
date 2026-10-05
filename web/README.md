@@ -5,11 +5,11 @@ panels). The SPA is built by Vite/TypeScript and the built bundle is embedded
 into the Go binary via `go:embed` so the single-binary invariant is preserved at
 runtime.
 
-> **Phase 1 status:** only the placeholder `internal/web/dist/` exists today
-> (a hand-written `index.html` + `assets/app.js` shell). The real React app,
-> `web/src/`, `package.json`, and `vite.config.ts` land in **Phase 2**. This
-> README records the dev-workflow contract now so Phase 2 wires against a fixed
-> target.
+> **Phase 2a status:** the real React build lives in `internal/web/dist/`
+> (built via `make web-build`). The Phase-1 placeholder (hand-written
+> `index.html` + `assets/app.js`) is replaced by the Vite-built hashed SPA
+> bundle. `web/src/`, `package.json`, and `vite.config.ts` have landed; this
+> README records the dev-workflow contract.
 
 ## Toolchain (Phase 2+)
 
@@ -47,19 +47,27 @@ Same-origin: the SPA calls `/api/v1/*` directly, attaching
 
 ## Building the SPA (`make web-build`)
 
-`make web-build` is the **dev/CI-time regeneration path** (Phase 2 wires the
-`npm run build` step; today it documents the contract). It is NOT called by
-`make build` or `make check`. It:
+`make web-build` is the **dev/CI-time regeneration path**. It is NOT called by
+`make build`, `make check`, `make lint`, or `make test` (those four stay
+node-free — AC-6). It:
 
 1. runs `swag init` to regenerate `internal/web/api/openapi.{json,yaml}` from
    the handler annotations in `internal/api`, and
-2. (Phase 2) runs `npm run build`, emitting the React bundle into
+2. runs `cd web && npm ci && npm run build`, emitting the React bundle into
    `internal/web/dist/`.
 
-The committed `internal/web/dist/` (placeholder now; real bundle in Phase 2) is
-a build INPUT the Go gate embeds via `//go:embed all:dist` in
-`internal/web`. It is committed (not gitignored). `web/node_modules/` WILL be
-gitignored once Phase 2 introduces `npm`; only the built `dist/` is committed.
+Resolved paths: the npm project root is `web/` (this directory — `package.json`
++ `vite.config.ts` live here). Vite's `build.outDir` is `../internal/web/dist`,
+so the hashed SPA bundle lands directly in `internal/web/dist/` (the
+`//go:embed all:dist` target at `internal/web/web.go:20`) — NOT `/web/dist/`
+(which is gitignored and unused). `make web-build` runs from the repo root and
+`cd`s into `web/`; never `cd internal/web`.
+
+The committed `internal/web/dist/` (the real bundle) is a build INPUT the Go
+gate embeds via `//go:embed all:dist` in `internal/web`. It is committed (not
+gitignored — `.gitignore` ignores `node_modules/` and `/web/dist/` only).
+`web/node_modules/` is gitignored (dev-only); only the built `dist/` is
+committed.
 
 ## Layout
 

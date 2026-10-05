@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -378,13 +379,22 @@ func TestWeb_Integration(t *testing.T) {
 		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
 			t.Errorf("/ Cache-Control = %q, want no-cache", cc)
 		}
-		// /assets/app.js (committed placeholder) -> 200 + immutable.
-		rec = webDo(t, h, webReq(http.MethodGet, "/assets/app.js", "", nil))
+		// A real hashed asset (Vite build) -> 200 + immutable.
+		jsAsset := "/assets/app.js" // fallback if discovery fails
+		if entries, err := os.ReadDir("internal/web/dist/assets"); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".js") {
+					jsAsset = "/assets/" + e.Name()
+					break
+				}
+			}
+		}
+		rec = webDo(t, h, webReq(http.MethodGet, jsAsset, "", nil))
 		if rec.Code != http.StatusOK {
-			t.Errorf("/assets/app.js status = %d, want 200", rec.Code)
+			t.Errorf("%s status = %d, want 200", jsAsset, rec.Code)
 		}
 		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
-			t.Errorf("/assets/app.js Cache-Control = %q, want immutable", cc)
+			t.Errorf("%s Cache-Control = %q, want immutable", jsAsset, cc)
 		}
 		// SPA fallback: an arbitrary client route -> 200 text/html (index.html).
 		rec = webDo(t, h, webReq(http.MethodGet, "/some/client/route", "", nil))
