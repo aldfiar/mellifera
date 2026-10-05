@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import type { ItemDocument } from "@/lib/document";
 import { clearToken, getToken } from "@/lib/auth";
 
 // TS mirrors of the Go wire DTOs (internal/api/handlers.go). Field names match
@@ -55,6 +56,40 @@ export interface AdminStatus {
   enrich: EnrichStats;
 }
 
+// handlers.go:129-139 (itemDTO) — the §3.1 document travels as json.RawMessage
+// on the Go side (opaque there) and is typed here via ItemDocument. Field names
+// match the JSON tags EXACTLY.
+export interface ItemDTO {
+  id: string; // "itm_<libraryID>_<fileID>" — string UUID form
+  module_id: string;
+  library_id: number; // int64
+  file_id: string;
+  relative_path: string;
+  media_type: string; // "video" | "image"
+  document: ItemDocument; // full §3.1 document — precision-preserved
+  schema_version: number;
+  status: string; // "new"|"pending"|"parsed"|"enriched"|"failed"|"ready"|"stale"
+}
+
+// handlers.go itemsResponse — empty array, never null
+export interface ItemsResponse {
+  items: ItemDTO[];
+}
+
+// handlers.go itemResponse
+export interface ItemResponse {
+  item: ItemDTO;
+}
+
+// listItems query params — `library` is REQUIRED (Go listItems 400s without an
+// integer `library`; handlers.go:216-230). `status` empty = all (server INV).
+export interface ListItemsParams {
+  library: number;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
 // Canonical error body inner object (handlers.go:364-385; arch §11.6).
 export interface ApiErrorBody {
   code: string;
@@ -82,13 +117,41 @@ export class ApiError extends Error {
   }
 }
 
-// 2a endpoint path constants — ALL pre-existing (router.go:92,98-100; AC-7).
-// Phase-2b adds GET /api/v1/items[/{id}] (unused in 2a — NOT listed here).
+// Endpoint path constants — ALL pre-existing (router.go:92-94,98-100).
+// GET /api/v1/items[/{id}] are the Phase-2b routes the browse slice consumes.
 export const ENDPOINTS = {
   libraries: "/api/v1/libraries",
   scan: (id: number): string => `/api/v1/libraries/${id}/scan`,
   adminStatus: "/api/v1/admin/status",
+  items: "/api/v1/items",
+  item: (id: string): string => `/api/v1/items/${id}`,
 } as const;
+
+// listItems — GET /api/v1/items?library=&status=&limit=&offset= (handlers.go:
+// 216-230). `library` is required (server INV); `status` is sent only when set
+// (empty = all); limit/offset are sent only when provided (server default
+// limit 50). Builds the query string here so callers pass typed params.
+export async function listItems(params: ListItemsParams): Promise<ItemsResponse> {
+  const qs = new URLSearchParams();
+  qs.set("library", String(params.library));
+  if (params.status) {
+    qs.set("status", params.status);
+  }
+  if (params.limit !== undefined) {
+    qs.set("limit", String(params.limit));
+  }
+  if (params.offset !== undefined) {
+    qs.set("offset", String(params.offset));
+  }
+  return apiRequest<ItemsResponse>(`${ENDPOINTS.items}?${qs.toString()}`);
+}
+
+// getItem — GET /api/v1/items/{id} (handlers.go:266-278). The id is the item's
+// string UUID, passed through verbatim. A missing item 404s with the canonical
+// not_found body (surfaced as ApiError{code:"not_found"}).
+export async function getItem(id: string): Promise<ItemResponse> {
+  return apiRequest<ItemResponse>(ENDPOINTS.item(id));
+}
 
 // redirectToLogin — the 401 rotation. Factored so the redirect is a single
 // chokepoint (and overridable in tests). INV-401-source-of-truth: a 401 is the
@@ -127,14 +190,9 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     body = typeof init.body === "string" ? init.body : JSON.stringify(init.body);
   }
 
-  let res: Response;
-  try {
-    res = await fetch(path, { ...init, headers, body });
-  } catch (err) {
-    // Network failure (fetch rejected): propagate as a rejected promise —
-    // TanStack Query surfaces it as an error state.
-    throw err;
-  }
+  // A rejected fetch (network failure) propagates as a rejected promise —
+  // TanStack Query surfaces it as an error state.
+  const res: Response = await fetch(path, { ...init, headers, body });
 
   if (res.status === 401) {
     clearToken();

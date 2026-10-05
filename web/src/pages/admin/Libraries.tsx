@@ -228,7 +228,7 @@ function LibrariesTable(props: {
               <TableRow key={lib.id}>
                 <TableCell>{lib.id}</TableCell>
                 <TableCell className="font-mono">{lib.module_id}</TableCell>
-                <TableCell className="font-mono">{lib.root_path}</TableCell>
+                <TableCell className="break-all font-mono">{lib.root_path}</TableCell>
                 <TableCell>{lib.display_name}</TableCell>
                 <TableCell>
                   <div className="flex flex-col gap-2">

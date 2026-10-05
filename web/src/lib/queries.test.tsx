@@ -5,10 +5,12 @@ import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import * as apiModule from "@/lib/api";
+import type { ListItemsParams } from "@/lib/api";
 import {
   queryClient,
   useAdminStatus,
   useCreateLibrary,
+  useItems,
   useLibraries,
   useScanLibrary,
 } from "@/lib/queries";
@@ -98,5 +100,50 @@ describe("query hooks — S5 joint (hooks -> Go endpoints via apiRequest)", () =
     const { result } = renderHook(() => useAdminStatus(), { wrapper: wrapper(client) });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(spy).toHaveBeenCalledWith("/api/v1/admin/status");
+  });
+
+  it("useItems delegates to listItems with the given params", async () => {
+    const listSpy = vi
+      .spyOn(apiModule, "listItems")
+      .mockResolvedValue({ items: [] });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const params: ListItemsParams = { library: 7, status: "pending", limit: 50, offset: 0 };
+
+    const { result } = renderHook(() => useItems(params), { wrapper: wrapper(client) });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(listSpy).toHaveBeenCalledWith(params);
+  });
+
+  it("useItems keys [\"items\", params] — distinct params fetch independently, identical params reuse the cache", async () => {
+    const listSpy = vi
+      .spyOn(apiModule, "listItems")
+      .mockResolvedValue({ items: [] });
+    // staleTime Infinity so a remount with identical params is served from the
+    // cache instead of triggering the default refetch-on-mount (which would
+    // say nothing about the key).
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    const page0: ListItemsParams = { library: 7, limit: 50, offset: 0 };
+    const page1: ListItemsParams = { library: 7, limit: 50, offset: 50 };
+
+    const first = renderHook(() => useItems(page0), { wrapper: wrapper(client) });
+    await waitFor(() => expect(first.result.current.isSuccess).toBe(true));
+    expect(listSpy).toHaveBeenCalledTimes(1);
+
+    // Different offset → a different cache entry → a second fetch.
+    const second = renderHook(() => useItems(page1), { wrapper: wrapper(client) });
+    await waitFor(() => expect(second.result.current.isSuccess).toBe(true));
+    expect(listSpy).toHaveBeenCalledTimes(2);
+
+    // Same params → served from the ["items", page0] cache entry, no refetch.
+    const cached = renderHook(() => useItems(page0), { wrapper: wrapper(client) });
+    await waitFor(() => expect(cached.result.current.isSuccess).toBe(true));
+    expect(listSpy).toHaveBeenCalledTimes(2);
+
+    // The key carries the full params object so pages cache independently.
+    expect(client.getQueryData(["items", page0])).toEqual({ items: [] });
+    expect(client.getQueryData(["items", page1])).toEqual({ items: [] });
   });
 });

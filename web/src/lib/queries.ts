@@ -9,11 +9,16 @@ import {
 
 import {
   apiRequest,
+  getItem,
+  listItems,
   type AdminStatus,
   type ApiError,
   type CreateLibraryRequest,
+  type ItemResponse,
+  type ItemsResponse,
   type LibrariesResponse,
   type LibraryDTO,
+  type ListItemsParams,
   type ScanResponse,
 } from "@/lib/api";
 
@@ -28,6 +33,8 @@ import {
 //   ["libraries"]           — GET /api/v1/libraries
 //   ["admin-status"]        — GET /api/v1/admin/status (polls)
 //   ["library-scan", id]    — POST /api/v1/libraries/{id}/scan result
+//   ["items", params]       — GET /api/v1/items (params = ListItemsParams, so
+//                             limit/offset/status key pages independently)
 
 // QueryClient for the app. GET queries keep the default retry; POST mutations
 // (create/scan) are non-idempotent and MUST NOT be auto-retried
@@ -100,5 +107,30 @@ export function useAdminStatus(): UseQueryResult<AdminStatus> {
     queryKey: ["admin-status"],
     queryFn: () => apiRequest<AdminStatus>("/api/v1/admin/status"),
     refetchInterval: 5000,
+  });
+}
+
+// useItem — GET /api/v1/items/{id} via getItem. Keyed ["item", id]: one cache
+// entry per item id, so deep links and navigations between items cache
+// independently. Pure delegation — a missing item surfaces as ApiError
+// code "not_found" for the page to render as a not-found state (T14); a 401
+// still rotates to /login inside the wrapper (INV-401-source-of-truth).
+export function useItem(id: string): UseQueryResult<ItemResponse> {
+  return useQuery({
+    queryKey: ["item", id],
+    queryFn: () => getItem(id),
+  });
+}
+
+// useItems — GET /api/v1/items via listItems. Keyed ["items", params]: the FULL
+// params object (library + status + limit + offset) is the key, so pages and
+// filter combinations cache independently instead of clobbering each other.
+// Pure delegation, no pagination logic here — Browse owns offset paging.
+export function useItems(
+  params: ListItemsParams,
+): UseQueryResult<ItemsResponse> {
+  return useQuery({
+    queryKey: ["items", params],
+    queryFn: () => listItems(params),
   });
 }

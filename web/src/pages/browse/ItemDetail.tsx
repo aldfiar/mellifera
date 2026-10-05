@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: Apache-2.0
+import type { ReactElement } from "react";
+import { useParams } from "react-router-dom";
+
+import type { ApiError, ItemDTO } from "@/lib/api";
+import { useItem } from "@/lib/queries";
+import {
+  provenanceEntries,
+  sourcesOf,
+  stageEntries,
+  viewEntries,
+} from "@/lib/document";
+import { EmptyState, ErrorState, LoadingState } from "@/components/states";
+import { ProvenanceBadge } from "@/components/metadata/ProvenanceBadge";
+import { SourceCard } from "@/components/metadata/SourceCard";
+import { StagesProgress } from "@/components/metadata/StagesProgress";
+import { ViewFields } from "@/components/metadata/ViewFields";
+import { Card, CardContent } from "@/components/ui/card";
+
+// ItemDetail — the full §3.1 document for one item (/items/:id), rendered
+// VERBATIM (INV-no-rounding, INV-no-merge):
+//   Tier 1  identifiers        — plain list
+//   core    item-managed fields — id/module/library/path/type/status/version
+//   Tier 2  sources.<plugin>   — one <SourceCard> per sourcesOf(doc) entry,
+//                                never merged across plugins
+//   Tier 3  _view              — <ViewFields> (values verbatim via JsonValue)
+//   audit   _provenance        — one <ProvenanceBadge> per provenance entry
+//   trail   _stages            — <StagesProgress> (per-stage error when present)
+//
+// INV-no-direct-fetch: the page touches the API only through useItem.
+// Error edges: ApiError code "not_found" (HTTP 404) → a clear not-found state,
+// never a crash; any other failure → the canonical error (code + message)
+// surfaced inline.
+
+export default function ItemDetail(): ReactElement {
+  const { id } = useParams<{ id: string }>();
+  const { data, isLoading, error, refetch } = useItem(id ?? "");
+
+  if (isLoading) {
+    return <LoadingState label="Loading item…" />;
+  }
+
+  if (error) {
+    const err = error as ApiError;
+    // 404 / not_found: the item does not exist (deleted id, stale link) —
+    // a clear, calm state rather than an error surface or a crash.
+    if (err.code === "not_found" || err.status === 404) {
+      return (
+        <main className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
+          <EmptyState
+            message={`Item not found: no item with id ${id ?? "(missing)"}.`}
+          />
+        </main>
+      );
+    }
+    // Any other failure — canonical error body surfaced inline (code + message).
+    return (
+      <main className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
+        <ErrorState error={err} onRetry={refetch} />
+      </main>
+    );
+  }
+
+  const item = data?.item;
+  if (!item) {
+    // Defensive: success without a payload should not happen (server always
+    // returns {item}); fail calm instead of crashing on undefined access.
+    return (
+      <main className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
+        <EmptyState message="Item not found." />
+      </main>
+    );
+  }
+
+  return <ItemDetailView item={item} />;
+}
+
+// ItemDetailView — mounted only with a loaded item, so the document accessors
+// run against real data (components receive parsed data as props; none fetch).
+function ItemDetailView(props: { item: ItemDTO }): ReactElement {
+  const { item } = props;
+  const doc = item.document;
+  const identifiers = Object.entries(doc.identifiers ?? {});
+  const sources = sourcesOf(doc);
+  const provenance = provenanceEntries(doc);
+  const viewRecord = Object.fromEntries(
+    viewEntries(doc).map((e) => [e.fieldPath, e.entry]),
+  );
+
+  return (
+    <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6">
+      <section>
+        <h2 className="mb-3 text-base font-semibold">Item</h2>
+        <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="flex gap-2">
+            <dt className="text-xs text-muted-foreground">id</dt>
+            <dd className="font-mono text-sm">{item.id}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="text-xs text-muted-foreground">module_id</dt>
+            <dd className="font-mono text-sm">{item.module_id}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="text-xs text-muted-foreground">library_id</dt>
+            <dd className="font-mono text-sm">{item.library_id}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="text-xs text-muted-foreground">file_id</dt>
+            <dd className="font-mono text-sm">{item.file_id}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="text-xs text-muted-foreground">relative_path</dt>
+            <dd className="break-all font-mono text-sm">{item.relative_path}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="text-xs text-muted-foreground">media_type</dt>
+            <dd className="text-sm">{item.media_type}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="text-xs text-muted-foreground">status</dt>
+            <dd className="text-sm">{item.status}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="text-xs text-muted-foreground">schema_version</dt>
+            <dd className="font-mono text-sm">{item.schema_version}</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section>
+        <h3 className="mb-2 text-sm font-semibold">Identifiers</h3>
+        {identifiers.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No identifiers</p>
+        ) : (
+          <dl className="flex flex-wrap gap-x-6 gap-y-1">
+            {identifiers.map(([key, value]) => (
+              <div key={key} className="flex gap-2">
+                <dt className="font-mono text-xs text-muted-foreground">{key}</dt>
+                <dd className="font-mono text-sm">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h3 className="text-sm font-semibold">Sources</h3>
+        {sources.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No source namespaces</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {sources.map((source) => (
+              <SourceCard
+                key={source.pluginId}
+                pluginId={source.pluginId}
+                namespace={source.namespace}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h3 className="mb-2 text-sm font-semibold">View</h3>
+        <Card>
+          <CardContent className="pt-6">
+            <ViewFields entries={viewRecord} />
+          </CardContent>
+        </Card>
+      </section>
+
+      <section>
+        <h3 className="mb-2 text-sm font-semibold">Provenance</h3>
+        {provenance.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No provenance entries</p>
+        ) : (
+          <ul className="space-y-2">
+            {provenance.map((prov) => (
+              <ProvenanceBadge
+                key={prov.fieldPath}
+                fieldPath={prov.fieldPath}
+                entry={prov.entry}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h3 className="mb-2 text-sm font-semibold">Pipeline stages</h3>
+        <StagesProgress stages={stageEntries(doc)} />
+      </section>
+    </main>
+  );
+}

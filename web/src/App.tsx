@@ -5,6 +5,8 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { RequireAuth } from "@/components/RequireAuth";
 import Login from "@/pages/Login";
 import Admin from "@/pages/admin/Admin";
+import Browse from "@/pages/browse/Browse";
+import ItemDetail from "@/pages/browse/ItemDetail";
 
 // Client-side route table. Routing is purely client-side (INV-no-server-route-
 // config): the Go NotFound SPA fallback (internal/web/web.go:54-63) serves
@@ -14,7 +16,9 @@ import Admin from "@/pages/admin/Admin";
 // INV-public-login-only: /login is the ONLY unauthenticated SPA route; every
 // other route is wrapped in <RequireAuth> (or redirects into one that is).
 //
-// INV-root-redirect-2a: / -> /admin in 2a (Phase 2b flips this to /browse).
+// INV-root-redirect-2b: / and * redirect to /browse (the 2a → /admin default
+// flipped in Phase 2b — browse is the operator's landing surface).
+
 export default function App(): ReactElement {
   return (
     <Routes>
@@ -27,9 +31,24 @@ export default function App(): ReactElement {
           </RequireAuth>
         }
       />
-      <Route path="/" element={<Navigate to="/admin" replace />} />
-      {/* 2b: / -> /browse */}
-      <Route path="*" element={<Navigate to="/admin" replace />} />
+      <Route
+        path="/browse"
+        element={
+          <RequireAuth>
+            <Browse />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/items/:id"
+        element={
+          <RequireAuth>
+            <ItemDetail />
+          </RequireAuth>
+        }
+      />
+      <Route path="/" element={<Navigate to="/browse" replace />} />
+      <Route path="*" element={<Navigate to="/browse" replace />} />
     </Routes>
   );
 }

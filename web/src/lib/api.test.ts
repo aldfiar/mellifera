@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, apiRequest, ENDPOINTS, type LibrariesResponse } from "@/lib/api";
+import {
+  ApiError,
+  apiRequest,
+  ENDPOINTS,
+  getItem,
+  listItems,
+  type LibrariesResponse,
+  type ListItemsParams,
+} from "@/lib/api";
 import { setToken, TOKEN_KEY } from "@/lib/auth";
 
 // S4 joint contract: apiRequest <-> Go /api/v1/* (authMiddleware expects
@@ -84,5 +92,106 @@ describe("apiRequest — Bearer + verbatim parse (S4 joint)", () => {
 
     const out = await apiRequest<{ rating: number }>("/api/v1/_probe");
     expect(out.rating).toBe(8.9); // not 9, not "8.90"
+  });
+});
+
+describe("items client — S4 joint (listItems/getItem <-> Go /api/v1/items)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("listItems hits /api/v1/items with library required and optional params only when set", async () => {
+    setToken("t1");
+    // mockImplementation (not mockResolvedValue): a Response body can be read
+    // only once, and this test awaits two requests.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => jsonResponse(200, { items: [] }));
+
+    const full: ListItemsParams = { library: 7, status: "pending", limit: 50, offset: 100 };
+    await listItems(full);
+
+    const [path] = fetchSpy.mock.calls[0]!;
+    expect(path).toBe("/api/v1/items?library=7&status=pending&limit=50&offset=100");
+
+    // status/limit/offset omitted when unset — empty status = all (server INV).
+    await listItems({ library: 3 });
+    const [minimalPath] = fetchSpy.mock.calls[1]!;
+    expect(minimalPath).toBe("/api/v1/items?library=3");
+  });
+
+  it("listItems parses the page verbatim incl. the full document", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        items: [
+          {
+            id: "itm_7_abc",
+            module_id: "tv",
+            library_id: 7,
+            file_id: "abc",
+            relative_path: "Сериалы/Breaking Bad/s01e01.mkv",
+            media_type: "video",
+            document: { _view: { title: { value: "Во все тяжкие", source: "tv-parser", reason: "parsed" } } },
+            schema_version: 1,
+            status: "parsed",
+          },
+        ],
+      }),
+    );
+
+    const out = await listItems({ library: 7 });
+
+    expect(out.items).toHaveLength(1);
+    const item = out.items[0]!;
+    expect(item.id).toBe("itm_7_abc");
+    expect(item.library_id).toBe(7);
+    expect(item.relative_path).toBe("Сериалы/Breaking Bad/s01e01.mkv"); // Cyrillic passthrough
+    expect(item.document._view?.title?.value).toBe("Во все тяжкие");
+    expect(item.schema_version).toBe(1);
+    expect(item.status).toBe("parsed");
+  });
+
+  it("getItem hits /api/v1/items/{id} with the raw string id", async () => {
+    setToken("t1");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        item: {
+          id: "itm_7_abc",
+          module_id: "tv",
+          library_id: 7,
+          file_id: "abc",
+          relative_path: "x.mkv",
+          media_type: "video",
+          document: {},
+          schema_version: 1,
+          status: "new",
+        },
+      }),
+    );
+
+    const out = await getItem("itm_7_abc");
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe("/api/v1/items/itm_7_abc");
+    expect(out.item.id).toBe("itm_7_abc");
+  });
+
+  it("getItem surfaces a 404 not_found as ApiError", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(404, { error: { code: "not_found", message: "item x not found", retryable: false } }),
+    );
+
+    let caught: unknown;
+    try {
+      await getItem("x");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).code).toBe("not_found");
+    expect((caught as ApiError).status).toBe(404);
   });
 });
