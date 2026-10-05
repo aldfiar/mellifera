@@ -1,0 +1,22 @@
+schema: lite
+
+# wf: openspec-pin=1.14.0
+# Distribution pin: the openspec CLI is invoked through this version
+# (npx --yes -p @fission-ai/openspec@<pin> openspec ...), never bare from PATH.
+# Single source of the version constant: the framework's scripts/openspec-pin.sh.
+
+# Project context (optional) — shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-operation guidance (optional) — advisory text shown during apply.
+operations:
+  apply:
+    guidance:
+      - Do not tick checkboxes in tasks.md; wf owns ticks — `wf change tick <change> <id>` re-runs the box's probe and writes the tick only on probe success.
+      - Never hand-edit or remove `<!-- wf: ... -->` markers (source_fingerprint front matter, wf:probe blocks) in tasks.md or spec deltas.
+      - If your observation disagrees with a recorded tick, re-derivation wins — fix the code or the probe, re-run, and let wf re-tick; never force a tick to match your expectation.
