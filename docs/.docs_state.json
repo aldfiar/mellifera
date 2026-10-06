@@ -1,12 +1,15 @@
 {
   "last_commit": "",
-  "last_commit_note": "feature/web-ui-phase-2 (web-ui Phase 2a) is UNCOMMITTED — all work sits on the working tree at HEAD=47f276e, pipeline at reviewer (review_coder.md verdict PROCEED); SHA recorded at commit time",
-  "updated_at": "2026-08-31",
-  "synced_feature": "web-ui-phase-2 (Phase 2a, in progress) — project docs synced to the working tree: project_structure.md (Phase 2a blockquote + additions section + capability model), .project_context.json (web_spa + web_dev_toolchain stack entries, web/ src_layout, docs_index). Note: ai-architecture.md §4 module-map note for web/ is the phase's pending DOCS-01 task; docs/web-ui/operator-runbook.md regen-path update is the pending DOCS-02 task",
+  "last_commit_note": "docs cleanup 2026-10-06: the six docs/<feature>/ wf records removed (git history + openspec/changes/archive/ preserve them); live operator/API docs consolidated into docs/{api-reference,operator-runbook}.md; future work extracted to docs/backlog.md",
+  "updated_at": "2026-10-06",
+  "synced_feature": "docs cleanup (post web-ui-phase-2 archive) — all six implemented feature folders (scan-library, plugin-pipeline, async-enrichment, image-enrichment, web-ui, web-ui-phase-2) deleted; references repointed in ai-architecture.md, project_structure.md, open-questions.md Q29, .project_context.json docs_index; behavior lives in openspec/specs/",
   "extracted_docs": [
     "mellifera/docs/architecture.md",
     "mellifera/docs/ai-architecture.md",
     "mellifera/docs/open-questions.md",
-    "mellifera/docs/prior-art.md"
+    "mellifera/docs/prior-art.md",
+    "mellifera/docs/api-reference.md",
+    "mellifera/docs/operator-runbook.md",
+    "mellifera/docs/backlog.md"
   ]
 }

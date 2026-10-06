@@ -13,8 +13,8 @@
 > media-type-agnostic (parseTV extracted into tv-parser), and adds the
 > `items.status` lifecycle column. Zero new protos — tv-parser and the enrich
 > chain implement the already-generated `metadata.v1.MetadataSource`. The
-> scan-library wire contract is unchanged (deprecate-don't-delete). Feature record:
-> `docs/plugin-pipeline/`.
+> scan-library wire contract is unchanged (deprecate-don't-delete). Behavior:
+> `openspec/specs/plugin-pipeline/spec.md`.
 >
 > **Phase B1 (`async-enrichment`) layered on top — additive.** Enrichment is now
 > ASYNC (architecture §4.4): `internal/enrich` gains a derived in-process
@@ -24,10 +24,10 @@
 > `POST /scan` returns once items are persisted `pending`; workers drain to
 > `enriched`/`ready` in the background. Additive: zero new protos, `go.mod`
 > unchanged, plugin contract + API surface + `scan.Result` unchanged
-> (deprecate-don't-delete). enrich 3→7, store 4→5 (both green ≤8). B2 (image+EXIF)
-> + B3 (TMDB + `AuthContext`) remain **outlined** (consumers of the B1 queue).
-> Feature record: `docs/async-enrichment/`; operator runbook:
-> [`docs/async-enrichment/api_reference.md`](async-enrichment/api_reference.md).
+> (deprecate-don't-delete). enrich 3→7, store 4→5 (both green ≤8). B3 (TMDB +
+> `AuthContext`) remains **deferred** ([`docs/backlog.md`](backlog.md)).
+> Operator runbook: [`docs/operator-runbook.md`](operator-runbook.md); behavior:
+> `openspec/specs/async-enrichment/spec.md`.
 >
 > **Phase B2 (`image-enrichment`) layered on top — additive.** Lands the image
 > media type + EXIF enrichment as the SECOND consumer of the B1 queue: a new
@@ -40,10 +40,11 @@
 > (deprecate-don't-delete). `metadata_source` now ships tv-parser + image-enricher
 > (still ZERO new capability types — `image_provider` stays reserved). `exiftool`
 > is a RUNTIME dep (like ffmpeg/ffprobe); a missing exiftool soft-fails image
-> enrichment per-source (the scan always succeeds). B3 (TMDB + `AuthContext`)
-> + Phase C (post-action) remain **outlined**. Feature record:
-> `docs/image-enrichment/`; operator runbook:
-> [`docs/image-enrichment/operator_runbook.md`](image-enrichment/operator_runbook.md).
+> enrichment per-source (the scan always succeeds). B3b (external image enrichers
+> + RAW) and Phase C (post-action) remain **deferred**
+> ([`docs/backlog.md`](backlog.md)). Operator runbook:
+> [`docs/operator-runbook.md`](operator-runbook.md); behavior:
+> `openspec/specs/image-enrichment/spec.md`.
 >
 > **web-ui Phase 1 layered on top — additive.** Lands the Go-side UI foundation:
 > a NEW `internal/web` package (`Handler`+`Options`) composes the chi `/api/*`
@@ -60,11 +61,11 @@
 > (dev/CI-only). The public surface widens (R-2): `/`, `/assets/*`, `/openapi.*`,
 > `/docs` are unauthenticated static (no data); all data stays role-gated. React
 > app + client panels + B3 (TMDB) + Phase C (post-action) remain **deferred**
-> (Phase 2+). Feature record: `docs/web-ui/`; operator runbook:
-> [`docs/web-ui/operator-runbook.md`](web-ui/operator-runbook.md).
+> (Phase 2+; [`docs/backlog.md`](backlog.md)). Operator runbook:
+> [`docs/operator-runbook.md`](operator-runbook.md); behavior:
+> `openspec/specs/web-ui/spec.md`.
 >
-> **web-ui Phase 2a layered on top — additive — IN PROGRESS (at reviewer; all
-> work UNCOMMITTED on `feature/web-ui-phase-2`, HEAD = `47f276e`).** Lands the
+> **web-ui Phase 2a/2b/2c layered on top — additive (web-only).** Lands the
 > React app itself: a NEW `web/` npm project (Vite 5 + React 18 + TypeScript
 > strict + `react-router-dom` v6 + TanStack Query v5 + Tailwind CSS +
 > shadcn/ui copy-in primitives) with the token-entry auth layer
@@ -79,8 +80,11 @@
 > `integration_web_test.go`) — `go.mod`, `internal/api` (7), `internal/web`
 > (2 symbols), `cmd/`, protos, SDK, and every endpoint are byte-identical vs
 > `47f276e`; zero new API endpoints. node/npm are dev/CI-only. Phase 2b
-> (browse + item detail + metadata rendering) + 2c (polish) remain
-> **outlined**. Feature record: `docs/web-ui-phase-2/`.
+> (browse + item detail + metadata rendering) and 2c (theme toggle, empty/error
+> states, route polish) shipped in the same openspec change (`web-ui-phase-2`,
+> archived 2026-10-06 — one additive Go integration test
+> `integration_web_items_test.go` is the only Go diff beyond test-only
+> adjustments). Behavior: `openspec/specs/web-ui/spec.md`.
 
 ## Overview
 
@@ -284,10 +288,9 @@ exercised by the queue (defined-but-unused in Phase A). The `document` gains (ar
 `sources.<plugin_id>` (lossless per-source namespace), `_provenance.<field_path>` (per-field source
 audit), `_view.<field>` (recomputable view; Phase-A last-writer), and `_stages[]` (per-stage progress,
 `stage:"metadata_source"`). **Full state machine, status meanings, and provenance-reading** ->
-[`docs/plugin-pipeline/api_reference.md`](plugin-pipeline/api_reference.md); **async lifecycle, env
-knobs, and the non-blocking-scan runbook** -> [`docs/async-enrichment/api_reference.md`](async-enrichment/api_reference.md);
-state set/machine source of truth: `docs/plugin-pipeline/acceptance.md` AC-7 (+ B1 `ready`/`stale` in
-`docs/async-enrichment/acceptance.md`).
+[`docs/api-reference.md`](api-reference.md) §4–§5; **async queue, env knobs, and the
+non-blocking-scan runbook** -> [`docs/operator-runbook.md`](operator-runbook.md) §5;
+behavioral requirements: `openspec/specs/{plugin-pipeline,async-enrichment}/spec.md`.
 
 ### Phase B2 additions (additive — `image-enrichment`)
 
@@ -304,7 +307,7 @@ additions:
 - **`Makefile`.** `build-plugin` now builds 3 binaries (base-scanner, tv-parser, image-enricher); a runtime-deps comment documents ffmpeg/ffprobe + exiftool.
 - **`integration_image_test.go`.** The B2 AC-1 golden: real server + 3 plugin subprocesses + REAL exiftool over stdlib-encoded image fixtures (jpeg/png + exiftool-stamped EXIF + ffmpeg webp + sips heic); scan non-blocking → items `pending` → bounded poll until settled `ready`; `sources."image-enricher"` carries real EXIF + `_provenance`/`_view`/`_stages`; soft-fail + Cyrillic + HEIC + stray-`.mkv`-gated-out asserted.
 
-**Image lifecycle = the B1 lifecycle, unchanged.** Image items consume the SAME async queue as TV: scan persists each item `pending` (non-blocking) → the worker pool drains `(item, image-enricher)` → `enriched --settled--> ready`. EXIF provenance, soft-fail, and runtime-dep posture: **[`docs/image-enrichment/operator_runbook.md`](image-enrichment/operator_runbook.md)**; state machine: `docs/image-enrichment/acceptance.md`.
+**Image lifecycle = the B1 lifecycle, unchanged.** Image items consume the SAME async queue as TV: scan persists each item `pending` (non-blocking) → the worker pool drains `(item, image-enricher)` → `enriched --settled--> ready`. EXIF provenance, soft-fail, and runtime-dep posture: **[`docs/operator-runbook.md`](operator-runbook.md)** §1/§4/§5; behavior: `openspec/specs/image-enrichment/spec.md`.
 
 ### web-ui Phase 1 additions (additive — `web-ui`)
 
@@ -318,11 +321,11 @@ the enrich queue, `scan.Result`, or proto/sdk (additive: `proto/`/`pkg/sdk`/
 - **`cmd/mellifera`.** Composes `web.Handler(api.New(deps), web.Options{DevMode: cfg.webDev})` as the SOLE top-level `http.Handler` (no second `http.Server`). Builds the `Deps.Status` closure (iterates the canonical `pluginIDs` set, maps `plugin.Health`→`api.PluginHealth` RFC3339-at-the-edge, reads `enrichQueue.Stats()`→`api.EnrichStats`; best-effort — a per-plugin error omits one entry, does not fail the snapshot). Reads `MELLIFERA_WEB_DEV` (`envBool`, default `false`).
 - **`Makefile`.** New `web-build` target — DEV/CI-only (`swag init -g internal/api/doc.go -o internal/web/api -ot json,yaml`; a commented Phase-2 `npm ci && npm run build`). NOT a prerequisite of `build`/`check`/`lint`/`test` (INV-node-free-gate).
 - **`NOTICE`.** Records the bundled Swagger UI (Apache-2.0) served via `github.com/swaggo/http-swagger` + the code-generated OpenAPI spec.
-- **`integration_web_test.go` + `qa_*_test.go`.** AC-1..AC-7 keystone (roles, swagger, list, item, admin-status, embed/delivery, build-gate node-free) + independent QA (browse-group default-deny, DTO-accuracy drift catcher, INV4 library wire key-set, empty-name asset guard, AC-7 node-free dry-run). Health-check P0/P1: 0; the two P2 cleanups (dead `Principal.Admin()` removed; byte-identical `libraryResponse`/`libraryDTO` collapsed) and two P3 doc-reconciliation notes (A-01/A-02) are folded into `docs/web-ui/conventions.md`.
+- **`integration_web_test.go` + `qa_*_test.go`.** AC-1..AC-7 keystone (roles, swagger, list, item, admin-status, embed/delivery, build-gate node-free) + independent QA (browse-group default-deny, DTO-accuracy drift catcher, INV4 library wire key-set, empty-name asset guard, AC-7 node-free dry-run). Health-check P0/P1: 0; the two P2 cleanups (dead `Principal.Admin()` removed; byte-identical `libraryResponse`/`libraryDTO` collapsed) and two P3 doc-reconciliation notes (A-01/A-02) are recorded in the feature's review records (git history).
 
-**Build-gate story (AC-7).** The Go gate (`make build`/`check`/`lint`/`test`) NEVER invokes `node`/`npm`/`swag` — it embeds COMMITTED artifacts (`internal/web/dist/*` — placeholder at Phase-1 time, real Vite build since 2a; `internal/web/api/openapi.{json,yaml}`). `make web-build` is the only node/swag-touching target (dev/CI). **Public-surface widens (R-2):** `/`, `/assets/*`, `/openapi.*`, `/docs` are now unauthenticated (static only — no data); all data stays behind role-gated `/api/v1/*`. Build-gate + R-2 posture + env knobs: **[`docs/web-ui/operator-runbook.md`](web-ui/operator-runbook.md)**.
+**Build-gate story (AC-7).** The Go gate (`make build`/`check`/`lint`/`test`) NEVER invokes `node`/`npm`/`swag` — it embeds COMMITTED artifacts (`internal/web/dist/*` — placeholder at Phase-1 time, real Vite build since 2a; `internal/web/api/openapi.{json,yaml}`). `make web-build` is the only node/swag-touching target (dev/CI). **Public-surface widens (R-2):** `/`, `/assets/*`, `/openapi.*`, `/docs` are now unauthenticated (static only — no data); all data stays behind role-gated `/api/v1/*`. Build-gate + R-2 posture + env knobs: **[`docs/operator-runbook.md`](operator-runbook.md)**.
 
-### web-ui Phase 2a additions (additive — `web-ui-phase-2`; IN PROGRESS at reviewer, uncommitted)
+### web-ui Phase 2a additions (additive — `web-ui-phase-2`)
 
 Phase 2a lands the React app (scaffold + auth + admin library-management) WITHOUT
 touching the Go side: `internal/api` (7 symbols), `internal/web` (2 symbols),
@@ -338,19 +341,23 @@ metadata rendering) + 2c (polish) are outlined for separate plans. Key additions
 - **Query hooks + provider root (`web/src/lib/queries.ts` + `main.tsx`).** `queryClient` singleton (mutations `retry: 0`), `useLibraries`, `useCreateLibrary` (invalidates `['libraries']` on success), `useScanLibrary` (no list invalidation — a scan does not change the row), `useAdminStatus` (`refetchInterval: 5000`). `main.tsx` = `StrictMode` > `QueryClientProvider` > `BrowserRouter`.
 - **Admin panel pages.** `Login.tsx` (token-entry form, inline validation, already-authed → redirect); `admin/Admin.tsx` (shell + nav); `admin/Libraries.tsx` (list + add-library form with the NFS-mount note + per-row **Scan** button with inline `ScanResponse` and per-row error keyed by library, disabled while pending); `admin/Status.tsx` (plugin-health table + enrich-stats grid on a 5s poll; 503 → "Status unavailable"). Routing in `App.tsx`: `/login` public, `/admin/*` behind `<RequireAuth>`, `/` → `/admin` (becomes `/browse` in 2b).
 - **shadcn/ui primitives (`web/src/components/ui/` — 8 files).** Copy-in `alert`, `badge`, `button`, `card`, `input`, `label`, `select`, `table` (cva variants, `forwardRef`, Apache-2.0 headers; Radix only behind `label`/`select`/`slot`). `lib/utils.ts` exports `cn()` (clsx + tailwind-merge). No shadcn runtime package.
-- **`internal/web/dist/*` (REGENERATED bytes).** The real Vite build replaces the Phase-1 placeholder: `index.html` (394B, `<div id="root">`, references 2 hashed assets), `assets/index-C0iFYnd6.js` (~335KB), `assets/index-bs9mjsKO.css` (~17KB); `assets/app.js` placeholder deleted. The embed target, `web.Handler`, and `Options` are unchanged.
+- **`internal/web/dist/*` (REGENERATED bytes).** The real Vite build replaces the Phase-1 placeholder: `index.html` (`<div id="root">`, references the hashed assets) + `assets/index-*.js|css` (Vite-hashed names — rebuilt on every `npm run build`); `assets/app.js` placeholder deleted. The embed target, `web.Handler`, and `Options` are unchanged.
 - **`Makefile` (`web-build` corrected + uncommented — R1).** `swag init -g internal/api/doc.go -o internal/web/api -ot json,yaml` + `cd web && npm ci && npm run build` (the Phase-1 comment wrongly said `cd internal/web`); a comment block records the resolved paths. Still NOT a prerequisite of `build`/`check`/`lint`/`test` (node-free gate). Known dev-tooling limitation: the `swag init` step fails on a PRE-EXISTING `json.RawMessage` parse issue (Phase-1-era, out of 2a scope) — regen the SPA via `cd web && npm run build`; the committed `openapi.{json,yaml}` remain valid.
 - **`.golangci.yml`.** + `issues.exclude-dirs: [node_modules]` — a stray `.go` example file inside an npm dep's tree tripped `golangci-lint run ./...` (and thus `check.sh`) on dev hosts. `node_modules/` is gitignored, so the node-less gate host is unaffected (reviewer-accepted deviation). The complexity-budget table is unchanged.
 - **Test-only Go adjustments (`internal/web/web_test.go` + `integration_web_test.go`).** The Phase-1 tests hard-coded placeholder bytes (`/assets/app.js`, "Mellifera SPA placeholder"). Both now discover the first `.js` file in `dist/assets` at test time (hash-agnostic) and assert the `<div id="root">` mount point. This resolved the T12 blocker — no production Go source changed (reviewer-accepted deviation).
-- **Tests.** `web/` Vitest: 5 files / 16 cases (api wrapper incl. 401-clearToken+redirect and lossless 8.9 round-trip; query hooks incl. cache invalidation; Libraries list/add; scan trigger; Status). Go: `integration_web_test.go` (AC-1..AC-7 keystone) updated as above. The phase's independent QA tasks (2) + docs tasks (2) are still PENDING in the pipeline.
+- **Tests.** `web/` Vitest (api wrapper incl. 401-clearToken+redirect and lossless number round-trip; query hooks incl. cache invalidation; Libraries list/add; scan trigger; Status; document accessors). Go: `integration_web_test.go` (AC-1..AC-7 keystone) updated as above.
 
-**Status caveat:** the feature record is `docs/web-ui-phase-2/` (plan, contracts,
-conventions, acceptance, task index, `reviews/review_coder.md` → PROCEED).
-Nothing is committed yet — HEAD is still `47f276e`; QA + docs phases + the commit
-itself remain. Phase 2b (browse + detail + the §3.1 metadata-rendering component
-tree: `SourceCard`/`ProvenanceBadge`/`ViewFields`/`StagesProgress`/recursive
-`JsonValue`) and 2c (responsive, a11y, dark mode) are outlined in
-`docs/web-ui-phase-2/implementation_plan.md` §Out of Scope.
+### web-ui Phase 2b+2c additions (additive — same openspec change, archived 2026-10-06)
+
+Phase 2b+2c complete the user-facing SPA on top of the 2a scaffold, still with a
+byte-identical Go production tree (the only Go diff is the additive
+`integration_web_items_test.go` items-contract test: library-required envelopes,
+pagination constants 50/200, full-document byte-fidelity, 404 shape):
+
+- **Browse (`web/src/pages/browse/Browse.tsx`).** Library-scoped item browsing: `useItems` (`["items", params]` TanStack Query hook, `?library=&limit=&offset=`) with pagination and per-library selection; routes live under `<RequireAuth>` (`/browse`, `/items/:id`; `/` and `*` → `/browse`).
+- **Item detail + metadata rendering (`ItemDetail.tsx` + `web/src/components/metadata/`).** `useItem` (`["item", id]`) + the §3.1 document renderer: `SourceCard` (per-source namespaces), recursive `JsonValue`, `ProvenanceBadge` (per-field `_provenance`), `ViewFields` (`_view`), `StagesProgress` (`_stages`). Accessors live in `web/src/lib/document.ts` (`sourcesOf`/`viewEntries`/`provenanceEntries`/`stageEntries`) — components stay presentational; `lib/api.ts` gained `ItemDTO` (field names mirror the Go json tags verbatim) + `listItems`/`getItem`.
+- **Polish (2c).** `ThemeToggle` (light/dark, persisted in `localStorage` `mellifera.theme`), shared loading/error/empty states (`components/states.tsx`), `AppNav` navigation, and SPA route polish.
+- **`internal/web/dist/*` regenerated** for the new build. Client roles, `RoleClient` minting, and the recent-items widget remain deferred ([`backlog.md`](backlog.md)); behavior: `openspec/specs/web-ui/spec.md`.
 
 ### Capability model
 
@@ -376,22 +383,19 @@ discovery (`.cr2/.nef/.arw/.dng`) remains deferred (exiftool reads RAW natively 
 **Realized in web-ui Phase 1 (no longer deferred):** the Go-side UI foundation — `internal/web` (SPA +
 Swagger composition via `go:embed`) + role-aware auth (`Principal{Role}`/`requireRole`) + 3 additive
 GETs + the `Deps.Status` liveness closure + the `make web-build` regen path (the `Principal` abstraction
-grounds the deferred session-based multi-user auth, D18/Q15). **Realized in web-ui Phase 2a (no longer
-deferred):** the real React app itself — `web/` (`package.json` + `vite.config.ts` + `web/src/`), the
+grounds the deferred session-based multi-user auth, D18/Q15). **Realized in web-ui Phase 2a+2b+2c (no longer
+deferred):** the real React app — `web/` (`package.json` + `vite.config.ts` + `web/src/`), the
 token-entry auth layer (`localStorage` + `<RequireAuth>`), the admin panel (libraries list/add/scan +
-status), and the REAL Vite build embedded at `internal/web/dist/` (the Phase-1 placeholder shell is
-gone). **Still deferred (web-ui Phase 2b/2c +):** the client browse panel + item detail with §3.1
-metadata rendering (2b), polish (responsive, a11y, dark mode — 2c), client panels, and the
-`RoleClient` resolver (type exists, no minter yet).
+status), the client **browse** panel + item detail with §3.1 metadata rendering, and the polish layer
+(theme toggle, shared states) — embedded as the REAL Vite build at `internal/web/dist/` (the Phase-1
+placeholder shell is gone). **Still deferred:** client panels for non-admin roles + the
+`RoleClient` resolver (type exists, no minter yet), B3 (TMDB + `AuthContext`), Phase C
+(post-action) — see [`backlog.md`](backlog.md).
 
-The `scan-library` enhanced objective lives at `mellifera/docs/scan-library/.phase_cache/enhanced_objective.md`;
-the Phase A feature record lives at `mellifera/docs/plugin-pipeline/`; the Phase B1 feature record
-lives at `mellifera/docs/async-enrichment/`; the Phase B2 feature record lives at
-`mellifera/docs/image-enrichment/` (plan, contracts, acceptance, reviews, audit, qa, operator runbook);
-the web-ui Phase 1 feature record lives at `mellifera/docs/web-ui/` (plan, contracts, conventions,
-acceptance, reviews, audit, qa, operator runbook); the web-ui Phase 2a feature record lives at
-`mellifera/docs/web-ui-phase-2/` (plan, contracts, conventions, acceptance, task index, reviews —
-IN PROGRESS at reviewer, uncommitted on `feature/web-ui-phase-2`).
+The per-feature wf records (plans, contracts, reviews, qa, state) were removed on
+2026-10-06 — behavior lives in `openspec/specs/` (scan-library, plugin-pipeline,
+async-enrichment, image-enrichment, web-ui), the gate records in
+`openspec/changes/archive/`, and the full records in git history.
 
 ## Open questions the planner must resolve
 

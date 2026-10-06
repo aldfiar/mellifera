@@ -56,9 +56,9 @@ Phase B2 deltas are marked **[B2]**; web-ui Phase 1 deltas are marked **[web-ui]
 > lease table). `POST /scan` returns once items are persisted `pending`; workers
 > drain them to `enriched`/`ready` in the background. The plugin contract, the
 > API surface, and `scan.Result` are **unchanged** (additive — deprecate-don't-
-> delete). Feature record:
-> `docs/async-enrichment/`; operator semantics:
-> [`docs/async-enrichment/api_reference.md`](async-enrichment/api_reference.md).
+> delete). Operator semantics:
+> [`docs/operator-runbook.md`](operator-runbook.md); behavior:
+> `openspec/specs/async-enrichment/spec.md`.
 
 > **Phase B2 shipped (`image-enrichment`).** Image media type + EXIF enrichment
 > land as the SECOND consumer of the B1 queue: a new `plugins/image-enricher`
@@ -70,9 +70,9 @@ Phase B2 deltas are marked **[B2]**; web-ui Phase 1 deltas are marked **[web-ui]
 > api/enrich/sdk/`go.mod` diff empty — AC-3); `metadata_source` now ships TWO
 > plugins (tv-parser + image-enricher) with **zero new capability types**
 > (`image_provider` stays reserved — D-1 holds). B3 (external TMDB + `AuthContext`)
-> + Phase C (post-action) remain **deferred**. Feature record:
-> `docs/image-enrichment/`; operator runbook:
-> [`docs/image-enrichment/operator_runbook.md`](image-enrichment/operator_runbook.md).
+> + Phase C (post-action) remain **deferred** ([`docs/backlog.md`](backlog.md)). Operator runbook:
+> [`docs/operator-runbook.md`](operator-runbook.md); behavior:
+> `openspec/specs/image-enrichment/spec.md`.
 
 > **web-ui Phase 1 shipped (`web-ui`).** The Go-side UI foundation lands as a NEW
 > `internal/web` package + an additive widening of `internal/api`: `web.Handler`
@@ -92,8 +92,9 @@ Phase B2 deltas are marked **[B2]**; web-ui Phase 1 deltas are marked **[web-ui]
 > no data); all data stays behind role-gated `/api/v1/*`. **Additive** (proto/sdk/
 > scan/enrich/plugin/module byte-identical vs `58a1130`). api 3→7 (under the 8 budget);
 > `internal/web` = 2. React app + client panels + B3 (TMDB) + Phase C (post-action)
-> remain **deferred** (Phase 2+). Feature record: `docs/web-ui/`; operator runbook:
-> [`docs/web-ui/operator-runbook.md`](web-ui/operator-runbook.md).
+> remain **deferred** (Phase 2+; see [`docs/backlog.md`](backlog.md)). Operator runbook:
+> [`docs/operator-runbook.md`](operator-runbook.md); behavior:
+> `openspec/specs/web-ui/spec.md`.
 
 | Package | Owns | Public API (≤8; WARN noted) | Depends on |
 |---|---|---|---|
@@ -124,7 +125,7 @@ before the server serves, stopped on shutdown). `proto/` and `pkg/sdk` are share
 leaves. No cycles.
 
 **Accepted deviations realized by `plugin-pipeline` Phase A** (reviewer ACCEPT,
-health-check HEALTHY; see `docs/plugin-pipeline/reviews/review_coder.md` §4):
+health-check HEALTHY; review records in git history):
 zero new protos — tv-parser + the enrich chain implement the already-generated
 `metadata.v1.MetadataSource` (decision D-1, capability mapping); plugin launch is
 caps-driven (base-scanner's client set byte-identical to scan-library — AC-3);
@@ -138,7 +139,7 @@ below); only B3 (external TMDB enricher + `AuthContext` population) and Phase C
 
 **Accepted deviations realized by `async-enrichment` Phase B1** (reviewer
 PROCEED-WITH-FIXES correctness; health-check ISSUES-FOUND PROCEED, no P0; QA
-green; see `docs/async-enrichment/{reviews,audit,qa}/`):
+green; review records in git history):
 - **D-Q1 (load-bearing):** a source is queueable iff `AuthMode != "CLIENT"`
   (not the §4.4-literal `== SERVER`). Empty/local (tv-parser) and `SERVER`
   (tmdb) are server-runnable and queued; only `CLIENT` (kinopoisk) needs user
@@ -169,8 +170,7 @@ green; see `docs/async-enrichment/{reviews,audit,qa}/`):
   audit D-02) — the worker drives the chain via `runSource`, not `Enrich`.
 
 **Accepted deviations realized by `image-enrichment` Phase B2** (reviewer PROCEED,
-health-check HEALTHY PROCEED (P0/P1: 0), QA green; see
-`docs/image-enrichment/{reviews,audit,qa}/`):
+health-check HEALTHY PROCEED (P0/P1: 0), QA green; review records in git history):
 - **EXIF via system `exiftool` subprocess (D-2 / D21).** The enricher invokes the
   system `exiftool` binary via `os/exec` arg-slice (`-j -n <selected tags> <absPath>`,
   NEVER a shell — mirrors `ffprobe.go`). `exiftool` is a RUNTIME dep (like
@@ -198,7 +198,7 @@ health-check HEALTHY PROCEED (P0/P1: 0), QA green; see
   fetch + `AuthContext`) + Phase C (post-action) remain **deferred**.
 
 **Accepted deviations realized by scan-library** (reviewer/health-check ACCEPT;
-see `docs/scan-library/reviews/review_coder.md` §5):
+review records in git history):
 - `store.DB()` shares the live `*sql.DB` with `internal/module` (seam S10) so the
   registry runs its own parameterized reads; store stays the sole opener/closer.
 - `api.Deps.AdminToken` makes the whole router injectable through one `New` point.

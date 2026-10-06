@@ -21,7 +21,7 @@ subprocesses (invoked via `os/exec` arg-slice — never a shell):
 A missing binary is a per-source SOFT-FAIL (empty metadata → B1 `no_data` →
 settle); the scan always succeeds and the build is unaffected. See
 `docs/architecture.md` §1.2 and the operator runbook
-(`docs/image-enrichment/operator_runbook.md`); the Makefile `build-plugin` target
+(`docs/operator-runbook.md`); the Makefile `build-plugin` target
 also documents these.
 
 ## The module map
@@ -47,7 +47,7 @@ but <12 (pre-justified R10); all others ≤8.
 
 `proto/` holds the gRPC contracts shared by core + plugins (`docs/architecture.md` §2). `internal/scan` is the scan-side analog of the deferred `internal/enrich`. Dependency direction points **down** only: `api → scan → {module, plugin} → store`. No cycles.
 
-> The generic `plugin.Call`/`Health` names from the pre-implementation map are realized as the typed accessor `plugin.Scanner(pluginID, capID)` and `plugin.Status` (avoids the name collision with the `Health` return type). Accepted deviations live in `docs/ai-architecture.md` §4 + `docs/scan-library/reviews/review_coder.md` §5.
+> The generic `plugin.Call`/`Health` names from the pre-implementation map are realized as the typed accessor `plugin.Scanner(pluginID, capID)` and `plugin.Status` (avoids the name collision with the `Health` return type). Accepted deviations live in `docs/ai-architecture.md` §4 (review records in git history).
 
 ## Before you edit
 
