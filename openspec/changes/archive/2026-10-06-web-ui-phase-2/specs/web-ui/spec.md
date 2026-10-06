@@ -205,7 +205,11 @@ grep -q "media_type" web/src/lib/api.ts
 <!-- wf:probe id=288ac5d45de8c35e -->
 ```bash
 set -e
-! grep -rnE "fetch\(|['\"]/api/" web/src --include="*.ts" --include="*.tsx" | grep -v "\.test\." | grep -vE "/(items|libraries|admin/status)" | grep -v "fetch(path)"
+violations=$(grep -rnE "fetch\(|['\"]/api/" web/src --include="*.ts" --include="*.tsx" \
+  | grep -v "\.test\." \
+  | grep -vE "/(items|libraries|admin/status)" \
+  | grep -vE "fetch\(path") || true
+test -z "$violations"
 go build ./...
 ```
 <!-- /wf:probe -->
