@@ -1,0 +1,1890 @@
+<!DOCTYPE html>
+<title>Mellifera Web UI — Home, Collections, Admin</title>
+<!--
+  Design mockup — full IA for the Mellifera SPA: Home (collections),
+  Serials / Films / Photos collection pages, series + film + photo detail,
+  and the Admin panel. Extends the shipped design language (shadcn/ui slate
+  tokens, system font stack, max-w-5xl anatomy, .dark theme toggle) and the
+  serials surfaces already mocked in .tmp/serials-ui-mockup.html (kept as the
+  deep serials reference: 14 surveyed series + full episode document flow).
+
+  Data notes:
+  - serial libraries (ongoing, serials) mirror the real surveyed roots
+    (/Volumes/kofe/ongoing, /Volumes/ojir/serials) — same data as the serials
+    mockup; only a subset is repeated here.
+  - films + photos libraries and all film/photo titles are MOCK, marked inline.
+  - film detail shows the REAL shipped behavior: the seeded tmdb SERVER slot
+    is unfilled today (items settle `ready` with a recorded `unavailable`
+    stage — backlog B3 fills it).
+  - EXIF fields match plugins/image-enricher mapExif() verbatim:
+    width height format make model date_taken orientation gps_lat gps_lon.
+  - tv-parser fields match plugins/tv-parser/tvparse.go:
+    title year season episode resolution release_group.
+
+  Open design questions are marked inline as "note" callouts.
+-->
+<style>
+  /* ---- tokens ---- */
+  /* Base: shadcn/ui slate retoned to a soft pastel neutral (lavender-grey
+     light, lifted ink dark) — the shipped SPA keeps plain slate; this mockup
+     proposes the softened base. Type accents (t-*) ride on top. */
+  :root {
+    --bg: #f4f4fa;
+    --fg: #23253c;
+    --card: #fdfdfe;
+    --muted: #ebebf3;
+    --muted-fg: #6a6f85;
+    --border: #e3e3ee;
+    --primary: #020817;
+    --primary-fg: #f8fafc;
+    --accent-bg: #ececf6;
+    --ring: #020817;
+    --still-fg: #e2e8f0;
+    --ok-bg: #dcfce7;   --ok-fg: #166534;
+    --warn-bg: #fef3c7; --warn-fg: #92400e;
+    --stale-bg: #ffedd5; --stale-fg: #9a3412;
+    --bad-bg: #fee2e2;  --bad-fg: #991b1b;
+    --neu-bg: #e2e8f0;  --neu-fg: #475569;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --radius: 8px;
+    /* ---- pastel type accents (light) ---- */
+    --acc-serials: #d8cef2; --acc-serials-fg: #4c3a8c;
+    --acc-movies: #f6d3b8;  --acc-movies-fg: #8a4b1f;
+    --acc-photos: #cdebd7;  --acc-photos-fg: #1f6b3d;
+    --acc-audio: #cfe4f6;   --acc-audio-fg: #1f5a8a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10121d; --fg: #f8fafc; --card: #171a29;
+      --muted: #202437; --muted-fg: #9aa1b5; --border: #2a2e45;
+      --primary: #f1f2f8; --primary-fg: #10121d; --accent-bg: #202437;
+      --ring: #cbd5e1; --still-fg: #cbd5e1;
+      --ok-bg: rgba(16,185,129,.16);  --ok-fg: #6ee7b7;
+      --warn-bg: rgba(245,158,11,.16); --warn-fg: #fcd34d;
+      --stale-bg: rgba(249,115,22,.16); --stale-fg: #fdba74;
+      --bad-bg: rgba(239,68,68,.16);  --bad-fg: #fca5a5;
+      --neu-bg: rgba(148,163,184,.16); --neu-fg: #cbd5e1;
+      /* ---- pastel type accents (dark, translucent) ---- */
+      --acc-serials: rgba(167,139,250,.30); --acc-serials-fg: #d9cdfa;
+      --acc-movies: rgba(251,180,120,.28);  --acc-movies-fg: #f6d0a6;
+      --acc-photos: rgba(110,231,183,.26);  --acc-photos-fg: #a9e9c9;
+      --acc-audio: rgba(125,192,245,.28);   --acc-audio-fg: #bcdcfa;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10121d; --fg: #f8fafc; --card: #171a29;
+    --muted: #202437; --muted-fg: #9aa1b5; --border: #2a2e45;
+    --primary: #f1f2f8; --primary-fg: #10121d; --accent-bg: #202437;
+    --ring: #cbd5e1; --still-fg: #cbd5e1;
+    --ok-bg: rgba(16,185,129,.16);  --ok-fg: #6ee7b7;
+    --warn-bg: rgba(245,158,11,.16); --warn-fg: #fcd34d;
+    --stale-bg: rgba(249,115,22,.16); --stale-fg: #fdba74;
+    --bad-bg: rgba(239,68,68,.16);  --bad-fg: #fca5a5;
+    --neu-bg: rgba(148,163,184,.16); --neu-fg: #cbd5e1;
+    /* ---- pastel type accents (dark, translucent) ---- */
+    --acc-serials: rgba(167,139,250,.30); --acc-serials-fg: #d9cdfa;
+    --acc-movies: rgba(251,180,120,.28);  --acc-movies-fg: #f6d0a6;
+    --acc-photos: rgba(110,231,183,.26);  --acc-photos-fg: #a9e9c9;
+    --acc-audio: rgba(125,192,245,.28);   --acc-audio-fg: #bcdcfa;
+    color-scheme: dark;
+  }
+
+  /* ---- base ---- */
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--font-sans); font-size: 14px; line-height: 1.5;
+    padding-inline: 16px;
+  }
+  h1, h2, h3 { margin: 0; text-wrap: balance; }
+  p { margin: 0; }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
+  .wrap { max-width: 76rem; margin-inline: auto; padding-block: 18px 48px; }
+  .mono { font-family: var(--font-mono); }
+  .scroll-x { overflow-x: auto; }
+
+  /* ---- left sidebar (hidden by default, slides in) ---- */
+  .frame { min-height: 100vh; }
+  .side {
+    position: fixed; inset-block: 0; left: 0; width: 224px; z-index: 40;
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 12px 10px; overflow: hidden;
+    background: var(--card); border-right: 1px solid var(--border);
+    transform: translateX(-100%);
+    transition: transform .18s ease;
+  }
+  body.side-open .side {
+    transform: translateX(0);
+    box-shadow: 0 12px 40px rgba(35,37,60,.18);
+  }
+  .content { margin-left: 0; transition: margin-left .18s ease; }
+  body.side-open .content { margin-left: 224px; }
+  @media (prefers-reduced-motion: reduce) { .side, .content { transition: none; } }
+  .menu-fab {
+    position: fixed; top: 14px; left: 14px; z-index: 45;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 38px; height: 38px; border-radius: 10px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card); color: var(--fg);
+    box-shadow: 0 4px 14px rgba(35,37,60,.14);
+  }
+  .menu-fab:hover { background: var(--accent-bg); }
+  .menu-fab svg { width: 17px; height: 17px; }
+  body.side-open .menu-fab { display: none; }
+  /* reserve the FAB zone while the panel is hidden */
+  body:not(.side-open) .wrap { padding-top: 54px; }
+  body.side-open .wrap { padding-top: 18px; }
+  .side-top { display: flex; align-items: center; gap: 10px; min-height: 34px; }
+  .side-toggle {
+    flex: none; display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: transparent; color: var(--muted-fg);
+  }
+  .side-toggle:hover { background: var(--accent-bg); color: var(--fg); }
+  .side-toggle svg { width: 15px; height: 15px; transition: transform .18s ease; }
+  body.side-open .side-toggle svg { transform: rotate(180deg); }
+  @media (prefers-reduced-motion: reduce) { .side-toggle svg { transition: none; } }
+  .side-nav { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 3px; }
+  /* per-collection fast links — the list scrolls, Home/Admin/profile stay put */
+  .side-colls { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .side-label {
+    font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted-fg); padding: 6px 10px 2px; white-space: nowrap;
+  }
+  .clink {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    border: 0; background: transparent; cursor: pointer;
+    border-radius: 6px; padding: 5px 10px;
+    font-size: 12.5px; color: var(--muted-fg); white-space: nowrap; text-align: left;
+  }
+  .clink:hover { background: var(--accent-bg); color: var(--fg); }
+  .clink .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--acc, var(--muted-fg)); }
+  .clink .lbl { overflow: hidden; text-overflow: ellipsis; }
+  .clink .cnt { margin-left: auto; font-size: 10.5px; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+  .slink {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    border: 0; background: transparent; cursor: pointer;
+    border-radius: 8px; padding: 8px 10px;
+    font-size: 13px; font-weight: 500; color: var(--muted-fg); white-space: nowrap;
+  }
+  .slink:hover { background: var(--accent-bg); color: var(--fg); }
+  .slink[aria-current="page"] {
+    background: var(--acc, var(--primary)); color: var(--acc-fg, var(--primary-fg));
+    font-weight: 600;
+  }
+  .slink svg { width: 16px; height: 16px; flex: none; }
+  .side .lbl, .side .brand, .side .pinfo, .side .mock-chip { opacity: 0; transition: opacity .12s ease; }
+  body.side-open .side .lbl, body.side-open .side .brand,
+  body.side-open .side .pinfo, body.side-open .side .mock-chip { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) {
+    .side .lbl, .side .brand, .side .pinfo, .side .mock-chip { transition: none; }
+  }
+  .side-sep { height: 1px; background: var(--border); margin: 6px 4px; }
+  .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+  body:not(.side-open) .side-foot { align-items: center; }
+  .profile { display: flex; align-items: center; gap: 10px; padding: 4px; }
+  .avatar {
+    flex: none; width: 30px; height: 30px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--acc-serials); color: var(--acc-serials-fg);
+    font-size: 12px; font-weight: 700;
+  }
+  .pinfo { display: flex; flex-direction: column; line-height: 1.25; }
+  .pinfo b { font-size: 12.5px; }
+  .pinfo small { color: var(--muted-fg); font-size: 11px; }
+
+  .brand { font-weight: 700; font-size: 14px; letter-spacing: -0.01em; white-space: nowrap; }
+  .mock-chip {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted-fg); border: 1px dashed var(--border);
+    border-radius: 999px; padding: 2px 8px; white-space: nowrap;
+  }
+  .theme-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: transparent; color: var(--muted-fg);
+  }
+  .theme-btn:hover { background: var(--accent-bg); color: var(--fg); }
+  .theme-btn svg { width: 15px; height: 15px; }
+  :root[data-theme="dark"] .icon-sun { display: block; }
+  :root[data-theme="dark"] .icon-moon { display: none; }
+  :root:not([data-theme="dark"]) .icon-sun { display: none; }
+  :root:not([data-theme="dark"]) .icon-moon { display: block; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .icon-sun { display: block; }
+    :root:not([data-theme="light"]) .icon-moon { display: none; }
+  }
+
+  /* ---- shared atoms ---- */
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+    border-radius: 999px; padding: 2px 8px; white-space: nowrap;
+  }
+  .pill.ok    { background: var(--ok-bg); color: var(--ok-fg); }
+  .pill.warn  { background: var(--warn-bg); color: var(--warn-fg); }
+  .pill.stale { background: var(--stale-bg); color: var(--stale-fg); }
+  .pill.bad   { background: var(--bad-bg); color: var(--bad-fg); }
+  .pill.neu   { background: var(--neu-bg); color: var(--neu-fg); }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600;
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px;
+    color: var(--muted-fg); white-space: nowrap;
+  }
+  .badge.proposed { border-style: dashed; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 500; color: var(--muted-fg);
+    background: var(--muted); border-radius: 4px; padding: 1px 6px;
+    white-space: nowrap;
+  }
+  .chip b { font-weight: 600; color: var(--fg); }
+  .raw {
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .note {
+    border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 10px 14px; font-size: 12.5px; color: var(--muted-fg);
+  }
+  .note b { color: var(--fg); font-weight: 600; }
+  .section-h {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    margin: 22px 0 12px;
+  }
+  .section-h h2 { font-size: 16px; font-weight: 600; }
+  .section-h .sub { font-size: 12px; color: var(--muted-fg); }
+
+  /* ---- placeholder stills (frame-grab / photo art) ---- */
+  .still {
+    position: relative; aspect-ratio: 16 / 9; border-radius: var(--radius);
+    overflow: hidden; border: 1px solid var(--border);
+    background:
+      radial-gradient(120% 90% at 20% 10%, rgba(255,255,255,.14), transparent 55%),
+      linear-gradient(135deg, var(--g1, #1c2733), var(--g2, #0f172a));
+    max-width: 100%;
+  }
+  .still::after {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(90% 70% at 50% 45%, transparent 55%, rgba(2,8,23,.55));
+  }
+  .still .grab {
+    position: absolute; left: 8px; bottom: 8px; z-index: 1;
+    font-family: var(--font-mono); font-size: 10px; color: var(--still-fg);
+    background: rgba(2,8,23,.55); border-radius: 4px; padding: 1px 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .still .pill { position: absolute; right: 8px; top: 8px; z-index: 1; }
+  .still .corner {
+    position: absolute; right: 8px; bottom: 8px; z-index: 1;
+    font-size: 10px; font-weight: 600; color: var(--still-fg);
+    background: rgba(2,8,23,.55); border-radius: 4px; padding: 1px 6px;
+  }
+  /* portrait-ish override for the photo-detail hero */
+  .still.r32 { aspect-ratio: 3 / 2; }
+
+  /* ---- continue / next-up media cards ---- */
+  .mgrid {
+    display: grid; gap: 16px; margin-top: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  }
+  .mcard {
+    display: flex; flex-direction: column; gap: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 10px; background: var(--card);
+  }
+  .mcard h3 { font-size: 13.5px; font-weight: 600; line-height: 1.35; }
+  .mcard .sub {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    font-size: 12px; color: var(--muted-fg); font-variant-numeric: tabular-nums;
+  }
+  .pbar {
+    height: 4px; border-radius: 999px; background: var(--neu-bg); overflow: hidden;
+  }
+  .pbar i { display: block; height: 100%; background: var(--acc, var(--primary)); }
+  .mrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .playbtn {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 0; cursor: pointer; border-radius: 999px; padding: 5px 14px;
+    background: var(--acc, var(--primary)); color: var(--acc-fg, var(--primary-fg));
+    font-size: 12px; font-weight: 600;
+  }
+  .playbtn:hover { opacity: .9; }
+  .playbtn svg { width: 11px; height: 11px; fill: currentColor; }
+
+  /* ---- pastel tone system: type accents + selection color ---- */
+  .t-serials { --acc: var(--acc-serials); --acc-fg: var(--acc-serials-fg); }
+  .t-movies  { --acc: var(--acc-movies);  --acc-fg: var(--acc-movies-fg); }
+  .t-photos  { --acc: var(--acc-photos);  --acc-fg: var(--acc-photos-fg); }
+  .t-audio   { --acc: var(--acc-audio);   --acc-fg: var(--acc-audio-fg); }
+
+  /* type badge: pastel fill instead of neutral outline */
+  .badge.tone { background: var(--acc); color: var(--acc-fg); border-color: transparent; }
+
+  /* selectable elements take on their tone when selected / hovered */
+  .fchip[aria-pressed="true"] {
+    background: var(--acc, var(--primary)); color: var(--acc-fg, var(--primary-fg));
+    border-color: transparent; font-weight: 600;
+  }
+  .coll-card:hover, .coll-card:focus-visible,
+  .scard:hover, .scard:focus-visible,
+  .mcard:hover, .mcard:focus-visible {
+    border-color: var(--acc, var(--muted-fg));
+    background: color-mix(in srgb, var(--acc, var(--muted)) 14%, var(--card));
+    transform: translateY(-1px);
+  }
+  .ptile:hover, .ptile:focus-visible {
+    border-color: var(--acc, var(--muted-fg));
+    background: color-mix(in srgb, var(--acc, var(--muted)) 14%, var(--card));
+  }
+  tr.rowlink:hover td { background: color-mix(in srgb, var(--acc, var(--muted)) 14%, var(--card)); }
+
+  /* ---- edit-collection overlay (admin) ---- */
+  .overlay {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(2,8,23,.6);
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 48px 16px; overflow: auto;
+  }
+  .overlay[hidden] { display: none; }
+  .dialog {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; width: 100%; max-width: 560px;
+    box-shadow: 0 24px 60px rgba(2,8,23,.35);
+  }
+  .dialog > header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+  }
+  .dialog > header h2 { font-size: 15px; font-weight: 700; }
+  .dialog > header .mono { font-size: 11px; color: var(--muted-fg); }
+  .dialog .dbody { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+  .dialog > footer {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 12px 18px; border-top: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .dialog .warn { font-size: 11.5px; color: var(--muted-fg); }
+  .dsub { font-size: 12px; color: var(--muted-fg); border: 1px dashed var(--border); border-radius: 6px; padding: 8px 10px; }
+</style>
+
+<style>
+  /* ---- type/folder filter chips ---- */
+  .fchip {
+    border: 1px solid var(--border); background: var(--card); color: var(--muted-fg);
+    border-radius: 999px; padding: 4px 12px; font-size: 12.5px; cursor: pointer;
+  }
+  .fchip:hover { color: var(--fg); background: var(--accent-bg); }
+
+  /* ---- collections (home) ---- */
+  .coll-grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+    margin-top: 14px;
+  }
+  .coll-card {
+    display: flex; flex-direction: column; gap: 9px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px; background: var(--card); cursor: pointer;
+    transition: border-color .15s ease, transform .15s ease, background-color .15s ease;
+  }
+  @media (prefers-reduced-motion: reduce) { .coll-card { transition: none; } }
+  .coll-card > header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .coll-card h3 { font-size: 14px; font-weight: 600; }
+  .coll-card .desc {
+    font-size: 12px; color: var(--muted-fg); margin: 0;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .strip .mini {
+    aspect-ratio: 16 / 9; border-radius: 6px; border: 1px solid var(--border);
+    background:
+      radial-gradient(120% 90% at 20% 10%, rgba(255,255,255,.14), transparent 55%),
+      linear-gradient(135deg, var(--g1, #1c2733), var(--g2, #0f172a));
+  }
+  .strip .mini.sq { aspect-ratio: 1 / 1; }
+  .counts {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    font-size: 12px; color: var(--muted-fg); font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- collection page header ---- */
+  .coll-head { display: flex; flex-direction: column; gap: 8px; margin-bottom: 6px; }
+  .coll-head h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+  .coll-head .desc { font-size: 13px; color: var(--muted-fg); margin: 0; }
+  .coll-head .facts {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    font-size: 13px; color: var(--muted-fg); font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- item grids (serials / films) ---- */
+  .filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; }
+  .field { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .field .label { color: var(--muted-fg); }
+  .select {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px; font-size: 13px; background: var(--card);
+  }
+  .select .mono { font-size: 11.5px; color: var(--muted-fg); }
+  .grid {
+    display: grid; gap: 16px; margin-top: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  }
+  .scard {
+    display: flex; flex-direction: column; gap: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 10px; background: var(--card); cursor: pointer;
+    transition: border-color .15s ease, transform .15s ease, background-color .15s ease;
+  }
+  @media (prefers-reduced-motion: reduce) { .scard { transition: none; } }
+  .scard h3 { font-size: 13.5px; font-weight: 600; line-height: 1.35; }
+  .scard .meta {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    font-size: 12px; color: var(--muted-fg); font-variant-numeric: tabular-nums;
+  }
+  .scard .chips { display: flex; gap: 4px; flex-wrap: wrap; }
+
+  /* ---- photo masonry ---- */
+  .masonry { columns: 4 210px; column-gap: 12px; margin-top: 14px; }
+  .ptile {
+    break-inside: avoid; margin: 0 0 12px; overflow: hidden; cursor: pointer;
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--card);
+    transition: border-color .15s ease, background-color .15s ease;
+  }
+  @media (prefers-reduced-motion: reduce) { .ptile { transition: none; } }
+  .ptile .ph {
+    display: block; width: 100%;
+    background:
+      radial-gradient(120% 90% at 20% 10%, rgba(255,255,255,.16), transparent 55%),
+      linear-gradient(140deg, var(--g1, #26303c), var(--g2, #10161e));
+  }
+  .ptile .ph.r32 { aspect-ratio: 3 / 2; }
+  .ptile .ph.r11 { aspect-ratio: 1 / 1; }
+  .ptile .ph.r43 { aspect-ratio: 4 / 3; }
+  .ptile .ph.r34 { aspect-ratio: 3 / 4; }
+  .ptile footer {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    padding: 6px 8px; font-size: 11px; color: var(--muted-fg);
+  }
+  .ptile footer .nm {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--font-mono); font-size: 10.5px;
+  }
+
+  /* ---- empty state ---- */
+  .empty {
+    border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 36px 20px; text-align: center; color: var(--muted-fg); font-size: 13px;
+    margin-top: 16px;
+  }
+  .empty b { display: block; color: var(--fg); font-size: 14px; margin-bottom: 4px; }
+
+  /* ---- detail pages ---- */
+  .backlink {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 0; background: transparent; cursor: pointer;
+    color: var(--muted-fg); font-size: 13px; padding: 4px 0; margin-bottom: 14px;
+  }
+  .backlink:hover { color: var(--fg); }
+  .hero { display: grid; grid-template-columns: 300px 1fr; gap: 20px; align-items: end; }
+  @media (max-width: 640px) { .hero { grid-template-columns: 1fr; } }
+  .hero h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+  .hero .facts {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px;
+    font-size: 13px; color: var(--muted-fg); font-variant-numeric: tabular-nums;
+  }
+  .identity { margin-top: 10px; font-size: 11px; color: var(--muted-fg); }
+
+  .cards2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 640px) { .cards2 { grid-template-columns: 1fr; } }
+  .source-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; }
+  .source-card > header {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--muted);
+  }
+  .source-card > header h3 { font-size: 13px; font-weight: 600; }
+  .source-card > header .mono { font-size: 11px; color: var(--muted-fg); }
+  .source-card .body { padding: 6px 14px 10px; }
+  .source-card footer {
+    padding: 8px 14px; border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--muted-fg);
+  }
+  .kv { display: grid; grid-template-columns: minmax(110px, 38%) 1fr; gap: 2px 12px; }
+  .kv dt { color: var(--muted-fg); font-size: 12.5px; padding-block: 4px; }
+  .kv dd { margin: 0; font-size: 12.5px; padding-block: 4px; overflow-wrap: anywhere; }
+  .kv dd.mono { font-size: 11.5px; }
+  .slot {
+    border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 14px; color: var(--muted-fg); font-size: 12.5px;
+  }
+  .slot b { color: var(--fg); font-weight: 600; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th {
+    text-align: left; font-weight: 500; color: var(--muted-fg); font-size: 12px;
+    border-bottom: 1px solid var(--border); padding: 8px 10px; white-space: nowrap;
+  }
+  /* long tables scroll under a sticky header */
+  .scroll-x.sticky { max-height: 560px; overflow-y: auto; }
+  .sticky th { position: sticky; top: 0; background: var(--card); z-index: 1; }
+  td { border-bottom: 1px solid var(--border); padding: 8px 10px; vertical-align: middle; }
+  tr.rowlink { cursor: pointer; }
+  td .thumb {
+    display: block; width: 74px; aspect-ratio: 16/9; border-radius: 4px;
+    border: 1px solid var(--border);
+    background: linear-gradient(135deg, var(--g1, #1c2733), var(--g2, #0f172a));
+  }
+  td .ep { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td .path { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); overflow-wrap: anywhere; }
+  td .chips { display: flex; gap: 4px; flex-wrap: wrap; }
+
+  .stages { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .stage {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 10px; font-size: 12px;
+  }
+  .stage .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-fg); }
+  .stage.done .dot { background: #10b981; }
+  .stage.err .dot { background: #ef4444; }
+  .stage .st { color: var(--muted-fg); font-size: 11px; }
+
+  /* ---- forms (admin + overlay) ---- */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { .form-grid { grid-template-columns: 1fr; } }
+  .field-c { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  .field-c .label { color: var(--muted-fg); display: inline-flex; align-items: center; gap: 6px; }
+  .field-c .hint { font-size: 11px; color: var(--muted-fg); }
+  .input {
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--card); color: var(--fg);
+    padding: 7px 10px; font: inherit; font-size: 13px; width: 100%;
+  }
+  .input.mono { font-family: var(--font-mono); font-size: 12px; }
+  .input::placeholder { color: var(--muted-fg); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 0; cursor: pointer; border-radius: 6px; padding: 7px 14px;
+    background: var(--primary); color: var(--primary-fg);
+    font-size: 13px; font-weight: 600;
+  }
+  .btn:hover { opacity: .9; }
+  .btn.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); font-weight: 500; }
+  .btn.ghost:hover { background: var(--accent-bg); opacity: 1; }
+  .btn.sm { padding: 4px 10px; font-size: 12px; }
+  .scan-result {
+    display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+
+<div class="frame">
+
+<button class="menu-fab" id="menuFab" aria-label="Open menu" aria-controls="side" aria-expanded="false">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+</button>
+
+<aside class="side" id="side" aria-label="Sidebar">
+  <div class="side-top">
+    <button class="side-toggle" id="sideToggle" aria-label="Toggle menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <span class="brand">Mellifera</span>
+  </div>
+
+  <nav class="side-nav" aria-label="Primary">
+    <button class="slink" data-goto="home" aria-current="page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+      <span class="lbl">Home</span>
+    </button>
+    <div class="side-sep"></div>
+    <span class="side-label">Collections · 20</span>
+    <div class="side-colls">
+    <button class="clink t-serials" data-goto="serials">
+      <span class="dot"></span><span class="lbl">ongoing</span><span class="cnt">14</span>
+    </button>
+    <button class="clink t-serials" data-goto="serials">
+      <span class="dot"></span><span class="lbl">serials</span><span class="cnt">37</span>
+    </button>
+    <button class="clink t-movies" data-goto="films">
+      <span class="dot"></span><span class="lbl">films</span><span class="cnt">214</span>
+    </button>
+    <button class="clink t-photos" data-goto="photos">
+      <span class="dot"></span><span class="lbl">photos</span><span class="cnt">3</span>
+    </button>
+    <button class="clink t-audio" data-goto="audio">
+      <span class="dot"></span><span class="lbl">audiobooks</span><span class="cnt">0</span>
+    </button>
+    <button class="clink t-serials" data-goto="serials">
+      <span class="dot"></span><span class="lbl">anime</span><span class="cnt">96</span>
+    </button>
+    <button class="clink t-serials" data-goto="serials">
+      <span class="dot"></span><span class="lbl">sitcoms</span><span class="cnt">212</span>
+    </button>
+    <button class="clink t-serials" data-goto="serials">
+      <span class="dot"></span><span class="lbl">kdrama</span><span class="cnt">48</span>
+    </button>
+    <button class="clink t-serials" data-goto="serials">
+      <span class="dot"></span><span class="lbl">docs</span><span class="cnt">31</span>
+    </button>
+    <button class="clink t-serials" data-goto="serials">
+      <span class="dot"></span><span class="lbl">telenovelas</span><span class="cnt">58</span>
+    </button>
+    <button class="clink t-movies" data-goto="films">
+      <span class="dot"></span><span class="lbl">classics</span><span class="cnt">141</span>
+    </button>
+    <button class="clink t-movies" data-goto="films">
+      <span class="dot"></span><span class="lbl">scifi</span><span class="cnt">88</span>
+    </button>
+    <button class="clink t-movies" data-goto="films">
+      <span class="dot"></span><span class="lbl">french</span><span class="cnt">64</span>
+    </button>
+    <button class="clink t-movies" data-goto="films">
+      <span class="dot"></span><span class="lbl">watchlater</span><span class="cnt">37</span>
+    </button>
+    <button class="clink t-photos" data-goto="photos">
+      <span class="dot"></span><span class="lbl">family</span><span class="cnt">12</span>
+    </button>
+    <button class="clink t-photos" data-goto="photos">
+      <span class="dot"></span><span class="lbl">travel</span><span class="cnt">8</span>
+    </button>
+    <button class="clink t-photos" data-goto="photos">
+      <span class="dot"></span><span class="lbl">film</span><span class="cnt">1</span>
+    </button>
+    <button class="clink t-photos" data-goto="photos">
+      <span class="dot"></span><span class="lbl">screens</span><span class="cnt">612</span>
+    </button>
+    <button class="clink t-audio" data-goto="audio">
+      <span class="dot"></span><span class="lbl">sf-audio</span><span class="cnt">214</span>
+    </button>
+    <button class="clink t-audio" data-goto="audio">
+      <span class="dot"></span><span class="lbl">kids-audio</span><span class="cnt">96</span>
+    </button>
+    </div>
+    <div class="side-sep"></div>
+    <button class="slink" data-goto="admin">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
+      <span class="lbl">Admin</span>
+    </button>
+  </nav>
+
+  <div class="side-foot">
+    <div class="profile">
+      <span class="avatar">IS</span>
+      <span class="pinfo"><b>Ivan</b><small>admin</small></span>
+    </div>
+    <button class="theme-btn" id="themeToggle" aria-label="Toggle theme">
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+    <span class="mock-chip">design mockup</span>
+  </div>
+</aside>
+
+<div class="content">
+<main class="wrap">
+
+<!-- ============================== PAGE: HOME ============================== -->
+<section data-page="home">
+  <div class="section-h" style="margin-top:0">
+    <h2>Collections</h2>
+    <span class="sub">every type gets its own pastel — selection follows the color</span>
+  </div>
+  <div class="filters" role="group" aria-label="Filter by type">
+    <button class="fchip" aria-pressed="true">All</button>
+    <button class="fchip t-serials" aria-pressed="false">Serials</button>
+    <button class="fchip t-movies" aria-pressed="false">Movies</button>
+    <button class="fchip t-photos" aria-pressed="false">Photos</button>
+    <button class="fchip t-audio" aria-pressed="false">Audiobooks</button>
+  </div>
+
+  <div class="coll-grid">
+    <article class="coll-card t-serials" data-goto="serials" tabindex="0" role="link" aria-label="Open collection ongoing">
+      <header><h3>ongoing</h3><span class="badge tone">serials</span></header>
+      <p class="desc">Seasonal shows still airing — one subdirectory per series.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#1c2733; --g2:#4b2e2e"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>14 series</span><span>·</span><span>updated 2026-10-06</span></div>
+    </article>
+
+    <article class="coll-card t-serials" data-goto="serials" tabindex="0" role="link" aria-label="Open collection serials">
+      <header><h3>serials</h3><span class="badge tone">serials</span></header>
+      <p class="desc">Completed series archive — same type as ongoing, its own root and scan.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#274060; --g2:#3b2d4f"></span>
+        <span class="mini" style="--g1:#1b2f4a; --g2:#3a2430"></span>
+        <span class="mini" style="--g1:#3a3038; --g2:#1a2530"></span>
+      </div>
+      <div class="counts"><span>37 series</span><span>·</span><span>updated 2026-10-06</span></div>
+    </article>
+
+    <article class="coll-card t-movies" data-goto="films" tabindex="0" role="link" aria-label="Open collection films">
+      <header><h3>films</h3><span class="badge tone">movies</span></header>
+      <p class="desc">Movies — one file per film, identity parsed from the filename.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#2b3440; --g2:#101820"></span>
+        <span class="mini" style="--g1:#4a2c14; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#1f2b24; --g2:#0d1a16"></span>
+      </div>
+      <div class="counts"><span>214 items</span><span>·</span><span>updated 2026-10-07</span></div>
+    </article>
+
+    <article class="coll-card t-photos" data-goto="photos" tabindex="0" role="link" aria-label="Open collection photos">
+      <header><h3>photos</h3><span class="badge tone">photos</span></header>
+      <p class="desc">Personal archive — subfolders by year and theme (nature, girls, …).</p>
+      <div class="strip">
+        <span class="mini sq" style="--g1:#3d3524; --g2:#1a2b3d"></span>
+        <span class="mini sq" style="--g1:#24303d; --g2:#3d2b2b"></span>
+        <span class="mini sq" style="--g1:#2b3d2f; --g2:#14202b"></span>
+      </div>
+      <div class="counts"><span>3 842 items</span><span>·</span><span>updated 2026-10-05</span></div>
+    </article>
+
+    <article class="coll-card t-audio" data-goto="audio" tabindex="0" role="link" aria-label="Open collection audiobooks">
+      <header><h3>audiobooks</h3><span class="badge tone">audiobooks</span><span class="badge proposed">future type</span></header>
+      <p class="desc">Fiction read by narrators — a new type lands as a module seed (scanner + parser plugins), exactly like serial did.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#33241f; --g2:#1d1620"></span>
+        <span class="mini" style="--g1:#20303a; --g2:#141c26"></span>
+        <span class="mini" style="--g1:#2a2a38; --g2:#181822"></span>
+      </div>
+      <div class="counts"><span>empty</span><span>·</span><span>not scanned yet</span></div>
+    </article>
+    <article class="coll-card t-serials" data-goto="audio" tabindex="0" role="link" aria-label="Open collection anime">
+      <header><h3>anime</h3><span class="badge tone">serials</span></header>
+      <p class="desc">Long-running series, cours per directory.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>96 series</span><span>·</span><span>updated 2026-10-04</span></div>
+    </article>
+    <article class="coll-card t-serials" data-goto="audio" tabindex="0" role="link" aria-label="Open collection sitcoms">
+      <header><h3>sitcoms</h3><span class="badge tone">serials</span></header>
+      <p class="desc">Half-hour episodes, flat season folders.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>212 episodes</span><span>·</span><span>updated 2026-10-03</span></div>
+    </article>
+    <article class="coll-card t-serials" data-goto="audio" tabindex="0" role="link" aria-label="Open collection kdrama">
+      <header><h3>kdrama</h3><span class="badge tone">serials</span></header>
+      <p class="desc">Korean drama, one directory per title.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>48 series</span><span>·</span><span>updated 2026-10-02</span></div>
+    </article>
+    <article class="coll-card t-serials" data-goto="audio" tabindex="0" role="link" aria-label="Open collection docs">
+      <header><h3>docs</h3><span class="badge tone">serials</span></header>
+      <p class="desc">Documentary mini-series.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>31 series</span><span>·</span><span>updated 2026-09-30</span></div>
+    </article>
+    <article class="coll-card t-serials" data-goto="audio" tabindex="0" role="link" aria-label="Open collection telenovelas">
+      <header><h3>telenovelas</h3><span class="badge tone">serials</span></header>
+      <p class="desc">Night soap for the background.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>58 series</span><span>·</span><span>updated 2026-09-28</span></div>
+    </article>
+    <article class="coll-card t-movies" data-goto="audio" tabindex="0" role="link" aria-label="Open collection classics">
+      <header><h3>classics</h3><span class="badge tone">movies</span></header>
+      <p class="desc">Pre-1980 canon, remasters only.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>141 items</span><span>·</span><span>updated 2026-10-01</span></div>
+    </article>
+    <article class="coll-card t-movies" data-goto="audio" tabindex="0" role="link" aria-label="Open collection scifi">
+      <header><h3>scifi</h3><span class="badge tone">movies</span></header>
+      <p class="desc">Genre shelf — space is a placeholder too.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>88 items</span><span>·</span><span>updated 2026-10-01</span></div>
+    </article>
+    <article class="coll-card t-movies" data-goto="audio" tabindex="0" role="link" aria-label="Open collection french">
+      <header><h3>french</h3><span class="badge tone">movies</span></header>
+      <p class="desc">Comédie française, VOST.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>64 items</span><span>·</span><span>updated 2026-09-29</span></div>
+    </article>
+    <article class="coll-card t-movies" data-goto="audio" tabindex="0" role="link" aria-label="Open collection watchlater">
+      <header><h3>watchlater</h3><span class="badge tone">movies</span></header>
+      <p class="desc">Unsorted intake queue.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>37 items</span><span>·</span><span>updated 2026-10-07</span></div>
+    </article>
+    <article class="coll-card t-photos" data-goto="audio" tabindex="0" role="link" aria-label="Open collection family">
+      <header><h3>family</h3><span class="badge tone">photos</span></header>
+      <p class="desc">Shared album — kids, pets, birthdays.</p>
+      <div class="strip">
+        <span class="mini sq" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini sq" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini sq" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>12 340 items</span><span>·</span><span>updated 2026-10-05</span></div>
+    </article>
+    <article class="coll-card t-photos" data-goto="audio" tabindex="0" role="link" aria-label="Open collection travel">
+      <header><h3>travel</h3><span class="badge tone">photos</span></header>
+      <p class="desc">Trips by year and country.</p>
+      <div class="strip">
+        <span class="mini sq" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini sq" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini sq" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>8 216 items</span><span>·</span><span>updated 2026-10-04</span></div>
+    </article>
+    <article class="coll-card t-photos" data-goto="audio" tabindex="0" role="link" aria-label="Open collection film">
+      <header><h3>film</h3><span class="badge tone">photos</span></header>
+      <p class="desc">Scanned negatives, 35mm rolls.</p>
+      <div class="strip">
+        <span class="mini sq" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini sq" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini sq" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>1 902 items</span><span>·</span><span>updated 2026-09-26</span></div>
+    </article>
+    <article class="coll-card t-photos" data-goto="audio" tabindex="0" role="link" aria-label="Open collection screens">
+      <header><h3>screens</h3><span class="badge tone">photos</span></header>
+      <p class="desc">Screenshots worth keeping.</p>
+      <div class="strip">
+        <span class="mini sq" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini sq" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini sq" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>612 items</span><span>·</span><span>updated 2026-10-03</span></div>
+    </article>
+    <article class="coll-card t-audio" data-goto="audio" tabindex="0" role="link" aria-label="Open collection sf-audio">
+      <header><h3>sf-audio</h3><span class="badge tone">audiobooks</span></header>
+      <p class="desc">Science fiction audiobooks, one directory per book.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>214 items</span><span>·</span><span>updated 2026-09-25</span></div>
+    </article>
+    <article class="coll-card t-audio" data-goto="audio" tabindex="0" role="link" aria-label="Open collection kids-audio">
+      <header><h3>kids-audio</h3><span class="badge tone">audiobooks</span></header>
+      <p class="desc">Bedtime stories, narrated.</p>
+      <div class="strip">
+        <span class="mini" style="--g1:#0e3a5c; --g2:#0c2f22"></span>
+        <span class="mini" style="--g1:#4a2c4f; --g2:#1d1b3a"></span>
+        <span class="mini" style="--g1:#3d2b14; --g2:#1f2b3d"></span>
+      </div>
+      <div class="counts"><span>96 items</span><span>·</span><span>updated 2026-09-20</span></div>
+    </article>
+  </div>
+
+  <div class="note" style="margin-top:16px">
+    <b>Data gap — card fields.</b> GET /libraries returns only
+    {id, module_id, root_path, display_name}: no description, no item count, no
+    updated_at. Home cards need an additive GET /libraries/{id}/summary; paths
+    stay admin-only by design.
+  </div>
+
+  <div class="section-h"><h2>Continue</h2><span class="sub">last played / last opened — resume position kept</span></div>
+  <div class="mgrid">
+    <article class="mcard t-serials" data-goto="serials" tabindex="0" role="link" aria-label="Resume One Piece S02E05">
+      <div class="still" style="--g1:#0e3a5c; --g2:#0c2f22"><span class="grab">24:12</span></div>
+      <h3>One Piece · S02E05</h3>
+      <div class="sub"><span>62%</span><span>·</span><span>12 min left</span><span>·</span><span>ongoing</span></div>
+      <div class="pbar" role="img" aria-label="62% watched"><i style="width:62%"></i></div>
+      <div class="mrow">
+        <span class="sub">yesterday</span>
+        <button class="playbtn" aria-label="Play One Piece S02E05"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button>
+      </div>
+    </article>
+
+    <article class="mcard t-movies" data-goto="films" tabindex="0" role="link" aria-label="Resume The Thing">
+      <div class="still" style="--g1:#2b3440; --g2:#101820"><span class="grab">01:49:32</span></div>
+      <h3>The Thing</h3>
+      <div class="sub"><span>34%</span><span>·</span><span>1h 12m left</span><span>·</span><span>films</span></div>
+      <div class="pbar" role="img" aria-label="34% watched"><i style="width:34%"></i></div>
+      <div class="mrow">
+        <span class="sub">3 days ago</span>
+        <button class="playbtn" aria-label="Play The Thing"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button>
+      </div>
+    </article>
+
+    <article class="mcard t-photos" data-goto="photo" tabindex="0" role="link" aria-label="Open last viewed photo">
+      <div class="still r32" style="--g1:#3d3524; --g2:#1a2b3d"><span class="grab">6000×4000</span></div>
+      <h3 class="mono" style="font-size:12.5px">nature/IMG_0034.png</h3>
+      <div class="sub"><span>photos</span><span>·</span><span>opened 2h ago</span></div>
+      <div class="mrow">
+        <span class="sub"></span>
+        <button class="playbtn" aria-label="Open IMG_0034.png"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Open</button>
+      </div>
+    </article>
+  </div>
+
+  <div class="section-h"><h2>Next up</h2><span class="sub">next episodes of what you follow — one click to play</span></div>
+  <div class="mgrid">
+    <article class="mcard t-serials" data-goto="serials" tabindex="0" role="link" aria-label="Play Bleach Kashin-tan S04E01">
+      <div class="still" style="--g1:#1c2733; --g2:#4b2e2e"><span class="grab">24:00</span></div>
+      <h3>Bleach: Sennen Kessen-hen — Kashin-tan</h3>
+      <div class="sub"><span>S04E01</span><span>·</span><span>not started</span><span>·</span><span>ongoing</span></div>
+      <div class="mrow">
+        <span class="sub">13 episodes</span>
+        <button class="playbtn" aria-label="Play S04E01"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button>
+      </div>
+    </article>
+
+    <article class="mcard t-serials" data-goto="serials" tabindex="0" role="link" aria-label="Play Seishun Buta Yarou E01">
+      <div class="still" style="--g1:#123f3a; --g2:#0d1f36"><span class="grab">23:40</span></div>
+      <h3>Seishun Buta Yarou wa Santa Claus no Yume wo Minai</h3>
+      <div class="sub"><span>S01E01</span><span>·</span><span>not started</span><span>·</span><span>serials</span></div>
+      <div class="mrow">
+        <span class="sub">12 episodes</span>
+        <button class="playbtn" aria-label="Play S01E01"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button>
+      </div>
+    </article>
+
+    <article class="mcard t-serials" data-goto="serials" tabindex="0" role="link" aria-label="Play Yomi no Tsugai E01">
+      <div class="still" style="--g1:#1b2f4a; --g2:#3a2430"><span class="grab">24:10</span></div>
+      <h3>Yomi no Tsugai</h3>
+      <div class="sub"><span>S01E01</span><span>·</span><span>not started</span><span>·</span><span>serials</span></div>
+      <div class="mrow">
+        <span class="sub">24 episodes</span>
+        <button class="playbtn" aria-label="Play S01E01"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button>
+      </div>
+    </article>
+  </div>
+
+  <div class="note" style="margin-top:14px">
+    <b>Proposed surface.</b> Continue/Next up need a playback-position store and
+    range-request file serving (the deferred <span class="mono">internal/stream</span>
+    package); until both land, Play deep-links to the item page.
+  </div>
+</section>
+
+<!-- ============================== PAGE: SERIALS COLLECTION ============================== -->
+<section data-page="serials" class="t-serials" hidden>
+  <button class="backlink" data-goto="home">← Home</button>
+
+  <div class="coll-head">
+    <div>
+      <h1>ongoing</h1>
+      <p class="desc">Seasonal shows still airing — one subdirectory per series.</p>
+    </div>
+    <div class="facts">
+      <span class="badge tone">serials</span><span>14 series</span><span>·</span>
+      <span>updated 2026-10-06 21:14</span>
+    </div>
+  </div>
+
+  <div class="filters">
+    <div class="field">
+      <span class="label">Collection</span>
+      <span class="select">ongoing</span>
+    </div>
+    <div class="field">
+      <span class="label">Status</span>
+      <span class="select">All</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <article class="scard" data-goto="series" tabindex="0" role="link" aria-label="Open One Piece">
+      <div class="still" style="--g1:#0e3a5c; --g2:#0c2f22">
+        <span class="grab">frame 00:01:00</span>
+      </div>
+      <h3>One Piece</h3>
+      <p class="raw">ONE.PIECE.S02.WEB-DLRip,LF</p>
+      <div class="meta"><span class="badge">S02</span><span>8 episodes</span></div>
+      <div class="chips"><span class="chip"><b>rus</b>·srt</span><span class="chip"><b>eng</b>·srt</span></div>
+    </article>
+
+    <article class="scard" tabindex="0" role="link" aria-label="Open Необычный адвокат У Ён У">
+      <div class="still" style="--g1:#274060; --g2:#3b2d4f">
+        <span class="grab">frame 00:01:00</span>
+      </div>
+      <h3 lang="ru">Необычный адвокат У Ён У</h3>
+      <p class="raw">Необычный адвокат У Ён У Extraordinary Attorney Woo.2022.S01</p>
+      <div class="meta"><span class="badge">S01</span><span>16 episodes</span></div>
+      <div class="chips"><span class="chip">non-ASCII title</span></div>
+    </article>
+
+    <article class="scard" tabindex="0" role="link" aria-label="Open Hanaori-san">
+      <div class="still" style="--g1:#4a2c4f; --g2:#1d1b3a">
+        <span class="grab">frame 00:01:00</span>
+      </div>
+      <h3>Hanaori-san wa Tensei Shite mo Kenka ga Shitai</h3>
+      <p class="raw">[AniDub]_Hanaori.san.wa.Tensei.Shite.mo.Kenka.ga.Shitai.s01</p>
+      <div class="meta"><span class="badge">S01</span><span>8 episodes</span></div>
+      <div class="chips"><span class="chip">no sidecars</span></div>
+    </article>
+
+    <article class="scard" tabindex="0" role="link" aria-label="Open Toumei na Yoru">
+      <div class="still" style="--g1:#223148; --g2:#0f2233">
+        <span class="grab">frame 00:01:00</span>
+      </div>
+      <h3>Toumei na Yoru ni Kakeru Kimi to Me ni Mienai Koi wo Shita</h3>
+      <p class="raw">Toumei na Yoru ni Kakeru Kimi to Me ni Mienai Koi wo Shita - AniLiberty [WEB-DL 1080p HEVC]</p>
+      <div class="meta"><span>13 episodes</span></div>
+      <div class="chips"><span class="chip">no sidecars</span></div>
+    </article>
+
+    <article class="scard" tabindex="0" role="link" aria-label="Open Super no Ura de Yani Suu Futari">
+      <div class="still" style="--g1:#31402e; --g2:#1c2540">
+        <span class="grab">frame 00:01:00</span>
+      </div>
+      <h3>Super no Ura de Yani Suu Futari</h3>
+      <p class="raw">Super no Ura de Yani Suu Futari - AniLiberty [WEB-DL 1080p]</p>
+      <div class="meta"><span>12 episodes</span></div>
+      <div class="chips"><span class="chip">no sidecars</span></div>
+    </article>
+
+    <article class="scard" tabindex="0" role="link" aria-label="Open The Ribbon Hero">
+      <div class="still" style="--g1:#3a3038; --g2:#1a2530">
+        <span class="grab">frame 00:01:00</span>
+      </div>
+      <h3>The Ribbon Hero</h3>
+      <p class="raw">The_Ribbon_Hero_[ONA]_[AniLiberty]_[WEB-DL_1080p]_[HEVC].mkv</p>
+      <div class="meta"><span class="badge">file-backed</span><span>1 episode</span></div>
+      <div class="chips"><span class="chip">stray root file → own serial</span></div>
+    </article>
+  </div>
+
+  <div class="note" style="margin-top:16px">
+    <b>Subset.</b> The full surveyed set (14 series) and the complete
+    series → episode document flow live in
+    <span class="mono">.tmp/serials-ui-mockup.html</span>. The second serials
+    collection ("serials") opens this same layout scoped to its own root.
+  </div>
+</section>
+
+<!-- ============================== PAGE: SERIES ============================== -->
+<section data-page="series" class="t-serials" hidden>
+  <button class="backlink" data-goto="serials">← ongoing</button>
+
+  <div class="hero">
+    <div class="still" style="--g1:#0e3a5c; --g2:#0c2f22">
+      <span class="grab">frame 00:01:00</span>
+      <span class="corner">S02E01</span>
+    </div>
+    <div>
+      <h1>One Piece</h1>
+      <p class="raw" style="margin-top:6px; white-space:normal">ONE.PIECE.S02.WEB-DLRip,LF</p>
+      <div class="facts">
+        <span class="badge">S02</span><span>8 episodes</span><span>·</span>
+        <span>serials · ongoing</span>
+      </div>
+      <div class="mrow" style="margin-top:12px; max-width:320px">
+        <span class="sub">Continue · S02E05 · 62%</span>
+        <button class="playbtn" aria-label="Play S02E05"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button>
+      </div>
+      <p class="identity mono">ser_2_3fd91c0ba4e27f15 · identity = (library_id, relative_path)</p>
+    </div>
+  </div>
+
+  <div class="section-h">
+    <h2>Metadata</h2>
+    <span class="sub">one namespace per plugin — never merged</span>
+  </div>
+  <div class="cards2">
+    <div class="source-card">
+      <header><h3>serial-parser</h3><span class="mono">priority 1</span></header>
+      <div class="body"><dl class="kv">
+        <dt>display_title</dt><dd>One Piece</dd>
+        <dt>season</dt><dd>2</dd>
+        <dt>parsed_from</dt><dd>directory</dd>
+        <dt>original_dir_name</dt><dd class="mono">ONE.PIECE.S02.WEB-DLRip,LF</dd>
+      </dl></div>
+      <footer>provenance: scan 2026-10-06 21:14 · stage serial-parser</footer>
+    </div>
+    <div class="slot">
+      <b>poster</b> — no poster source yet. The episode frame grab (hero) is the
+      default image; when an enricher plugin provides a poster it outranks the
+      frame grab automatically (view precedence).
+    </div>
+  </div>
+
+  <div class="section-h">
+    <h2>Episodes</h2>
+    <span class="sub">full episode document flow → serials-ui-mockup.html</span>
+  </div>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th></th><th>Episode</th><th>File</th><th>Sidecars</th><th style="width:130px"></th></tr></thead>
+      <tbody>
+        <tr class="rowlink" tabindex="0" role="link" aria-label="Open S02E01">
+          <td><span class="thumb" style="--g1:#0e3a5c; --g2:#0c2f22"></span></td>
+          <td><span class="ep">S02E01</span></td>
+          <td><span class="path">One.Piece.S02E01.WEB-DLRip.RGzsRutracker.avi</span></td>
+          <td><span class="chips"><span class="chip"><b>rus</b>·srt</span><span class="chip"><b>eng</b>·srt</span></span></td>
+          <td><button class="playbtn" aria-label="Play S02E01"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button></td>
+        </tr>
+        <tr class="rowlink" tabindex="0" role="link" aria-label="Open S02E02">
+          <td><span class="thumb" style="--g1:#0d3350; --g2:#0b2a1f"></span></td>
+          <td><span class="ep">S02E02</span></td>
+          <td><span class="path">One.Piece.S02E02.WEB-DLRip.RGzsRutracker.avi</span></td>
+          <td><span class="chips"><span class="chip"><b>rus</b>·srt</span><span class="chip"><b>eng</b>·srt</span></span></td>
+          <td><button class="playbtn" aria-label="Play S02E02"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button></td>
+        </tr>
+        <tr class="rowlink" tabindex="0" role="link" aria-label="Open S02E03">
+          <td><span class="thumb" style="--g1:#103f63; --g2:#0d3426"></span></td>
+          <td><span class="ep">S02E03</span></td>
+          <td><span class="path">One.Piece.S02E03.WEB-DLRip.RGzsRutracker.avi</span></td>
+          <td><span class="chips"><span class="chip"><b>rus</b>·srt</span><span class="chip"><b>eng</b>·srt</span></span></td>
+          <td><button class="playbtn" aria-label="Play S02E03"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button></td>
+        </tr>
+        <tr class="rowlink" tabindex="0" role="link" aria-label="Open S02E04">
+          <td><span class="thumb" style="--g1:#0c3049; --g2:#123a2a"></span></td>
+          <td><span class="ep">S02E04</span></td>
+          <td><span class="path">One.Piece.S02E04.WEB-DLRip.RGzsRutracker.avi</span></td>
+          <td><span class="chips"><span class="chip"><b>rus</b>·srt</span><span class="chip"><b>eng</b>·srt</span></span></td>
+          <td><button class="playbtn" aria-label="Play S02E04"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============================== PAGE: FILMS COLLECTION ============================== -->
+<section data-page="films" class="t-movies" hidden>
+  <button class="backlink" data-goto="home">← Home</button>
+
+  <div class="coll-head">
+    <div>
+      <h1>films</h1>
+      <p class="desc">Movies — one file per film, identity parsed from the filename.</p>
+    </div>
+    <div class="facts">
+      <span class="badge tone">movies</span><span class="mono" style="font-size:11px">module tv</span>
+      <span>214 items</span><span>·</span><span>updated 2026-10-07 12:02</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <article class="scard" data-goto="film" tabindex="0" role="link" aria-label="Open The Thing">
+      <div class="still" style="--g1:#2b3440; --g2:#101820">
+        <span class="grab">01:49:32</span>
+      </div>
+      <h3>The Thing</h3>
+      <p class="raw">The.Thing.1982.1080p.BluRay.x264.mkv</p>
+      <div class="meta"><span class="badge">1982</span><span class="chip">1080p</span></div>
+      <div class="chips"><span class="chip">ffprobe · tv-parser</span></div>
+    </article>
+
+    <article class="scard" tabindex="0" role="link" aria-label="Open Blade Runner 2049">
+      <div class="still" style="--g1:#4a2c14; --g2:#1d1b3a">
+        <span class="grab">02:43:51</span>
+      </div>
+      <h3>Blade Runner 2049</h3>
+      <p class="raw">Blade.Runner.2049.2017.2160p.WEB-DL.DTS-HD.x265.mkv</p>
+      <div class="meta"><span class="badge">2017</span><span class="chip">2160p</span></div>
+      <div class="chips"><span class="chip">hdr10</span></div>
+    </article>
+
+    <article class="scard" tabindex="0" role="link" aria-label="Open Arrival">
+      <div class="still" style="--g1:#1f2b3d; --g2:#0d1a2b">
+        <span class="grab">01:56:07</span>
+      </div>
+      <h3>Arrival</h3>
+      <p class="raw">Arrival.2016.1080p.BluRay.DTS.x264-FTO.mkv</p>
+      <div class="meta"><span class="badge">2016</span><span class="chip">1080p</span><span class="chip">FTO</span></div>
+      <div class="chips"><span class="chip"><b>rus</b>·srt</span></div>
+    </article>
+
+    <article class="scard" tabindex="0" role="link" aria-label="Open Криминальное чтиво">
+      <div class="still" style="--g1:#3d2b14; --g2:#171f2b">
+        <span class="grab">02:34:03</span>
+      </div>
+      <h3 lang="ru">Криминальное чтиво</h3>
+      <p class="raw">Криминальное чтиво (1994) BDRip-AVC.mkv</p>
+      <div class="meta"><span class="badge">1994</span><span class="chip">avc</span></div>
+      <div class="chips"><span class="chip">non-ASCII filename</span></div>
+    </article>
+
+    <article class="scard" tabindex="0" role="link" aria-label="Open Mad Max Fury Road">
+      <div class="still" style="--g1:#403018; --g2:#1f2b3d">
+        <span class="grab">01:51:24</span>
+      </div>
+      <h3>Mad Max: Fury Road</h3>
+      <p class="raw">Mad.Max.Fury.Road.2015.BluRay.1080p.mkv</p>
+      <div class="meta"><span class="badge">2015</span><span class="chip">1080p</span></div>
+      <div class="chips"><span class="chip">1080p</span></div>
+    </article>
+
+    <article class="scard" tabindex="0" role="link" aria-label="Open Parasite">
+      <div class="still" style="--g1:#1f2b24; --g2:#0d1a16">
+        <span class="grab">02:12:10</span>
+      </div>
+      <h3>Parasite</h3>
+      <p class="raw">Parasite.2019.1080p.KORSUB.WEBRip.x264.mp4</p>
+      <div class="meta"><span class="badge">2019</span><span class="chip">1080p</span></div>
+      <div class="chips"><span class="chip">KORSUB</span></div>
+    </article>
+  </div>
+
+  <div class="note" style="margin-top:16px">
+    <b>Mock data.</b> Film titles are placeholders; the fields shown (title,
+    year, resolution, release_group) are the real tv-parser namespace keys. The
+    tv module stays flat — folder navigation like photos have would be a
+    relative_path layer, not a new module.
+  </div>
+</section>
+
+<!-- ============================== PAGE: FILM ============================== -->
+<section data-page="film" class="t-movies" hidden>
+  <button class="backlink" data-goto="films">← films</button>
+
+  <div class="hero">
+    <div class="still" style="--g1:#2b3440; --g2:#101820">
+      <span class="grab">01:49:32</span>
+    </div>
+    <div>
+      <h1>The Thing</h1>
+      <p class="raw" style="margin-top:6px; white-space:normal">The.Thing.1982.1080p.BluRay.x264.mkv</p>
+      <div class="facts">
+        <span class="badge">1982</span><span class="chip">1080p</span><span>1h 49m</span><span>·</span>
+        <span>movies · films</span>
+      </div>
+      <div class="mrow" style="margin-top:12px; max-width:320px">
+        <span class="sub">Resume · 34% · 1h 12m left</span>
+        <button class="playbtn" aria-label="Play The Thing"><svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play</button>
+      </div>
+      <p class="identity mono">itm_3_9f2c1a44d8b6a701 · identity = (library_id, file_id)</p>
+    </div>
+  </div>
+
+  <div class="section-h">
+    <h2>Identifiers</h2>
+    <span class="sub">tier-1 fields — core-managed</span>
+  </div>
+  <div class="source-card"><div class="body"><dl class="kv">
+    <dt>id</dt><dd class="mono">itm_3_9f2c1a44d8b6a701</dd>
+    <dt>module</dt><dd>tv</dd>
+    <dt>collection</dt><dd>3 · films</dd>
+    <dt>path</dt><dd class="mono">The.Thing.1982.1080p.BluRay.x264.mkv</dd>
+    <dt>media_type</dt><dd>video</dd>
+  </dl></div></div>
+
+  <div class="section-h">
+    <h2>Sources</h2>
+    <span class="sub">sources.&lt;plugin_id&gt; — namespaces stay lossless</span>
+  </div>
+  <div class="cards2">
+    <div class="source-card">
+      <header><h3>parsed</h3><span class="mono">ffprobe · base-scanner</span></header>
+      <div class="body"><dl class="kv">
+        <dt>container</dt><dd>mkv</dd>
+        <dt>duration</dt><dd>1h 49m 32s</dd>
+        <dt>video</dt><dd>h264 · 1920×800</dd>
+        <dt>audio</dt><dd>dts · 5.1</dd>
+        <dt>size</dt><dd>11.2 GB</dd>
+      </dl></div>
+      <footer>provenance: scan 2026-10-07 12:02 · stage scan</footer>
+    </div>
+    <div class="source-card">
+      <header><h3>tv-parser</h3><span class="mono">priority 1</span></header>
+      <div class="body"><dl class="kv">
+        <dt>title</dt><dd>The Thing</dd>
+        <dt>year</dt><dd>1982</dd>
+        <dt>resolution</dt><dd>1080p</dd>
+        <dt>parsed_from</dt><dd>filename</dd>
+      </dl></div>
+      <footer>provenance: enrich 2026-10-07 12:03 · stage tv-parser</footer>
+    </div>
+  </div>
+  <div style="height:16px"></div>
+  <div class="slot">
+    <b>tmdb</b> — seeded SERVER slot in the tv module; no plugin fills it yet.
+    Backlog B3 makes it real (HTTP fetch + secrets + soft-fail); the slot would
+    then render as a full source card next to tv-parser.
+  </div>
+
+  <div class="section-h"><h2>View</h2><span class="sub">_view — last writer wins until B3 arbitration</span></div>
+  <div class="source-card"><div class="body"><dl class="kv">
+    <dt>title</dt><dd>The Thing <span class="pill neu" style="margin-left:6px">tv-parser</span></dd>
+    <dt>year</dt><dd>1982 <span class="pill neu" style="margin-left:6px">tv-parser</span></dd>
+    <dt>resolution</dt><dd>1080p <span class="pill neu" style="margin-left:6px">tv-parser</span></dd>
+  </dl></div></div>
+
+  <div class="section-h"><h2>Stages</h2><span class="sub">_stages — the enrichment trail</span></div>
+  <div class="stages">
+    <span class="stage done"><span class="dot"></span>parsed <span class="st">scan 12:02</span></span>
+    <span class="stage done"><span class="dot"></span>tv-parser <span class="st">12:03 · 0.1s</span></span>
+    <span class="stage"><span class="dot"></span>tmdb <span class="st">unavailable · seeded</span></span>
+    <span class="stage done"><span class="dot"></span>ready</span>
+  </div>
+</section>
+
+<!-- ============================== PAGE: PHOTOS COLLECTION ============================== -->
+<section data-page="photos" class="t-photos" hidden>
+  <button class="backlink" data-goto="home">← Home</button>
+
+  <div class="coll-head">
+    <div>
+      <h1>photos</h1>
+      <p class="desc">Personal archive — subfolders by year and theme.</p>
+    </div>
+    <div class="facts">
+      <span class="badge tone">photos</span><span>3 842 items</span><span>·</span>
+      <span>updated 2026-10-05 08:12</span>
+    </div>
+  </div>
+
+  <div class="filters" role="group" aria-label="Subfolders">
+    <span class="field"><span class="label">Folder</span></span>
+    <button class="fchip" aria-pressed="true">All</button>
+    <button class="fchip t-photos" aria-pressed="false">2026</button>
+    <button class="fchip t-photos" aria-pressed="false">2025</button>
+    <button class="fchip t-photos" aria-pressed="false">nature</button>
+    <button class="fchip t-photos" aria-pressed="false">girls</button>
+    <button class="fchip t-photos" aria-pressed="false">архив</button>
+  </div>
+
+  <div class="masonry">
+    <figure class="ptile" data-goto="photo" tabindex="0" role="link" aria-label="Open DSC_0142.jpg">
+      <span class="ph r32" style="--g1:#3d3524; --g2:#1a2b3d"></span>
+      <footer><span class="nm">2026/07/DSC_0142.jpg</span><span>04 Jul</span></footer>
+    </figure>
+    <figure class="ptile" tabindex="0" role="link" aria-label="Open IMG_5521.jpg">
+      <span class="ph r11" style="--g1:#24303d; --g2:#3d2b2b"></span>
+      <footer><span class="nm">2026/07/IMG_5521.jpg</span><span>02 Jul</span></footer>
+    </figure>
+    <figure class="ptile" tabindex="0" role="link" aria-label="Open DSC_0156.jpg">
+      <span class="ph r34" style="--g1:#2b3d2f; --g2:#14202b"></span>
+      <footer><span class="nm">2026/07/DSC_0156.jpg</span><span>01 Jul</span></footer>
+    </figure>
+    <figure class="ptile" tabindex="0" role="link" aria-label="Open P1070432.jpg">
+      <span class="ph r43" style="--g1:#402a2a; --g2:#161f2e"></span>
+      <footer><span class="nm">2026/06/P1070432.jpg</span><span>21 Jun</span></footer>
+    </figure>
+    <figure class="ptile" tabindex="0" role="link" aria-label="Open IMG_0034.png">
+      <span class="ph r32" style="--g1:#1f3040; --g2:#101820"></span>
+      <footer><span class="nm">nature/IMG_0034.png</span><span>18 May</span></footer>
+    </figure>
+    <figure class="ptile" tabindex="0" role="link" aria-label="Open DSC_0771.jpg">
+      <span class="ph r11" style="--g1:#332b40; --g2:#1a1626"></span>
+      <footer><span class="nm">girls/DSC_0771.jpg</span><span>10 May</span></footer>
+    </figure>
+    <figure class="ptile" tabindex="0" role="link" aria-label="Open скан_1989_012.jpg">
+      <span class="ph r34" style="--g1:#3d3220; --g2:#241a12"></span>
+      <footer><span class="nm">архив/скан_1989_012.jpg</span><span>1989</span></footer>
+    </figure>
+    <figure class="ptile" tabindex="0" role="link" aria-label="Open IMG_9102.jpg">
+      <span class="ph r43" style="--g1:#2a3a33; --g2:#0f1d18"></span>
+      <footer><span class="nm">2025/12/IMG_9102.jpg</span><span>29 Dec</span></footer>
+    </figure>
+  </div>
+
+  <div class="note" style="margin-top:16px">
+    <b>Subfolders + mock data.</b> Folder chips group by the item's
+    <span class="mono">relative_path</span> prefix; tile dates read
+    <span class="mono">sources.image-enricher.date_taken</span>. A
+    distinct-folder endpoint (GET /libraries/{id}/folders) is the clean fix for
+    the chip list; today it would be client-side grouping over GET /items.
+  </div>
+</section>
+
+<!-- ============================== PAGE: PHOTO ============================== -->
+<section data-page="photo" class="t-photos" hidden>
+  <button class="backlink" data-goto="photos">← photos · nature</button>
+
+  <div class="hero">
+    <div class="still r32" style="--g1:#3d3524; --g2:#1a2b3d">
+      <span class="grab">6000×4000 · jpeg</span>
+    </div>
+    <div>
+      <h1 class="mono" style="font-size:18px">nature/IMG_0034.png</h1>
+      <div class="facts">
+        <span>6000×4000</span><span>·</span><span>jpeg</span><span>·</span>
+        <span>photos</span>
+      </div>
+      <p class="identity mono">itm_4_c81d30f7a52e9b04 · identity = (library_id, file_id)</p>
+    </div>
+  </div>
+
+  <div class="section-h">
+    <h2>EXIF</h2>
+    <span class="sub">sources.image-enricher — one exiftool pass, per-field provenance</span>
+  </div>
+  <div class="source-card">
+    <header><h3>image-enricher</h3><span class="mono">exiftool</span></header>
+    <div class="body"><dl class="kv">
+      <dt>width</dt><dd>6000</dd>
+      <dt>height</dt><dd>4000</dd>
+      <dt>format</dt><dd>jpeg</dd>
+      <dt>make</dt><dd>Canon</dd>
+      <dt>model</dt><dd>Canon EOS R6</dd>
+      <dt>date_taken</dt><dd class="mono">2026-07-04T15:34:12+00:00</dd>
+      <dt>orientation</dt><dd>1</dd>
+      <dt>gps_lat</dt><dd>55.75222</dd>
+      <dt>gps_lon</dt><dd>37.61556</dd>
+    </dl></div>
+    <footer>provenance: enrich 2026-10-07 09:40 · stage image-enricher · missing tags are simply absent, never dropped silently</footer>
+  </div>
+
+  <div class="section-h"><h2>Stages</h2><span class="sub">_stages — the enrichment trail</span></div>
+  <div class="stages">
+    <span class="stage done"><span class="dot"></span>parsed <span class="st">scan 09:39</span></span>
+    <span class="stage done"><span class="dot"></span>image-enricher <span class="st">09:40 · 0.6s</span></span>
+    <span class="stage done"><span class="dot"></span>ready</span>
+  </div>
+</section>
+
+<!-- ============================== PAGE: AUDIOBOOKS COLLECTION (future type, empty) ============================== -->
+<section data-page="audio" class="t-audio" hidden>
+  <button class="backlink" data-goto="home">← Home</button>
+
+  <div class="coll-head">
+    <div>
+      <h1>audiobooks</h1>
+      <p class="desc">Fiction read by narrators — future type, collection created before its module exists.</p>
+    </div>
+    <div class="facts">
+      <span class="badge tone">audiobooks</span><span class="badge proposed">future type</span>
+      <span>0 items</span>
+    </div>
+  </div>
+
+  <div class="empty">
+    <b>No items yet</b>
+    This collection was created ahead of its module. When an audiobooks module
+    seeds (scanner + parser plugins, like serial did in serials-library), the
+    first scan fills this grid — the type's card language lands with the module,
+    not with the UI.
+  </div>
+</section>
+
+<!-- ============================== PAGE: ADMIN ============================== -->
+<section data-page="admin" hidden>
+  <div class="section-h" style="margin-top:0">
+    <h2>Admin</h2>
+    <span class="sub">collections — add, scan, edit; paths live here, not on the public screens</span>
+  </div>
+
+  <div class="source-card">
+    <div class="scroll-x sticky">
+      <table>
+        <thead><tr>
+          <th>Collection</th><th>Type</th><th>Root folder</th>
+          <th>Items <span class="badge proposed">proposed</span></th>
+          <th>Updated <span class="badge proposed">proposed</span></th>
+          <th style="width:170px">Actions</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td><b>ongoing</b><br><span style="font-size:11px;color:var(--muted-fg)">Seasonal shows still airing</span></td>
+            <td><span class="badge t-serials tone">serials</span></td>
+            <td><span class="path">/Volumes/kofe/ongoing</span></td>
+            <td class="mono">964</td><td>2026-10-06 21:14</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+              <span class="scan-result">
+                <span class="chip">disc <b>964</b></span>
+                <span class="chip">kept <b>960</b></span>
+                <span class="pill warn">4 warnings</span>
+              </span>
+            </td>
+          </tr>
+          <tr>
+            <td><b>serials</b><br><span style="font-size:11px;color:var(--muted-fg)">Completed series archive</span></td>
+            <td><span class="badge t-serials tone">serials</span></td>
+            <td><span class="path">/Volumes/ojir/serials</span></td>
+            <td class="mono">2 918</td><td>2026-10-06 21:31</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>films</b><br><span style="font-size:11px;color:var(--muted-fg)">Movies, one file each</span></td>
+            <td><span class="badge t-movies tone">movies</span></td>
+            <td><span class="path">/Volumes/inrat/films</span></td>
+            <td class="mono">214</td><td>2026-10-07 12:02</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>photos</b><br><span style="font-size:11px;color:var(--muted-fg)">Personal archive by year and theme</span></td>
+            <td><span class="badge t-photos tone">photos</span></td>
+            <td><span class="path">/Volumes/onlas/photos</span></td>
+            <td class="mono">3 842</td><td>2026-10-05 08:12</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>audiobooks</b><br><span style="font-size:11px;color:var(--muted-fg)">Fiction read by narrators</span></td>
+            <td><span class="badge t-audio tone">audiobooks</span><span class="badge proposed">future type</span></td>
+            <td><span class="path">/Volumes/inrat/audiobooks</span></td>
+            <td class="mono">0</td><td>—</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>anime</b><br><span style="font-size:11px;color:var(--muted-fg)">Long-running series, cours per directory.</span></td>
+            <td><span class="badge t-serials tone">serials</span></td>
+            <td><span class="path">/Volumes/kofe/anime</span></td>
+            <td class="mono">96</td><td>2026-10-04</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>sitcoms</b><br><span style="font-size:11px;color:var(--muted-fg)">Half-hour episodes, flat season folders.</span></td>
+            <td><span class="badge t-serials tone">serials</span></td>
+            <td><span class="path">/Volumes/kofe/sitcoms</span></td>
+            <td class="mono">212</td><td>2026-10-03</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>kdrama</b><br><span style="font-size:11px;color:var(--muted-fg)">Korean drama, one directory per title.</span></td>
+            <td><span class="badge t-serials tone">serials</span></td>
+            <td><span class="path">/Volumes/kofe/kdrama</span></td>
+            <td class="mono">48</td><td>2026-10-02</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>docs</b><br><span style="font-size:11px;color:var(--muted-fg)">Documentary mini-series.</span></td>
+            <td><span class="badge t-serials tone">serials</span></td>
+            <td><span class="path">/Volumes/kofe/docs</span></td>
+            <td class="mono">31</td><td>2026-09-30</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>telenovelas</b><br><span style="font-size:11px;color:var(--muted-fg)">Night soap for the background.</span></td>
+            <td><span class="badge t-serials tone">serials</span></td>
+            <td><span class="path">/Volumes/kofe/telenovelas</span></td>
+            <td class="mono">58</td><td>2026-09-28</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>classics</b><br><span style="font-size:11px;color:var(--muted-fg)">Pre-1980 canon, remasters only.</span></td>
+            <td><span class="badge t-movies tone">movies</span></td>
+            <td><span class="path">/Volumes/inrat/classics</span></td>
+            <td class="mono">141</td><td>2026-10-01</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>scifi</b><br><span style="font-size:11px;color:var(--muted-fg)">Genre shelf — space is a placeholder too.</span></td>
+            <td><span class="badge t-movies tone">movies</span></td>
+            <td><span class="path">/Volumes/inrat/scifi</span></td>
+            <td class="mono">88</td><td>2026-10-01</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>french</b><br><span style="font-size:11px;color:var(--muted-fg)">Comédie française, VOST.</span></td>
+            <td><span class="badge t-movies tone">movies</span></td>
+            <td><span class="path">/Volumes/inrat/french</span></td>
+            <td class="mono">64</td><td>2026-09-29</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>watchlater</b><br><span style="font-size:11px;color:var(--muted-fg)">Unsorted intake queue.</span></td>
+            <td><span class="badge t-movies tone">movies</span></td>
+            <td><span class="path">/Volumes/inrat/watchlater</span></td>
+            <td class="mono">37</td><td>2026-10-07</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>family</b><br><span style="font-size:11px;color:var(--muted-fg)">Shared album — kids, pets, birthdays.</span></td>
+            <td><span class="badge t-photos tone">photos</span></td>
+            <td><span class="path">/Volumes/onlas/family</span></td>
+            <td class="mono">12</td><td>2026-10-05</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>travel</b><br><span style="font-size:11px;color:var(--muted-fg)">Trips by year and country.</span></td>
+            <td><span class="badge t-photos tone">photos</span></td>
+            <td><span class="path">/Volumes/onlas/travel</span></td>
+            <td class="mono">8</td><td>2026-10-04</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>film</b><br><span style="font-size:11px;color:var(--muted-fg)">Scanned negatives, 35mm rolls.</span></td>
+            <td><span class="badge t-photos tone">photos</span></td>
+            <td><span class="path">/Volumes/onlas/film</span></td>
+            <td class="mono">1</td><td>2026-09-26</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>screens</b><br><span style="font-size:11px;color:var(--muted-fg)">Screenshots worth keeping.</span></td>
+            <td><span class="badge t-photos tone">photos</span></td>
+            <td><span class="path">/Volumes/onlas/screens</span></td>
+            <td class="mono">612</td><td>2026-10-03</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>sf-audio</b><br><span style="font-size:11px;color:var(--muted-fg)">Science fiction audiobooks, one directory per book.</span></td>
+            <td><span class="badge t-audio tone">audiobooks</span></td>
+            <td><span class="path">/Volumes/ingit/sf-audio</span></td>
+            <td class="mono">214</td><td>2026-09-25</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>kids-audio</b><br><span style="font-size:11px;color:var(--muted-fg)">Bedtime stories, narrated.</span></td>
+            <td><span class="badge t-audio tone">audiobooks</span></td>
+            <td><span class="path">/Volumes/ingit/kids-audio</span></td>
+            <td class="mono">96</td><td>2026-09-20</td>
+            <td>
+              <button class="btn ghost sm">Scan</button>
+              <button class="btn ghost sm" data-goto="manage">Edit</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <footer>
+      Shipped write paths today: create (POST /libraries) and scan
+      (POST /libraries/{id}/scan). Edit needs PATCH /libraries/{id} — the
+      overlay below is the proposed surface. No delete endpoint; removal stays
+      out of scope until a janitor design.
+    </footer>
+  </div>
+
+  <div class="section-h"><h2>Add collection</h2></div>
+  <div class="source-card">
+    <div class="body" style="padding:14px">
+      <div class="form-grid">
+        <div class="field-c">
+          <span class="label">Type</span>
+          <span class="select">serials <span class="mono">module serial</span></span>
+          <span class="hint">type = module seed (tv · image ship today, serial via serials-library); a new type lands with its plugins, then appears here</span>
+        </div>
+        <div class="field-c">
+          <span class="label">Name</span>
+          <input class="input" value="ongoing" aria-label="Name">
+        </div>
+        <div class="field-c" style="grid-column:1 / -1">
+          <span class="label">Description <span class="badge proposed">proposed</span></span>
+          <input class="input" value="Seasonal shows still airing" aria-label="Description">
+        </div>
+        <div class="field-c" style="grid-column:1 / -1">
+          <span class="label">Root folder</span>
+          <input class="input mono" value="/Volumes/kofe/ongoing" aria-label="Root folder">
+          <span class="hint">absolute OS path — network roots must be OS-mounted (NFS); the server reads them as local paths</span>
+        </div>
+      </div>
+      <div style="margin-top:12px"><button class="btn">Add collection</button></div>
+    </div>
+  </div>
+
+  <!-- edit-collection overlay — opens over this page via data-goto="manage" -->
+  <div class="overlay" id="editOverlay" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+      <header>
+        <div>
+          <h2 id="editTitle">Edit collection — photos</h2>
+          <span class="mono">lib_4 · module image</span>
+        </div>
+        <button class="btn ghost sm" data-close aria-label="Close">✕</button>
+      </header>
+      <div class="dbody">
+        <div class="form-grid">
+          <div class="field-c">
+            <span class="label">Name</span>
+            <input class="input" value="photos" aria-label="Name">
+          </div>
+          <div class="field-c">
+            <span class="label">Type <span style="font-weight:400">(fixed at creation)</span></span>
+            <span class="select">photos <span class="mono">module image</span></span>
+          </div>
+          <div class="field-c" style="grid-column:1 / -1">
+            <span class="label">Description <span class="badge proposed">proposed</span></span>
+            <input class="input" value="Personal archive — subfolders by year and theme." aria-label="Description">
+          </div>
+          <div class="field-c" style="grid-column:1 / -1">
+            <span class="label">Root folder</span>
+            <input class="input mono" value="/Volumes/onlas/photos" aria-label="Root folder">
+            <span class="hint">network roots must be OS-mounted (NFS)</span>
+          </div>
+        </div>
+        <div class="dsub">
+          Discovered subfolders (read-only): 2026 · 2025 · nature · girls · архив —
+          the filesystem owns the tree; the admin surface can only change the root.
+          Excluding folders would be a scan-filter option (future).
+        </div>
+      </div>
+      <footer>
+        <span class="warn">Moving the root re-identifies all items — the next scan
+        marks old rows deleted. Renames of the collection itself are always safe.</span>
+        <span style="display:flex; gap:8px">
+          <button class="btn ghost" data-close>Cancel</button>
+          <button class="btn">Save changes</button>
+        </span>
+      </footer>
+    </div>
+  </div>
+</section>
+
+</main>
+</div><!-- /.content -->
+</div><!-- /.frame -->
+
+<script>
+  // Theme toggle — same localStorage key as the SPA (web/src/components/ThemeToggle.tsx)
+  // and the serials mockup, so preference carries across all three.
+  (function () {
+    var root = document.documentElement;
+    var KEY = "mellifera.theme";
+    var stored = null;
+    try { stored = localStorage.getItem(KEY); } catch (e) {}
+    var initial = stored === "dark" || stored === "light"
+      ? stored
+      : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    root.setAttribute("data-theme", initial);
+    document.getElementById("themeToggle").addEventListener("click", function () {
+      var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem(KEY, next); } catch (e) {}
+    });
+  })();
+
+  // Sidebar — hidden by default; the floating button opens it, the chevron
+  // (and Escape) close it. State persists in localStorage.
+  (function () {
+    var fab = document.getElementById("menuFab");
+    var btn = document.getElementById("sideToggle");
+    function setSide(open) {
+      document.body.classList.toggle("side-open", open);
+      fab.setAttribute("aria-expanded", open ? "true" : "false");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      try { localStorage.setItem("mellifera.side", open ? "open" : "hidden"); } catch (e) {}
+    }
+    var stored = null;
+    try { stored = localStorage.getItem("mellifera.side"); } catch (e) {}
+    setSide(stored === "open");
+    fab.addEventListener("click", function () { setSide(true); });
+    btn.addEventListener("click", function () { setSide(false); });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Escape") return;
+      var overlay = document.getElementById("editOverlay");
+      if (overlay && !overlay.hidden) return; // Escape closes the overlay first
+      setSide(false);
+    });
+  })();
+
+  // Mock navigation — data-goto switches pages; "manage" opens the edit
+  // overlay over Admin; data-close hides it (button or backdrop click).
+  // Detail pages highlight their parent collection in the sidebar.
+  (function () {
+    var pages = document.querySelectorAll("[data-page]");
+    var navs = document.querySelectorAll(".slink[data-goto]");
+    var overlay = document.getElementById("editOverlay");
+    var alias = { series: "serials", film: "films", photo: "photos" };
+    function show(name) {
+      pages.forEach(function (p) { p.hidden = p.getAttribute("data-page") !== name; });
+      var cur = alias[name] || name;
+      navs.forEach(function (n) {
+        if (n.getAttribute("data-goto") === cur) {
+          n.setAttribute("aria-current", "page");
+        } else {
+          n.removeAttribute("aria-current");
+        }
+      });
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+    document.addEventListener("click", function (ev) {
+      var t = ev.target.closest("[data-goto]");
+      if (t) {
+        var name = t.getAttribute("data-goto");
+        // "manage" is not a page: it opens the edit overlay over Admin.
+        show(name === "manage" ? "admin" : name);
+        if (name === "manage") overlay.hidden = false;
+        return;
+      }
+      if (ev.target.closest("[data-close]")) { overlay.hidden = true; return; }
+      if (ev.target === overlay) { overlay.hidden = true; return; }
+      var chip = ev.target.closest(".fchip");
+      if (chip) {
+        chip.parentElement.querySelectorAll(".fchip").forEach(function (c) {
+          c.setAttribute("aria-pressed", "false");
+        });
+        chip.setAttribute("aria-pressed", "true");
+      }
+    });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && !overlay.hidden) { overlay.hidden = true; return; }
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      var t = ev.target.closest && ev.target.closest("[data-goto]");
+      if (t && ev.target === t) {
+        ev.preventDefault();
+        var name = t.getAttribute("data-goto");
+        show(name === "manage" ? "admin" : name);
+        if (name === "manage") overlay.hidden = false;
+      }
+    });
+  })();
+</script>
