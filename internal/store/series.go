@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Series is a persisted serial-level entity (serials-library D1): one row per
@@ -192,12 +193,16 @@ func (s *Store) QueryItemsBySeries(ctx context.Context, sr Series, backing strin
 
 // queryItemsBySeriesDirectory runs the prefix predicate and applies the Go-side
 // depth-1 filter (SQL has no cheap "no further /" predicate; the prefix match
-// is done in SQL so only the serial's subtree leaves the engine).
+// is done in SQL so only the serial's subtree leaves the engine). The substr
+// length is a CHARACTER count (SQLite substr counts characters, not bytes), so
+// it is computed with utf8.RuneCountInString — a Go byte length silently
+// returns zero rows for any non-ASCII series path (a Cyrillic prefix matched
+// 61 of 81 bytes and the equality never held).
 func (s *Store) queryItemsBySeriesDirectory(ctx context.Context, sr Series) ([]Item, error) {
 	prefix := sr.RelativePath + "/"
 	rows, err := s.db.QueryContext(ctx,
 		itemColumns+" FROM items WHERE library_id = ? AND substr(relative_path, 1, ?) = ? ORDER BY relative_path",
-		sr.LibraryID, len(prefix), prefix,
+		sr.LibraryID, utf8.RuneCountInString(prefix), prefix,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query items by series %s: %w", sr.ID, err)
@@ -211,7 +216,12 @@ func (s *Store) queryItemsBySeriesDirectory(ctx context.Context, sr Series) ([]I
 		}
 		// Depth-1 filter: the remainder after the series prefix must not
 		// itself contain a separator (grandchildren belong to a deeper level,
-		// not to this serial's episode list).
+		// not to this serial's episode list). The byte slice is boundary-safe:
+		// a row passed the SQL predicate only if its first
+		// RuneCountInString(prefix) characters equal prefix, and a character
+		// prefix of valid UTF-8 is always a byte prefix (a substring can never
+		// be longer than its source), so len(prefix) ≤ len(it.RelativePath)
+		// and the split lands on a character boundary.
 		if strings.Contains(it.RelativePath[len(prefix):], "/") {
 			continue
 		}

@@ -264,8 +264,22 @@ func emitFileBackedSerial(ctx context.Context, s *scannerImpl, root, name string
 	}
 	probeWarn := probeWarnings(warning)
 
+	// The two emissions share ONE relative path, so the facts registry carries
+	// a FIFO of views per rel and this registration order is the emission
+	// order (record first, episode second — the drain identifies each
+	// DiscoveredFile exactly once, in stream order): the record emission
+	// identifies with the marker facts (PutSeries), the episode emission with
+	// plain episode facts — seriesRel kept so the core stamps
+	// series_relative_path; no SxxExx facts, so serial-parser is a skipped
+	// stage. Marker facts on the episode view would route it as a SECOND
+	// PutSeries and the serial would never get its single episode item
+	// (spec "Loose top-level videos become file-backed serials", tasks 2.8,
+	// D2 rule 6).
 	s.registerFacts(map[string]fileFacts{
 		rel: {record: true, backing: backingFile, dirNameRaw: name, seriesRel: rel},
+	})
+	s.registerFacts(map[string]fileFacts{
+		rel: {seriesRel: rel},
 	})
 
 	record := &scannerv1.DiscoveredFile{

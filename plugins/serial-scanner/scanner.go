@@ -30,15 +30,21 @@ var _ sdk.Scanner = (*scannerImpl)(nil)
 type scannerImpl struct {
 	// facts carries the per-file facts the walk computed (sidecar association
 	// needs the on-disk tree, which Identify cannot re-derive from a relative
-	// path alone). The core ALWAYS calls Scan before Identify in the drain
-	// (internal/scan persist), within the same plugin process, so the walk
-	// populates the map the later Identify calls read. Deviation note:
-	// base-scanner is stateless between RPCs; serial-scanner keeps this single
-	// per-scan map because the sidecar contract (§Interfaces §2) is only
-	// computable with tree context. On a miss (a foreign file Identify was
-	// never shown), the facts degrade gracefully — see fileFactsFor.
+	// path alone), keyed by relative path as a FIFO of fact views. The core
+	// ALWAYS calls Scan before Identify in the drain (internal/scan persist),
+	// within the same plugin process, and identifies each DiscoveredFile
+	// exactly once in stream order — so the walk appends one view per
+	// emission and each Identify consumes the head. The FIFO is what makes a
+	// file-backed serial (two emissions of ONE relative path) routable: the
+	// record emission identifies with the marker facts, the episode emission
+	// with the episode facts (scanner.go §Interfaces §4 / D2 rule 6).
+	// Deviation note: base-scanner is stateless between RPCs; serial-scanner
+	// keeps this single per-scan map because the sidecar contract
+	// (§Interfaces §2) is only computable with tree context. On a miss (a
+	// foreign file Identify was never shown, or a view re-requested after its
+	// emission was consumed), the facts degrade gracefully — see fileFactsFor.
 	mu    sync.Mutex
-	facts map[string]fileFacts
+	facts map[string][]fileFacts
 }
 
 // fileFacts is what Identify stamps for one relative path. Exactly one of the
@@ -157,31 +163,43 @@ func sidecarList(facts []sidecarFact) []any {
 func (s *scannerImpl) beginScan() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.facts = map[string]fileFacts{}
+	s.facts = map[string][]fileFacts{}
 }
 
-// registerFacts merges one serial's stamped facts into the scan's map. Called
-// BEFORE the record is emitted: the core identifies each file as the stream
-// drains, starting with the record.
+// registerFacts appends one serial's stamped fact views to the scan's map, in
+// emission order. Called BEFORE the record is emitted: the core identifies
+// each file as the stream drains, starting with the record. When one relative
+// path is emitted more than once (the file-backed serial: record, then the
+// same file as its episode), the caller appends the views in emission order so
+// each Identify serves its own emission's view.
 func (s *scannerImpl) registerFacts(facts map[string]fileFacts) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for rel, f := range facts {
-		s.facts[rel] = f
+		s.facts[rel] = append(s.facts[rel], f)
 	}
 }
 
-// fileFactsFor reads the facts for rel, degrading gracefully on a miss (a file
-// this process never walked): the series-relative path is derived from the path
-// shape (its first segment; the file itself when top-level) with no sidecars —
-// never an error, never a panic.
+// fileFactsFor serves rel's next fact view in registration (= emission) order:
+// the drain identifies each DiscoveredFile exactly once in stream order, so a
+// two-view rel (the file-backed serial) serves its record view to the first
+// Identify and its episode view to the second. Once only one view remains it
+// is served without advancing — repeated Identifies of a rel (a foreign or
+// re-requested file) are sticky and deterministic. A rel this process never
+// walked degrades gracefully: the series-relative path is derived from the
+// path shape (its first segment; the file itself when top-level) with no
+// sidecars — never an error, never a panic.
 func (s *scannerImpl) fileFactsFor(rel string) fileFacts {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if f, ok := s.facts[rel]; ok {
-		return f
+	q := s.facts[rel]
+	if len(q) == 0 {
+		return fileFacts{seriesRel: deriveSeriesRel(rel)}
 	}
-	return fileFacts{seriesRel: deriveSeriesRel(rel)}
+	if len(q) > 1 {
+		s.facts[rel] = q[1:]
+	}
+	return q[0]
 }
 
 // deriveSeriesRel infers the serial identity path from a relative path alone:
