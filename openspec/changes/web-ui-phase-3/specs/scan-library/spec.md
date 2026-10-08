@@ -40,6 +40,12 @@ go test ./internal/store -run TestLibraryDescriptionRoundtrip
 - **WHEN** an operator creates a library pointing at a directory of TV-named media files, triggers a scan, and lists the library's items
 - **THEN** the item list contains every discovered file, each carrying its parsed identity and probe data in its document
 
+<!-- wf:probe id=8e3b5af30e95a861 -->
+```bash
+set -e
+go test -run TestIntegrationScanLibrary .
+```
+<!-- /wf:probe -->
 
 ## ADDED Requirements
 

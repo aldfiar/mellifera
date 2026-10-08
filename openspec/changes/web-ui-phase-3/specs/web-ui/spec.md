@@ -66,6 +66,17 @@ test -z "$violations"
 - **WHEN** the SPA's API client is inspected for the items endpoints
 - **THEN** listItems and getItem target the pre-existing `/api/v1/items` routes and the ItemDTO fields match the Go JSON tags verbatim
 
+<!-- wf:probe id=b60a9bba64675000 -->
+```bash
+set -e
+grep -q "listItems" web/src/lib/api.ts
+grep -q "getItem" web/src/lib/api.ts
+grep -q "schema_version" web/src/lib/api.ts
+grep -q "relative_path" web/src/lib/api.ts
+grep -q "media_type" web/src/lib/api.ts
+```
+<!-- /wf:probe -->
+
 ### Requirement: Admin library management panel
 
 The admin panel (`/admin`) SHALL be collections management: a collections table
@@ -89,7 +100,7 @@ section.
 - **WHEN** the operator submits the add-collection form with a module type, a name, a description, and an absolute root path
 - **THEN** the new collection appears in the table with its summary re-fetching; a 400/500 instead shows the canonical error inline
 
-<!-- wf:probe id=ca3aae99a81533ed -->
+<!-- wf:probe id=43d0b2ce71a94805 -->
 ```bash
 set -e
 grep -q 'description' web/src/pages/admin/Collections.tsx
@@ -156,6 +167,14 @@ set -e
 test -f internal/web/dist/index.html
 ls internal/web/dist/assets/*.js >/dev/null
 grep -qrs "/collections" internal/web/dist/assets
+for f in internal/web/api/openapi.json internal/web/api/openapi.yaml; do
+  grep -qF '/libraries/{id}/summary' "$f"
+  grep -qF '/libraries/{id}/folders' "$f"
+done
+grep -qF '"/libraries/{id}":' internal/web/api/openapi.json
+grep -qF '"/progress/{item_id}":' internal/web/api/openapi.json
+grep -qF '"description": {' internal/web/api/openapi.json
+grep -A6 'api.libraryDTO:' internal/web/api/openapi.yaml | grep -q 'description:'
 ```
 <!-- /wf:probe -->
 
@@ -269,6 +288,11 @@ grep -q 'summary' web/src/pages/home/Home.tsx
 grep -qE 'fchip|TypeChip|filter' web/src/pages/home/Home.tsx
 test -z "$(grep -rn 'root_path\|/Volumes' web/src/pages/home/)"
 test -z "$(grep -rn 'pill ok\|pill warn\|pill stale\|pill bad' web/src/pages/home/)"
+grep -q 'collections/' web/src/App.tsx
+grep -q 'summary' web/src/pages/collections/Collection.tsx
+grep -q 'module_id' web/src/pages/collections/Collection.tsx
+test -z "$(grep -rn 'root_path\|/Volumes' web/src/pages/collections/)"
+test -z "$(grep -rn 'pill ok\|pill warn\|pill stale\|pill bad' web/src/pages/collections/)"
 ```
 <!-- /wf:probe -->
 
@@ -343,6 +367,9 @@ every layout.
 set -e
 grep -q 'collections/' web/src/App.tsx
 grep -q 'module_id' web/src/pages/collections/Collection.tsx
+grep -qE 'limit|offset' web/src/pages/collections/Collection.tsx
+grep -qiE 'chip' web/src/pages/collections/Collection.tsx
+grep -qE 'relative_path|file_name|filename' web/src/pages/collections/Collection.tsx
 ```
 <!-- /wf:probe -->
 
