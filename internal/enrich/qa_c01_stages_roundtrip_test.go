@@ -7,7 +7,7 @@
 // worker.go:291 (attemptedNoWork) — that discard the `ok` value.
 //
 // Root cause: appendStage builds _stages in memory as []map[string]any, so WITHIN a
-// single workItem pass both assertions succeed. But persistItem marshals the whole
+// single workItem pass both assertions succeed. But persistRow marshals the whole
 // document (including _stages) to JSON, and decodeDoc (worker.go) unmarshals it
 // back into map[string]any. encoding/json decodes a JSON array as []any (NOT
 // []map[string]any), so the unchecked assertions silently yield nil/false on a
@@ -59,7 +59,7 @@ func TestQA_C01_StagesRoundTrip(t *testing.T) {
 			t.Fatalf("precondition: in-memory _stages must be []map[string]any, got %T", doc["_stages"])
 		}
 
-		// The store round-trip workItem performs: persistItem marshals, decodeDoc unmarshals.
+		// The store round-trip workItem performs: persistRow marshals, decodeDoc unmarshals.
 		rt := roundTripDoc(t, doc)
 
 		// C-01 FIX: after the round-trip, decodeDoc normalizes _stages to []map[string]any
@@ -138,7 +138,7 @@ func TestQA_C01_StagesRoundTrip(t *testing.T) {
 	})
 }
 
-// roundTripDoc simulates the store persist+load cycle: marshal (persistItem) then
+// roundTripDoc simulates the store persist+load cycle: marshal (persistRow) then
 // decodeDoc (workItem's load). Before the C-01 fix this mutated _stages from
 // []map[string]any to []any; decodeDoc now normalizes it back to []map[string]any.
 func roundTripDoc(t *testing.T, doc map[string]any) map[string]any {

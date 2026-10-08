@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/mellifera/mellifera/internal/module"
@@ -17,7 +18,7 @@ import (
 
 // coolKey identifies one (item, plugin) ledger row.
 type coolKey struct {
-	itemID, pluginID string
+	rowID, pluginID string
 }
 
 // failureIndex builds the lookup the worker consults for both the cooldown-skip
@@ -37,8 +38,8 @@ func buildFailureIndex(rows []store.FailureRow) failureIndex {
 // inCooldown reports whether (item, plugin) is still inside its terminal cooldown
 // (NextEligibleAt strictly after now) — derivation skips it; the dispatch skips
 // it within an item's chain (arch §4.4 loop-safety).
-func inCooldown(idx failureIndex, itemID, pluginID string, now time.Time) bool {
-	r, ok := idx[coolKey{itemID, pluginID}]
+func inCooldown(idx failureIndex, rowID, pluginID string, now time.Time) bool {
+	r, ok := idx[coolKey{rowID, pluginID}]
 	if !ok {
 		return false
 	}
@@ -47,8 +48,8 @@ func inCooldown(idx failureIndex, itemID, pluginID string, now time.Time) bool {
 
 // priorAttempts returns the existing ledger row's attempt count for (item, plugin),
 // or 0 when no row exists (the first terminal failure for the pair).
-func priorAttempts(idx failureIndex, itemID, pluginID string) int {
-	if r, ok := idx[coolKey{itemID, pluginID}]; ok {
+func priorAttempts(idx failureIndex, rowID, pluginID string) int {
+	if r, ok := idx[coolKey{rowID, pluginID}]; ok {
 		return r.Attempts
 	}
 	return 0
@@ -106,19 +107,83 @@ func exhaustedDoublings(priorAttempts, maxAttempts int) int {
 	return rounds
 }
 
-// reconstructBase rebuilds the per-item *scannerv1.IdentifyResult the chain's Match
+// reconstructBase rebuilds the per-row *scannerv1.IdentifyResult the chain's Match
 // step consumes, FROM THE PERSISTED DOCUMENT (D-Q2 / S7): Parsed is read out of
 // doc["parsed"]; no re-probe of the file. tv-parser reads only the parsed Struct
 // (relative_path/stem), which a freshly scanned item carries, so a minimal base
 // suffices. B3 may re-Identify if a source needs richer base. A missing/empty
 // parsed yields an empty Struct (downstream pathFromParsed handles nil/empty).
+//
+// When the document carries a probe JSON (doc["ffprobe"], stamped by scan), the
+// reported duration is surfaced to the chain as a well-known parsed fact,
+// probe_duration_seconds (serials-library D3: a frame-grab source clamps its
+// seek to a fraction of the probe-reported duration so short files still yield
+// a frame). The fact is advisory — sources that never read it are unaffected,
+// and a missing/unparseable probe simply leaves it absent.
 func reconstructBase(doc map[string]any) *scannerv1.IdentifyResult {
 	st, err := toStruct(doc["parsed"]) // nil -> &structpb.Struct{} (empty)
 	if st == nil {
 		st = &structpb.Struct{}
 	}
 	_ = err
+	if dur, ok := probeDuration(doc["ffprobe"]); ok {
+		if st.Fields == nil {
+			st.Fields = make(map[string]*structpb.Value, 1)
+		}
+		st.Fields["probe_duration_seconds"] = structpb.NewNumberValue(dur)
+	}
 	return &scannerv1.IdentifyResult{Parsed: st}
+}
+
+// probeDuration extracts the probe-reported duration in seconds from the
+// persisted ffprobe JSON ({"format": {"duration": "<seconds>"}} — verbatim
+// ffprobe output carries it as a JSON string). The document view differs by
+// path: a store round-trip decodes it to a map, a freshly assembled (un-
+// persisted) document carries json.RawMessage — both are accepted. Absent on a
+// directory-backed row, an unparseable probe, or a non-numeric duration.
+func probeDuration(raw any) (float64, bool) {
+	var durStr string
+	switch v := raw.(type) {
+	case map[string]any: // decoded document (decodeDoc)
+		format, ok := v["format"].(map[string]any)
+		if !ok {
+			return 0, false
+		}
+		durStr, ok = format["duration"].(string)
+		if !ok {
+			if n, isNum := format["duration"].(float64); isNum {
+				return n, n > 0
+			}
+			return 0, false
+		}
+	case json.RawMessage:
+		durStr = rawDurationString(v)
+	case []byte:
+		durStr = rawDurationString(v)
+	case string:
+		durStr = rawDurationString([]byte(v))
+	default:
+		return 0, false
+	}
+	d, err := strconv.ParseFloat(durStr, 64)
+	if err != nil || d <= 0 {
+		return 0, false
+	}
+	return d, true
+}
+
+// rawDurationString pulls format.duration out of a raw ffprobe JSON payload.
+// Empty when the payload is unparseable or the key is absent.
+func rawDurationString(b []byte) string {
+	var probe struct {
+		Format struct {
+			Duration string `json:"duration"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(b, &probe); err != nil {
+		return ""
+	}
+	return probe.Format.Duration
 }
 
 // toStruct normalizes the persisted parsed value into a *structpb.Struct. A
@@ -154,7 +219,7 @@ func toStruct(v any) (*structpb.Struct, error) {
 // _stages is normalized to the in-memory form here: encoding/json decodes a JSON
 // array of objects into []any (each element map[string]any), but appendStage
 // (enrich.go) and attemptedNoWork read _stages as []map[string]any. Without this
-// coercion a store round-trip (persistItem marshals -> decodeDoc unmarshals) silently
+// coercion a store round-trip (persistRow marshals -> decodeDoc unmarshals) silently
 // breaks both unchecked assertions — appendStage would drop prior history (data loss)
 // and attemptedNoWork could not observe a prior-pass stage. Normalizing once at the
 // decode boundary keeps both readers correct across every re-derive. A no-op when
@@ -209,7 +274,7 @@ type driveResult struct {
 // outcome never aborts the chain — only ctx.Done() does (INV-soft-fail).
 func (q *Queue) driveSources(
 	ctx context.Context, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult,
-	itemID string, idx failureIndex, status *string,
+	rowID string, idx failureIndex, status *string,
 ) driveResult {
 	res := driveResult{}
 	nowt := now()
@@ -222,13 +287,13 @@ func (q *Queue) driveSources(
 		if !queueable(src) || hasNamespace(doc, src.PluginID) {
 			continue
 		}
-		if inCooldown(idx, itemID, src.PluginID, nowt) {
+		if inCooldown(idx, rowID, src.PluginID, nowt) {
 			continue
 		}
 		sr, ledgerStatus, attempts := runSourceRetryable(ctx, q.resolve, src, mod, base, q.cfg.MaxAttempts, q.cfg.Backoff)
 		*status = advanceForSource(*status, sr.kind, &res.begun)
 		appendStage(doc, sr, *status)
-		q.applyOutcome(ctx, itemID, src.PluginID, idx, sr, ledgerStatus, attempts)
+		q.applyOutcome(ctx, rowID, src.PluginID, idx, sr, ledgerStatus, attempts)
 		if sr.kind == outcomeSucceeded && len(sr.namespace) > 0 {
 			applyContribution(doc, sr)
 			res.succeeded++
@@ -267,16 +332,16 @@ func advanceForSource(status string, kind outcomeKind, begun *bool) string {
 // terminal outcome writes the cooldown schedule. Skipped/unavailable/cancelled
 // outcomes write nothing (INV-rare-ledger-writes).
 func (q *Queue) applyOutcome(
-	ctx context.Context, itemID, pluginID string, idx failureIndex,
+	ctx context.Context, rowID, pluginID string, idx failureIndex,
 	sr sourceResult, ledgerStatus string, attempts int,
 ) {
 	if ledgerStatus == "" {
-		if sr.kind == outcomeSucceeded && priorAttempts(idx, itemID, pluginID) > 0 {
-			q.storeWrite(func() error { return q.deps.Store.ClearFailure(ctx, itemID, pluginID) }) // reset-on-success
+		if sr.kind == outcomeSucceeded && priorAttempts(idx, rowID, pluginID) > 0 {
+			q.storeWrite(func() error { return q.deps.Store.ClearFailure(ctx, rowID, pluginID) }) // reset-on-success
 		}
 		return
 	}
-	prior := priorAttempts(idx, itemID, pluginID)
+	prior := priorAttempts(idx, rowID, pluginID)
 	storeAttempts, cool := terminalCooldown(ledgerStatus, prior, q.cfg)
 	reason := sr.errMsg
 	if reason == "" {
@@ -284,7 +349,7 @@ func (q *Queue) applyOutcome(
 	}
 	next := now().Add(cool)
 	q.storeWrite(func() error {
-		return q.deps.Store.RecordFailure(ctx, itemID, pluginID, ledgerStatus, reason, storeAttempts, next)
+		return q.deps.Store.RecordFailure(ctx, rowID, pluginID, ledgerStatus, reason, storeAttempts, next)
 	})
 }
 
@@ -294,12 +359,12 @@ func (q *Queue) applyOutcome(
 // When true, the item has no pending work and may settle to ready (arch §4.4). A
 // source with neither a namespace, a ledger row, nor a recorded attempt still has
 // genuine pending work and must not settle.
-func allSourcesTerminal(idx failureIndex, mod module.Module, doc map[string]any, itemID string, nowt time.Time) bool {
+func allSourcesTerminal(idx failureIndex, mod module.Module, doc map[string]any, rowID string, nowt time.Time) bool {
 	for _, src := range mod.MetadataSources {
 		if !queueable(src) {
 			continue
 		}
-		if hasNamespace(doc, src.PluginID) || inCooldown(idx, itemID, src.PluginID, nowt) {
+		if hasNamespace(doc, src.PluginID) || inCooldown(idx, rowID, src.PluginID, nowt) {
 			continue
 		}
 		if attemptedNoWork(doc, src.PluginID) {

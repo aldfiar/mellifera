@@ -3,18 +3,21 @@
 
 // Command mellifera is the composition root: a flat, top-to-bottom constructor
 // list that wires the whole app graph in one file. It reads configuration from
-// the environment, opens the store, loads and starts the base-scanner (scanner)
-// and tv-parser + image-enricher (metadata_source) plugin subprocesses, constructs enrich.Deps
+// the environment, opens the store, loads and starts the base-scanner +
+// serial-scanner (scanner) and tv-parser + image-enricher + serial-parser +
+// frame-grabber (metadata_source) plugin subprocesses, constructs enrich.Deps
 // and wires it into the scan orchestrator, assembles the HTTP edge, and serves
 // until SIGINT/SIGTERM. There is no DI container and no reflection wiring —
 // every dependency is an explicit constructor call (ai-architecture §2 principle
 // 5; mellifera-build skill; depguard denies reflect + DI frameworks).
 //
 // Dev-mode plugin loading: each plugin binary is loaded from a configurable
-// filesystem path (env MELLIFERA_BASE_SCANNER / MELLIFERA_TV_PARSER /
-// MELLIFERA_IMAGE_ENRICHER, defaults bin/base-scanner / bin/tv-parser /
-// bin/image-enricher from `make build-plugin`). go:embed
-// first-run extraction is deferred to release packaging (D11/Q20).
+// filesystem path (env MELLIFERA_BASE_SCANNER / MELLIFERA_SERIAL_SCANNER /
+// MELLIFERA_TV_PARSER / MELLIFERA_IMAGE_ENRICHER / MELLIFERA_SERIAL_PARSER /
+// MELLIFERA_FRAME_GRABBER, defaults bin/base-scanner / bin/serial-scanner /
+// bin/tv-parser / bin/image-enricher / bin/serial-parser / bin/frame-grabber
+// from `make build-plugin`). go:embed first-run extraction is deferred to
+// release packaging (D11/Q20).
 package main
 
 import (
@@ -83,11 +86,21 @@ func main() {
 	// iterated by the Deps.Status closure. Defined ONCE here (DRY) so the load
 	// sites and the status closure cannot diverge. A Phase-2+ Manager.List()
 	// would replace this literal (INV-known-plugin-set).
-	pluginIDs := []string{"base-scanner", "tv-parser", "image-enricher"}
+	pluginIDs := []string{"base-scanner", "serial-scanner", "tv-parser", "image-enricher", "serial-parser", "frame-grabber"}
 	fatalOn(mgr.Load("base-scanner", cfg.baseScannerPath, []sdk.Capability{
 		{Type: "scanner", ID: "default", ProtoService: scannerService},
 	}), "load base-scanner")
 	fatalOn(mgr.Start(ctx, "base-scanner"), "start base-scanner")
+
+	// serial-scanner is the second scanner-capability plugin (serials-library
+	// D2): directory-structured discovery, selected purely by module config
+	// (the structure knob). Same dev-mode pattern + cookie pair as
+	// base-scanner; loaded/started BEFORE the server serves
+	// (INV-start-before-serve).
+	fatalOn(mgr.Load("serial-scanner", cfg.serialScannerPath, []sdk.Capability{
+		{Type: "scanner", ID: "default", ProtoService: scannerService},
+	}), "load serial-scanner")
+	fatalOn(mgr.Start(ctx, "serial-scanner"), "start serial-scanner")
 
 	// tv-parser is the first metadata_source plugin (parseTV extracted from
 	// base-scanner in T06/T07). It loads from a filesystem path with the same
@@ -108,6 +121,21 @@ func main() {
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
 	}), "load image-enricher")
 	fatalOn(mgr.Start(ctx, "image-enricher"), "start image-enricher")
+
+	// serial-parser + frame-grabber are the serials-module metadata_source
+	// chain (serials-library D3/D5): the local directory-facts parser
+	// (priority 1) and the ffmpeg frame-grab default images (priority 2). Same
+	// dev-mode pattern + cookie pair + capability declaration as tv-parser;
+	// loaded/started BEFORE the server serves (INV-start-before-serve) so the
+	// first serial scan's queue finds live enrichers.
+	fatalOn(mgr.Load("serial-parser", cfg.serialParserPath, []sdk.Capability{
+		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
+	}), "load serial-parser")
+	fatalOn(mgr.Start(ctx, "serial-parser"), "start serial-parser")
+	fatalOn(mgr.Load("frame-grabber", cfg.frameGrabberPath, []sdk.Capability{
+		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
+	}), "load frame-grabber")
+	fatalOn(mgr.Start(ctx, "frame-grabber"), "start frame-grabber")
 
 	scanDeps := scan.Deps{
 		Store:   st,
@@ -211,9 +239,9 @@ func main() {
 	// in-flight RPCs can drain against still-live subprocesses (best-effort
 	// within shutdownTimeout). Stop is void: it cancels workers + waits.
 	enrichQueue.Stop()
-	logErr(mgr.Stop(shutdownCtx, "base-scanner"), "stop base-scanner")
-	logErr(mgr.Stop(shutdownCtx, "tv-parser"), "stop tv-parser")
-	logErr(mgr.Stop(shutdownCtx, "image-enricher"), "stop image-enricher")
+	for _, id := range pluginIDs {
+		logErr(mgr.Stop(shutdownCtx, id), "stop "+id)
+	}
 	// store.Close runs via the deferred st.Close() in main.
 }
 
@@ -222,8 +250,11 @@ type config struct {
 	dsn               string
 	adminToken        string
 	baseScannerPath   string
+	serialScannerPath string
 	tvParserPath      string
 	imageEnricherPath string
+	serialParserPath  string
+	frameGrabberPath  string
 	listenAddr        string
 	webDev            bool
 	enrich            enrich.QueueConfig
@@ -246,8 +277,11 @@ func loadConfig() config {
 		dsn:               filepath.Join(dataDir, "mellifera.db"),
 		adminToken:        adminToken,
 		baseScannerPath:   envOr("MELLIFERA_BASE_SCANNER", "bin/base-scanner"),
+		serialScannerPath: envOr("MELLIFERA_SERIAL_SCANNER", "bin/serial-scanner"),
 		tvParserPath:      envOr("MELLIFERA_TV_PARSER", "bin/tv-parser"),
 		imageEnricherPath: envOr("MELLIFERA_IMAGE_ENRICHER", "bin/image-enricher"),
+		serialParserPath:  envOr("MELLIFERA_SERIAL_PARSER", "bin/serial-parser"),
+		frameGrabberPath:  envOr("MELLIFERA_FRAME_GRABBER", "bin/frame-grabber"),
 		listenAddr:        envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
 		// webDev=true loosens the SPA cache headers (no-cache everywhere) so the
 		// Vite dev proxy :5173 can hot-reload alongside this server. Default

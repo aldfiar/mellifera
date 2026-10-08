@@ -5,6 +5,7 @@ package enrich
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,11 +86,13 @@ type Stats struct {
 }
 
 // Queue is the in-process async enrichment dispatcher (arch §4.4). It DERIVES
-// pending (item, plugin) work from items + the document namespaces + the
-// enrichment_failures ledger (there is NO queue/claim/lease table — INV-derived-
-// not-stored), feeds a bounded channel, and a worker pool drains it under
-// per-item leases (one per item). Single-instance MVP: leases are in-memory and
-// vanish on restart; pending work is re-derived from items on the next Start.
+// pending (row, plugin) work from items AND series rows + the document
+// namespaces + the enrichment_failures ledger (there is NO queue/claim/lease
+// table — INV-derived-not-stored), feeds a bounded channel, and a worker pool
+// drains it under per-row leases (one per row id; serials-library D5). Row ids
+// never collide across the two stores (opaque itm_/ser_ prefixes). Single-
+// instance MVP: leases are in-memory and vanish on restart; pending work is
+// re-derived from the rows on the next Start.
 type Queue struct {
 	deps    Deps
 	cfg     QueueConfig
@@ -100,7 +103,7 @@ type Queue struct {
 	libs   map[int64]struct{} // known libraries (registered via Notify)
 	libsMu sync.Mutex
 
-	work chan string // itemIDs (bounded buffer); closed by Stop
+	work chan string // row ids, items and series alike (bounded buffer); closed by Stop
 
 	wg       sync.WaitGroup // worker goroutines
 	feederWG sync.WaitGroup // active derive-and-feed goroutines
@@ -227,9 +230,9 @@ func (q *Queue) deriveAsync(ctx context.Context, libs []int64) {
 	}()
 }
 
-// feed derives the pending (item, plugin) tasks for each library and feeds the
-// unique item set into the channel. It is the §4.4 derivation producer; the
-// worker pool consumes item-by-item under per-item leases. Feeding blocks on the
+// feed derives the pending (row, plugin) tasks for each library and feeds the
+// unique row-id set into the channel. It is the §4.4 derivation producer; the
+// worker pool consumes row-by-row under per-row leases. Feeding blocks on the
 // bounded channel (backpressure); ctx.Done() aborts the feed promptly.
 func (q *Queue) feed(ctx context.Context, libs []int64) {
 	for _, lib := range libs {
@@ -248,50 +251,57 @@ func (q *Queue) feed(ctx context.Context, libs []int64) {
 	}
 }
 
-// uniqueItems returns the deduplicated itemID set from a task list (a lease is
-// per-item, so an item with several pending sources is dispatched once and its
+// uniqueItems returns the deduplicated row-id set from a task list (a lease is
+// per row, so a row with several pending sources is dispatched once and its
 // chain drains them serially). It preserves first-seen order.
 func uniqueItems(tasks []queueTask) []string {
 	seen := make(map[string]struct{}, len(tasks))
 	out := make([]string, 0, len(tasks))
 	for _, t := range tasks {
-		if _, ok := seen[t.itemID]; ok {
+		if _, ok := seen[t.rowID]; ok {
 			continue
 		}
-		seen[t.itemID] = struct{}{}
-		out = append(out, t.itemID)
+		seen[t.rowID] = struct{}{}
+		out = append(out, t.rowID)
 	}
 	return out
 }
 
-// worker is one pool goroutine. It ranges over the channel, running the per-item
+// worker is one pool goroutine. It ranges over the channel, running the per-row
 // driver until Stop closes the channel. The driver honors ctx per-source (a
-// cancelled ctx hard-aborts the in-flight item to failed, then the loop continues
-// draining remaining buffered items before the close ends the range).
+// cancelled ctx hard-aborts the in-flight row to failed, then the loop continues
+// draining remaining buffered rows before the close ends the range).
 func (q *Queue) worker(ctx context.Context) {
 	defer q.wg.Done()
-	for itemID := range q.work {
-		q.workItem(ctx, itemID)
+	for rowID := range q.work {
+		q.workItem(ctx, rowID)
 	}
 }
 
-// queueTask is one derived (item, plugin) pending unit. The dispatch groups by
-// item (per-item lease); pluginID is retained for the derivation predicate's
-// test surface (the D-Q1 / cooldown / namespace assertions assert the task set).
+// queueTask is one derived (row, plugin) pending unit — row being an item OR a
+// series row (serials-library D5; row ids never collide across the stores). The
+// dispatch groups by row (per-row lease); pluginID is retained for the
+// derivation predicate's test surface (the D-Q1 / cooldown / namespace
+// assertions assert the task set).
 type queueTask struct {
-	itemID, pluginID string
+	rowID, pluginID string
 }
 
-// task is an alias preserving the derivation's (item, plugin) vocabulary.
+// task is an alias preserving the derivation's (row, plugin) vocabulary.
 type task = queueTask
 
-// deriveLibrary computes the pending (item, plugin) set for one library per the
-// §4.4 derivation predicate (B8): item row EXISTS, source applicable + Enabled +
-// AuthMode != CLIENT (D-Q1), namespace ABSENT (not done), NOT in-ledger-cooldown.
-// It reads items (all statuses; the predicate filters) + the ledger; it never
-// touches a queue table (INV-derived-not-stored). Parameterized SQL only.
+// deriveLibrary computes the pending (row, plugin) set for one library per the
+// §4.4 derivation predicate (B8) applied IDENTICALLY to both stores
+// (serials-library D5): row EXISTS, source applicable + Enabled + AuthMode !=
+// CLIENT (D-Q1), namespace ABSENT (not done), NOT in-ledger-cooldown. It reads
+// items and series rows (all statuses; the predicate filters) + the ledger; it
+// never touches a queue table (INV-derived-not-stored). Parameterized SQL only.
 func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask, error) {
 	items, err := q.allItems(ctx, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	seriesRows, err := q.allSeries(ctx, libraryID)
 	if err != nil {
 		return nil, err
 	}
@@ -304,20 +314,41 @@ func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask
 	for _, it := range items {
 		mod, err := q.deps.Modules.Get(it.ModuleID)
 		if err != nil {
-			continue // module unresolvable -> item not derivable (soft)
+			continue // module unresolvable -> row not derivable (soft)
 		}
-		doc := decodeDoc(it.Document)
-		for _, src := range mod.MetadataSources {
-			if !queueable(src) || hasNamespace(doc, src.PluginID) {
-				continue
-			}
-			if inCooldown(idx, it.ID, src.PluginID, nowt) {
-				continue
-			}
-			tasks = append(tasks, queueTask{itemID: it.ID, pluginID: src.PluginID})
+		for _, pluginID := range pendingSources(mod, decodeDoc(it.Document), it.ID, idx, nowt) {
+			tasks = append(tasks, queueTask{rowID: it.ID, pluginID: pluginID})
+		}
+	}
+	for _, sr := range seriesRows {
+		mod, err := q.deps.Modules.Get(sr.ModuleID)
+		if err != nil {
+			continue // module unresolvable -> row not derivable (soft)
+		}
+		for _, pluginID := range pendingSources(mod, decodeDoc(sr.Document), sr.ID, idx, nowt) {
+			tasks = append(tasks, queueTask{rowID: sr.ID, pluginID: pluginID})
 		}
 	}
 	return tasks, nil
+}
+
+// pendingSources is the shared per-row derivation predicate: the plugin ids of
+// the module's metadata chain that still have pending work for the row —
+// queueable (D-Q1), namespace absent (not done), not in-ledger-cooldown. The
+// SAME predicate runs over items and series rows; nothing here names a media
+// type (INV-media-type-agnostic).
+func pendingSources(mod module.Module, doc map[string]any, rowID string, idx failureIndex, nowt time.Time) []string {
+	out := make([]string, 0)
+	for _, src := range mod.MetadataSources {
+		if !queueable(src) || hasNamespace(doc, src.PluginID) {
+			continue
+		}
+		if inCooldown(idx, rowID, src.PluginID, nowt) {
+			continue
+		}
+		out = append(out, src.PluginID)
+	}
+	return out
 }
 
 // allItems paginates QueryItems across ALL statuses (empty status = no filter)
@@ -335,6 +366,18 @@ func (q *Queue) allItems(ctx context.Context, libraryID int64) ([]store.Item, er
 			return out, nil
 		}
 	}
+}
+
+// allSeries loads a library's series rows across ALL statuses (empty status =
+// no filter) — the second derivation source (serials-library D5). Series counts
+// are small (one row per serial directory), so a single QuerySeries call is the
+// intended granularity.
+func (q *Queue) allSeries(ctx context.Context, libraryID int64) ([]store.Series, error) {
+	rows, err := q.deps.Store.QuerySeries(ctx, libraryID, "")
+	if err != nil {
+		return nil, fmt.Errorf("enrich: derive series lib %d: %w", libraryID, err)
+	}
+	return rows, nil
 }
 
 // fetchFailureIndex reads the ledger once (terminal-only, small) for the
@@ -366,44 +409,85 @@ func hasNamespace(doc map[string]any, pluginID string) bool {
 	return exists
 }
 
-// workItem is the per-item worker driver: claim the item's lease, drive its
+// queueRow is one loaded queue target — an item OR a series row
+// (serials-library D5). Document, lifecycle, lease, and ledger machinery are
+// identical for both; only the persist sink differs (PutItem vs PutSeries).
+type queueRow struct {
+	id       string
+	moduleID string
+	status   string
+	doc      json.RawMessage
+	persist  func(ctx context.Context, status string, doc json.RawMessage)
+}
+
+// loadRow loads the queue target by row id: the item table first, the series
+// table on sql.ErrNoRows — NO id-prefix sniffing (the prefixes are opaque,
+// serials-library D5). A row missing from both tables is gone (deleted between
+// derive and work) and yields an error the driver treats as nothing-to-do.
+func (q *Queue) loadRow(ctx context.Context, id string) (queueRow, error) {
+	it, err := q.deps.Store.GetItem(ctx, id)
+	if err == nil {
+		return queueRow{
+			id: it.ID, moduleID: it.ModuleID, status: it.Status, doc: it.Document,
+			persist: func(ctx context.Context, status string, doc json.RawMessage) {
+				q.putItem(ctx, it, status, doc)
+			},
+		}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return queueRow{}, err
+	}
+	sr, serr := q.deps.Store.GetSeries(ctx, id)
+	if serr != nil {
+		return queueRow{}, serr // includes ErrNoRows: the row is gone
+	}
+	return queueRow{
+		id: sr.ID, moduleID: sr.ModuleID, status: sr.Status, doc: sr.Document,
+		persist: func(ctx context.Context, status string, doc json.RawMessage) {
+			q.putSeries(ctx, sr, status, doc)
+		},
+	}, nil
+}
+
+// workItem is the per-row worker driver: claim the row's lease, drive its
 // pending queueable sources serially, advance the lifecycle, and persist. Soft-
 // fail: a source failure / unavailable / namespace violation is recorded and the
-// item advances to its furthest-valid state; only ctx.Done() hard-aborts (-> failed).
-// Serialize-within-item: the lease blocks any second worker for this item (S4).
-func (q *Queue) workItem(ctx context.Context, itemID string) {
-	if !q.leases.acquire(itemID, "queue", q.cfg.LeaseTTL) {
-		return // live lease held -> another worker owns this item
+// row advances to its furthest-valid state; only ctx.Done() hard-aborts (-> failed).
+// Serialize-within-row: the lease blocks any second worker for this row (S4) —
+// a series and its episodes never serialize against each other (distinct ids).
+func (q *Queue) workItem(ctx context.Context, rowID string) {
+	if !q.leases.acquire(rowID, "queue", q.cfg.LeaseTTL) {
+		return // live lease held -> another worker owns this row
 	}
-	defer q.leases.release(itemID)
+	defer q.leases.release(rowID)
 	q.statPending.Add(-1)
 	q.statInFlight.Add(1)
 	defer q.statInFlight.Add(-1)
 
-	it, err := q.deps.Store.GetItem(ctx, itemID)
+	row, err := q.loadRow(ctx, rowID)
 	if err != nil {
-		return // item gone (deleted); nothing to do
+		return // row gone (deleted) or unreadable; nothing to do
 	}
-	mod, err := q.deps.Modules.Get(it.ModuleID)
+	mod, err := q.deps.Modules.Get(row.moduleID)
 	if err != nil {
-		return // module unresolvable; leave the item as-is (soft)
+		return // module unresolvable; leave the row as-is (soft)
 	}
 	idx, err := q.fetchFailureIndex(ctx)
 	if err != nil {
 		return
 	}
-	doc := decodeDoc(it.Document)
-	status := reengage(it.Status)
-	dr := q.driveSources(ctx, mod, doc, reconstructBase(doc), itemID, idx, &status)
+	doc := decodeDoc(row.doc)
+	status := reengage(row.status)
+	dr := q.driveSources(ctx, mod, doc, reconstructBase(doc), rowID, idx, &status)
 	if dr.hardAbort {
-		q.hardFail(ctx, it, doc, dr.err)
+		q.hardFail(ctx, row, doc, dr.err)
 		return
 	}
 	if dr.begun && dr.succeeded > 0 {
 		status = advance(status, evEnriched) // parsed -> enriched
 	}
-	status = q.settle(ctx, mod, doc, itemID, status)
-	q.persistItem(ctx, it, status, doc)
+	status = q.settle(ctx, mod, doc, rowID, status)
+	q.persistRow(ctx, row, status, doc)
 	if status == statusReady {
 		q.statDone.Add(1)
 	}
@@ -443,24 +527,39 @@ func (q *Queue) settle(ctx context.Context, mod module.Module, doc map[string]an
 }
 
 // hardFail is the ctx-cancel path: stamp the _error record and persist status=
-// failed (the queue re-derives the item's pending sources on a later pass,
+// failed (the queue re-derives the row's pending sources on a later pass,
 // driving failed --retry--> pending). Mirrors enrich.go's hardError.
-func (q *Queue) hardFail(ctx context.Context, it store.Item, doc map[string]any, cause error) {
+func (q *Queue) hardFail(ctx context.Context, row queueRow, doc map[string]any, cause error) {
 	_ = hardError(doc, cause)
-	q.persistItem(ctx, it, statusFailed, doc)
+	q.persistRow(ctx, row, statusFailed, doc)
 	q.statFailed.Add(1)
 }
 
-// persistItem writes the (possibly enriched) document + advanced status back via
-// the upsert. The queue never creates items; PutItem refreshes the existing row.
-func (q *Queue) persistItem(ctx context.Context, it store.Item, status string, doc map[string]any) {
+// persistRow writes the (possibly enriched) document + advanced status back via
+// the row's persist sink (PutItem for items, PutSeries for series rows — both
+// upserts refresh the existing row; the queue never creates rows).
+func (q *Queue) persistRow(ctx context.Context, row queueRow, status string, doc map[string]any) {
 	docBytes, err := json.Marshal(doc)
 	if err != nil {
 		return // a map of strings/maps never fails; keep the prior document on the impossible error
 	}
+	row.persist(ctx, status, docBytes)
+}
+
+// putItem is the item persist sink: refresh the loaded item's document + status.
+func (q *Queue) putItem(ctx context.Context, it store.Item, status string, docBytes json.RawMessage) {
 	it.Document = docBytes
 	it.Status = status
 	q.storeWrite(func() error { return q.deps.Store.PutItem(ctx, it) })
+}
+
+// putSeries is the series persist sink: refresh the loaded series row's
+// document + status. PutSeries upserts by (library_id, relative_path), so the
+// row's id and created_at survive (the store's upsert contract).
+func (q *Queue) putSeries(ctx context.Context, sr store.Series, status string, docBytes json.RawMessage) {
+	sr.Document = docBytes
+	sr.Status = status
+	q.storeWrite(func() error { return q.deps.Store.PutSeries(ctx, sr) })
 }
 
 // storeWrite serializes store writes. SQLite (modernc.org/sqlite) is opened by

@@ -178,7 +178,7 @@ func TestDerivation(t *testing.T) {
 			t.Fatalf("deriveLibrary: %v", err)
 		}
 		for _, tk := range tasks {
-			if tk.itemID == "i_done" && tk.pluginID == "tv-parser" {
+			if tk.rowID == "i_done" && tk.pluginID == "tv-parser" {
 				t.Fatalf("tv-parser re-derived for an item whose sources.tv-parser exists: %+v", tk)
 			}
 		}
@@ -197,7 +197,7 @@ func TestDerivation(t *testing.T) {
 			t.Fatalf("deriveLibrary: %v", err)
 		}
 		for _, tk := range tasks {
-			if tk.itemID == "i_cool" && tk.pluginID == "tv-parser" {
+			if tk.rowID == "i_cool" && tk.pluginID == "tv-parser" {
 				t.Fatalf("tv-parser derived within cooldown (loop-safety broken): %+v", tk)
 			}
 		}
@@ -209,7 +209,7 @@ func TestDerivation(t *testing.T) {
 		}
 		found := false
 		for _, tk := range tasks2 {
-			if tk.itemID == "i_cool" && tk.pluginID == "tv-parser" {
+			if tk.rowID == "i_cool" && tk.pluginID == "tv-parser" {
 				found = true
 			}
 		}
@@ -309,7 +309,7 @@ func TestQueue_RetryToLedger(t *testing.T) {
 		t.Fatalf("deriveLibrary: %v", err)
 	}
 	for _, tk := range tasks {
-		if tk.itemID == "i_retry" && tk.pluginID == "tv-parser" {
+		if tk.rowID == "i_retry" && tk.pluginID == "tv-parser" {
 			t.Fatalf("exhausted pair re-derived (cooldown skip broken): %+v", tk)
 		}
 	}
@@ -396,7 +396,7 @@ func TestQueue_RestartResume(t *testing.T) {
 		t.Fatalf("deriveLibrary: %v", err)
 	}
 	for _, tk := range tasks {
-		if tk.itemID == "i_resume" && tk.pluginID == "tv-parser" {
+		if tk.rowID == "i_resume" && tk.pluginID == "tv-parser" {
 			t.Fatalf("in-cooldown pair re-derived after restart (loop-safety broken): %+v", tk)
 		}
 	}
