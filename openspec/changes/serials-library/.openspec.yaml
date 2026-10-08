@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-06
+goal: Add a serials module type with directory-based serial identity, episode
+  grouping, sidecar association, ffmpeg frame-grab default images, and
+  per-plugin-namespaced enrichment incl. manual edits
