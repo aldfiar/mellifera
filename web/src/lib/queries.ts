@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import { useEffect, useState } from "react";
 import {
   QueryClient,
   useMutation,
@@ -9,6 +10,7 @@ import {
 
 import {
   apiRequest,
+  fetchItemMediaObjectUrl,
   getItem,
   getLibraryFolders,
   getLibrarySummary,
@@ -240,4 +242,53 @@ export function useSeriesEpisodes(
     queryFn: () => getSeriesEpisodes(seriesId),
     enabled: seriesId !== "",
   });
+}
+
+// useItemMedia — the object-URL lifecycle for one media URL (media-preview D5):
+// fetches `mediaUrl` (an itemMedia() URL) through the authenticated blob
+// channel and hands back the object URL for an <img>. Deliberately NOT a
+// TanStack hook: a cached object URL is revoked on unmount, so a query cache
+// would keep handing out dead URLs — the lifecycle IS the state here.
+//
+// - `null` URL (the caller's pre-selection says no resolvable media fact) →
+//   no request at all, always null.
+// - ANY failure (404 thumb/original miss, network, abort) → null, so the
+//   caller keeps its placeholder — never a broken-image state.
+// - The object URL is revoked when the media URL changes and on unmount; a
+//   fetch that resolves after unmount revokes its URL immediately.
+export function useItemMedia(mediaUrl: string | null): string | null {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    setObjectUrl(null);
+    if (mediaUrl === null) {
+      return;
+    }
+    let disposed = false;
+    let created: string | null = null;
+    const controller = new AbortController();
+    fetchItemMediaObjectUrl(mediaUrl, controller.signal)
+      .then((url) => {
+        if (disposed) {
+          URL.revokeObjectURL(url); // resolved after unmount — revoke at once
+          return;
+        }
+        created = url;
+        setObjectUrl(url);
+      })
+      .catch(() => {
+        if (!disposed) {
+          setObjectUrl(null); // any media error → the placeholder fallback
+        }
+      });
+    return () => {
+      disposed = true;
+      controller.abort();
+      if (created !== null) {
+        URL.revokeObjectURL(created);
+      }
+    };
+  }, [mediaUrl]);
+
+  return objectUrl;
 }

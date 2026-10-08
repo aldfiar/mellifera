@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { ReactElement } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
-import type {
-  ApiError,
-  ItemDTO,
-  LibraryDTO,
-  ListItemsParams,
-  SeriesDTO,
+import {
+  ENDPOINTS,
+  hasFrameGrabberThumb,
+  hasOriginalFile,
+  type ApiError,
+  type ItemDTO,
+  type LibraryDTO,
+  type ListItemsParams,
+  type SeriesDTO,
 } from "@/lib/api";
 import {
+  useItemMedia,
   useItems,
   useLibraries,
   useLibraryFolders,
@@ -158,6 +162,31 @@ function aspectRatio(doc: ItemDocument): string | null {
 // values pass through image-enricher untouched — never re-encode them here).
 function formatDatePart(stamp: string): string {
   return /^\d{4}-\d{2}-\d{2}T/.test(stamp) ? stamp.slice(0, 10) : stamp;
+}
+
+// MediaImg — an object-URL <img> over the caller's placeholder: renders the
+// image once the media fetch resolves and hides itself on any load/decode
+// failure — never a broken-image state (the surrounding placeholder box stays).
+// Shared by the movie cards and the photo masonry tiles.
+function MediaImg(props: { src: string | null }): ReactElement | null {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [props.src]);
+
+  if (props.src === null || failed) {
+    return null;
+  }
+  return (
+    <img
+      src={props.src}
+      alt=""
+      loading="lazy"
+      className="h-full w-full object-cover"
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 // dotClass — mirrors the sidebar's pastel type dots (same module_id keys;
@@ -362,17 +391,31 @@ function MoviesBody(props: { libraryId: number }): ReactElement {
   );
 }
 
-// MovieCard — one movie file card: title, parsed chips + duration, raw
-// filename, deep-link into the item detail.
+// MovieCard — one movie file card: the frame-grabber thumb (via the
+// authenticated media fetch, D5) over a quiet placeholder box when the
+// document carries the frame-grabber fact, then title, parsed chips +
+// duration, raw filename, deep-link into the item detail. A document without
+// the fact renders exactly the text card — never a broken-image state (D6:
+// the thumb variant is requested only when the fact exists).
 function MovieCard(props: { item: ItemDTO }): ReactElement {
   const { item } = props;
   const duration = durationSeconds(item.document);
+  const hasThumb = hasFrameGrabberThumb(item.document);
+  const thumb = useItemMedia(hasThumb ? ENDPOINTS.itemMedia(item.id, "thumb") : null);
 
   return (
     <Link
       to={`/items/${item.id}`}
       className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
     >
+      {hasThumb ? (
+        <span
+          className="block aspect-video w-full overflow-hidden rounded-md bg-muted"
+          aria-hidden="true"
+        >
+          <MediaImg src={thumb} />
+        </span>
+      ) : null}
       <span className="text-sm font-medium">{viewTitle(item.document)}</span>
       <span className="flex flex-wrap gap-1">
         {parsedChips(item.document).map((chip) => (
@@ -505,15 +548,26 @@ function FolderChip(props: {
   );
 }
 
-// PhotoTile — one masonry tile: a real-ratio placeholder block (aspect from
-// the enricher's width/height facts — media serving is a deferred capability,
-// so there is nothing to <img> yet), the raw filename, and the capture-date
+// PhotoTile — one masonry tile: the real-ratio block (aspect from the
+// enricher's width/height facts) carrying the item's media — the frame-grabber
+// thumb when the document carries that fact, else the original — over the
+// quiet gradient placeholder, plus the raw filename and the capture-date
 // footer from the document's date_taken fact. A document without a date
-// renders no footer — never a faked one. Deep-links into /items/{id}.
+// renders no footer — never a faked one; a document with no resolvable media
+// fact (or whose media fetch 404s — a stale absolute_path after a root move)
+// keeps the pure placeholder — never a broken-image state (D6: the thumb
+// variant is requested only when the fact exists). Deep-links into
+// /items/{id}.
 function PhotoTile(props: { item: ItemDTO }): ReactElement {
   const { item } = props;
   const ratio = aspectRatio(item.document);
   const date = captureDate(item.document);
+  const hasThumb = hasFrameGrabberThumb(item.document);
+  const src = useItemMedia(
+    hasThumb || hasOriginalFile(item.document)
+      ? ENDPOINTS.itemMedia(item.id, hasThumb ? "thumb" : undefined)
+      : null,
+  );
 
   return (
     <Link
@@ -525,7 +579,9 @@ function PhotoTile(props: { item: ItemDTO }): ReactElement {
         className="ph"
         style={ratio ? { aspectRatio: ratio } : undefined}
         aria-hidden="true"
-      />
+      >
+        <MediaImg src={src} />
+      </span>
       <footer>
         <span className="nm">{fileName(item.relative_path)}</span>
         {date !== null ? <span>{formatDatePart(date)}</span> : null}

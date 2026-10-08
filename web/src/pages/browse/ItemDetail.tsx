@@ -18,14 +18,17 @@ import { ViewFields } from "@/components/metadata/ViewFields";
 import { Card, CardContent } from "@/components/ui/card";
 
 // ItemDetail — the full §3.1 document for one item (/items/:id), rendered
-// VERBATIM (INV-no-rounding, INV-no-merge):
-//   Tier 1  identifiers        — plain list
-//   core    item-managed fields — id/module/library/path/type/status/version
-//   Tier 2  sources.<plugin>   — one <SourceCard> per sourcesOf(doc) entry,
-//                                never merged across plugins
-//   Tier 3  _view              — <ViewFields> (values verbatim via JsonValue)
-//   audit   _provenance        — one <ProvenanceBadge> per provenance entry
-//   trail   _stages            — <StagesProgress> (per-stage error when present)
+// VERBATIM (INV-no-rounding, INV-no-merge) in two visual tiers:
+//   Details surface (always visible — the viewer-facing reading view):
+//     core    item-managed fields — id/module/library/path/type/status/version
+//     Tier 1  identifiers        — plain list
+//     Tier 3  _view              — <ViewFields> (values verbatim via JsonValue)
+//   Technical details (collapsed until expanded — audit plumbing, content
+//   byte-identical to the former always-visible renders):
+//     Tier 2  sources.<plugin>   — one <SourceCard> per sourcesOf(doc) entry,
+//                                  never merged across plugins
+//     audit   _provenance        — one <ProvenanceBadge> per provenance entry
+//     trail   _stages            — <StagesProgress> (per-stage error when present)
 //
 // INV-no-direct-fetch: the page touches the API only through useItem.
 // Error edges: ApiError code "not_found" (HTTP 404) → a clear not-found state,
@@ -143,23 +146,6 @@ function ItemDetailView(props: { item: ItemDTO }): ReactElement {
         )}
       </section>
 
-      <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold">Sources</h3>
-        {sources.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No source namespaces</p>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {sources.map((source) => (
-              <SourceCard
-                key={source.pluginId}
-                pluginId={source.pluginId}
-                namespace={source.namespace}
-              />
-            ))}
-          </div>
-        )}
-      </section>
-
       <section>
         <h3 className="mb-2 text-sm font-semibold">View</h3>
         <Card>
@@ -169,27 +155,55 @@ function ItemDetailView(props: { item: ItemDTO }): ReactElement {
         </Card>
       </section>
 
-      <section>
-        <h3 className="mb-2 text-sm font-semibold">Provenance</h3>
-        {provenance.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No provenance entries</p>
-        ) : (
-          <ul className="space-y-2">
-            {provenance.map((prov) => (
-              <ProvenanceBadge
-                key={prov.fieldPath}
-                fieldPath={prov.fieldPath}
-                entry={prov.entry}
-              />
-            ))}
-          </ul>
-        )}
-      </section>
+      {/* Technical details — audit plumbing collapsed until expanded (D7).
+          Native <details>/<summary>: the simplest accessible disclosure. The
+          wrapped renders are byte-identical to the former always-visible
+          sections; only their visibility changed. */}
+      <details className="rounded-lg border bg-card text-card-foreground shadow-sm">
+        <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold">
+          Technical details
+        </summary>
+        <div className="flex flex-col gap-6 px-4 pb-4">
+          <section className="flex flex-col gap-3">
+            <h3 className="text-sm font-semibold">Sources</h3>
+            {sources.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No source namespaces</p>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                {sources.map((source) => (
+                  <SourceCard
+                    key={source.pluginId}
+                    pluginId={source.pluginId}
+                    namespace={source.namespace}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
 
-      <section>
-        <h3 className="mb-2 text-sm font-semibold">Pipeline stages</h3>
-        <StagesProgress stages={stageEntries(doc)} />
-      </section>
+          <section>
+            <h3 className="mb-2 text-sm font-semibold">Provenance</h3>
+            {provenance.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No provenance entries</p>
+            ) : (
+              <ul className="space-y-2">
+                {provenance.map((prov) => (
+                  <ProvenanceBadge
+                    key={prov.fieldPath}
+                    fieldPath={prov.fieldPath}
+                    entry={prov.entry}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section>
+            <h3 className="mb-2 text-sm font-semibold">Pipeline stages</h3>
+            <StagesProgress stages={stageEntries(doc)} />
+          </section>
+        </div>
+      </details>
     </main>
   );
 }

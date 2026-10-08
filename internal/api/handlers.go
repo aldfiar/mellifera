@@ -7,8 +7,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -588,6 +593,117 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, itemResponse{Item: toItemDTO(it)})
+}
+
+// mediaVariantThumb is the only media variant served today: the frame-grabber
+// JPEG stamped into the item document's sources["frame-grabber"].thumbnail_path
+// (media-preview D2/D6). Any other non-empty ?variant= value is a 400.
+const mediaVariantThumb = "thumb"
+
+// itemMedia: parse {id} + ?variant → store.GetItem → serve the document-resolved
+// file's bytes. One domain call (the read); the file IO IS the response write —
+// media-preview D2. The path is resolved ONLY from the stored document
+// (parsed.absolute_path for the original, sources["frame-grabber"].thumbnail_path
+// for the thumb variant); no client-supplied value ever steers resolution, so an
+// unknown id / missing path fact / missing file are all 404 not_found, an unknown
+// variant is 400 bad_request. Serving is http.ServeContent (media-preview D3):
+// Content-Type by extension, a strong ETag (size+mtime — no content hashing of
+// multi-GB files), Cache-Control: private, immutable (bearer-authed content must
+// not sit in shared caches), and stdlib 304/HEAD/Range handling for free. HEAD
+// and If-None-Match are answered by ServeContent from the same headers. Non-image
+// content carries Content-Disposition: attachment — video downloads, it does not
+// stream (media-preview D4; the deferred internal/stream surface owns playback).
+//
+// @Summary      Serve an item's media bytes
+// @Tags         items
+// @ID           get-item-media
+// @Router       /items/{id}/media [get]
+// @Param        id      path   string true  "item id (UUID)"
+// @Param        variant query  string false "media variant (thumb)"
+// @Success      200 {file} file
+// @Failure      400 {object} errorBody
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) itemMedia(w http.ResponseWriter, r *http.Request) {
+	variant := r.URL.Query().Get("variant")
+	if variant != "" && variant != mediaVariantThumb {
+		writeError(w, http.StatusBadRequest, "bad_request", "unknown media variant "+strconv.Quote(variant), false)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	it, err := a.deps.Store.GetItem(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "item "+id+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	path := documentMediaPath(it.Document, variant)
+	if path == "" {
+		writeError(w, http.StatusNotFound, "not_found", "item "+id+" carries no media path fact", false)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "media file for item "+id+" is missing", false)
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "media file for item "+id+" is missing", false)
+		return
+	}
+	name := filepath.Base(path)
+	ct := mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	disposition := "attachment"
+	if strings.HasPrefix(ct, "image/") {
+		disposition = "inline"
+	}
+	h := w.Header()
+	h.Set("Content-Type", ct)
+	h.Set("ETag", strongETag(fi))
+	h.Set("Cache-Control", "private, immutable")
+	h.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
+	http.ServeContent(w, r, name, fi.ModTime(), f)
+}
+
+// documentMediaPath resolves the media file path for the requested variant from
+// the stored document — the ONLY resolution input (media-preview D2). This is a
+// targeted one-fact read in the seriesBacking idiom: the document stays opaque
+// on the wire and is never mapped to a typed model. An unreadable document or an
+// absent fact returns "" (the caller answers 404 not_found — D6's strict
+// contract; no server-side thumb→original fallback to hide the distinction).
+func documentMediaPath(raw json.RawMessage, variant string) string {
+	var doc struct {
+		Parsed struct {
+			AbsolutePath string `json:"absolute_path"`
+		} `json:"parsed"`
+		Sources map[string]struct {
+			ThumbnailPath string `json:"thumbnail_path"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return ""
+	}
+	if variant == mediaVariantThumb {
+		return doc.Sources["frame-grabber"].ThumbnailPath
+	}
+	return doc.Parsed.AbsolutePath
+}
+
+// strongETag derives a strong entity tag from the file's size and nanosecond
+// mtime (media-preview D3): no content hashing of potentially multi-GB videos.
+// No W/ prefix — this is a strong validator, so If-None-Match revalidates to 304
+// on an unchanged file. Write-once scan/enrich files make collisions practically
+// impossible, and a re-scan that rewrites bytes also refreshes the mtime.
+func strongETag(fi os.FileInfo) string {
+	return fmt.Sprintf(`"%d-%d"`, fi.Size(), fi.ModTime().UnixNano())
 }
 
 // listSeries: parse ?library (required integer) → store.QuerySeries → write

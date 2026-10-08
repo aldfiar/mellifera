@@ -375,9 +375,10 @@ body.side-open .app-content {
   }
 }
 
-/* The placeholder block: media serving is a deferred capability, so the tile
-   shows the item's real aspect ratio (from the enricher's width/height facts)
-   over a quiet token gradient instead of an <img>. */
+/* The placeholder block: the tile's fallback when its media URL cannot
+   resolve — shows the item's real aspect ratio (from the enricher's
+   width/height facts) over a quiet token gradient while/until an <img>
+   fills it (media-preview). */
 .ptile .ph {
   display: block;
   width: 100%;

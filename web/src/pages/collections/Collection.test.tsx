@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -101,11 +101,11 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-function renderCollection(id: string): void {
+function renderCollection(id: string): ReturnType<typeof render> {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  render(
+  return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[`/collections/${id}`]}>
         <Routes>
@@ -480,5 +480,187 @@ describe("Collection — serial body (box 5.4)", () => {
     renderCollection("1");
 
     expect(await screen.findByText("Not scanned yet — run a scan from Admin.")).toBeDefined();
+  });
+});
+
+describe("Collection — media tiles (media-preview group 2)", () => {
+  // stubObjectUrls — jsdom has no createObjectURL/revokeObjectURL; the hook's
+  // whole contract is those two calls, so they are observable stubs here.
+  function stubObjectUrls(): { create: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> } {
+    const create = vi.fn(
+      (blob: Blob) => `blob:mock-${String(blob.size)}-${String(create.mock.calls.length)}`,
+    );
+    const revoke = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revoke, configurable: true, writable: true });
+    return { create, revoke };
+  }
+
+  function mediaResponse(): Response {
+    return new Response("jpeg-bytes", {
+      status: 200,
+      headers: { "Content-Type": "image/jpeg" },
+    });
+  }
+
+  // photoDoc — an image document with the media facts (frame-grabber thumb,
+  // original absolute_path) the media accessors read.
+  function photoDoc(parts: {
+    dateTaken?: string;
+    width?: number;
+    height?: number;
+    thumbPath?: string;
+    absolutePath?: string;
+  }): ItemDocument {
+    const d = doc({
+      dateTaken: parts.dateTaken,
+      width: parts.width,
+      height: parts.height,
+    });
+    if (parts.thumbPath !== undefined) {
+      d.sources = {
+        ...(d.sources ?? {}),
+        "frame-grabber": { thumbnail_path: parts.thumbPath },
+      };
+    }
+    if (parts.absolutePath !== undefined) {
+      d.parsed = { absolute_path: parts.absolutePath };
+    }
+    return d;
+  }
+
+  function mediaCalls(spy: ReturnType<typeof fetchWith>): string[] {
+    return spy.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/media"));
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // photosSeam — the URL-dispatched fetch for the photos body over three
+  // tiles: p1 carries BOTH facts (→ variant=thumb), p2 only the original (→
+  // no variant), p3 NO fact (→ the endpoint is never asked). `media` answers
+  // the /media calls.
+  function photosSeam(
+    media: () => Promise<Response>,
+  ): ReturnType<typeof fetchWith> {
+    const photos: ItemDTO[] = [
+      item(
+        "itm_1_p1",
+        "image",
+        "2026/beach.jpg",
+        photoDoc({ dateTaken: "2026-07-04T12:21:05Z", width: 300, height: 200, thumbPath: "/t/p1.jpg", absolutePath: "/lib/1/p1.jpg" }),
+      ),
+      item("itm_1_p2", "image", "2025/alps.jpg", photoDoc({ absolutePath: "/lib/1/p2.jpg" })),
+      item("itm_1_p3", "image", "archive/scan.jpg", doc({})),
+    ];
+    return fetchWith({}).mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/media")) {
+        return media();
+      }
+      if (url.includes("/api/v1/libraries/1/folders")) {
+        return Promise.resolve(jsonResponse(200, { folders: [] }));
+      }
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(jsonResponse(200, { library_id: 1, items: 3, updated_at: "" }));
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "image", "photos")] }));
+      }
+      if (url.includes("/api/v1/items")) {
+        return Promise.resolve(jsonResponse(200, { items: photos }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+  }
+
+  it("renders photo tiles through the media fetch — thumb variant when the frame-grabber fact exists, else the original", async () => {
+    stubObjectUrls();
+    const spy = photosSeam(() => Promise.resolve(mediaResponse()));
+    renderCollection("1");
+
+    const beach = await screen.findByRole("link", { name: "Open beach.jpg" });
+    await waitFor(() => expect(beach.querySelector("img")).not.toBeNull());
+    const alps = screen.getByRole("link", { name: "Open alps.jpg" });
+    await waitFor(() => expect(alps.querySelector("img")).not.toBeNull());
+
+    // p1 asked for its thumb; p2 fell back to the original (no variant).
+    expect(mediaCalls(spy)).toEqual([
+      "/api/v1/items/itm_1_p1/media?variant=thumb",
+      "/api/v1/items/itm_1_p2/media",
+    ]);
+
+    // p3 has no media fact — no <img>, no media call, placeholder kept.
+    const scan = screen.getByRole("link", { name: "Open scan.jpg" });
+    expect(scan.querySelector("img")).toBeNull();
+    // Capture-date footer unchanged (photo p1 still shows its date part).
+    expect(within(beach).getByText("2026-07-04")).toBeDefined();
+  });
+
+  it("keeps the placeholder when the media fetch 404s — never a broken-image state", async () => {
+    stubObjectUrls();
+    const spy = photosSeam(() =>
+      Promise.resolve(
+        jsonResponse(404, {
+          error: { code: "not_found", message: "media file is missing", retryable: false },
+        }),
+      ),
+    );
+    renderCollection("1");
+
+    await screen.findByRole("link", { name: "Open beach.jpg" });
+    // The fetch was attempted for the fact-bearing tiles…
+    await waitFor(() => expect(mediaCalls(spy).length).toBe(2));
+    // …but a failed load renders the placeholder, not an <img> and not a
+    // broken-image icon.
+    for (const link of [
+      screen.getByRole("link", { name: "Open beach.jpg" }),
+      screen.getByRole("link", { name: "Open alps.jpg" }),
+    ]) {
+      expect(link.querySelector("img")).toBeNull();
+    }
+    // The tile is still fully itself: filename + date footer.
+    expect(within(screen.getByRole("link", { name: "Open beach.jpg" })).getByText("2026-07-04")).toBeDefined();
+  });
+
+  it("renders the movie card's frame-grabber thumb via the media fetch; a card without the fact stays text-only", async () => {
+    stubObjectUrls();
+    const spy = fetchWith({
+      ...headerSeam("tv", 2),
+      "/media": () => Promise.resolve(mediaResponse()),
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              item(
+                "itm_1_a",
+                "tv",
+                "Movies/The Thing 2019 1080p.mkv",
+                doc({
+                  title: "The Thing",
+                  season: 1,
+                  episode: 2,
+                }),
+              ),
+              item("itm_1_b", "tv", "Movies/plain.mkv", { parsed: {}, sources: { "frame-grabber": { thumbnail_path: "/t/b.jpg" } }, _view: { title: { value: "Plain", source: "tv-parser", reason: "priority" } } }),
+            ],
+          }),
+        ),
+    });
+    renderCollection("1");
+
+    // The thumb-bearing card fetches ?variant=thumb and renders the img.
+    await screen.findByRole("link", { name: /Plain/ });
+    await waitFor(() => expect(mediaCalls(spy)).toEqual(["/api/v1/items/itm_1_b/media?variant=thumb"]));
+    const withThumb = screen.getByRole("link", { name: /Plain/ });
+    await waitFor(() => expect(withThumb.querySelector("img")).not.toBeNull());
+
+    // The card without the fact fires no media request and renders no img.
+    const plain = screen.getByRole("link", { name: /The Thing/ });
+    expect(plain.querySelector("img")).toBeNull();
   });
 });

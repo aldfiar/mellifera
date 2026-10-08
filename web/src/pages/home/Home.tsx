@@ -1,17 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactElement } from "react";
 import { Link } from "react-router-dom";
 import { useQueries } from "@tanstack/react-query";
 
-import type {
-  ApiError,
-  ItemDTO,
-  LibraryDTO,
-  ProgressDTO,
+import {
+  ENDPOINTS,
+  hasFrameGrabberThumb,
+  hasOriginalFile,
+  type ApiError,
+  type ItemDTO,
+  type LibraryDTO,
+  type ProgressDTO,
 } from "@/lib/api";
 import { getItem, listItems } from "@/lib/api";
-import { useLibraries, useLibrarySummary, useProgressList } from "@/lib/queries";
+import {
+  useItemMedia,
+  useItems,
+  useLibraries,
+  useLibrarySummary,
+  useProgressList,
+} from "@/lib/queries";
 import type { ItemDocument } from "@/lib/document";
 import { viewEntries } from "@/lib/document";
 import { cn } from "@/lib/utils";
@@ -40,6 +49,11 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 // (handlers.go parsePagination maxLimit) — one bounded page per touched
 // collection; a series whose next episode falls beyond the page is omitted.
 const SCAN_LIMIT = 200;
+
+// Bounded first page the collection cards scan for a representative preview
+// item (media-preview D8 — the card fetches the collection's first items; one
+// small page per card, cached under the shared ["items", params] key space).
+const CARD_PREVIEW_LIMIT = 12;
 
 // Next up row cap — the row is a suggestion strip, not a queue dump.
 const NEXT_UP_LIMIT = 12;
@@ -258,6 +272,53 @@ function viewTitle(doc: ItemDocument): string {
   return "—";
 }
 
+// representativeItem — the collection card's preview candidate (media-preview
+// D8): the first item on the fetched page whose media can actually render in
+// an <img> — a frame-grabber thumb (thumb variant), or an image original
+// (parsed.absolute_path). A video original cannot decode in an <img>, so a
+// movie without a thumb fact is NOT a resolvable preview — the card keeps its
+// badge-only layout. Null when the page carries no resolvable item. Exported
+// pure for tests.
+export function representativeItem(items: ItemDTO[]): ItemDTO | null {
+  for (const it of items) {
+    if (
+      hasFrameGrabberThumb(it.document) ||
+      (it.media_type === "image" && hasOriginalFile(it.document))
+    ) {
+      return it;
+    }
+  }
+  return null;
+}
+
+// CardPreview — the collection card's preview area above the badge row. It
+// renders only once the representative item's media has ACTUALLY loaded
+// through the authenticated fetch: while the media loads, when it fails, or
+// when no representative exists, the card keeps its existing badge-only
+// layout — never a broken-image state (spec "Collection card previews").
+function CardPreview(props: { src: string | null }): ReactElement | null {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [props.src]);
+
+  if (props.src === null || failed) {
+    return null;
+  }
+  return (
+    <span className="block aspect-video w-full overflow-hidden rounded-md bg-muted">
+      <img
+        src={props.src}
+        alt=""
+        loading="lazy"
+        className="h-full w-full object-cover"
+        onError={() => setFailed(true)}
+      />
+    </span>
+  );
+}
+
 // ---- Page ------------------------------------------------------------------
 
 export default function Home(): ReactElement {
@@ -339,14 +400,34 @@ function TypeChip(props: {
 
 // CollectionCard — one card per collection: pastel type badge, name,
 // description, item count + updated stamp from the summary (async like the
-// sidebar's counts — the card is navigable before the summary lands). Zero
-// items → the explicit "Not scanned yet" card state; a missing description
-// renders the card without the line. Never a root folder, never a pill (D5).
+// sidebar's counts — the card is navigable before the summary lands). Above
+// the badge row sits the media preview (media-preview D8): ONE representative
+// item picked from the collection's first page — its thumb variant when the
+// document carries the frame-grabber fact, else its original — loaded through
+// the authenticated media fetch; the area appears only once the image
+// actually resolves. Zero items → the explicit "Not scanned yet" card state
+// with NO preview area; no resolvable media → the badge-only card. A missing
+// description renders the card without the line. Never a root folder, never a
+// pill (D5).
 function CollectionCard(props: { lib: LibraryDTO }): ReactElement {
   const { lib } = props;
   const summary = useLibrarySummary(lib.id);
   const updated = summary.data ? formatDate(summary.data.updated_at) : "";
   const isEmpty = summary.data?.items === 0;
+
+  const page = useItems({ library: lib.id, limit: CARD_PREVIEW_LIMIT, offset: 0 });
+  const representative = useMemo(
+    () => representativeItem(page.data?.items ?? []),
+    [page.data],
+  );
+  const preview = useItemMedia(
+    representative !== null
+      ? ENDPOINTS.itemMedia(
+          representative.id,
+          hasFrameGrabberThumb(representative.document) ? "thumb" : undefined,
+        )
+      : null,
+  );
 
   return (
     <li>
@@ -354,6 +435,7 @@ function CollectionCard(props: { lib: LibraryDTO }): ReactElement {
         to={`/collections/${lib.id}`}
         className="flex h-full flex-col gap-2 rounded-md border p-4 hover:bg-accent"
       >
+        {representative !== null ? <CardPreview src={preview} /> : null}
         <span className="flex items-center gap-2">
           <span className={dotClass(lib.module_id)} aria-hidden="true" />
           <span className="chip">{typeLabel(lib.module_id)}</span>

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -139,6 +139,11 @@ const SUMMARIES: Record<string, unknown> = {
 function gridFetch(): Record<string, () => Promise<Response>> {
   return {
     "/api/v1/progress": () => Promise.resolve(jsonResponse(200, { items: [] })),
+    // The cards' representative-item scan (media-preview D8): empty pages —
+    // the grid tests assert the badge/summary layout, whose fallback is the
+    // badge-only card.
+    "/api/v1/items?library=": () =>
+      Promise.resolve(jsonResponse(200, { items: [] })),
     ...Object.fromEntries(
       Object.entries(SUMMARIES).map(([k, v]) => [
         k,
@@ -434,5 +439,133 @@ describe("Home — Next up derivation (pure core)", () => {
     expect(formatPosition(0)).toBe("00:00");
     expect(formatPosition(89)).toBe("01:29");
     expect(formatPosition(3725)).toBe("1:02:05");
+  });
+});
+
+describe("Home — collection card previews (media-preview group 2)", () => {
+  // stubObjectUrls — jsdom has no createObjectURL/revokeObjectURL; the hook's
+  // whole contract is those two calls, so they are observable stubs here.
+  function stubObjectUrls(): void {
+    Object.defineProperty(URL, "createObjectURL", {
+      value: vi.fn((blob: Blob) => `blob:mock-${String(blob.size)}`),
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      value: vi.fn(),
+      configurable: true,
+      writable: true,
+    });
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("previews a representative item's media; keeps badge-only when nothing resolves; zero-item card has no preview area", async () => {
+    stubObjectUrls();
+    const spy = fetchWith({
+      "/api/v1/progress": () => Promise.resolve(jsonResponse(200, { items: [] })),
+      "/media": () =>
+        Promise.resolve(
+          new Response("jpeg-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+        ),
+      // films: a fact-less item first, then a frame-grabber item — the
+      // representative is the FIRST item whose media can resolve (itm_1_b).
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              item("itm_1_a", 1, viewTitleDoc("Factless")),
+              item("itm_1_b", 1, {
+                sources: { "frame-grabber": { thumbnail_path: "/t/b.jpg" } },
+              }),
+            ],
+          }),
+        ),
+      // serials: items exist but none carries a resolvable media fact.
+      "/api/v1/items?library=2": () =>
+        Promise.resolve(
+          jsonResponse(200, { items: [item("itm_2_a", 2, viewTitleDoc("No Facts"))] }),
+        ),
+      // photos: zero items.
+      "/api/v1/items?library=3": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+      ...Object.fromEntries(
+        Object.entries(SUMMARIES).map(([k, v]) => [
+          k,
+          () => Promise.resolve(jsonResponse(200, v)),
+        ]),
+      ),
+      "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, LIBRARIES_BODY)),
+    });
+    renderHome();
+
+    // films: the preview area appears once the representative's media has
+    // actually loaded — and it asked for the thumb variant of itm_1_b only.
+    const films = await screen.findByRole("link", { name: /films/ });
+    await waitFor(() => expect(films.querySelector("img")).not.toBeNull());
+    expect(
+      spy.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/media")),
+    ).toEqual(["/api/v1/items/itm_1_b/media?variant=thumb"]);
+    // The badge row still renders under the preview.
+    expect(within(films).getByText("Movies")).toBeDefined();
+
+    // serials: items but no resolvable media — the badge-only card, no img,
+    // no media request.
+    const serials = screen.getByRole("link", { name: /serials/ });
+    expect(serials.querySelector("img")).toBeNull();
+
+    // photos: zero items — the explicit "not scanned yet" card, no preview.
+    const photos = screen.getByRole("link", { name: /photos/ });
+    expect(photos.textContent).toContain("Not scanned yet");
+    expect(photos.querySelector("img")).toBeNull();
+  });
+
+  it("keeps the badge-only card when the representative item's media fetch fails", async () => {
+    stubObjectUrls();
+    fetchWith({
+      "/api/v1/progress": () => Promise.resolve(jsonResponse(200, { items: [] })),
+      "/media": () =>
+        Promise.resolve(
+          jsonResponse(404, {
+            error: { code: "not_found", message: "media file is missing", retryable: false },
+          }),
+        ),
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              item("itm_1_b", 1, {
+                sources: { "frame-grabber": { thumbnail_path: "/t/b.jpg" } },
+              }),
+            ],
+          }),
+        ),
+      "/api/v1/items?library=2": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+      "/api/v1/items?library=3": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+      ...Object.fromEntries(
+        Object.entries(SUMMARIES).map(([k, v]) => [
+          k,
+          () => Promise.resolve(jsonResponse(200, v)),
+        ]),
+      ),
+      "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, LIBRARIES_BODY)),
+    });
+    renderHome();
+
+    // The preview is attempted (a fact exists) but the 404 sends the card
+    // back to its badge-only layout — never a broken-image state.
+    await screen.findByRole("link", { name: /films/ });
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: /films/ }).querySelector("img")).toBeNull(),
+    );
+    expect(within(screen.getByRole("link", { name: /films/ })).getByText("Movies")).toBeDefined();
+    expect(within(screen.getByRole("link", { name: /films/ })).getByText("214 items · updated 2026-09-20")).toBeDefined();
   });
 });

@@ -94,6 +94,13 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Get("/libraries/{id}/folders", h.libraryFolders)
 		r.Get("/items", h.listItems)
 		r.Get("/items/{id}", h.getItem)
+		// Item media (media-preview): real bytes for the SPA's <img> surfaces —
+		// the document-resolved original plus the frame-grabber thumb variant.
+		// Read-only, so it lives in the browse group beside the item detail
+		// view. HEAD is mounted explicitly (chi does not fold HEAD into Get);
+		// the handler answers it headers-only via http.ServeContent.
+		r.Get("/items/{id}/media", h.itemMedia)
+		r.Head("/items/{id}/media", h.itemMedia)
 		// Series routes (serials-library): read-only serial-level views, same
 		// browse group as items — the serial document is opaque on the wire,
 		// exactly like an item document.

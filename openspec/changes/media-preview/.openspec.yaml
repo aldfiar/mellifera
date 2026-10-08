@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-08
+goal: Photos and thumbnails render in the SPA; collection cards carry preview
+  images; the item detail page leads with viewer-facing fields and hides audit
+  plumbing behind an opt-in disclosure

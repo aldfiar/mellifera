@@ -301,6 +301,39 @@ paths:
       summary: Get a single item with its full document
       tags:
       - items
+  /items/{id}/media:
+    get:
+      operationId: get-item-media
+      parameters:
+      - description: item id (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: media variant (thumb)
+        in: query
+        name: variant
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Serve an item's media bytes
+      tags:
+      - items
   /libraries:
     get:
       operationId: list-libraries

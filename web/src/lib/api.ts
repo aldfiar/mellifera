@@ -190,8 +190,8 @@ export class ApiError extends Error {
 }
 
 // Endpoint path constants — ALL pre-existing (router.go:92-94,98-100 + the
-// web-ui-phase-3 additions). GET /api/v1/items[/{id}] are the Phase-2b routes
-// the item surfaces consume.
+// web-ui-phase-3 additions + the media-preview media route). GET
+// /api/v1/items[/{id}[/media]] are the routes the item surfaces consume.
 export const ENDPOINTS = {
   libraries: "/api/v1/libraries",
   library: (id: number): string => `/api/v1/libraries/${id}`,
@@ -201,6 +201,16 @@ export const ENDPOINTS = {
   adminStatus: "/api/v1/admin/status",
   items: "/api/v1/items",
   item: (id: string): string => `/api/v1/items/${id}`,
+  // itemMedia — GET /api/v1/items/{id}/media (handlers.go itemMedia,
+  // media-preview group 1; browse bearer gate). `variant` "thumb" requests the
+  // frame-grabber JPEG — call it ONLY when hasFrameGrabberThumb(doc) is true,
+  // because a thumb miss is a 404 (D6's strict contract). The bytes go through
+  // fetchItemMediaObjectUrl, never an <img src> (an img channel cannot carry
+  // the bearer header — D5).
+  itemMedia: (id: string, variant?: string): string =>
+    variant === undefined
+      ? `/api/v1/items/${id}/media`
+      : `/api/v1/items/${id}/media?variant=${variant}`,
   series: "/api/v1/series",
   seriesEpisodes: (id: string): string => `/api/v1/series/${id}/episodes`,
   progress: "/api/v1/progress",
@@ -300,11 +310,102 @@ export async function getItem(id: string): Promise<ItemResponse> {
   return apiRequest<ItemResponse>(ENDPOINTS.item(id));
 }
 
+// hasFrameGrabberThumb — media-preview D6 client-side pre-selection: the
+// document carries the frame-grabber thumbnail fact
+// (sources["frame-grabber"].thumbnail_path — the EXACT fact the Go handler's
+// documentMediaPath reads). Only a TRUE answer may request ?variant=thumb: the
+// endpoint answers a thumb miss with 404, so the SPA never asks for a thumb
+// the document does not name. Exported pure for tests.
+export function hasFrameGrabberThumb(doc: ItemDocument): boolean {
+  const grabber = doc.sources?.["frame-grabber"];
+  return (
+    !!grabber &&
+    typeof grabber === "object" &&
+    typeof grabber.thumbnail_path === "string" &&
+    grabber.thumbnail_path !== ""
+  );
+}
+
+// hasOriginalFile — the document carries the scan-stamped original-path fact
+// (parsed.absolute_path — the EXACT fact documentMediaPath resolves the
+// original variant from), so GET /items/{id}/media without a variant can
+// resolve. Exported pure for tests.
+export function hasOriginalFile(doc: ItemDocument): boolean {
+  const parsed = doc.parsed;
+  if (!parsed || typeof parsed !== "object") {
+    return false;
+  }
+  const absolute = (parsed as Record<string, unknown>).absolute_path;
+  return typeof absolute === "string" && absolute !== "";
+}
+
+// fetchItemMediaObjectUrl — the authenticated media byte channel (media-preview
+// D5): an <img src> request cannot carry the Authorization header and the media
+// endpoint must stay bearer-gated, so the bytes are fetched through the same
+// bearer posture as every other /api/v1 call and converted into ONE blob
+// object URL. The caller owns revoking it (useItemMedia revokes on unmount /
+// URL change). `path` is an itemMedia() URL — the parameter name also matches
+// the wrapper-chokepoint idiom apiRequest uses. A 401 still rotates to /login
+// (INV-401-source-of-truth); any other non-2xx rejects ApiError so consumers
+// fall back to the placeholder (never a broken-image state).
+export async function fetchItemMediaObjectUrl(
+  path: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const res: Response = await fetch(path, { headers, signal });
+
+  if (res.status === 401) {
+    clearToken();
+    redirectToLogin();
+    throw new ApiError(401, {
+      code: "unauthorized",
+      message: "session expired",
+      retryable: false,
+    });
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status, await errorBody(res));
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
 // redirectToLogin — the 401 rotation. Factored so the redirect is a single
 // chokepoint (and overridable in tests). INV-401-source-of-truth: a 401 is the
 // SOLE signal that rotates the client to /login.
 function redirectToLogin(): void {
   window.location.assign("/login");
+}
+
+// errorBody — the canonical {"error":{code,message,retryable}} parser shared by
+// the JSON wrapper (apiRequest) and the media channel (fetchItemMediaObjectUrl)
+// so both reject the SAME ApiError shape. A non-canonical or non-JSON body
+// falls back to the HTTP status text (fail-fast, no silent success).
+async function errorBody(res: Response): Promise<ApiErrorBody> {
+  try {
+    const obj = (await res.json()) as { error?: ApiErrorBody };
+    if (
+      obj &&
+      typeof obj === "object" &&
+      obj.error &&
+      typeof obj.error.code === "string" &&
+      typeof obj.error.message === "string" &&
+      typeof obj.error.retryable === "boolean"
+    ) {
+      return obj.error;
+    }
+  } catch {
+    // non-JSON body — fall through to the status-text error below.
+  }
+  return {
+    code: "http_error",
+    message: res.statusText || `request failed with status ${res.status}`,
+    retryable: false,
+  };
 }
 
 // apiRequest<T> — the Bearer fetch wrapper. Every /api/v1/* call funnels
@@ -352,31 +453,7 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   }
 
   if (!res.ok) {
-    let parsed: ApiErrorBody | null = null;
-    try {
-      const text = await res.text();
-      const obj = JSON.parse(text) as { error?: ApiErrorBody };
-      if (
-        obj &&
-        typeof obj === "object" &&
-        obj.error &&
-        typeof obj.error.code === "string" &&
-        typeof obj.error.message === "string" &&
-        typeof obj.error.retryable === "boolean"
-      ) {
-        parsed = obj.error;
-      }
-    } catch {
-      // non-JSON body — fall through to the status-text error below.
-    }
-    throw new ApiError(
-      res.status,
-      parsed ?? {
-        code: "http_error",
-        message: res.statusText || `request failed with status ${res.status}`,
-        retryable: false,
-      },
-    );
+    throw new ApiError(res.status, await errorBody(res));
   }
 
   // 2xx — verbatim parse (INV-no-rounding).

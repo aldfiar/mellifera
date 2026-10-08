@@ -13,6 +13,22 @@ import ItemDetail from "@/pages/browse/ItemDetail";
 // document rendering (verbatim values, one card per namespace) and its error
 // edges (404 → not-found state, not a crash; other errors → code + message
 // inline) are asserted independently of the network. End-to-end is QA1.
+//
+// Group-3 slice: the audit tiers (sources, provenance, stages) collapsed into
+// a native <details> "Technical details" disclosure — collapsed by default,
+// full content once expanded. jsdom implements no layout, so "hidden" is
+// asserted on the <details> open flag rather than on layout visibility.
+
+/** Expands the Technical details disclosure (native, uncontrolled <details>). */
+function expandTechnicalDetails(): HTMLDetailsElement {
+  const details = screen.getByText("Technical details").closest(
+    "details",
+  ) as HTMLDetailsElement | null;
+  expect(details).not.toBeNull();
+  expect(details!.open).toBe(false);
+  details!.open = true;
+  return details!;
+}
 
 const ITEM_RESPONSE: ItemResponse = {
   item: {
@@ -73,7 +89,7 @@ describe("ItemDetail — happy path (GET /api/v1/items/{id})", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
-  it("renders identifiers, one card per source namespace, view, provenance, and stages", async () => {
+  it("renders identifiers, one card per source namespace, view, provenance, and stages after expanding the disclosure", async () => {
     vi.spyOn(apiModule, "getItem").mockResolvedValue(ITEM_RESPONSE);
 
     renderAtId("itm_1_9", freshClient());
@@ -88,6 +104,8 @@ describe("ItemDetail — happy path (GET /api/v1/items/{id})", () => {
     expect(screen.getByText("42")).toBeDefined();
     expect(screen.getByText("tt0000042")).toBeDefined();
 
+    expandTechnicalDetails();
+
     // One SourceCard per namespace, same-named fields NOT merged, numbers
     // render at full precision. ("tv-parser" recurs across card title,
     // provenance, and stages.)
@@ -99,6 +117,37 @@ describe("ItemDetail — happy path (GET /api/v1/items/{id})", () => {
 
     // _view, _provenance, _stages (incl. the failed stage's error).
     expect(screen.getByText("tv-parser (ru) — first")).toBeDefined();
+    expect(screen.getByText("0.98")).toBeDefined();
+    expect(screen.getByText("upstream 503")).toBeDefined();
+  });
+});
+
+describe("ItemDetail — Technical details disclosure", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("collapses sources, provenance, and stages until Technical details is expanded", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(ITEM_RESPONSE);
+
+    renderAtId("itm_1_9", freshClient());
+
+    // The Details surface renders immediately: core fields, identifiers, view.
+    expect(await screen.findByText("itm_1_9")).toBeDefined();
+    expect(screen.getByText("tmdb_id")).toBeDefined();
+    expect(screen.getByText("tt0000042")).toBeDefined();
+    expect(screen.getByText("tv-parser (ru) — first")).toBeDefined();
+
+    // The disclosure exists, is collapsed by default, and carries the audit
+    // tiers (sources, provenance, stages) inside it.
+    const details = expandTechnicalDetails();
+    expect(details.textContent).toContain("Sources");
+    expect(details.textContent).toContain("Provenance");
+    expect(details.textContent).toContain("Pipeline stages");
+
+    // Expanded: the audit tiers render (one card per namespace, badge,
+    // per-stage error) — same content as before the restructure.
+    expect(screen.getAllByText("tv-parser").length).toBeGreaterThan(0);
+    expect(screen.getByText("second-plugin")).toBeDefined();
     expect(screen.getByText("0.98")).toBeDefined();
     expect(screen.getByText("upstream 503")).toBeDefined();
   });

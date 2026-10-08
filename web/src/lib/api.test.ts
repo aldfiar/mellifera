@@ -5,7 +5,10 @@ import {
   ApiError,
   apiRequest,
   ENDPOINTS,
+  fetchItemMediaObjectUrl,
   getItem,
+  hasFrameGrabberThumb,
+  hasOriginalFile,
   listItems,
   type LibrariesResponse,
   type ListItemsParams,
@@ -187,6 +190,86 @@ describe("items client — S4 joint (listItems/getItem <-> Go /api/v1/items)", (
     let caught: unknown;
     try {
       await getItem("x");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).code).toBe("not_found");
+    expect((caught as ApiError).status).toBe(404);
+  });
+});
+
+describe("itemMedia — media URL + authenticated blob channel (media-preview group 2)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("ENDPOINTS.itemMedia builds the media URL, adding ?variant=thumb only when asked", () => {
+    expect(ENDPOINTS.itemMedia("itm_7_abc")).toBe("/api/v1/items/itm_7_abc/media");
+    expect(ENDPOINTS.itemMedia("itm_7_abc", "thumb")).toBe(
+      "/api/v1/items/itm_7_abc/media?variant=thumb",
+    );
+  });
+
+  it("media-fact accessors mirror the exact facts the Go documentMediaPath reads", () => {
+    // The thumb fact: sources["frame-grabber"].thumbnail_path, non-empty.
+    expect(
+      hasFrameGrabberThumb({
+        sources: { "frame-grabber": { thumbnail_path: "/data/thumbs/x.jpg" } },
+      }),
+    ).toBe(true);
+    // Absent / empty / wrong-namespace facts are all false — never request
+    // variant=thumb without the fact (D6: a thumb miss is a 404).
+    expect(hasFrameGrabberThumb({ sources: { "frame-grabber": {} } })).toBe(false);
+    expect(
+      hasFrameGrabberThumb({
+        sources: { "frame-grabber": { thumbnail_path: "" } },
+      }),
+    ).toBe(false);
+    expect(
+      hasFrameGrabberThumb({ sources: { "tv-parser": { thumbnail_path: "/x" } } }),
+    ).toBe(false);
+    expect(hasFrameGrabberThumb({})).toBe(false);
+    // The original fact: parsed.absolute_path, non-empty.
+    expect(hasOriginalFile({ parsed: { absolute_path: "/media/f.jpg" } })).toBe(true);
+    expect(hasOriginalFile({ parsed: { absolute_path: "" } })).toBe(false);
+    expect(hasOriginalFile({ parsed: {} })).toBe(false);
+    expect(hasOriginalFile({})).toBe(false);
+  });
+
+  it("fetchItemMediaObjectUrl carries the bearer header and returns an object URL for the blob", async () => {
+    setToken("t1");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("jpeg-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+    );
+    const createObjectURL = vi.fn(() => "blob:mocked");
+    Object.defineProperty(URL, "createObjectURL", {
+      value: createObjectURL,
+      configurable: true,
+      writable: true,
+    });
+
+    const url = await fetchItemMediaObjectUrl("/api/v1/items/itm_7_abc/media?variant=thumb");
+
+    const [path, init] = fetchSpy.mock.calls[0]!;
+    expect(path).toBe("/api/v1/items/itm_7_abc/media?variant=thumb");
+    expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer t1");
+    expect(url).toBe("blob:mocked");
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetchItemMediaObjectUrl rejects ApiError not_found on a 404 thumb miss", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(404, { error: { code: "not_found", message: "no media fact", retryable: false } }),
+    );
+
+    let caught: unknown;
+    try {
+      await fetchItemMediaObjectUrl("/api/v1/items/x/media?variant=thumb");
     } catch (e) {
       caught = e;
     }

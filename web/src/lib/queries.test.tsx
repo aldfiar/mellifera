@@ -10,6 +10,7 @@ import {
   queryClient,
   useAdminStatus,
   useCreateLibrary,
+  useItemMedia,
   useItems,
   useLibraries,
   useScanLibrary,
@@ -145,5 +146,68 @@ describe("query hooks — S5 joint (hooks -> Go endpoints via apiRequest)", () =
     // The key carries the full params object so pages cache independently.
     expect(client.getQueryData(["items", page0])).toEqual({ items: [] });
     expect(client.getQueryData(["items", page1])).toEqual({ items: [] });
+  });
+});
+
+describe("useItemMedia — object-URL lifecycle (media-preview D5)", () => {
+  function stubObjectUrls(): { create: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> } {
+    const create = vi.fn(() => `blob:mock-${String(Math.random())}`);
+    const revoke = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revoke, configurable: true, writable: true });
+    return { create, revoke };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("fetches the media URL through the blob channel and revokes the object URL on unmount", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("jpeg-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+    );
+    const { create, revoke } = stubObjectUrls();
+
+    const { result, unmount } = renderHook(() =>
+      useItemMedia("/api/v1/items/itm_1_a/media?variant=thumb"),
+    );
+
+    await waitFor(() => expect(result.current).toBe(create.mock.results[0]?.value));
+    unmount();
+    expect(revoke).toHaveBeenCalledWith(create.mock.results[0]?.value);
+  });
+
+  it("returns null on any media error (404 thumb miss) — the caller keeps its placeholder", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: "not_found", message: "x", retryable: false } }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { create } = stubObjectUrls();
+
+    const { result } = renderHook(() =>
+      useItemMedia("/api/v1/items/itm_1_a/media?variant=thumb"),
+    );
+
+    // The fetch fired, the error settled, and NO object URL was ever minted —
+    // the placeholder is the only surface the caller can render.
+    await waitFor(() => expect(result.current).toBeNull(), { timeout: 50 });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(create).not.toHaveBeenCalled();
+    expect(result.current).toBeNull();
+  });
+
+  it("fires no request for a null URL — the caller's pre-selection said no media fact", () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    stubObjectUrls();
+
+    const { result } = renderHook(() => useItemMedia(null));
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(result.current).toBeNull();
   });
 });
