@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { ReactElement } from "react";
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 
-import type { ApiError, ItemDTO, LibraryDTO, ListItemsParams } from "@/lib/api";
+import type {
+  ApiError,
+  ItemDTO,
+  LibraryDTO,
+  ListItemsParams,
+  SeriesDTO,
+} from "@/lib/api";
 import {
   useItems,
   useLibraries,
   useLibraryFolders,
   useLibrarySummary,
+  useSeries,
+  useSeriesEpisodes,
 } from "@/lib/queries";
 import type { ItemDocument } from "@/lib/document";
 import { viewEntries } from "@/lib/document";
@@ -25,9 +33,10 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 //   tv     → MoviesBody: paginated parsed-chip file cards (box 5.2)
 //   image  → PhotosBody: subfolder chips from the folders endpoint over a
 //            masonry grid with capture-date footers (box 5.3)
-//   serial → the generic ItemGrid fallthrough, still honest end-to-end; the
-//            serial series grid lands with the serials-library change
-//            (box 5.4). No /series call is made here.
+//   serial → SerialsBody: one poster card per series from
+//            GET /api/v1/series?library={id}; a picked series navigates to
+//            its episode flow via the ?series=<ser_id> deep-linkable query
+//            state (box 5.4)
 //
 // Metadata fidelity: every rendered value is read verbatim out of the item
 // document (per-source namespaces, `_view`) — a chip whose fact is absent is
@@ -222,8 +231,7 @@ function CollectionHeader(props: { lib: LibraryDTO }): ReactElement {
 }
 
 // CollectionBody — the module_id-keyed arm (D6). Every type gets its honest
-// layout; the serial/unknown fallthrough keeps the generic grid until the
-// serials-library change lands (box 5.4).
+// layout; unknown module ids keep the generic item grid.
 function CollectionBody(props: {
   module_id: string;
   libraryId: number;
@@ -240,9 +248,9 @@ function CollectionBody(props: {
       return <MoviesBody libraryId={props.libraryId} />;
     case "image":
       return <PhotosBody libraryId={props.libraryId} />;
+    case "serial":
+      return <SerialsBody libraryId={props.libraryId} />;
     default:
-      // Serial layout lands with the serials-library change (box 5.4);
-      // until then serial collections render the generic item grid.
       return <ItemGrid libraryId={props.libraryId} />;
   }
 }
@@ -512,12 +520,190 @@ function PhotoTile(props: { item: ItemDTO }): ReactElement {
   );
 }
 
-// ---- serial + unknown — the shared fallthrough -------------------------------
+// ---- serial — box 5.4 --------------------------------------------------------
 
-// ItemGrid — the generic paginated body (the group-3 interim, kept honest):
-// one card per item with its title (verbatim from `_view`), type/status
-// chips, and the raw filename, deep-linking into the item detail. Serial
-// collections land here until box 5.4 swaps in the series grid.
+// SerialsBody — the serials layout. Two states, one deep-linkable surface:
+// no ?series param → the series grid (one poster card per row of
+// GET /api/v1/series?library={id}); a ?series=<ser_id> param → that series'
+// episode flow (GET /api/v1/series/{id}/episodes, fetched once per series —
+// episode documents are NEVER fetched eagerly per series row). The param is
+// real URL state, so an episode view deep-links and /collections/{id} alone
+// still lands on the grid.
+function SerialsBody(props: { libraryId: number }): ReactElement {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const seriesId = searchParams.get("series") ?? "";
+
+  if (seriesId !== "") {
+    return (
+      <EpisodesView
+        seriesId={seriesId}
+        onBack={() => setSearchParams({})}
+      />
+    );
+  }
+  return <SeriesGrid libraryId={props.libraryId} />;
+}
+
+// serialTitle — the series' display title, precedence-ordered: the cleaned
+// display title serial-parser writes into its source namespace once
+// enrichment has run, else the raw directory name (parsed.dir_name_raw)
+// verbatim — Cyrillic names are first-class and are never reformatted — else
+// the relative path's last segment (a row whose scan produced neither fact
+// still names itself honestly).
+function serialTitle(sr: SeriesDTO): string {
+  const parser = sr.document.sources?.["serial-parser"];
+  if (parser) {
+    const title = stringField(parser.title);
+    if (title !== null) {
+      return title;
+    }
+  }
+  const parsed = sr.document.parsed;
+  if (parsed && typeof parsed === "object") {
+    const raw = stringField((parsed as Record<string, unknown>).dir_name_raw);
+    if (raw !== null) {
+      return raw;
+    }
+  }
+  return fileName(sr.relative_path);
+}
+
+// seriesSeason — the series' season number out of the document's source
+// namespaces, or null when none carries one (the chip is then omitted, never
+// guessed).
+function seriesSeason(doc: SeriesDTO["document"]): number | null {
+  for (const ns of namespaces(doc)) {
+    const season = numberField(ns.season);
+    if (season !== null) {
+      return season;
+    }
+  }
+  return null;
+}
+
+// seriesBacking — the `backing` marker fact the serial-scanner stamps into
+// the document's `parsed` namespace ("directory" | "file"). Null when absent.
+function seriesBacking(doc: SeriesDTO["document"]): string | null {
+  const parsed = doc.parsed;
+  if (!parsed || typeof parsed !== "object") {
+    return null;
+  }
+  return stringField((parsed as Record<string, unknown>).backing);
+}
+
+// SeriesGrid — one poster card per series row. Deleted rows are skipped (the
+// janitor's tombstones are not a browse surface); an empty list after the
+// fetch is an honest "nothing scanned yet" state.
+function SeriesGrid(props: { libraryId: number }): ReactElement {
+  const series = useSeries(props.libraryId);
+
+  if (series.isLoading) {
+    return <LoadingState label="Loading series…" />;
+  }
+  if (series.error) {
+    return <ErrorState error={series.error as ApiError} onRetry={series.refetch} />;
+  }
+
+  const rows = (series.data?.items ?? []).filter((s) => s.status !== "deleted");
+  if (rows.length === 0) {
+    return <EmptyState message="No series scanned yet." />;
+  }
+
+  return (
+    <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      {rows.map((sr) => (
+        <li key={sr.id}>
+          <SeriesCard sr={sr} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// SeriesCard — one series card: poster-ratio placeholder (media serving is a
+// deferred capability), display title (serialTitle precedence), and the fact
+// chips — the lifecycle status (ready/stale/pending), the season when the
+// document carries one, and the "file" backing marker (directory-backed
+// series are the default and stay unmarked). No episode count — that fact
+// would cost one round-trip per series. Links into the episode flow.
+function SeriesCard(props: { sr: SeriesDTO }): ReactElement {
+  const { sr } = props;
+  const season = seriesSeason(sr.document);
+  const backing = seriesBacking(sr.document);
+
+  return (
+    <Link
+      to={`?series=${encodeURIComponent(sr.id)}`}
+      className="scard"
+      aria-label={`Open ${serialTitle(sr)}`}
+    >
+      <span className="scard-poster" aria-hidden="true" />
+      <span className="scard-body">
+        <span className="scard-title">{serialTitle(sr)}</span>
+        <span className="flex flex-wrap gap-1">
+          <span className="chip">{sr.status}</span>
+          {season !== null ? (
+            <span className="chip">Season {String(season)}</span>
+          ) : null}
+          {backing === "file" ? <span className="chip">file</span> : null}
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+// EpisodesView — one series' episode flow: the back affordance into the grid,
+// then the episodes as movie-idiom cards (parsed chips + raw filename,
+// deep-linking into /items/{id}), fetched once per series.
+function EpisodesView(props: {
+  seriesId: string;
+  onBack: () => void;
+}): ReactElement {
+  const episodes = useSeriesEpisodes(props.seriesId);
+
+  if (episodes.isLoading) {
+    return <LoadingState label="Loading episodes…" />;
+  }
+  if (episodes.error) {
+    return (
+      <ErrorState
+        error={episodes.error as ApiError}
+        onRetry={episodes.refetch}
+      />
+    );
+  }
+
+  const items = episodes.data?.items ?? [];
+  return (
+    <section className="flex flex-col gap-3">
+      <button
+        type="button"
+        className="w-fit rounded-md border px-3 py-1.5 text-sm ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        onClick={props.onBack}
+      >
+        ← All series
+      </button>
+      {items.length === 0 ? (
+        <EmptyState message="No episodes found for this series." />
+      ) : (
+        <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {items.map((item) => (
+            <li key={item.id}>
+              <MovieCard item={item} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// ---- unknown module_id — the generic fallthrough -----------------------------
+
+// ItemGrid — the generic paginated body: one card per item with its title
+// (verbatim from `_view`), type/status chips, and the raw filename,
+// deep-linking into the item detail. Unknown module ids land here; serial
+// collections now use the series grid above.
 function ItemGrid(props: { libraryId: number }): ReactElement {
   const { query, items, offset, prev, next } = usePagedItems(props.libraryId);
 

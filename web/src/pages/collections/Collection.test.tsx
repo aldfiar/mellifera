@@ -8,15 +8,16 @@ import Collection, {
   captureDate,
   parsedChips,
 } from "@/pages/collections/Collection";
-import type { ItemDTO, LibraryDTO } from "@/lib/api";
+import type { ItemDTO, LibraryDTO, SeriesDTO } from "@/lib/api";
 import type { ItemDocument } from "@/lib/document";
 
-// Group-5 slice (boxes 5.1–5.3): the collection page's OWN behavior, asserted
+// Group-5 slice (boxes 5.1–5.4): the collection page's OWN behavior, asserted
 // at the fetch seam (the same idiom as Home.test.tsx). Covered here: the tv
 // body's parsed chips + raw filename + limit/offset paging, the photos body's
 // folder-chip client-side filter round-trip and masonry date-footers (present
-// and honestly absent), and the serial fallthrough to the generic grid. Layout
-// itself is CSS's contract.
+// and honestly absent), and the serial body's series grid (title precedence,
+// fact chips, the episode-flow round-trip hitting the episodes endpoint once)
+// with its empty and error states. Layout itself is CSS's contract.
 //
 // NOTE on fixtures: pages/collections must never carry a filesystem-path
 // literal (D5 — the group probe greps for it), so the fixtures omit the
@@ -302,7 +303,43 @@ describe("Collection — image body (box 5.3)", () => {
   });
 });
 
-describe("Collection — serial fallthrough (box 5.4 pending)", () => {
+describe("Collection — serial body (box 5.4)", () => {
+  // seriesRow — a /series wire row fixture. The serial-level document is
+  // opaque dynamic JSON: `parsed` facts (dir_name_raw, backing) plus the
+  // sources.<plugin_id> namespaces serial-parser writes into.
+  function seriesRow(parts: {
+    id: string;
+    title?: string; // serial-parser's cleaned display title
+    dirNameRaw?: string; // parsed.dir_name_raw — the raw directory name
+    season?: number;
+    backing?: string;
+    status?: string;
+    relativePath?: string;
+  }): SeriesDTO {
+    const d: ItemDocument = {};
+    if (parts.title !== undefined || parts.season !== undefined) {
+      const sp: Record<string, unknown> = {};
+      if (parts.title !== undefined) sp.title = parts.title;
+      if (parts.season !== undefined) sp.season = parts.season;
+      d.sources = { "serial-parser": sp };
+    }
+    const parsed: Record<string, unknown> = {};
+    if (parts.dirNameRaw !== undefined) parsed.dir_name_raw = parts.dirNameRaw;
+    if (parts.backing !== undefined) parsed.backing = parts.backing;
+    if (Object.keys(parsed).length > 0) {
+      d.parsed = parsed;
+    }
+    return {
+      id: parts.id,
+      module_id: "serial",
+      library_id: 1,
+      relative_path: parts.relativePath ?? parts.dirNameRaw ?? parts.id,
+      document: d,
+      schema_version: 1,
+      status: parts.status ?? "ready",
+    };
+  }
+
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -310,27 +347,130 @@ describe("Collection — serial fallthrough (box 5.4 pending)", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the generic item grid for a serial library and never calls /series", async () => {
+  it("renders one card per series with title precedence serial-parser → dir_name_raw, status/season/backing chips, skipping deleted rows", async () => {
     fetchWith({
-      ...headerSeam("serial", 1),
-      "/api/v1/items?library=1": () =>
+      ...headerSeam("serial", 3),
+      "/api/v1/series?library=1": () =>
         Promise.resolve(
           jsonResponse(200, {
             items: [
-              item("itm_1_s1", "serial", "Show/S01E01.mkv", doc({ title: "Show S01E01" })),
+              seriesRow({
+                id: "ser_1_enriched",
+                title: "Тайна Смолвуда",
+                dirNameRaw: "smolwood.s01",
+                season: 1,
+              }),
+              seriesRow({ id: "ser_1_raw", dirNameRaw: "Очень Странные Дела" }),
+              seriesRow({
+                id: "ser_1_stray",
+                title: "Stray File",
+                dirNameRaw: "stray.mkv",
+                backing: "file",
+                status: "stale",
+              }),
+              seriesRow({ id: "ser_1_dead", dirNameRaw: "gone", status: "deleted" }),
             ],
           }),
         ),
     });
     renderCollection("1");
 
-    // The generic grid's card shape: title + type/status chips + filename.
-    const card = await screen.findByRole("link", { name: /Show S01E01/ });
-    expect(within(card).getByText("video")).toBeDefined();
-    expect(within(card).getByText("ready")).toBeDefined();
-    expect(within(card).getByText("S01E01.mkv")).toBeDefined();
-    // The fetch mock rejects ANY unmatched URL — a /series call would have
-    // failed this test; reaching here proves none was made.
+    // Precedence: serial-parser's cleaned title wins over dir_name_raw.
+    const enriched = await screen.findByRole("link", { name: /Тайна Смолвуда/ });
+    expect(within(enriched).queryByText("smolwood.s01")).toBeNull();
+    expect(within(enriched).getByText("Season 1")).toBeDefined();
+
+    // No parser title → the raw directory name, verbatim (Cyrillic intact).
+    expect(screen.getByRole("link", { name: /Очень Странные Дела/ })).toBeDefined();
+
+    // File-backed stray: "file" marker + its stale status chip.
+    const stray = screen.getByRole("link", { name: /Stray File/ });
+    expect(within(stray).getByText("file")).toBeDefined();
+    expect(within(stray).getByText("stale")).toBeDefined();
+
+    // Deleted rows are not a browse surface — no card at all.
+    expect(screen.queryByRole("link", { name: /gone/ })).toBeNull();
+
+    // Ready status renders as a plain chip on the default cards.
+    expect(within(enriched).getByText("ready")).toBeDefined();
+  });
+
+  it("navigates a card into the episode flow, fetching the episodes endpoint exactly once", async () => {
+    let episodesFetches = 0;
+    fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [seriesRow({ id: "ser_1_show", dirNameRaw: "Show 2019" })],
+          }),
+        ),
+      "/api/v1/series/ser_1_show/episodes": () => {
+        episodesFetches += 1;
+        return Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              item(
+                "itm_1_e1",
+                "serial",
+                "Show 2019/S01E01.mkv",
+                doc({ title: "Show 2019 S01E01", season: 1, episode: 1 }),
+              ),
+            ],
+          }),
+        );
+      },
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("link", { name: /Show 2019/ }));
+
+    // The episode card reuses the movie idiom: parsed chips + raw filename,
+    // deep-linking into /items/{id}.
+    const ep = await screen.findByRole("link", { name: /Show 2019 S01E01/ });
+    expect(ep.getAttribute("href")).toBe("/items/itm_1_e1");
+    expect(within(ep).getByText("S01E01")).toBeDefined();
+    expect(within(ep).getByText("S01E01.mkv")).toBeDefined();
+    expect(episodesFetches).toBe(1);
+
+    // Back into the grid — the episodes endpoint is NOT hit again (cached),
+    // and the series list is not re-fetched either.
+    fireEvent.click(screen.getByRole("button", { name: "← All series" }));
+    expect(await screen.findByRole("link", { name: /Show 2019/ })).toBeDefined();
+    expect(episodesFetches).toBe(1);
+  });
+
+  it("shows an honest empty state when no series has been scanned", async () => {
+    // Summary items > 0: the summary-driven "not scanned yet" gate owns the
+    // zero-ITEM case; this exercises the series list's own empty reply.
+    fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+    });
+    renderCollection("1");
+
+    expect(await screen.findByText("No series scanned yet.")).toBeDefined();
+  });
+
+  it("surfaces a failed series fetch on the canonical inline error state", async () => {
+    fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(404, {
+            error: {
+              code: "not_found",
+              message: "library not found",
+              retryable: false,
+            },
+          }),
+        ),
+    });
+    renderCollection("1");
+
+    expect(await screen.findByText("not_found")).toBeDefined();
+    expect(screen.getByText("library not found")).toBeDefined();
   });
 
   it("renders the summary-driven 'not scanned yet' state for a zero-item collection", async () => {

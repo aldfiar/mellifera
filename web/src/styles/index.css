@@ -405,6 +405,54 @@ body.side-open .app-content {
   overflow-wrap: anywhere;
 }
 
+/* ---- Serial series grid (collection page, serial module_id, box 5.4) ------- */
+
+/* One series card: a poster-ratio placeholder (media serving is a deferred
+   capability) over the display title + fact chips, token-bordered like the
+   other cards. */
+.scard {
+  display: block;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.scard:hover {
+  background: hsl(var(--accent));
+}
+@media (prefers-reduced-motion: reduce) {
+  .scard {
+    transition: none;
+  }
+}
+
+/* The poster placeholder: the same quiet token gradient as the photo tiles,
+   poster ratio (2/3). */
+.scard .scard-poster {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  background: linear-gradient(
+    140deg,
+    hsl(var(--secondary)),
+    hsl(var(--muted))
+  );
+}
+
+/* Card body: the display title (wraps, any script) + the fact chip row. */
+.scard .scard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+.scard .scard-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 /* ---- Admin collections table + edit overlay (web-ui-phase-3 group 6) ------ */
 
 /* Scroll panel for the collections table: 20+ collections scroll INSIDE the

@@ -12,6 +12,8 @@ import {
   getItem,
   getLibraryFolders,
   getLibrarySummary,
+  getSeries,
+  getSeriesEpisodes,
   listItems,
   listProgress,
   updateLibrary,
@@ -27,6 +29,7 @@ import {
   type ListItemsParams,
   type ProgressListResponse,
   type ScanResponse,
+  type SeriesListResponse,
   type UpdateLibraryRequest,
 } from "@/lib/api";
 
@@ -206,5 +209,35 @@ export function useItems(
   return useQuery({
     queryKey: ["items", params],
     queryFn: () => listItems(params),
+  });
+}
+
+// useSeries — GET /api/v1/series?library={id} via getSeries
+// (web-ui-phase-3 box 5.4). Keyed ["series", libraryId]: one cache entry per
+// library, mirroring the summary/folders hooks' per-library keying. The list
+// comes back whole (no limit/offset on the wire) — no pagination state here.
+// `enabled` guards a not-yet-parsed route id (NaN) like useLibrarySummary.
+export function useSeries(
+  libraryId: number,
+): UseQueryResult<SeriesListResponse> {
+  return useQuery({
+    queryKey: ["series", libraryId],
+    queryFn: () => getSeries(libraryId),
+    enabled: Number.isFinite(libraryId),
+  });
+}
+
+// useSeriesEpisodes — GET /api/v1/series/{id}/episodes via getSeriesEpisodes.
+// Keyed ["series-episodes", seriesId]: one cache entry per series, so
+// navigating in and out of the episode flow reuses the fetched page. `enabled`
+// guards the empty id (no series selected yet — the hook must not fire a
+// malformed /series//episodes request).
+export function useSeriesEpisodes(
+  seriesId: string,
+): UseQueryResult<ItemsResponse> {
+  return useQuery({
+    queryKey: ["series-episodes", seriesId],
+    queryFn: () => getSeriesEpisodes(seriesId),
+    enabled: seriesId !== "",
   });
 }

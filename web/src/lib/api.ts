@@ -127,6 +127,27 @@ export interface ItemsResponse {
   items: ItemDTO[];
 }
 
+// handlers.go seriesDTO — the ONE wire shape for a series, mirroring itemDTO:
+// row identity fields + the FULL serial-level document carried opaque
+// (json.RawMessage on the Go side, typed here via ItemDocument). Field names
+// match the JSON tags EXACTLY. status is the series lifecycle: "pending" |
+// "stale" | "ready" | "deleted".
+export interface SeriesDTO {
+  id: string; // "ser_<libraryID>_<sha16>" — opaque string id
+  module_id: string;
+  library_id: number; // int64
+  relative_path: string;
+  document: ItemDocument; // serial-level §3.1 document — precision-preserved
+  schema_version: number;
+  status: string; // "pending" | "stale" | "ready" | "deleted"
+}
+
+// handlers.go seriesListResponse — empty array, never null. GET /series is NOT
+// paginated (the server takes only `library`); the list comes back whole.
+export interface SeriesListResponse {
+  items: SeriesDTO[];
+}
+
 // handlers.go itemResponse
 export interface ItemResponse {
   item: ItemDTO;
@@ -180,6 +201,8 @@ export const ENDPOINTS = {
   adminStatus: "/api/v1/admin/status",
   items: "/api/v1/items",
   item: (id: string): string => `/api/v1/items/${id}`,
+  series: "/api/v1/series",
+  seriesEpisodes: (id: string): string => `/api/v1/series/${id}/episodes`,
   progress: "/api/v1/progress",
 } as const;
 
@@ -248,6 +271,26 @@ export async function listProgress(limit?: number): Promise<ProgressListResponse
       ? `${ENDPOINTS.progress}?limit=${String(limit)}`
       : ENDPOINTS.progress;
   return apiRequest<ProgressListResponse>(path);
+}
+
+// getSeries — GET /api/v1/series?library={id} (handlers.go listSeries). The
+// library param is REQUIRED (a non-integer library is a 400 bad_request);
+// there are no limit/offset params — the server returns the library's series
+// whole, relative_path-ordered. A series' episodes are a SEPARATE call
+// (getSeriesEpisodes) and are never fetched eagerly per series.
+export async function getSeries(libraryId: number): Promise<SeriesListResponse> {
+  return apiRequest<SeriesListResponse>(
+    `${ENDPOINTS.series}?library=${String(libraryId)}`,
+  );
+}
+
+// getSeriesEpisodes — GET /api/v1/series/{id}/episodes (handlers.go
+// seriesEpisodes). The id is the opaque ser_ string id, passed through
+// verbatim; items come back in the SAME wire shape as GET /api/v1/items
+// (itemsResponse). An unknown series id is a 404 with the canonical not_found
+// body (surfaced as ApiError{code:"not_found"}).
+export async function getSeriesEpisodes(seriesId: string): Promise<ItemsResponse> {
+  return apiRequest<ItemsResponse>(ENDPOINTS.seriesEpisodes(seriesId));
 }
 
 // getItem — GET /api/v1/items/{id} (handlers.go:266-278). The id is the item's
