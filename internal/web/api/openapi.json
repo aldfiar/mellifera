@@ -373,6 +373,132 @@
                     }
                 }
             }
+        },
+        "/progress": {
+            "get": {
+                "tags": [
+                    "progress"
+                ],
+                "summary": "Recent playback positions (Continue rail)",
+                "operationId": "list-progress",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "page size (default 20, max 100)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.progressListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/progress/{item_id}": {
+            "get": {
+                "tags": [
+                    "progress"
+                ],
+                "summary": "Get one item's stored playback position",
+                "operationId": "get-progress",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id (UUID)",
+                        "name": "item_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.progressDTO"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "progress"
+                ],
+                "summary": "Store the playback position for an item",
+                "operationId": "put-progress",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id (UUID)",
+                        "name": "item_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "position to store (seconds)",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.progressRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.progressDTO"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -567,6 +693,39 @@
                 },
                 "updated_at": {
                     "type": "string"
+                }
+            }
+        },
+        "api.progressDTO": {
+            "type": "object",
+            "properties": {
+                "item_id": {
+                    "type": "string"
+                },
+                "position_seconds": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.progressListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.progressDTO"
+                    }
+                }
+            }
+        },
+        "api.progressRequest": {
+            "type": "object",
+            "properties": {
+                "position_seconds": {
+                    "type": "integer"
                 }
             }
         },

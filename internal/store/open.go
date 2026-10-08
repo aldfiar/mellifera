@@ -111,15 +111,14 @@ var schemaSQL = []string{
   next_eligible_at TEXT NOT NULL,
   PRIMARY KEY (item_id, plugin_id)
 )`,
+	// playback_progress is the web-ui-phase-3 position store: ONE row per item
+	// (item_id PK — the upsert overwrites), plain integer seconds with a >= 0
+	// CHECK, and the stamp every write refreshes. Reads join to items, so rows
+	// whose item is gone are skipped, never an error.
 	`CREATE TABLE IF NOT EXISTS playback_progress (
-  item_id        TEXT NOT NULL,
-  position_ms    INTEGER NOT NULL DEFAULT 0,
-  duration_ms    INTEGER,
-  played         INTEGER NOT NULL DEFAULT 0,
-  play_count     INTEGER NOT NULL DEFAULT 0,
-  last_played_at TEXT,
-  updated_at     TEXT NOT NULL,
-  PRIMARY KEY (item_id)
+  item_id          TEXT PRIMARY KEY,
+  position_seconds INTEGER NOT NULL CHECK (position_seconds >= 0),
+  updated_at       TEXT NOT NULL
 )`,
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
@@ -154,6 +153,10 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, err
 	}
 	if err := ensureLibrariesDescription(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensurePlaybackProgressSeconds(ctx, db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -253,6 +256,19 @@ func ensureItemsStatus(ctx context.Context, db *sql.DB) error {
 func ensureLibrariesDescription(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "libraries", "description",
 		"ALTER TABLE libraries ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+}
+
+// ensurePlaybackProgressSeconds bridges PRE-phase-3 databases whose
+// playback_progress table was created with the never-written §9.1 placeholder
+// shape (position_ms/played/play_count): the spec'd position_seconds column is
+// added via ensureColumn's guarded ALTER when absent (with a DEFAULT 0 —
+// NOT NULL ADD COLUMN requires one; the upsert always supplies the value).
+// Fresh DBs already get the column from the CREATE TABLE in schemaSQL. The
+// placeholder columns are left dormant on migrated DBs: no code ever read or
+// wrote them, so dropping them is not worth a table rebuild.
+func ensurePlaybackProgressSeconds(ctx context.Context, db *sql.DB) error {
+	return ensureColumn(ctx, db, "playback_progress", "position_seconds",
+		"ALTER TABLE playback_progress ADD COLUMN position_seconds INTEGER NOT NULL DEFAULT 0 CHECK (position_seconds >= 0)")
 }
 
 // Close releases the database handle.

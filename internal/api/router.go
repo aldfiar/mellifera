@@ -94,6 +94,12 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Get("/libraries/{id}/folders", h.libraryFolders)
 		r.Get("/items", h.listItems)
 		r.Get("/items/{id}", h.getItem)
+		// Playback progress (web-ui-phase-3): the PUT lives in the browse
+		// group by design (admin+client) — writing a position is a viewer
+		// action, not an operator mutation.
+		r.Get("/progress", h.listProgress)
+		r.Get("/progress/{item_id}", h.getProgress)
+		r.Put("/progress/{item_id}", h.putProgress)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(requireRole(RoleAdmin))

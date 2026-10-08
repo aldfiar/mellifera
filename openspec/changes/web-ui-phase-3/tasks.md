@@ -20,9 +20,9 @@ this change with the serial layout gated on its presence. Max concurrency 2
 
 ## 2. Playback-progress capability
 
-- [ ] 2.1 `playback_progress` idempotent DDL + upsert (single row per item, refreshed stamp, orphan-tolerant reads) [probe:8696d785bab6006b]
-- [ ] 2.2 `PUT /api/v1/progress/{item_id}` (browse): valid → 200 record, negative/non-integer → 400 (value untouched), unknown item → 404 [probe:25e5e695d3472138]
-- [ ] 2.3 `GET /api/v1/progress?limit` (default 20, max 100, newest-first, positive positions only) + `GET /api/v1/progress/{item_id}` (200/404), `limit=abc` → 400 [probe:7e018bd69bc80a50]
+- [x] 2.1 `playback_progress` idempotent DDL + upsert (single row per item, refreshed stamp, orphan-tolerant reads) [probe:8696d785bab6006b]
+- [x] 2.2 `PUT /api/v1/progress/{item_id}` (browse): valid → 200 record, negative/non-integer → 400 (value untouched), unknown item → 404 [probe:25e5e695d3472138]
+- [x] 2.3 `GET /api/v1/progress?limit` (default 20, max 100, newest-first, positive positions only) + `GET /api/v1/progress/{item_id}` (200/404), `limit=abc` → 400 [probe:7e018bd69bc80a50]
 
 ## 3. SPA shell — sidebar, profile, navigation
 

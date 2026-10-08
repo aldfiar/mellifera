@@ -90,6 +90,36 @@ type libraryFoldersResponse struct {
 	Folders []folderDTO `json:"folders"`
 }
 
+// Progress listing defaults (web-ui-phase-3): a smaller page than the item
+// tables — the Continue rail renders a handful of cards. limit clamps to
+// progressMaxLimit; unlike parsePagination, a PRESENT non-integer limit is a
+// 400 (the rail is user-facing, so silent fallbacks would hide client bugs).
+const (
+	progressDefaultLimit = 20
+	progressMaxLimit     = 100
+)
+
+// progressRequest is the body of PUT /api/v1/progress/{item_id}. The pointer
+// carries presence: a MISSING position_seconds is a non-canonical body (400),
+// distinct from an explicit 0 (a valid "back to start").
+type progressRequest struct {
+	PositionSeconds *int64 `json:"position_seconds"`
+}
+
+// progressDTO is the ONE wire shape for a stored playback position (no
+// store.PlaybackProgress leaked — INV4): the item id, integer seconds, and
+// the raw RFC3339 stamp as persisted.
+type progressDTO struct {
+	ItemID          string `json:"item_id"`
+	PositionSeconds int64  `json:"position_seconds"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
+// progressListResponse is the wire shape for GET /api/v1/progress.
+type progressListResponse struct {
+	Items []progressDTO `json:"items"`
+}
+
 // scanResponse is the wire shape for a scan result.
 type scanResponse struct {
 	LibraryID  int64    `json:"library_id"`
@@ -316,6 +346,114 @@ func (a *app) libraryFolders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, libraryFoldersResponse{Folders: dtos})
 }
 
+// putProgress: parse {item_id} + progressRequest → store.PutProgress → write
+// progressDTO. One domain call. Validation is the parse step, BEFORE the store
+// call: a malformed or non-canonical body (json decodes into *int64, so a
+// non-integer 1.5 or "90" fails the decode; a missing field fails the nil
+// check) and a negative value are 400 bad_request with the stored value
+// untouched; an unknown item is 404 not_found (store.PutProgress refuses
+// before writing, so no orphan row is minted). The endpoint is never retried.
+//
+// @Summary      Store the playback position for an item
+// @Tags         progress
+// @ID           put-progress
+// @Router       /progress/{item_id} [put]
+// @Param        item_id path string          true "item id (UUID)"
+// @Param        request body progressRequest true "position to store (seconds)"
+// @Success      200 {object} progressDTO
+// @Failure      400 {object} errorBody
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
+	itemID := chi.URLParam(r, "item_id")
+	var req progressRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON body", false)
+		return
+	}
+	if req.PositionSeconds == nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "position_seconds is required", false)
+		return
+	}
+	if *req.PositionSeconds < 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "position_seconds must be >= 0", false)
+		return
+	}
+	rec, err := a.deps.Store.PutProgress(r.Context(), itemID, *req.PositionSeconds)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "item "+itemID+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, toProgressDTO(rec))
+}
+
+// listProgress: parse ?limit → store.ListProgress → write progressListResponse.
+// One domain call. limit defaults to progressDefaultLimit and clamps to
+// progressMaxLimit; a present non-positive or non-integer limit is 400
+// bad_request (stricter than the item tables' parsePagination, whose silent
+// fallbacks fit admin paging but not a user-facing rail). The store read is
+// orphan-tolerant and positive-positions-only, so the handler does no shaping.
+//
+// @Summary      Recent playback positions (Continue rail)
+// @Tags         progress
+// @ID           list-progress
+// @Router       /progress [get]
+// @Param        limit query int false "page size (default 20, max 100)"
+// @Success      200 {object} progressListResponse
+// @Failure      400 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
+	limit := progressDefaultLimit
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, "bad_request", "limit must be a positive integer", false)
+			return
+		}
+		limit = min(n, progressMaxLimit)
+	}
+	recs, err := a.deps.Store.ListProgress(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dtos := make([]progressDTO, len(recs))
+	for i, rec := range recs {
+		dtos[i] = toProgressDTO(rec)
+	}
+	writeJSON(w, http.StatusOK, progressListResponse{Items: dtos})
+}
+
+// getProgress: parse {item_id} → store.GetProgress → write progressDTO. One
+// domain call. An absent record OR an item that no longer exists is 404
+// not_found — the store read JOINs to items, so orphaned rows never surface.
+//
+// @Summary      Get one item's stored playback position
+// @Tags         progress
+// @ID           get-progress
+// @Router       /progress/{item_id} [get]
+// @Param        item_id path string true "item id (UUID)"
+// @Success      200 {object} progressDTO
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
+	itemID := chi.URLParam(r, "item_id")
+	rec, err := a.deps.Store.GetProgress(r.Context(), itemID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "progress for item "+itemID+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, toProgressDTO(rec))
+}
+
 // scanLibrary: parse {id} → deps.Scan → write scanResponse. One domain call.
 //
 // @Summary      Trigger a scan for a library
@@ -513,6 +651,17 @@ func toLibraryDTO(l store.Library) libraryDTO {
 		RootPath:    l.RootPath,
 		DisplayName: l.DisplayName,
 		Description: l.Description,
+	}
+}
+
+// toProgressDTO maps a single store.PlaybackProgress to its wire shape (INV4).
+// The store already carries UpdatedAt as the raw RFC3339 TEXT, so this is a
+// plain field copy.
+func toProgressDTO(p store.PlaybackProgress) progressDTO {
+	return progressDTO{
+		ItemID:          p.ItemID,
+		PositionSeconds: p.PositionSeconds,
+		UpdatedAt:       p.UpdatedAt,
 	}
 }
 

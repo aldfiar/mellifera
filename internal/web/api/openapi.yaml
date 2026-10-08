@@ -125,6 +125,27 @@ definitions:
       updated_at:
         type: string
     type: object
+  api.progressDTO:
+    properties:
+      item_id:
+        type: string
+      position_seconds:
+        type: integer
+      updated_at:
+        type: string
+    type: object
+  api.progressListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/api.progressDTO'
+        type: array
+    type: object
+  api.progressRequest:
+    properties:
+      position_seconds:
+        type: integer
+    type: object
   api.scanResponse:
     properties:
       discovered:
@@ -407,4 +428,87 @@ paths:
       summary: Item count and last-update stamp for a library
       tags:
       - libraries
+  /progress:
+    get:
+      operationId: list-progress
+      parameters:
+      - description: page size (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.progressListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Recent playback positions (Continue rail)
+      tags:
+      - progress
+  /progress/{item_id}:
+    get:
+      operationId: get-progress
+      parameters:
+      - description: item id (UUID)
+        in: path
+        name: item_id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.progressDTO'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Get one item's stored playback position
+      tags:
+      - progress
+    put:
+      operationId: put-progress
+      parameters:
+      - description: item id (UUID)
+        in: path
+        name: item_id
+        required: true
+        type: string
+      - description: position to store (seconds)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.progressRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.progressDTO'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Store the playback position for an item
+      tags:
+      - progress
 swagger: "2.0"
