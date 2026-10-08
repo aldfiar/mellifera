@@ -90,12 +90,15 @@ func mountV1Routes(r chi.Router, h *app) {
 	r.Group(func(r chi.Router) {
 		r.Use(requireRole(RoleAdmin, RoleClient))
 		r.Get("/libraries", h.listLibraries)
+		r.Get("/libraries/{id}/summary", h.librarySummary)
+		r.Get("/libraries/{id}/folders", h.libraryFolders)
 		r.Get("/items", h.listItems)
 		r.Get("/items/{id}", h.getItem)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(requireRole(RoleAdmin))
 		r.Post("/libraries", h.createLibrary)
+		r.Patch("/libraries/{id}", h.patchLibrary)
 		r.Post("/libraries/{id}/scan", h.scanLibrary)
 		r.Get("/admin/status", h.adminStatus)
 	})

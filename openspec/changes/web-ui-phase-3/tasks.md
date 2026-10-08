@@ -10,12 +10,12 @@ this change with the serial layout gated on its presence. Max concurrency 2
 
 ## 1. Store + library API — description, update, summary, folders
 
-- [ ] 1.1 Libraries `description` column: new idempotent migration entry (`ALTER TABLE libraries ADD COLUMN description TEXT NOT NULL DEFAULT ''`), store roundtrip through create/read (design D8) [probe:a412a2004b1f0741]
-- [ ] 1.2 Library DTO + `GET /libraries` carry `description`; `POST /libraries` accepts the optional field (create with/without) [probe:10a04e7e23934383]
-- [ ] 1.3 `PATCH /api/v1/libraries/{id}` (admin): updates `display_name`/`description`, returns the DTO [probe:7b5af9af35da650b]
-- [ ] 1.4 PATCH rejects `root_path`/`module_id` changes with 400 (row untouched), unknown id → 404 [probe:77928e420935e248]
-- [ ] 1.5 `GET /api/v1/libraries/{id}/summary` (browse): constant-time `{library_id, items, updated_at}`, empty library → `items: 0` + `""`, 404 unknown, 400 non-integer [probe:2b30942d278fb480]
-- [ ] 1.6 `GET /api/v1/libraries/{id}/folders` (browse): depth-1 prefixes + counts, path-sorted, SQL aggregate, 404 unknown [probe:7e1d32a64d7043ff]
+- [x] 1.1 Libraries `description` column: new idempotent migration entry (`ALTER TABLE libraries ADD COLUMN description TEXT NOT NULL DEFAULT ''`), store roundtrip through create/read (design D8) [probe:a412a2004b1f0741]
+- [x] 1.2 Library DTO + `GET /libraries` carry `description`; `POST /libraries` accepts the optional field (create with/without) [probe:10a04e7e23934383]
+- [x] 1.3 `PATCH /api/v1/libraries/{id}` (admin): updates `display_name`/`description`, returns the DTO [probe:7b5af9af35da650b]
+- [x] 1.4 PATCH rejects `root_path`/`module_id` changes with 400 (row untouched), unknown id → 404 [probe:77928e420935e248]
+- [x] 1.5 `GET /api/v1/libraries/{id}/summary` (browse): constant-time `{library_id, items, updated_at}`, empty library → `items: 0` + `""`, 404 unknown, 400 non-integer [probe:2b30942d278fb480]
+- [x] 1.6 `GET /api/v1/libraries/{id}/folders` (browse): depth-1 prefixes + counts, path-sorted, SQL aggregate, 404 unknown [probe:7e1d32a64d7043ff]
 - [ ] 1.7 Regenerate committed `internal/web/api/openapi.{json,yaml}` with the new routes and DTO field [probe:fe5d7468a0e434f4]
 
 ## 2. Playback-progress capability
@@ -39,7 +39,7 @@ this change with the serial layout gated on its presence. Max concurrency 2
 
 ## 5. Collection pages — `/collections/{id}`
 
-- [ ] 5.1 Route + header from library + summary (name, type badge, description, count, updated; no paths/pills) with the body keyed by `module_id` [probe:b9c48ae1b98f0c79]
+- [ ] 5.1 Route + header from library + summary (name, type badge, description, count, updated; no paths/pills) with the body keyed by `module_id` [probe:25c42c993ff9a6c8]
 - [ ] 5.2 Movies (`tv`): paginated item card grid with parsed chips + raw filenames [probe:b9c48ae1b98f0c79]
 - [ ] 5.3 Photos (`image`): folder chip row from the folders endpoint (client-side filter) over an item masonry grid with capture-date footers [probe:b44fac0b43f4f086]
 - [ ] 5.4 Serials (`serial`): series grid from `GET /series?library={id}` linking into the episode flow (consumes serials-library; gate on its merge) [probe:df3ca14e8db184a5]
@@ -48,8 +48,8 @@ this change with the serial layout gated on its presence. Max concurrency 2
 
 - [ ] 6.1 Collections table: name + description, type badge, root folder, Items/Updated from summary, per-row Scan (inline result) + Edit, sticky header at 20+ rows [probe:107d8a9a99bec216]
 - [ ] 6.2 Edit overlay: Name/Description inputs, read-only Type + Root folder with the re-identification warning, PATCH submission with inline 400/404 canonical errors, table re-fetch on success [probe:fdc92080f01735e6]
-- [ ] 6.3 Add-collection form gains Description; Status section removed from the SPA (no plugin/enrich UI anywhere in `web/src/pages/admin/`); `GET /admin/status` contract untouched
-- [ ] 6.4 Add-collection form renders Description and POSTs it on create [probe:ca3aae99a81533ed]
+- [ ] 6.3 Add-collection form gains Description; Status section removed from the SPA (no plugin/enrich UI anywhere in `web/src/pages/admin/`); `GET /admin/status` contract untouched [probe:bbfedb503f8ff6ff]
+- [ ] 6.4 Add-collection form renders Description and POSTs it on create [probe:43d0b2ce71a94805]
 
 ## 7. QA + delivery
 

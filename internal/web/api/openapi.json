@@ -195,6 +195,103 @@
                 }
             }
         },
+        "/libraries/{id}": {
+            "patch": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "Update a library's display name and/or description",
+                "operationId": "update-library",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "fields to update",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.updateLibraryRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.libraryDTO"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/libraries/{id}/folders": {
+            "get": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "Depth-1 folder prefixes and item counts for a library",
+                "operationId": "library-folders",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.libraryFoldersResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/libraries/{id}/scan": {
             "post": {
                 "tags": [
@@ -232,9 +329,87 @@
                     }
                 }
             }
+        },
+        "/libraries/{id}/summary": {
+            "get": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "Item count and last-update stamp for a library",
+                "operationId": "library-summary",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.librarySummaryResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
+        "api.EnrichStats": {
+            "type": "object",
+            "properties": {
+                "done": {
+                    "type": "integer"
+                },
+                "failed": {
+                    "type": "integer"
+                },
+                "in_flight": {
+                    "type": "integer"
+                },
+                "pending": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.PluginHealth": {
+            "type": "object",
+            "properties": {
+                "checked_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "restarts": {
+                    "type": "integer"
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
         "api.apiError": {
             "type": "object",
             "properties": {
@@ -252,6 +427,9 @@
         "api.createLibraryRequest": {
             "type": "object",
             "properties": {
+                "description": {
+                    "type": "string"
+                },
                 "display_name": {
                     "type": "string"
                 },
@@ -263,28 +441,22 @@
                 }
             }
         },
-        "api.enrichStatsDTO": {
-            "type": "object",
-            "properties": {
-                "done": {
-                    "type": "integer"
-                },
-                "failed": {
-                    "type": "integer"
-                },
-                "in_flight": {
-                    "type": "integer"
-                },
-                "pending": {
-                    "type": "integer"
-                }
-            }
-        },
         "api.errorBody": {
             "type": "object",
             "properties": {
                 "error": {
                     "$ref": "#/definitions/api.apiError"
+                }
+            }
+        },
+        "api.folderDTO": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "integer"
+                },
+                "path": {
+                    "type": "string"
                 }
             }
         },
@@ -356,6 +528,9 @@
         "api.libraryDTO": {
             "type": "object",
             "properties": {
+                "description": {
+                    "type": "string"
+                },
                 "display_name": {
                     "type": "string"
                 },
@@ -370,19 +545,27 @@
                 }
             }
         },
-        "api.pluginHealthDTO": {
+        "api.libraryFoldersResponse": {
             "type": "object",
             "properties": {
-                "checked_at": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "restarts": {
+                "folders": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.folderDTO"
+                    }
+                }
+            }
+        },
+        "api.librarySummaryResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
                     "type": "integer"
                 },
-                "state": {
+                "library_id": {
+                    "type": "integer"
+                },
+                "updated_at": {
                     "type": "string"
                 }
             }
@@ -411,13 +594,30 @@
             "type": "object",
             "properties": {
                 "enrich": {
-                    "$ref": "#/definitions/api.enrichStatsDTO"
+                    "$ref": "#/definitions/api.EnrichStats"
                 },
                 "plugins": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/api.pluginHealthDTO"
+                        "$ref": "#/definitions/api.PluginHealth"
                     }
+                }
+            }
+        },
+        "api.updateLibraryRequest": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "module_id": {
+                    "type": "string"
+                },
+                "root_path": {
+                    "type": "string"
                 }
             }
         }

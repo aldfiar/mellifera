@@ -1,5 +1,27 @@
 basePath: /api/v1
 definitions:
+  api.EnrichStats:
+    properties:
+      done:
+        type: integer
+      failed:
+        type: integer
+      in_flight:
+        type: integer
+      pending:
+        type: integer
+    type: object
+  api.PluginHealth:
+    properties:
+      checked_at:
+        type: string
+      id:
+        type: string
+      restarts:
+        type: integer
+      state:
+        type: string
+    type: object
   api.apiError:
     properties:
       code:
@@ -11,6 +33,8 @@ definitions:
     type: object
   api.createLibraryRequest:
     properties:
+      description:
+        type: string
       display_name:
         type: string
       module_id:
@@ -18,21 +42,17 @@ definitions:
       root_path:
         type: string
     type: object
-  api.enrichStatsDTO:
-    properties:
-      done:
-        type: integer
-      failed:
-        type: integer
-      in_flight:
-        type: integer
-      pending:
-        type: integer
-    type: object
   api.errorBody:
     properties:
       error:
         $ref: '#/definitions/api.apiError'
+    type: object
+  api.folderDTO:
+    properties:
+      items:
+        type: integer
+      path:
+        type: string
     type: object
   api.itemDTO:
     properties:
@@ -78,6 +98,8 @@ definitions:
     type: object
   api.libraryDTO:
     properties:
+      description:
+        type: string
       display_name:
         type: string
       id:
@@ -87,15 +109,20 @@ definitions:
       root_path:
         type: string
     type: object
-  api.pluginHealthDTO:
+  api.libraryFoldersResponse:
     properties:
-      checked_at:
-        type: string
-      id:
-        type: string
-      restarts:
+      folders:
+        items:
+          $ref: '#/definitions/api.folderDTO'
+        type: array
+    type: object
+  api.librarySummaryResponse:
+    properties:
+      items:
         type: integer
-      state:
+      library_id:
+        type: integer
+      updated_at:
         type: string
     type: object
   api.scanResponse:
@@ -114,11 +141,22 @@ definitions:
   api.statusResponse:
     properties:
       enrich:
-        $ref: '#/definitions/api.enrichStatsDTO'
+        $ref: '#/definitions/api.EnrichStats'
       plugins:
         items:
-          $ref: '#/definitions/api.pluginHealthDTO'
+          $ref: '#/definitions/api.PluginHealth'
         type: array
+    type: object
+  api.updateLibraryRequest:
+    properties:
+      description:
+        type: string
+      display_name:
+        type: string
+      module_id:
+        type: string
+      root_path:
+        type: string
     type: object
 host: localhost:8080
 info:
@@ -251,6 +289,70 @@ paths:
       summary: Create a scan library
       tags:
       - libraries
+  /libraries/{id}:
+    patch:
+      operationId: update-library
+      parameters:
+      - description: library id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.updateLibraryRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.libraryDTO'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Update a library's display name and/or description
+      tags:
+      - libraries
+  /libraries/{id}/folders:
+    get:
+      operationId: library-folders
+      parameters:
+      - description: library id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.libraryFoldersResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Depth-1 folder prefixes and item counts for a library
+      tags:
+      - libraries
   /libraries/{id}/scan:
     post:
       operationId: scan-library
@@ -274,6 +376,35 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: Trigger a scan for a library
+      tags:
+      - libraries
+  /libraries/{id}/summary:
+    get:
+      operationId: library-summary
+      parameters:
+      - description: library id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.librarySummaryResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Item count and last-update stamp for a library
       tags:
       - libraries
 swagger: "2.0"

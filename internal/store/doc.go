@@ -21,11 +21,15 @@
 //     a core-managed lifecycle status; the canonical set new/pending/parsed/
 //     enriched/failed/deleted is owned by internal/enrich, not store).
 //   - Library: a configured scan root bound to a module.
+//   - FolderCount: one depth-1 item-path prefix + its count (LibraryFolders).
 //   - Open: opens SQLite, sets WAL, runs idempotent migrations, returns *Store.
 //   - Close: releases the database handle.
 //   - DB: returns the *sql.DB for trusted internal consumers (seam S10).
-//   - CreateLibrary: inserts a library row, returns its id.
+//   - CreateLibrary: inserts a library row (optional description), returns its id.
 //   - GetLibrary: loads a library by id.
+//   - UpdateLibrary: partial display_name/description update (nil = unchanged).
+//   - LibrarySummary: constant-time item count + last-update stamp (404-able).
+//   - LibraryFolders: depth-1 path prefixes + counts, path-ordered (404-able).
 //   - GetItem: loads an item by id.
 //   - PutItem: upserts an item keyed by file_id (idempotent re-scan).
 //   - QueryItems: lists items for a library with LIMIT/OFFSET; a non-empty

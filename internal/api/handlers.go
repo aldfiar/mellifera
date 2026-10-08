@@ -30,15 +30,27 @@ const (
 	maxLimit     = 200
 )
 
-// createLibraryRequest is the body of POST /api/v1/libraries.
+// createLibraryRequest is the body of POST /api/v1/libraries. Description is
+// optional (an omitted field persists as "").
 type createLibraryRequest struct {
 	ModuleID    string `json:"module_id"`
 	RootPath    string `json:"root_path"`
 	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+}
+
+// updateLibraryRequest is the body of PATCH /api/v1/libraries/{id}. Pointers
+// carry presence: a nil field leaves the column unchanged; RootPath/ModuleID
+// are read only to REJECT identity changes with 400 (web-ui-phase-3 D2).
+type updateLibraryRequest struct {
+	DisplayName *string `json:"display_name"`
+	Description *string `json:"description"`
+	RootPath    *string `json:"root_path"`
+	ModuleID    *string `json:"module_id"`
 }
 
 // libraryDTO is the ONE wire shape for a library (no store.Library leaked) —
-// the boundary conversion of store.Library used by BOTH the list and the create
+// the boundary conversion of store.Library used by the list, create, and patch
 // responses (mirrors the itemResponse-reuses-itemDTO pattern: one type per wire
 // noun). CreatedAt is intentionally omitted, mirroring itemDTO time-omission
 // (the document is the source of truth; carrying time.Time here would force a
@@ -48,11 +60,34 @@ type libraryDTO struct {
 	ModuleID    string `json:"module_id"`
 	RootPath    string `json:"root_path"`
 	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
 }
 
 // librariesResponse is the wire shape for GET /libraries.
 type librariesResponse struct {
 	Items []libraryDTO `json:"items"`
+}
+
+// librarySummaryResponse is the wire shape for GET /libraries/{id}/summary —
+// the constant-time count + last-update aggregate. UpdatedAt is the raw
+// RFC3339 TEXT from the store ("" when the library has no items), keeping the
+// DTO free of a time import.
+type librarySummaryResponse struct {
+	LibraryID int64  `json:"library_id"`
+	Items     int64  `json:"items"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// folderDTO is one depth-1 folder prefix + its item count (GET
+// /libraries/{id}/folders). Top-level files report Path "".
+type folderDTO struct {
+	Path  string `json:"path"`
+	Items int64  `json:"items"`
+}
+
+// libraryFoldersResponse is the wire shape for GET /libraries/{id}/folders.
+type libraryFoldersResponse struct {
+	Folders []folderDTO `json:"folders"`
 }
 
 // scanResponse is the wire shape for a scan result.
@@ -139,7 +174,7 @@ type itemDTO struct {
 }
 
 // createLibrary: parse createLibraryRequest → store.CreateLibrary → write
-// libraryDTO. One domain call.
+// libraryDTO. One domain call. Description is optional and defaults to "".
 //
 // @Summary      Create a scan library
 // @Tags         libraries
@@ -155,7 +190,7 @@ func (a *app) createLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON body", false)
 		return
 	}
-	id, err := a.deps.Store.CreateLibrary(r.Context(), req.ModuleID, req.RootPath, req.DisplayName)
+	id, err := a.deps.Store.CreateLibrary(r.Context(), req.ModuleID, req.RootPath, req.DisplayName, req.Description)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -165,7 +200,120 @@ func (a *app) createLibrary(w http.ResponseWriter, r *http.Request) {
 		ModuleID:    req.ModuleID,
 		RootPath:    req.RootPath,
 		DisplayName: req.DisplayName,
+		Description: req.Description,
 	})
+}
+
+// patchLibrary: parse {id} + updateLibraryRequest → store.UpdateLibrary →
+// write libraryDTO. One domain call. Presence of root_path/module_id is
+// rejected with 400 BEFORE the store call (identity is (module_id, root_path);
+// moving a root re-identifies every item — D2). A nil display_name/description
+// leaves the column unchanged; a missing id surfaces from store as a wrapped
+// sql.ErrNoRows → 404 not_found. Handlers do not retry or auto-correct.
+//
+// @Summary      Update a library's display name and/or description
+// @Tags         libraries
+// @ID           update-library
+// @Router       /libraries/{id} [patch]
+// @Param        id      path int                  true "library id"
+// @Param        request body updateLibraryRequest true "fields to update"
+// @Success      200 {object} libraryDTO
+// @Failure      400 {object} errorBody
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) patchLibrary(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "library id must be an integer", false)
+		return
+	}
+	var req updateLibraryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON body", false)
+		return
+	}
+	if req.RootPath != nil || req.ModuleID != nil {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"root_path and module_id are immutable (moving a root re-identifies all items)", false)
+		return
+	}
+	lib, err := a.deps.Store.UpdateLibrary(r.Context(), id, req.DisplayName, req.Description)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, toLibraryDTO(lib))
+}
+
+// librarySummary: parse {id} → store.LibrarySummary → write
+// librarySummaryResponse. One domain call (the aggregate is a constant-time
+// SQL count/max, never an item scan). A missing id → 404; a non-integer id →
+// 400 (parse step).
+//
+// @Summary      Item count and last-update stamp for a library
+// @Tags         libraries
+// @ID           library-summary
+// @Router       /libraries/{id}/summary [get]
+// @Param        id path int true "library id"
+// @Success      200 {object} librarySummaryResponse
+// @Failure      400 {object} errorBody
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) librarySummary(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "library id must be an integer", false)
+		return
+	}
+	items, updatedAt, err := a.deps.Store.LibrarySummary(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, librarySummaryResponse{LibraryID: id, Items: items, UpdatedAt: updatedAt})
+}
+
+// libraryFolders: parse {id} → store.LibraryFolders → write
+// libraryFoldersResponse. One domain call (the depth-1 aggregate runs in SQL;
+// the handler does no shaping). A missing id → 404; a non-integer id → 400.
+//
+// @Summary      Depth-1 folder prefixes and item counts for a library
+// @Tags         libraries
+// @ID           library-folders
+// @Router       /libraries/{id}/folders [get]
+// @Param        id path int true "library id"
+// @Success      200 {object} libraryFoldersResponse
+// @Failure      400 {object} errorBody
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) libraryFolders(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "library id must be an integer", false)
+		return
+	}
+	folders, err := a.deps.Store.LibraryFolders(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dtos := make([]folderDTO, len(folders))
+	for i, fc := range folders {
+		dtos[i] = folderDTO{Path: fc.Path, Items: fc.Items}
+	}
+	writeJSON(w, http.StatusOK, libraryFoldersResponse{Folders: dtos})
 }
 
 // scanLibrary: parse {id} → deps.Scan → write scanResponse. One domain call.
@@ -351,14 +499,21 @@ func toItemDTO(it store.Item) itemDTO {
 func toLibraryDTOs(libs []store.Library) []libraryDTO {
 	out := make([]libraryDTO, len(libs))
 	for i, l := range libs {
-		out[i] = libraryDTO{
-			ID:          l.ID,
-			ModuleID:    l.ModuleID,
-			RootPath:    l.RootPath,
-			DisplayName: l.DisplayName,
-		}
+		out[i] = toLibraryDTO(l)
 	}
 	return out
+}
+
+// toLibraryDTO maps a single store.Library to its wire shape. Factored out so
+// the list, create, and patch responses share one conversion (DRY).
+func toLibraryDTO(l store.Library) libraryDTO {
+	return libraryDTO{
+		ID:          l.ID,
+		ModuleID:    l.ModuleID,
+		RootPath:    l.RootPath,
+		DisplayName: l.DisplayName,
+		Description: l.Description,
+	}
 }
 
 // apiError is the inner object of the canonical error body (architecture §11.6).

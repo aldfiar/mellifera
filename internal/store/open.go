@@ -31,6 +31,10 @@ type Store struct {
 // INLINE on items rather than via ALTER TABLE ADD COLUMN, because ALTER ADD
 // COLUMN is not idempotent and Open must be re-runnable (B7). The json_extract
 // expressions are verbatim from §9.2; only the DDL mechanism differs.
+//
+// Columns added AFTER a table first shipped (libraries.description) follow the
+// same rule: fresh DBs get them from the CREATE TABLE above; pre-existing DBs
+// get them from a PRAGMA table_info-guarded ALTER in Open (ensureColumn).
 var schemaSQL = []string{
 	`CREATE TABLE IF NOT EXISTS modules (
   id             TEXT PRIMARY KEY,
@@ -56,6 +60,7 @@ var schemaSQL = []string{
   module_id    TEXT NOT NULL,
   root_path    TEXT NOT NULL,
   display_name TEXT,
+  description  TEXT NOT NULL DEFAULT '',
   created_at   TEXT NOT NULL,
   UNIQUE (module_id, root_path)
 )`,
@@ -148,6 +153,10 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureLibrariesDescription(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
@@ -175,20 +184,18 @@ func withBusyTimeout(dsn string) string {
 	return fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", dsn, sep, busyTimeoutPragma)
 }
 
-// ensureItemsStatus makes Open additive across scan-library databases: the
-// items.status column + its index. Fresh DBs already get the column from the
-// CREATE TABLE in schemaSQL; pre-existing scan-library DBs (no status column)
-// get it via a PRAGMA table_info-guarded ALTER (SQLite has no ADD COLUMN IF NOT
-// EXISTS, so the guard keeps Open re-runnable -- INV-idempotent-migration). The
-// index is created AFTER the column exists so both fresh and migrated DBs end
-// up indexed. Store stays value-agnostic: only the column DEFAULT 'new' is owned
-// here; the lifecycle set/transitions live in internal/enrich.
-func ensureItemsStatus(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info(items)")
+// ensureColumn is the shared guarded-ALTER primitive for columns added after a
+// table first shipped. SQLite has no ADD COLUMN IF NOT EXISTS, so Open probes
+// PRAGMA table_info and ALTERs only when the column is absent — the guard is
+// what keeps re-running Open safe (INV-idempotent-migration). addDDL must be
+// the static ALTER statement matching the column declared in schemaSQL
+// (identifiers are constants, never data — INV1).
+func ensureColumn(ctx context.Context, db *sql.DB, table, column, addDDL string) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
 	if err != nil {
-		return fmt.Errorf("store: migrate items.status (table_info): %w", err)
+		return fmt.Errorf("store: migrate %s.%s (table_info): %w", table, column, err)
 	}
-	hasStatus := false
+	hasColumn := false
 	for rows.Next() {
 		var (
 			cid     int
@@ -200,27 +207,52 @@ func ensureItemsStatus(ctx context.Context, db *sql.DB) error {
 		)
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
 			rows.Close()
-			return fmt.Errorf("store: migrate items.status (scan): %w", err)
+			return fmt.Errorf("store: migrate %s.%s (scan): %w", table, column, err)
 		}
-		if name == "status" {
-			hasStatus = true
+		if name == column {
+			hasColumn = true
 		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: migrate items.status (rows): %w", err)
+		return fmt.Errorf("store: migrate %s.%s (rows): %w", table, column, err)
 	}
-	if !hasStatus {
-		if _, err := db.ExecContext(ctx,
-			"ALTER TABLE items ADD COLUMN status TEXT NOT NULL DEFAULT 'new'"); err != nil {
-			return fmt.Errorf("store: migrate items.status (alter): %w", err)
+	if !hasColumn {
+		if _, err := db.ExecContext(ctx, addDDL); err != nil {
+			return fmt.Errorf("store: migrate %s.%s (alter): %w", table, column, err)
 		}
+	}
+	return nil
+}
+
+// ensureItemsStatus makes Open additive across scan-library databases: the
+// items.status column + its index. Fresh DBs already get the column from the
+// CREATE TABLE in schemaSQL; pre-existing scan-library DBs (no status column)
+// get it via ensureColumn's guarded ALTER. The index is created AFTER the
+// column exists so both fresh and migrated DBs end up indexed. Store stays
+// value-agnostic: only the column DEFAULT 'new' is owned here; the lifecycle
+// set/transitions live in internal/enrich.
+func ensureItemsStatus(ctx context.Context, db *sql.DB) error {
+	if err := ensureColumn(ctx, db, "items", "status",
+		"ALTER TABLE items ADD COLUMN status TEXT NOT NULL DEFAULT 'new'"); err != nil {
+		return err
 	}
 	if _, err := db.ExecContext(ctx,
 		"CREATE INDEX IF NOT EXISTS items_status ON items(status)"); err != nil {
 		return fmt.Errorf("store: migrate items_status index: %w", err)
 	}
 	return nil
+}
+
+// ensureLibrariesDescription makes Open additive for libraries.description
+// (web-ui-phase-3): the human description column. Fresh DBs get it from the
+// CREATE TABLE in schemaSQL; pre-existing DBs get it via ensureColumn's
+// guarded ALTER with the same NOT NULL DEFAULT ” the fresh DDL declares
+// (every existing row reads as ""). Store stays value-agnostic about the
+// description's content — it is an opaque human string.
+func ensureLibrariesDescription(ctx context.Context, db *sql.DB) error {
+	return ensureColumn(ctx, db, "libraries", "description",
+		"ALTER TABLE libraries ADD COLUMN description TEXT NOT NULL DEFAULT ''")
 }
 
 // Close releases the database handle.

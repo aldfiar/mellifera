@@ -5,6 +5,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -15,16 +17,30 @@ type Library struct {
 	ModuleID    string
 	RootPath    string
 	DisplayName string
+	Description string
 	CreatedAt   time.Time
 }
 
-// CreateLibrary inserts a library row and returns its new id. A duplicate
-// (module_id, root_path) violates the table's UNIQUE constraint and yields a
-// wrapped error the api layer maps to 4xx (T09).
-func (s *Store) CreateLibrary(ctx context.Context, moduleID, rootPath, displayName string) (int64, error) {
+// FolderCount is one depth-1 relative-path prefix of a library's items with the
+// number of items under it. Top-level files report Path "" (LibraryFolders).
+type FolderCount struct {
+	Path  string
+	Items int64
+}
+
+// CreateLibrary inserts a library row and returns its new id. The description
+// is an optional trailing argument (a POST body may omit the field; it then
+// persists as the column default ""). A duplicate (module_id, root_path)
+// violates the table's UNIQUE constraint and yields a wrapped error the api
+// layer maps to 4xx (T09).
+func (s *Store) CreateLibrary(ctx context.Context, moduleID, rootPath, displayName string, description ...string) (int64, error) {
+	desc := ""
+	if len(description) > 0 {
+		desc = description[0]
+	}
 	res, err := s.db.ExecContext(ctx,
-		"INSERT INTO libraries (module_id, root_path, display_name, created_at) VALUES (?, ?, ?, ?)",
-		moduleID, rootPath, displayName, formatTime(time.Now().UTC()),
+		"INSERT INTO libraries (module_id, root_path, display_name, description, created_at) VALUES (?, ?, ?, ?, ?)",
+		moduleID, rootPath, displayName, desc, formatTime(time.Now().UTC()),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: create library: %w", err)
@@ -36,6 +52,109 @@ func (s *Store) CreateLibrary(ctx context.Context, moduleID, rootPath, displayNa
 	return id, nil
 }
 
+// UpdateLibrary applies a partial update to the library row: a nil argument
+// leaves the column unchanged (PATCH {display_name?, description?}); a
+// non-nil pointer overwrites it. The identity columns (module_id, root_path)
+// are NOT updatable here — moving a root re-identifies every item and is not
+// an API operation (web-ui-phase-3 D2). A missing row yields a wrapped
+// sql.ErrNoRows (the api layer maps it to 404); the updated row is returned.
+func (s *Store) UpdateLibrary(ctx context.Context, id int64, displayName, description *string) (Library, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE libraries SET
+  display_name = COALESCE(?, display_name),
+  description  = COALESCE(?, description)
+WHERE id = ?`,
+		displayName, description, id,
+	)
+	if err != nil {
+		return Library{}, fmt.Errorf("store: update library %d: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return Library{}, fmt.Errorf("store: update library %d affected: %w", id, err)
+	}
+	if affected == 0 {
+		return Library{}, fmt.Errorf("store: update library %d: %w", id, sql.ErrNoRows)
+	}
+	return s.GetLibrary(ctx, id)
+}
+
+// LibrarySummary aggregates a library's persisted, non-deleted items in ONE
+// constant-time SQL pass: the count plus the most recent item update stamp
+// (the RFC3339Nano TEXT as persisted; "" when the library has no items). A
+// missing library yields a wrapped sql.ErrNoRows (the api layer maps it to 404).
+//
+// The `status <> 'deleted'` exclusion is the one read-side hard-coding of a
+// lifecycle literal in store: the canonical status set lives in internal/enrich
+// (INV-value-agnostic-store), but the summary contract is defined over
+// non-deleted items and store cannot import enrich (INV5). Every other row
+// counts regardless of lifecycle state.
+func (s *Store) LibrarySummary(ctx context.Context, id int64) (items int64, updatedAt string, err error) {
+	if err := libraryExists(ctx, s.db, id); err != nil {
+		return 0, "", err
+	}
+	row := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM items WHERE library_id = ? AND status <> 'deleted'",
+		id,
+	)
+	if err := row.Scan(&items, &updatedAt); err != nil {
+		return 0, "", fmt.Errorf("store: library %d summary: %w", id, err)
+	}
+	return items, updatedAt, nil
+}
+
+// LibraryFolders aggregates the library's items into depth-1 relative-path
+// prefixes entirely in SQL (no documents loaded): the prefix is the text before
+// the first '/', "" for top-level files. Rows are path-ordered; the count
+// excludes deleted items (same literal carve-out as LibrarySummary). A missing
+// library yields a wrapped sql.ErrNoRows.
+func (s *Store) LibraryFolders(ctx context.Context, id int64) ([]FolderCount, error) {
+	if err := libraryExists(ctx, s.db, id); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT CASE WHEN instr(relative_path, '/') = 0
+            THEN ''
+            ELSE substr(relative_path, 1, instr(relative_path, '/') - 1)
+       END AS prefix,
+       COUNT(*) AS items
+FROM items
+WHERE library_id = ? AND status <> 'deleted'
+GROUP BY prefix
+ORDER BY prefix`, id)
+	if err != nil {
+		return nil, fmt.Errorf("store: library %d folders: %w", id, err)
+	}
+	defer rows.Close()
+	out := make([]FolderCount, 0)
+	for rows.Next() {
+		var fc FolderCount
+		if err := rows.Scan(&fc.Path, &fc.Items); err != nil {
+			return nil, fmt.Errorf("store: library %d folders scan: %w", id, err)
+		}
+		out = append(out, fc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: library %d folders: %w", id, err)
+	}
+	return out, nil
+}
+
+// libraryExists maps a missing libraries row to the same wrapped sql.ErrNoRows
+// the other library reads yield, so every caller's 404 path is one errors.Is
+// check.
+func libraryExists(ctx context.Context, db *sql.DB, id int64) error {
+	var one int
+	err := db.QueryRowContext(ctx, "SELECT 1 FROM libraries WHERE id = ?", id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("store: library %d: %w", id, err)
+	}
+	if err != nil {
+		return fmt.Errorf("store: library %d exists: %w", id, err)
+	}
+	return nil
+}
+
 // GetLibrary loads a library by id. A missing row yields a wrapped
 // sql.ErrNoRows.
 func (s *Store) GetLibrary(ctx context.Context, id int64) (Library, error) {
@@ -44,10 +163,10 @@ func (s *Store) GetLibrary(ctx context.Context, id int64) (Library, error) {
 		createdText string
 	)
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, module_id, root_path, display_name, created_at FROM libraries WHERE id = ?",
+		"SELECT id, module_id, root_path, display_name, description, created_at FROM libraries WHERE id = ?",
 		id,
 	)
-	if err := row.Scan(&l.ID, &l.ModuleID, &l.RootPath, &l.DisplayName, &createdText); err != nil {
+	if err := row.Scan(&l.ID, &l.ModuleID, &l.RootPath, &l.DisplayName, &l.Description, &createdText); err != nil {
 		return Library{}, fmt.Errorf("store: get library %d: %w", id, err)
 	}
 	created, err := parseTime(createdText)
@@ -67,7 +186,7 @@ func (s *Store) GetLibrary(ctx context.Context, id int64) (Library, error) {
 // library list relies on).
 func (s *Store) ListLibraries(ctx context.Context) ([]Library, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, module_id, root_path, display_name, created_at FROM libraries ORDER BY id",
+		"SELECT id, module_id, root_path, display_name, description, created_at FROM libraries ORDER BY id",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list libraries: %w", err)
@@ -79,7 +198,7 @@ func (s *Store) ListLibraries(ctx context.Context) ([]Library, error) {
 			l           Library
 			createdText string
 		)
-		if err := rows.Scan(&l.ID, &l.ModuleID, &l.RootPath, &l.DisplayName, &createdText); err != nil {
+		if err := rows.Scan(&l.ID, &l.ModuleID, &l.RootPath, &l.DisplayName, &l.Description, &createdText); err != nil {
 			return nil, fmt.Errorf("store: list libraries scan: %w", err)
 		}
 		created, err := parseTime(createdText)
