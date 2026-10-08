@@ -302,8 +302,11 @@ The home surface SHALL render a **Continue** row from
 `GET /api/v1/progress`: one card per item with `position_seconds > 0`, ordered
 by recency, showing a progress bar, remaining-time or percent label, source
 collection, and a Play affordance; and a **Next up** row deriving, per series
-touched by Continue, the lowest-numbered episode of that series with no progress
-record (season/episode and series grouping read from the items' existing
+touched by Continue, the lowest-numbered episode that comes strictly AFTER the
+highest-started one (the skip-aware reading of "no progress record": with
+sequential viewing the two readings coincide — the derivation never suggests
+an episode the viewer has already moved past) (season/episode and series
+grouping read from the items' existing
 document facts), each with a Play affordance. Until the playback capability
 ships, Play SHALL deep-link to the item's detail page — the surfaces MUST NOT
 attempt inline streaming. Both rows SHALL render shared empty states when the

@@ -77,13 +77,13 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-function renderSidebar(): void {
+function renderSidebar(initialPath: string = "/"): void {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialPath]}>
         <Sidebar />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -183,6 +183,56 @@ describe("Sidebar — open/close mechanics + persistence", () => {
 
     expect(document.body.classList.contains("side-open")).toBe(true);
     expect(screen.getByText("Mellifera")).toBeDefined();
+  });
+
+  it("highlights the parent collection entry while an item detail page is open", async () => {
+    // The sidebar SHALL: detail pages highlight their parent collection. The
+    // item fetch reuses ItemDetail's ["item", id] cache key, so exactly ONE
+    // item request is made even though both surfaces read it.
+    const fetchSpy = fetchWith({
+      ...freshLibraries(),
+      "/api/v1/items/tv_abc": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            item: {
+              id: "tv_abc",
+              library_id: 2,
+              module_id: "tv",
+              relative_path: "Film 2019.mkv",
+              media_type: "tv",
+              status: "ready",
+              document: {},
+            },
+          }),
+        ),
+    });
+
+    renderSidebar("/items/tv_abc");
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+
+    const films = await screen.findByRole("link", { name: /films/ });
+    expect(films.className).toContain("clink-active");
+    const serials = screen.getByRole("link", { name: /serials/ });
+    expect(serials.className).not.toContain("clink-active");
+
+    // Cache sharing: the panel issued exactly one item request for the
+    // detail page's own item — never a duplicate.
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes("/api/v1/items/tv_abc")).length).toBe(1);
+  });
+
+  it("highlights no collection entry off the detail route without an item request", async () => {
+    const fetchSpy = fetchWith(freshLibraries());
+
+    renderSidebar("/collections/2");
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+
+    await screen.findByRole("link", { name: /films/ });
+    const films = screen.getByRole("link", { name: /films/ });
+    // On the collection page itself NavLink's isActive carries the highlight.
+    expect(films.className).toContain("clink-active");
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes("/api/v1/items/"))).toBe(false);
   });
 
   it("renders collection names immediately while the summary counts are still in flight", async () => {

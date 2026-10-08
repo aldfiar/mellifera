@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useCallback, useEffect, useState } from "react";
 import type { ReactElement } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, House, Menu, Settings2 } from "lucide-react";
 
 import type { AdminStatus, LibraryDTO } from "@/lib/api";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, getItem } from "@/lib/api";
 import { useLibraries, useLibrarySummary } from "@/lib/queries";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { cn } from "@/lib/utils";
@@ -87,13 +87,14 @@ function sideLinkClass({ isActive }: { isActive: boolean }): string {
 }
 
 // collLinkClass — collection entries highlight while their collection page is
-// open (the active-type accent; detail-page parent highlighting lands with the
-// group-5 collection bodies).
-function collLinkClass({ isActive }: { isActive: boolean }): string {
-  return cn(
-    "clink",
-    isActive && "clink-active",
-  );
+// open, or while a DETAIL page of one of their items is open (the sidebar
+// SHALL: detail pages highlight their parent collection entry).
+function collLinkClass(active: boolean): ({ isActive }: { isActive: boolean }) => string {
+  return ({ isActive }) =>
+    cn(
+      "clink",
+      (isActive || active) && "clink-active",
+    );
 }
 
 export default function Sidebar(): ReactElement {
@@ -179,6 +180,21 @@ function SideNav(): ReactElement {
   const libraries = useLibraries();
   const libs: LibraryDTO[] = libraries.data?.items ?? [];
 
+  // Detail-page parent highlight (the sidebar SHALL): while an item detail
+  // page is open, its parent collection's entry highlights too. The item is
+  // fetched under the SAME ["item", id] query key ItemDetail uses, so an
+  // item already on screen is answered from the cache — the panel never
+  // issues a second request for it. Off the detail route the query is
+  // disabled entirely (no request at all).
+  const location = useLocation();
+  const detailId = /^\/items\/([^/]+)$/.exec(location.pathname)?.[1] ?? null;
+  const detailItem = useQuery({
+    queryKey: ["item", detailId],
+    queryFn: () => getItem(detailId ?? ""),
+    enabled: detailId !== null,
+  });
+  const parentLibraryId = detailItem.data?.item.library_id;
+
   return (
     <nav className="side-nav" aria-label="Primary">
       <NavLink to="/" end className={sideLinkClass}>
@@ -195,7 +211,9 @@ function SideNav(): ReactElement {
         ) : libraries.error ? (
           <span className="side-label">Collections unavailable</span>
         ) : (
-          libs.map((lib) => <SideColl key={lib.id} lib={lib} />)
+          libs.map((lib) => (
+            <SideColl key={lib.id} lib={lib} active={lib.id === parentLibraryId} />
+          ))
         )}
       </div>
 
@@ -210,13 +228,14 @@ function SideNav(): ReactElement {
 // SideColl — one collection entry: pastel dot, name, item count. The count
 // comes from the summary hook asynchronously; while it is in flight the entry
 // renders WITHOUT the count (never a spinner, never a placeholder that
-// shifts layout) — opening the panel never waits on summaries (D1).
-function SideColl(props: { lib: LibraryDTO }): ReactElement {
+// shifts layout) — opening the panel never waits on summaries (D1). `active`
+// marks the parent collection of an open detail page (collLinkClass).
+function SideColl(props: { lib: LibraryDTO; active?: boolean }): ReactElement {
   const { lib } = props;
   const summary = useLibrarySummary(lib.id);
 
   return (
-    <NavLink to={`/collections/${lib.id}`} className={collLinkClass}>
+    <NavLink to={`/collections/${lib.id}`} className={collLinkClass(props.active === true)}>
       <span className={dotClass(lib.module_id)} aria-hidden="true" />
       <span className="lbl">{lib.display_name}</span>
       <span className="cnt">
