@@ -29,7 +29,7 @@
 // tv-parser writes its namespace each TV item settles enriched -> ready
 // end-to-end. A later TMDB load (B3) re-derives ready items (namespace absent +
 // not in cooldown) and runs without regressing ready.
-package mellifera_test
+package itest
 
 import (
 	"encoding/json"

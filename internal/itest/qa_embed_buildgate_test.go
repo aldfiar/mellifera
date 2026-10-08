@@ -19,7 +19,7 @@
 // integration_web_test.go::ac6_embed (composed-handler SPA); ac7_gates (make
 // build+check exit 0 + additive proto/sdk/scan/enrich/plugin/module probe +
 // check.sh via make check).
-package mellifera_test
+package itest
 
 import (
 	"net/http"
@@ -71,7 +71,9 @@ func TestQA_BuildGateNodeFreeDryRun(t *testing.T) {
 		"lint":  "golangci-lint",
 	}
 	for _, target := range []string{"build", "check", "test", "lint"} {
-		out, err := exec.Command("make", "-n", target).CombinedOutput()
+		make := exec.Command("make", "-n", target)
+		make.Dir = moduleRoot(t) // the Makefile lives at the module root, not the test package dir
+		out, err := make.CombinedOutput()
 		if err != nil {
 			t.Fatalf("make -n %s: %v (output: %s)", target, err, out)
 		}

@@ -21,7 +21,7 @@
 // The coder's run_test.go already proves scan ctx-cancellation and soft-fail
 // aggregation, and manager_test.go proves the §7.3 restart/backoff state
 // machine — those are NOT duplicated here (see the joint coverage map).
-package mellifera_test
+package itest
 
 import (
 	"context"

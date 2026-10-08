@@ -18,7 +18,7 @@
 //
 // Tests skip cleanly under -short / missing ffmpeg (the TV regression needs a real
 // .mkv). The additive/pure-Go probes run regardless (no exiftool/ffmpeg needed).
-package mellifera_test
+package itest
 
 import (
 	"net/http"

@@ -16,7 +16,7 @@
 // on PATH (INV4: never fail CI for a missing optional binary). With both on PATH
 // (the project toolchain guarantees them) it runs the full golden path and must
 // pass under `go test ./...` by default.
-package mellifera_test
+package itest
 
 import (
 	"encoding/json"
@@ -125,6 +125,20 @@ func moduleRoot(t *testing.T) string {
 	return strings.TrimSpace(string(out))
 }
 
+// serialPluginBins builds the three serial-suite plugin binaries into tmp and
+// returns them as the env values for MELLIFERA_SERIAL_SCANNER, MELLIFERA_SERIAL_PARSER
+// and MELLIFERA_FRAME_GRABBER. The registry seeds all six modules, so EVERY full
+// server start launches every serial plugin at startup — pinning absolute tmp
+// paths keeps the harness HERMETIC: without them the plugins fall back to the
+// repo-relative bin/ defaults, which only resolve when the tests happen to run
+// from the module root with bin/ populated by `make build-plugin`.
+func serialPluginBins(t *testing.T, tmp string) (scanner, parser, grabber string) {
+	t.Helper()
+	return buildBinary(t, tmp, "itest-serial-scanner", "./plugins/serial-scanner"),
+		buildBinary(t, tmp, "itest-serial-parser", "./plugins/serial-parser"),
+		buildBinary(t, tmp, "itest-frame-grabber", "./plugins/frame-grabber")
+}
+
 // writeFixtures builds the TV fixture tree under a temp dir and returns its root.
 // Three real (ffmpeg-generated) media files exercise TV parsing, the Cyrillic
 // path, and resolution/release-group stripping; one zero-byte file drives the
@@ -190,20 +204,22 @@ func mustSymlink(t *testing.T, target, link string) {
 
 // startServer launches the real mellifera server subprocess configured for the
 // test: a temp data dir + temp SQLite DB, the given admin token, the built
-// base-scanner + tv-parser + image-enricher binaries, and a random free port. It
-// blocks until the server answers HTTP, then returns the base URL. The server is
-// stopped (SIGINT with a SIGKILL fallback) and its combined log is dumped in a
-// cleanup on exit.
+// base-scanner + tv-parser + image-enricher binaries plus the three serial-suite
+// plugin binaries (serialPluginBins), and a random free port. It blocks until the
+// server answers HTTP, then returns the base URL. The server is stopped (SIGINT
+// with a SIGKILL fallback) and its combined log is dumped in a cleanup on exit.
 //
-// image-enricher is built and pointed at explicitly (MELLIFERA_IMAGE_ENRICHER)
-// so the harness is HERMETIC: the server loads image-enricher at startup
-// (mandatory since Task 05 — fatalOn if absent) and must not fall back to the
-// non-hermetic repo-local bin/image-enricher artifact. The three plugins are all
-// real go-plugin subprocesses on the hot path (no in-process fakes).
+// The plugins are built and pointed at explicitly (MELLIFERA_* env) so the
+// harness is HERMETIC: the server loads every seeded module at startup
+// (mandatory — fatalOn if absent) and must not fall back to the non-hermetic
+// repo-relative bin/ artifacts, which only resolve when the tests happen to run
+// from the module root. All six plugins are real go-plugin subprocesses on the
+// hot path (no in-process fakes).
 func startServer(t *testing.T, serverBin, scannerBin, tvParserBin, imageEnricherBin, tmp, token string) string {
 	t.Helper()
 	addr := net.JoinHostPort("127.0.0.1", freePort(t))
 	dataDir := filepath.Join(tmp, "data")
+	serialScannerBin, serialParserBin, frameGrabberBin := serialPluginBins(t, tmp)
 
 	srv := exec.Command(serverBin)
 	srv.Env = append(os.Environ(),
@@ -212,6 +228,9 @@ func startServer(t *testing.T, serverBin, scannerBin, tvParserBin, imageEnricher
 		"MELLIFERA_BASE_SCANNER="+scannerBin,
 		"MELLIFERA_TV_PARSER="+tvParserBin,
 		"MELLIFERA_IMAGE_ENRICHER="+imageEnricherBin,
+		"MELLIFERA_SERIAL_SCANNER="+serialScannerBin,
+		"MELLIFERA_SERIAL_PARSER="+serialParserBin,
+		"MELLIFERA_FRAME_GRABBER="+frameGrabberBin,
 		"MELLIFERA_LISTEN="+addr,
 	)
 	var log strings.Builder

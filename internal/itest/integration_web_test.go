@@ -32,7 +32,7 @@
 //     path keys carrying 6 operations (POST /libraries + GET /libraries share
 //     the /libraries key). This test asserts the TRUE invariant: all 5 path
 //     keys + all 6 operations are present.
-package mellifera_test
+package itest
 
 import (
 	"bytes"
@@ -381,7 +381,8 @@ func TestWeb_Integration(t *testing.T) {
 		}
 		// A real hashed asset (Vite build) -> 200 + immutable.
 		jsAsset := "/assets/app.js" // fallback if discovery fails
-		if entries, err := os.ReadDir("internal/web/dist/assets"); err == nil {
+		distAssets := filepath.Join(moduleRoot(t), "internal", "web", "dist", "assets")
+		if entries, err := os.ReadDir(distAssets); err == nil {
 			for _, e := range entries {
 				if !e.IsDir() && strings.HasSuffix(e.Name(), ".js") {
 					jsAsset = "/assets/" + e.Name()
@@ -423,6 +424,7 @@ func TestWeb_Integration(t *testing.T) {
 		}
 		for _, target := range []string{"build", "check"} {
 			cmd := exec.Command("make", target)
+			cmd.Dir = moduleRoot(t) // the Makefile lives at the module root, not the test package dir
 			cmd.Stdout = nil
 			cmd.Stderr = nil
 			if out, err := cmd.CombinedOutput(); err != nil {
@@ -440,6 +442,7 @@ func TestWeb_Integration(t *testing.T) {
 		// pin.
 		diff := exec.Command("git", "diff", "--stat", "58a1130", "HEAD", "--",
 			"proto/", "pkg/sdk/")
+		diff.Dir = moduleRoot(t) // git pathspecs resolve against cwd — must be the module root
 		out, err := diff.CombinedOutput()
 		if err != nil {
 			t.Logf("git diff additive probe: %v (output: %s) — continuing", err, out)

@@ -20,7 +20,7 @@
 // (in-package list/create/get-item/admin-status + full-document deep-equal),
 // admin_status_test.go (happy/nil-503/error-500), integration_web_test.go::ac3
 // /ac4/ac5 (composed-handler happy paths).
-package mellifera_test
+package itest
 
 import (
 	"bytes"

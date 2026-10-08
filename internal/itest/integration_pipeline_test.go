@@ -25,7 +25,7 @@
 // This stub keeps the test name (skipped) so a stale `go test -run
 // TestIntegrationPipeline` invocation is unambiguous about WHY it no longer runs,
 // rather than silently reporting "no matching tests".
-package mellifera_test
+package itest
 
 import "testing"
 

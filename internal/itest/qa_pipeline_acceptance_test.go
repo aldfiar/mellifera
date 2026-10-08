@@ -24,7 +24,7 @@
 //
 // This stub keeps the test name (skipped) so a stale `go test -run
 // TestQA_PipelineAcceptanceReDerivation` is unambiguous about WHY it no longer runs.
-package mellifera_test
+package itest
 
 import "testing"
 

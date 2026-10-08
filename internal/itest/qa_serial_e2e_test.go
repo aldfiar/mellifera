@@ -20,7 +20,7 @@
 // helper is qaSerial-prefixed to stay collision-free in package mellifera_test;
 // the shared harness (buildBinary/doRequest/scanLibrary/listItems/…,
 // integration_test.go) is reused as-is.
-package mellifera_test
+package itest
 
 import (
 	"crypto/sha256"

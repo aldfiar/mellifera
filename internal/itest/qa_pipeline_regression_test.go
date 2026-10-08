@@ -17,7 +17,7 @@
 // state-machine legality, and namespace rejection at the subprocess layer are
 // covered by check.sh/depguard and the coder's unit + integration tests; see
 // docs/plugin-pipeline/qa/.joint_coverage.md for the layer mapping.)
-package mellifera_test
+package itest
 
 import (
 	"fmt"

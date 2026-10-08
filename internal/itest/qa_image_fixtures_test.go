@@ -6,7 +6,7 @@
 // assertions (mirrors the auditor's S-03 recommendation for the coder golden).
 // All helpers are package mellifera_test; no behavior lives here beyond test
 // plumbing and the independent exiftool re-derivation oracle.
-package mellifera_test
+package itest
 
 import (
 	"encoding/json"
@@ -321,15 +321,17 @@ func qaImgStrippedPath(t *testing.T) string {
 
 // qaImgStartServerStrippedPath starts the server with PATH=<stripped> (containing
 // ffprobe/ffmpeg but NOT exiftool), so the image-enricher subprocess inherits a
-// PATH where exec.LookPath("exiftool") fails. Otherwise identical to startServer.
+// PATH where exec.LookPath("exiftool") fails. Otherwise identical to startServer
+// (serialPluginBins pins the three serial plugins — HERMETIC, see startServer).
 func qaImgStartServerStrippedPath(t *testing.T, serverBin, scannerBin, tvParserBin, imageEnricherBin, tmp, token, pathDir string) string {
 	t.Helper()
 	addr := net.JoinHostPort("127.0.0.1", freePort(t))
 	dataDir := filepath.Join(tmp, "data-miss")
+	serialScannerBin, serialParserBin, frameGrabberBin := serialPluginBins(t, tmp)
 
 	// Build the env WITHOUT the inherited PATH (filter it), then add the stripped
 	// PATH + the plugin/server vars. Filtering avoids last-wins duplicate-key ambiguity.
-	env := make([]string, 0, len(os.Environ())+8)
+	env := make([]string, 0, len(os.Environ())+11)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "PATH=") {
 			continue
@@ -343,6 +345,9 @@ func qaImgStartServerStrippedPath(t *testing.T, serverBin, scannerBin, tvParserB
 		"MELLIFERA_BASE_SCANNER="+scannerBin,
 		"MELLIFERA_TV_PARSER="+tvParserBin,
 		"MELLIFERA_IMAGE_ENRICHER="+imageEnricherBin,
+		"MELLIFERA_SERIAL_SCANNER="+serialScannerBin,
+		"MELLIFERA_SERIAL_PARSER="+serialParserBin,
+		"MELLIFERA_FRAME_GRABBER="+frameGrabberBin,
 		"MELLIFERA_LISTEN="+addr,
 	)
 

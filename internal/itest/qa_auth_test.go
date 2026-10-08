@@ -11,7 +11,7 @@
 // creates NO library row (the domain call is truly gated). That is a genuinely
 // different failure-mode set and a higher altitude than the coder's test, so it
 // is not redundant.
-package mellifera_test
+package itest
 
 import (
 	"bytes"

@@ -20,7 +20,7 @@
 // exiftool. Fixture/harness/oracle helpers live in qa_image_fixtures_test.go; the
 // shared scan harness (buildBinary/startServer/scanLibrary/listItems/…) is reused
 // from integration_test.go + integration_async_test.go.
-package mellifera_test
+package itest
 
 import (
 	"net/http"

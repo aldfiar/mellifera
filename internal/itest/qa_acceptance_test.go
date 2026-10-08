@@ -16,7 +16,7 @@
 // the coder's (Better Call Saul + Чернобыль vs Breaking Bad + Игра престолов),
 // so a parser regression that the coder's chosen values happen to mask is
 // caught by these different inputs.
-package mellifera_test
+package itest
 
 import (
 	"encoding/json"
@@ -316,6 +316,7 @@ func qaStartServer(t *testing.T, serverBin, scannerBin, tvParserBin, imageEnrich
 	t.Helper()
 	addr := net.JoinHostPort("127.0.0.1", qaFreePort(t))
 	dataDir := filepath.Join(tmp, "qa-data")
+	serialScannerBin, serialParserBin, frameGrabberBin := serialPluginBins(t, tmp)
 	srv := exec.Command(serverBin)
 	srv.Env = append(os.Environ(),
 		"MELLIFERA_DATA_DIR="+dataDir,
@@ -323,6 +324,9 @@ func qaStartServer(t *testing.T, serverBin, scannerBin, tvParserBin, imageEnrich
 		"MELLIFERA_BASE_SCANNER="+scannerBin,
 		"MELLIFERA_TV_PARSER="+tvParserBin,
 		"MELLIFERA_IMAGE_ENRICHER="+imageEnricherBin,
+		"MELLIFERA_SERIAL_SCANNER="+serialScannerBin,
+		"MELLIFERA_SERIAL_PARSER="+serialParserBin,
+		"MELLIFERA_FRAME_GRABBER="+frameGrabberBin,
 		"MELLIFERA_LISTEN="+addr,
 	)
 	var log strings.Builder

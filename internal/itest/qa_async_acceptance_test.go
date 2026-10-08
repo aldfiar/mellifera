@@ -24,7 +24,7 @@
 //   - assertion shape: table-driven expected values (qasyncExpect), not per-field ifs.
 //
 // Skips cleanly under -short / missing ffprobe|ffmpeg (INV-skip-clean).
-package mellifera_test
+package itest
 
 import (
 	"net/http"

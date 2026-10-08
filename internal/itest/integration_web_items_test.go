@@ -26,7 +26,7 @@
 // Status filtering is intentionally NOT re-tested here — in-package
 // TestListItems_StatusFilter (internal/api/router_test.go) already owns that
 // matrix; one confirming case rides along in the scoping sub-test.
-package mellifera_test
+package itest
 
 import (
 	"bytes"

@@ -14,7 +14,7 @@
 // ffmpeg webp + sips heic). Skips cleanly under -short / missing exiftool. The
 // AC-2/AC-3 structural probes (no-CGO, go.mod untouched, additive diff) are run as
 // the delegation's bash gate (they are git/grep probes by nature).
-package mellifera_test
+package itest
 
 import (
 	"image"
