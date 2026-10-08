@@ -113,6 +113,42 @@ const imageConfigJSON = `{
   ]
 }`
 
+// serialConfigJSON is the serials-library module config, as JSON — a CONFIG
+// ENTITY (INV1/INV2) mirroring the tv seed shape. It binds serial-scanner
+// (scanner) with the structure knob "series-directories" (design.md §Interfaces
+// §3 — the plugin treats any other value as fatal config error) + serial-parser
+// (priority 1) and frame-grabber (priority 2) as the metadata_source chain,
+// under media_type "serial", schema_version 1. Both enrichers are LOCAL plugins:
+// no auth_mode (queueable per D-Q1). No display block — external show-metadata
+// sources are B3 territory; serial documents land ready for it.
+// display_name carries Russian first-class (arch §1.2).
+const serialConfigJSON = `{
+  "id": "serial",
+  "schema_version": 1,
+  "display_name": {"ru": "Сериалы (каталоги)", "en": "Serial Libraries"},
+  "media_type": "serial",
+  "scanner": {
+    "plugin_id": "serial-scanner",
+    "capability_id": "default",
+    "options": {
+      "structure": "series-directories",
+      "follow_symlinks": false
+    }
+  },
+  "metadata_sources": [
+    {
+      "plugin_id": "serial-parser", "capability_id": "default",
+      "priority": 1, "enabled": true,
+      "options": {}
+    },
+    {
+      "plugin_id": "frame-grabber", "capability_id": "default",
+      "priority": 2, "enabled": true,
+      "options": {}
+    }
+  ]
+}`
+
 // Registry is the in-memory cache of module configs, loaded once at Open.
 type Registry struct {
 	ordered []Module
@@ -152,9 +188,9 @@ type MetadataSourceBinding struct {
 	Options      json.RawMessage
 }
 
-// Open seeds the built-in TV module (idempotent), then loads every enabled
-// module config from the modules table into an in-memory cache. Get/List after
-// this are pure (no database access).
+// Open seeds the built-in module configs (tv, image, serial — idempotent), then
+// loads every enabled module config from the modules table into an in-memory
+// cache. Get/List after this are pure (no database access).
 func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	db := s.DB()
 	if _, err := db.ExecContext(ctx, seedModulesSQL,
@@ -169,6 +205,15 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 		"image", "image", imageConfigJSON, 1, 1, seedCreatedAt, seedCreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("module: seed image: %w", err)
+	}
+	// Third idempotent seed: the serial module (serial-scanner + serial-parser +
+	// frame-grabber, serials-library design.md §Interfaces §8 — mirrors the tv
+	// seed shape). INSERT OR IGNORE keeps the tv/image rows byte-identical and
+	// Open safe to run repeatedly.
+	if _, err := db.ExecContext(ctx, seedModulesSQL,
+		"serial", "serial", serialConfigJSON, 1, 1, seedCreatedAt, seedCreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("module: seed serial: %w", err)
 	}
 	rows, err := db.QueryContext(ctx, listModulesSQL)
 	if err != nil {

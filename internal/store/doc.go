@@ -20,6 +20,11 @@
 //   - Item: a persisted media item (document + denormalized query fields +
 //     a core-managed lifecycle status; the canonical set new/pending/parsed/
 //     enriched/failed/deleted is owned by internal/enrich, not store).
+//   - Series: a persisted serial-level entity (serials-library) keyed by
+//     (library_id, relative_path) with the SAME opaque-document discipline as
+//     items (INV3 applies verbatim — the store never parses a series document).
+//   - SeriesBackings: the two backing-kind constants QueryItemsBySeries takes
+//     as a plain argument (the store never derives a backing from the document).
 //   - Library: a configured scan root bound to a module.
 //   - FolderCount: one depth-1 item-path prefix + its count (LibraryFolders).
 //   - Open: opens SQLite, sets WAL, runs idempotent migrations, returns *Store.
@@ -34,6 +39,12 @@
 //   - PutItem: upserts an item keyed by file_id (idempotent re-scan).
 //   - QueryItems: lists items for a library with LIMIT/OFFSET; a non-empty
 //     status arg filters by exact lifecycle-state match (empty = all statuses).
+//   - PutSeries/GetSeries/QuerySeries/ListSeriesIDs/QueryItemsBySeries: the
+//     series CRUD set (methods — outside the symbol budget). PutSeries upserts
+//     by (library_id, relative_path) and mints the deterministic
+//     ser_<libraryID>_<sha16hex16(relative_path)> id; QueryItemsBySeries
+//     derives episodes by backing (exact match vs prefix + depth-1 filter)
+//     without a join column.
 //
 // # Invariants
 //
@@ -48,7 +59,8 @@
 //     columns (§9.2) project specific paths via json_extract at the SQLite
 //     layer (defined in DDL, not in Go).
 //   - INV4: Migrations create ALL §9.1 tables — including the reserved ones
-//     (playback_progress, drafts, enrichment_failures, scan_jobs) —
+//     (playback_progress, drafts, enrichment_failures, scan_jobs) and the
+//     serials-library series table (plain columns, NO generated columns) —
 //     additively (CREATE ... IF NOT EXISTS). Methods for reserved tables
 //     (RecordProgress/GetResume) are DEFERRED to a later feature.
 //   - INV5: store imports stdlib + modernc.org/sqlite only. It MAY NOT import

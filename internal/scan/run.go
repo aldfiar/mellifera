@@ -142,16 +142,26 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 	// (B6); the scanner subprocess observes the same ctx and closes up cleanly.
 	// notify fires ONLY after a clean drain (the !ok branch) — a cancelled
 	// context returns before notify, so a half-drained scan never signals the
-	// queue (B7: Notify is NOT called on ctx cancel).
+	// queue (B7: Notify is NOT called on ctx cancel). The series sweep runs in
+	// that same clean-drain branch and NOWHERE else: a scan whose stream did
+	// not drain cleanly must never advance a series row it never observed to
+	// "deleted" (serials-library box 1.6).
+	observed := make(map[string]bool)
 	for {
 		select {
 		case <-ctx.Done():
 			return finish(res), ctx.Err()
 		case f, ok := <-ch:
 			if !ok {
-				// Stream drained: non-blocking handoff to the enrich queue
-				// (AC-async / S5). The queue feeds its own bounded channel;
-				// notify does not await the async drain.
+				// Clean drain: sweep the library's series rows that this pass
+				// did not re-observe to "deleted" (vanished/renamed serial
+				// directories), then hand off to the queue.
+				if serr := sweepSeries(ctx, st, libraryID, observed, &res); serr != nil {
+					return finish(res), serr
+				}
+				// Non-blocking handoff to the enrich queue (AC-async / S5).
+				// The queue feeds its own bounded channel; notify does not
+				// await the async drain.
 				if notify != nil {
 					notify(ctx, libraryID)
 				}
@@ -159,29 +169,74 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 			}
 			res.Discovered++
 			res.Warnings = append(res.Warnings, f.GetWarnings()...)
-			if perr := persist(ctx, st, sc, f, mod, lib.RootPath, libraryID, &res); perr != nil {
+			if perr := persist(ctx, st, sc, f, mod, lib.RootPath, libraryID, observed, &res); perr != nil {
 				return finish(res), perr
 			}
 		}
 	}
 }
 
-// persist identifies one discovered file, assembles its base §3.1 document, and
-// upserts it into the store at status "pending" (the async worker advances it).
+// scanStatusDeleted is the lifecycle value the post-drain series sweep writes
+// for a series row that was NOT re-observed this pass (a vanished or renamed
+// serial directory). Like scanStatusPending/scanStatusStale it is owned by
+// internal/enrich (INV-status-owner); scan emits the literal it needs rather
+// than importing enrich's unexported consts.
+const scanStatusDeleted = "deleted"
+
+// sweepSeries advances every series row of the library that this scan pass did
+// not re-observe to "deleted" (serials-library box 1.5): the directory vanished,
+// or was renamed/moved (which is a NEW ser_ identity — the old row is deleted,
+// and no metadata is copied across identities). Already-deleted rows are left
+// untouched so repeated clean re-scans do not churn their updated_at. Errors
+// are soft (AC-6): a failed row sweep is a warning and the sweep continues; a
+// cancelled context aborts. The caller runs this ONLY after a clean drain.
+func sweepSeries(ctx context.Context, st *store.Store, libraryID int64, observed map[string]bool, res *Result) error {
+	rows, err := st.QuerySeries(ctx, libraryID, "")
+	if err != nil {
+		return fmt.Errorf("scan: series sweep: %w", err)
+	}
+	for _, sr := range rows {
+		if observed[sr.RelativePath] || sr.Status == scanStatusDeleted {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		sr.Status = scanStatusDeleted
+		if err := st.PutSeries(ctx, sr); err != nil {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("series sweep %q: %v", sr.RelativePath, err))
+			continue
+		}
+	}
+	return nil
+}
+
+// persist identifies one discovered file and routes it by the serial-record
+// marker fact (serials-library boxes 1.3/1.4): facts carrying
+// `serial_record: true` assemble a serial-level base document (design.md
+// §Interfaces §4 — parsed marker facts, ffprobe) and persist via PutSeries in
+// the SAME drain loop as PutItem; every other file is an episode item, whose
+// parsed (already carrying series_relative_path + sidecars when the scanner
+// stamps them — §Interfaces §2) flows through assembleBaseDoc verbatim.
 // Enrichment is NO LONGER driven inline (B1/AC-async): scan persists the base
 // document — carrying parsed + ffprobe so the worker reconstructs the per-item
 // base WITHOUT a re-probe (D-Q2 / S7, INV-persist-base) — and hands the library
 // to the queue via runScan's post-drain notify. The retained serial enricher
-// seam (B6) is not invoked here. A re-scan of a file whose base identity changed
-// advances the item to "stale" (AC-states(c)); an unchanged re-scan preserves the
-// prior status so a settled item is not regressed. Identify/PutItem failures are
-// soft (AC-6); a cancelled context is returned as an error so runScan stops
-// draining (B6) and takes precedence over any concurrent soft failure.
-func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, rootPath string, libraryID int64, res *Result) error {
+// seam (B6) is not invoked here. A re-scan whose base identity changed
+// advances the record to "stale" (AC-states(c)); an unchanged re-scan preserves
+// the prior status so a settled record is not regressed. Identify/persist
+// failures are soft (AC-6); a cancelled context is returned as an error so
+// runScan stops draining (B6) and takes precedence over any concurrent soft
+// failure.
+func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, rootPath string, libraryID int64, observed map[string]bool, res *Result) error {
 	identified, err := sc.Identify(ctx, &scannerv1.IdentifyRequest{File: f, ModuleType: mod.MediaType})
 	if err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("identify %q: %v", f.GetRelativePath(), err))
 		return ctx.Err()
+	}
+	parsed := identifyParsed(identified)
+	if isSerialRecord(parsed) {
+		return persistSeries(ctx, st, f, parsed, mod, rootPath, libraryID, observed, res)
 	}
 	base := assembleBaseDoc(f, identified, mod.MediaType, mod.SchemaVersion, rootPath)
 	status := nextScanStatus(ctx, st, libraryID, f.GetFileId(), base, res)
@@ -191,6 +246,108 @@ func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.
 	}
 	res.Persisted++
 	return nil
+}
+
+// persistSeries assembles the serial-level base document and upserts it via
+// PutSeries at the marker-decided status, recording the series'
+// series_relative_path in the pass's observed set (the post-drain sweep's
+// re-observation basis). The series identity is (library_id,
+// series_relative_path) — NOT the record's file_id — per design.md
+// §Interfaces §5. Failures are soft (AC-6) like the item path.
+func persistSeries(ctx context.Context, st *store.Store, f *scannerv1.DiscoveredFile, parsed map[string]any, mod module.Module, rootPath string, libraryID int64, observed map[string]bool, res *Result) error {
+	rel := seriesRelativePath(parsed, f.GetRelativePath())
+	doc := assembleSeriesDoc(f, parsed, rootPath)
+	status := nextSeriesStatus(ctx, st, libraryID, rel, doc, res)
+	if err := st.PutSeries(ctx, store.Series{
+		ModuleID:      mod.ID,
+		LibraryID:     libraryID,
+		RelativePath:  rel,
+		Document:      marshalDoc(doc),
+		SchemaVersion: mod.SchemaVersion,
+		Status:        status,
+	}); err != nil {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("persist series %q: %v", rel, err))
+		return ctx.Err()
+	}
+	observed[rel] = true
+	res.Persisted++
+	return nil
+}
+
+// identifyParsed projects an IdentifyResult's parsed Struct into a plain map
+// (the drain-side fact view the marker routing and series assembly read). A
+// nil or unmarshalable parsed yields an empty map — fact routing then treats
+// the record as a plain item, the pre-serials behavior.
+func identifyParsed(id *scannerv1.IdentifyResult) map[string]any {
+	m := map[string]any{}
+	if p := id.GetParsed(); p != nil {
+		if b, err := json.Marshal(p); err == nil {
+			_ = json.Unmarshal(b, &m)
+		}
+	}
+	return m
+}
+
+// isSerialRecord reports whether the parsed facts carry the serial-record
+// marker (design.md §Interfaces §1: `serial_record: true`). It keys ONLY on
+// the marker fact name — never on a media-type literal (INV2: the core stays
+// media-type-agnostic; a tv/image item's parsed simply never carries it).
+func isSerialRecord(parsed map[string]any) bool {
+	v, ok := parsed["serial_record"].(bool)
+	return ok && v
+}
+
+// seriesRelativePath reads the `series_relative_path` identity fact from the
+// marker facts, falling back to the record's own relative path when the fact
+// is absent or not a string (a malformed marker degrades to the record's path
+// — a warning-worthy identity, never a panic).
+func seriesRelativePath(parsed map[string]any, fallback string) string {
+	if v, ok := parsed["series_relative_path"].(string); ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
+// assembleSeriesDoc builds the serial-level base document per design.md
+// §Interfaces §4: parsed (the serial-record marker facts, plus the same
+// absolute_path stamp items get) and ffprobe — the verbatim FfprobeJson when
+// the scanner carried one (a file-backed record's probe), an empty object
+// otherwise (directory-backed). The core-managed namespaces (sources /
+// _provenance / _view / _stages) populate only as metadata plugins enrich the
+// document. The key set is exactly {parsed, ffprobe}: identity/lifecycle live
+// in the series row's columns, not duplicated into the opaque document.
+func assembleSeriesDoc(f *scannerv1.DiscoveredFile, parsed map[string]any, rootPath string) map[string]any {
+	parsedBytes, err := json.Marshal(parsed)
+	if err != nil {
+		parsedBytes = json.RawMessage(`{}`)
+	}
+	return map[string]any{
+		"parsed": parsedWithAbsolutePath(json.RawMessage(parsedBytes), rootPath, f.GetRelativePath()),
+		"ffprobe": func() json.RawMessage {
+			if raw := f.GetFfprobeJson(); len(raw) > 0 {
+				return json.RawMessage(raw) // verbatim (INV3)
+			}
+			return json.RawMessage(`{}`)
+		}(),
+	}
+}
+
+// nextSeriesStatus decides the lifecycle status scan persists for one serial
+// record — the series mirror of nextScanStatus over the same baseChanged /
+// canonical-JSON compare (serials-library box 1.4): "pending" for a first
+// sight, "stale" when the serial facts (parsed + ffprobe) changed, and the
+// prior status preserved for an unchanged re-scan (a ready series is not
+// regressed to pending). A lookup error is soft (AC-6): it falls back to
+// "pending" — the queue re-derives either way.
+func nextSeriesStatus(ctx context.Context, st *store.Store, libraryID int64, rel string, refreshed map[string]any, res *Result) string {
+	prior, err := st.GetSeriesByPath(ctx, libraryID, rel)
+	if err != nil {
+		return scanStatusPending // first sight (or unreadable prior) -> re-queue
+	}
+	if baseChanged(prior.Document, refreshed) {
+		return scanStatusStale
+	}
+	return prior.Status // unchanged re-scan: preserve (don't regress ready)
 }
 
 // scanStatusPending/scanStatusStale are the lifecycle values scan writes for a

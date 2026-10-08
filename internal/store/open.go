@@ -81,6 +81,24 @@ var schemaSQL = []string{
   tmdb_id        INTEGER GENERATED ALWAYS AS (json_extract(document, '$.identifiers.tmdb_id')) VIRTUAL,
   kinopoisk_id   INTEGER GENERATED ALWAYS AS (json_extract(document, '$.identifiers.kinopoisk_id')) VIRTUAL
 )`,
+	// series is the serials-library serial-level entity (serials-library D1):
+	// one row per serial directory (or file-backed stray video), identity
+	// (library_id, relative_path), carrying the §3.1 dynamic JSON document with
+	// the SAME namespace machinery as items — persisted opaque (INV3 applies
+	// verbatim: the store never parses a series document). Plain columns only —
+	// NO generated columns (the known B3b blocker is not touched).
+	`CREATE TABLE IF NOT EXISTS series (
+  id             TEXT PRIMARY KEY,
+  library_id     INTEGER NOT NULL,
+  module_id      TEXT NOT NULL,
+  relative_path  TEXT NOT NULL,
+  document       TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  status         TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  UNIQUE (library_id, relative_path)
+)`,
 	`CREATE TABLE IF NOT EXISTS drafts (
   token         TEXT PRIMARY KEY,
   core_instance TEXT NOT NULL,
@@ -122,6 +140,10 @@ var schemaSQL = []string{
 )`,
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
+	// series_library backs the per-library series listing/sweep paths
+	// (serials-library D1: index on library_id; the UNIQUE(library_id,
+	// relative_path) constraint is declared inline on the table).
+	`CREATE INDEX IF NOT EXISTS series_library ON series(library_id)`,
 	// §9.2 indexes for the common listing/lookup paths.
 	`CREATE INDEX IF NOT EXISTS items_display_title ON items(display_title)`,
 	`CREATE INDEX IF NOT EXISTS items_tmdb_id ON items(tmdb_id)`,

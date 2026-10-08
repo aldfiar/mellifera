@@ -87,7 +87,7 @@ func TestRegistry_List_CacheOnly(t *testing.T) {
 		t.Fatalf("insert movies: %v", err)
 	}
 
-	r, err := Open(ctx, s) // seeds tv + image, loads image + movies + tv
+	r, err := Open(ctx, s) // seeds tv + image + serial, loads image + movies + serial + tv
 	if err != nil {
 		t.Fatalf("module.Open: %v", err)
 	}
@@ -96,12 +96,13 @@ func TestRegistry_List_CacheOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(list) != 3 {
-		t.Fatalf("List = %d modules, want 3 (image+movies+tv): %+v", len(list), list)
+	if len(list) != 4 {
+		t.Fatalf("List = %d modules, want 4 (image+movies+serial+tv): %+v", len(list), list)
 	}
-	// id-ordered: "image" < "movies" < "tv".
-	if list[0].ID != "image" || list[1].ID != "movies" || list[2].ID != "tv" {
-		t.Fatalf("List order = %s, %s, %s; want image, movies, tv", list[0].ID, list[1].ID, list[2].ID)
+	// id-ordered: "image" < "movies" < "serial" < "tv".
+	if list[0].ID != "image" || list[1].ID != "movies" || list[2].ID != "serial" || list[3].ID != "tv" {
+		t.Fatalf("List order = %s, %s, %s, %s; want image, movies, serial, tv",
+			list[0].ID, list[1].ID, list[2].ID, list[3].ID)
 	}
 
 	// INV2: wipe the table; the cache must keep serving with no DB read.
@@ -112,8 +113,8 @@ func TestRegistry_List_CacheOnly(t *testing.T) {
 		t.Fatalf("Get(tv) after DB wipe = %v; cache must be independent of the DB (INV2)", err)
 	}
 	list2, err := r.List()
-	if err != nil || len(list2) != 3 {
-		t.Fatalf("List after DB wipe = %d (err=%v); want 3 (cache-only, INV2)", len(list2), err)
+	if err != nil || len(list2) != 4 {
+		t.Fatalf("List after DB wipe = %d (err=%v); want 4 (cache-only, INV2)", len(list2), err)
 	}
 }
 
@@ -197,4 +198,95 @@ func mustListLen(t *testing.T, r *Registry) int {
 		t.Fatalf("List: %v", err)
 	}
 	return len(list)
+}
+
+// TestSerialModuleSeed covers the serials-library module seed (box 1.1): Open
+// seeds an idempotent "serial" config entity mirroring the tv seed shape —
+// scanner binding serial-scanner/default with the "series-directories"
+// structure knob, and the ordered metadata chain serial-parser (priority 1) +
+// frame-grabber (priority 2), media_type "serial" — while the seeded tv and
+// image configs stay byte-identical.
+func TestSerialModuleSeed(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	r, err := Open(ctx, s)
+	if err != nil {
+		t.Fatalf("module.Open: %v", err)
+	}
+
+	m, err := r.Get("serial")
+	if err != nil {
+		t.Fatalf("Get(serial): %v", err)
+	}
+	if m.ID != "serial" || m.MediaType != "serial" || m.SchemaVersion != 1 {
+		t.Fatalf("Get(serial) = %+v, want id=serial media_type=serial schema_version=1", m)
+	}
+	if m.Scanner.PluginID != "serial-scanner" || m.Scanner.CapabilityID != "default" {
+		t.Fatalf("scanner binding = %+v, want serial-scanner/default", m.Scanner)
+	}
+	var opts struct {
+		Structure string `json:"structure"`
+	}
+	if err := json.Unmarshal(m.Scanner.Options, &opts); err != nil {
+		t.Fatalf("parse scanner options: %v", err)
+	}
+	if opts.Structure != "series-directories" {
+		t.Fatalf("options.structure = %q, want series-directories", opts.Structure)
+	}
+	if len(m.MetadataSources) != 2 {
+		t.Fatalf("metadata_sources len = %d, want 2 (serial-parser + frame-grabber)", len(m.MetadataSources))
+	}
+	for i, want := range []struct {
+		pluginID string
+		priority int
+	}{
+		{"serial-parser", 1},
+		{"frame-grabber", 2},
+	} {
+		src := m.MetadataSources[i]
+		if src.PluginID != want.pluginID || src.CapabilityID != "default" {
+			t.Errorf("metadata_source[%d] = %+v, want %s/default", i, src, want.pluginID)
+		}
+		if src.Priority != want.priority || !src.Enabled {
+			t.Errorf("metadata_source[%d] priority=%d enabled=%v, want priority=%d enabled=true",
+				i, src.Priority, src.Enabled, want.priority)
+		}
+		if src.AuthMode != "" {
+			t.Errorf("metadata_source[%d] auth_mode = %q, want empty (local plugin; queueable per D-Q1)",
+				i, src.AuthMode)
+		}
+	}
+
+	// The tv/image seeds are untouched by the serial addition: their persisted
+	// config blobs are byte-identical to the seed constants (the serial seed
+	// never rewrote them — INSERT OR IGNORE skips the existing rows).
+	for id, want := range map[string]string{"tv": tvConfigJSON, "image": imageConfigJSON} {
+		var got string
+		if err := s.DB().QueryRowContext(ctx,
+			"SELECT config_json FROM modules WHERE id = ?", id).Scan(&got); err != nil {
+			t.Fatalf("load %s config: %v", id, err)
+		}
+		if got != want {
+			t.Errorf("%s config_json differs from the %sConfigJSON seed constant (%d vs %d bytes)",
+				id, id, len(got), len(want))
+		}
+	}
+
+	// INSERT OR IGNORE: re-Open is error-free and does not duplicate the row.
+	if _, err := Open(ctx, s); err != nil {
+		t.Fatalf("re-Open: %v (serial seed must be idempotent)", err)
+	}
+	var n int
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM modules WHERE id = 'serial'").Scan(&n); err != nil {
+		t.Fatalf("count serial rows: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("serial seed rows = %d, want 1 (no duplicate after re-Open)", n)
+	}
 }
