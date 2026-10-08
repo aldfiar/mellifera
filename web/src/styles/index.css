@@ -61,3 +61,278 @@
     }
   }
 }
+
+/* ---- Sidebar shell (web-ui-phase-3 group 3) --------------------------------
+   The panel is hidden by default: .side sits translated off-canvas and the
+   body.side-open class (toggled by components/Sidebar.tsx, like the theme's
+   .dark) slides it in, hides the floating button and offsets the content.
+   Mechanics only — colors come from the shadcn slate tokens; the pastel type
+   dots are small accents, not a retheme. */
+.menu-fab {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  box-shadow: 0 4px 14px hsl(var(--foreground) / 0.08);
+}
+.menu-fab:hover {
+  background: hsl(var(--accent));
+}
+.menu-fab svg {
+  width: 17px;
+  height: 17px;
+}
+body.side-open .menu-fab {
+  display: none;
+}
+
+.side {
+  position: fixed;
+  inset-block: 0;
+  left: 0;
+  width: 224px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 10px;
+  overflow: hidden;
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border-right: 1px solid hsl(var(--border));
+  transform: translateX(-100%);
+  transition: transform 0.18s ease;
+}
+body.side-open .side {
+  transform: translateX(0);
+  box-shadow: 0 12px 40px hsl(var(--foreground) / 0.14);
+}
+
+/* Content: while the panel is hidden it takes the full width and reserves the
+   FAB's zone (padding-top) so page headings never sit under the button; when
+   open, the content shifts right of the 224px panel. */
+.app-content {
+  min-height: 100vh;
+  transition: margin-left 0.18s ease;
+}
+body:not(.side-open) .app-content {
+  padding-top: 54px;
+}
+body.side-open .app-content {
+  margin-left: 224px;
+  padding-top: 18px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .side,
+  .app-content {
+    transition: none;
+  }
+}
+
+.side-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+}
+.side-brand {
+  font-weight: 600;
+  font-size: 14px;
+}
+.side-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid hsl(var(--border));
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+}
+.side-toggle:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.side-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* Nav: Home/Admin are fixed rows; ONLY .side-colls flexes and scrolls, so 20+
+   collections scroll independently while the nav rows and the pinned profile
+   never move. */
+.side-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.side-colls {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.side-label {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+  padding: 6px 10px 2px;
+  white-space: nowrap;
+}
+.slink {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+}
+.slink svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.slink:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.slink-active {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font-weight: 600;
+}
+.slink-active:hover {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+.slink .lbl,
+.clink .lbl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.clink {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+  text-align: left;
+}
+.clink:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.clink-active {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+/* Pastel type dots — small accents keyed by module_id (serial=lavender,
+   tv=peach, image=mint, default/audiobook=sky). */
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: hsl(var(--muted-foreground));
+}
+.dot-serial {
+  background: #b7a6f4;
+}
+.dot-tv {
+  background: #f6c3a4;
+}
+.dot-image {
+  background: #a4e3c3;
+}
+.dot-audio {
+  background: #a4c8f4;
+}
+.clink .cnt {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+}
+
+/* Pinned footer: profile + theme toggle, pushed to the panel bottom no matter
+   how long the collections list is. */
+.side-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  border-top: 1px solid hsl(var(--border));
+  padding-top: 8px;
+}
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px;
+}
+.avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: hsl(var(--secondary));
+  color: hsl(var(--secondary-foreground));
+}
+.pinfo {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.pinfo b {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.pinfo small {
+  font-size: 10.5px;
+  color: hsl(var(--muted-foreground));
+}
+
+/* Small metadata chips (collection page item cards). */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  border: 1px solid hsl(var(--border));
+  padding: 1px 8px;
+  font-size: 10.5px;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+}

@@ -90,9 +90,10 @@ export function ThemeToggle(): ReactElement {
   );
 }
 
-// Boot apply — module-evaluation side effect, run ONCE. AppNav (this module's
-// only importer) renders inside the admin shell, but every route is reached
-// through statically-imported App.tsx, so this executes at SPA startup on all
-// pages and the persisted/system choice colors even the surfaces that never
-// mount the toggle. Idempotent (a class toggle), guarded like readStoredTheme.
+// Boot apply — module-evaluation side effect, run ONCE. Sidebar (this
+// module's only importer) renders inside the authed shell, but every route is
+// reached through statically-imported App.tsx, so this executes at SPA
+// startup on all pages and the persisted/system choice colors even the
+// surfaces that never mount the toggle (e.g. /login). Idempotent (a class
+// toggle), guarded like readStoredTheme.
 applyTheme(readStoredTheme() ?? systemTheme());

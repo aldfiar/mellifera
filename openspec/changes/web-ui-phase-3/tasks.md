@@ -26,10 +26,10 @@ this change with the serial layout gated on its presence. Max concurrency 2
 
 ## 3. SPA shell — sidebar, profile, navigation
 
-- [ ] 3.1 Sidebar hidden by default: floating menu button, slide-in 224px panel (brand, Home/Admin icon nav, pinned profile, theme toggle), chevron/Escape close, `mellifera.side` persistence, no heading overlap [probe:024d433d9435672e]
-- [ ] 3.2 Profile block: operator identity + role probed via `GET /admin/status` (admin on 200, client on 403/failure), pinned at the panel bottom [probe:e11f23f0dc338749]
-- [ ] 3.3 Collections list: all libraries as pastel-dot entries with summary counts, independently scrollable list, Home/Admin/profile pinned, counts never block opening [probe:2e30440ea6eccd07]
-- [ ] 3.4 Remove the top navigation header and the redundant Home page title; routes: `/` → Home, `/collections/{id}`, `/items/{id}`, `/admin`, `/login` [probe:b9c48ae1b98f0c79]
+- [x] 3.1 Sidebar hidden by default: floating menu button, slide-in 224px panel (brand, Home/Admin icon nav, pinned profile, theme toggle), chevron/Escape close, `mellifera.side` persistence, no heading overlap [probe:024d433d9435672e]
+- [x] 3.2 Profile block: operator identity + role probed via `GET /admin/status` (admin on 200, client on 403/failure), pinned at the panel bottom [probe:e11f23f0dc338749]
+- [x] 3.3 Collections list: all libraries as pastel-dot entries with summary counts, independently scrollable list, Home/Admin/profile pinned, counts never block opening [probe:2e30440ea6eccd07]
+- [x] 3.4 Remove the top navigation header and the redundant Home page title; routes: `/` → Home, `/collections/{id}`, `/items/{id}`, `/admin`, `/login` [probe:b9c48ae1b98f0c79]
 
 ## 4. Home — collections grid, Continue, Next up
 

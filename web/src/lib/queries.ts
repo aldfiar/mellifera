@@ -10,6 +10,7 @@ import {
 import {
   apiRequest,
   getItem,
+  getLibrarySummary,
   listItems,
   type AdminStatus,
   type ApiError,
@@ -18,6 +19,7 @@ import {
   type ItemsResponse,
   type LibrariesResponse,
   type LibraryDTO,
+  type LibrarySummary,
   type ListItemsParams,
   type ScanResponse,
 } from "@/lib/api";
@@ -31,6 +33,7 @@ import {
 //
 // Query keys are the exact strings in conventions §3 (INV-query-keys):
 //   ["libraries"]           — GET /api/v1/libraries
+//   ["library-summary", id] — GET /api/v1/libraries/{id}/summary
 //   ["admin-status"]        — GET /api/v1/admin/status (polls)
 //   ["library-scan", id]    — POST /api/v1/libraries/{id}/scan result
 //   ["items", params]       — GET /api/v1/items (params = ListItemsParams, so
@@ -93,6 +96,22 @@ export function useScanLibrary(): UseMutationResult<
     mutationFn: (id: number) =>
       apiRequest<ScanResponse>(`/api/v1/libraries/${id}/scan`, { method: "POST" }),
     retry: 0,
+  });
+}
+
+// useLibrarySummary — GET /api/v1/libraries/{id}/summary via
+// getLibrarySummary. Keyed ["library-summary", id]: one cache entry per
+// library, so the sidebar list and the collection header share the count
+// without extra round-trips (web-ui-phase-3 D1 accepts the N+1 at realistic
+// collection counts). Callers that render many summaries (the sidebar) mount
+// these lazily per open panel — the counts arrive asynchronously and never
+// block the surface around them. `enabled` guards a not-yet-parsed route id
+// (NaN) so the hook never fires a malformed request.
+export function useLibrarySummary(id: number): UseQueryResult<LibrarySummary> {
+  return useQuery({
+    queryKey: ["library-summary", id],
+    queryFn: () => getLibrarySummary(id),
+    enabled: Number.isFinite(id),
   });
 }
 

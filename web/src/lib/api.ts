@@ -6,19 +6,32 @@ import { clearToken, getToken } from "@/lib/auth";
 // the JSON tags EXACTLY (module_id, not moduleId) — these ARE the JSON shape;
 // drift = bug (INV-verbatim-field-names; conventions §3).
 
-// handlers.go:34-38 (createLibraryRequest)
+// handlers.go createLibraryRequest — description is optional; an omitted field
+// persists as "" (web-ui-phase-3 group 1).
 export interface CreateLibraryRequest {
-  module_id: string; // "tv" | "image"
+  module_id: string; // "tv" | "image" | "serial" | …
   root_path: string; // absolute OS path — local OR NFS-mounted
   display_name: string;
+  description?: string;
 }
 
-// handlers.go:46-51 (libraryDTO)
+// handlers.go libraryDTO — description is always present in responses (""
+// when never set; web-ui-phase-3 group 1).
 export interface LibraryDTO {
   id: number; // int64
   module_id: string;
   root_path: string;
   display_name: string;
+  description: string;
+}
+
+// handlers.go librarySummaryResponse — the constant-time count + last-update
+// aggregate (GET /api/v1/libraries/{id}/summary, group 1). updated_at is the
+// raw RFC3339 TEXT from the store ("" when the library has no items).
+export interface LibrarySummary {
+  library_id: number; // int64
+  items: number; // int64
+  updated_at: string;
 }
 
 // handlers.go:54-56 (librariesResponse) — empty array, never null
@@ -117,15 +130,24 @@ export class ApiError extends Error {
   }
 }
 
-// Endpoint path constants — ALL pre-existing (router.go:92-94,98-100).
-// GET /api/v1/items[/{id}] are the Phase-2b routes the browse slice consumes.
+// Endpoint path constants — ALL pre-existing (router.go:92-94,98-100 + the
+// web-ui-phase-3 additions). GET /api/v1/items[/{id}] are the Phase-2b routes
+// the item surfaces consume.
 export const ENDPOINTS = {
   libraries: "/api/v1/libraries",
   scan: (id: number): string => `/api/v1/libraries/${id}/scan`,
+  librarySummary: (id: number): string => `/api/v1/libraries/${id}/summary`,
   adminStatus: "/api/v1/admin/status",
   items: "/api/v1/items",
   item: (id: string): string => `/api/v1/items/${id}`,
 } as const;
+
+// getLibrarySummary — GET /api/v1/libraries/{id}/summary (handlers.go
+// librarySummary). Constant-time aggregate on the server; 404 with the
+// canonical not_found body for an unknown library.
+export async function getLibrarySummary(id: number): Promise<LibrarySummary> {
+  return apiRequest<LibrarySummary>(ENDPOINTS.librarySummary(id));
+}
 
 // listItems — GET /api/v1/items?library=&status=&limit=&offset= (handlers.go:
 // 216-230). `library` is required (server INV); `status` is sent only when set
