@@ -15,6 +15,16 @@ export interface CreateLibraryRequest {
   description?: string;
 }
 
+// handlers.go updateLibraryRequest — the PATCH /api/v1/libraries/{id} body.
+// Pointers carry presence on the Go side, so a field is sent ONLY when the
+// caller wants it changed; root_path/module_id are NOT part of this shape (the
+// server 400s an identity-field attempt — web-ui-phase-3 D2), and the TS type
+// omits them so the client cannot even build an immutable-field PATCH.
+export interface UpdateLibraryRequest {
+  display_name?: string;
+  description?: string;
+}
+
 // handlers.go libraryDTO — description is always present in responses (""
 // when never set; web-ui-phase-3 group 1).
 export interface LibraryDTO {
@@ -163,6 +173,7 @@ export class ApiError extends Error {
 // the item surfaces consume.
 export const ENDPOINTS = {
   libraries: "/api/v1/libraries",
+  library: (id: number): string => `/api/v1/libraries/${id}`,
   scan: (id: number): string => `/api/v1/libraries/${id}/scan`,
   librarySummary: (id: number): string => `/api/v1/libraries/${id}/summary`,
   libraryFolders: (id: number): string => `/api/v1/libraries/${id}/folders`,
@@ -171,6 +182,25 @@ export const ENDPOINTS = {
   item: (id: string): string => `/api/v1/items/${id}`,
   progress: "/api/v1/progress",
 } as const;
+
+// updateLibrary — PATCH /api/v1/libraries/{id} (handlers.go updateLibrary).
+// Sends only the present fields (Go decodes pointers — an absent field leaves
+// the column unchanged). 200 with the updated libraryDTO; 400 with the
+// canonical bad_request body when root_path/module_id appear (immutable) or
+// the body is non-canonical; 404 not_found for an unknown id. The caller
+// surfaces those errors inline — no auto-retry (mutations are retry:0).
+export async function updateLibrary(
+  id: number,
+  req: UpdateLibraryRequest,
+): Promise<LibraryDTO> {
+  return apiRequest<LibraryDTO>(ENDPOINTS.library(id), {
+    method: "PATCH",
+    // apiRequest JSON.stringifies non-string bodies and sets Content-Type;
+    // the cast bridges RequestInit.body's narrower BodyInit type (same bridge
+    // as useCreateLibrary).
+    body: req as unknown as BodyInit,
+  });
+}
 
 // getLibrarySummary — GET /api/v1/libraries/{id}/summary (handlers.go
 // librarySummary). Constant-time aggregate on the server; 404 with the

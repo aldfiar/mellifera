@@ -7,7 +7,7 @@ import Sidebar from "@/components/Sidebar";
 import Login from "@/pages/Login";
 import Home from "@/pages/home/Home";
 import Collection from "@/pages/collections/Collection";
-import Admin from "@/pages/admin/Admin";
+import Collections from "@/pages/admin/Collections";
 import ItemDetail from "@/pages/browse/ItemDetail";
 
 // Client-side route table (web-ui-phase-3 group 3). Routing is purely
@@ -75,7 +75,7 @@ export default function App(): ReactElement {
         element={
           <RequireAuth>
             <Shell>
-              <Admin />
+              <Collections />
             </Shell>
           </RequireAuth>
         }

@@ -14,6 +14,7 @@ import {
   getLibrarySummary,
   listItems,
   listProgress,
+  updateLibrary,
   type AdminStatus,
   type ApiError,
   type CreateLibraryRequest,
@@ -26,6 +27,7 @@ import {
   type ListItemsParams,
   type ProgressListResponse,
   type ScanResponse,
+  type UpdateLibraryRequest,
 } from "@/lib/api";
 
 // TanStack Query hooks over the 4 pre-existing Go endpoints
@@ -100,6 +102,27 @@ export function useScanLibrary(): UseMutationResult<
     mutationFn: (id: number) =>
       apiRequest<ScanResponse>(`/api/v1/libraries/${id}/scan`, { method: "POST" }),
     retry: 0,
+  });
+}
+
+// useUpdateLibrary — PATCH /api/v1/libraries/{id} via updateLibrary
+// (web-ui-phase-3 group 6: the admin edit overlay). Non-idempotent in effect →
+// retry:0 (INV-no-mutation-retry) — a 400/404 surfaces inline, no auto-retry.
+// On success invalidates ["libraries"] so the table re-fetches the patched
+// row (spec: "re-fetches the table"); summaries are NOT invalidated because a
+// rename does not change item counts or updated_at.
+export function useUpdateLibrary(): UseMutationResult<
+  LibraryDTO,
+  ApiError,
+  { id: number; req: UpdateLibraryRequest }
+> {
+  return useMutation({
+    mutationFn: ({ id, req }: { id: number; req: UpdateLibraryRequest }) =>
+      updateLibrary(id, req),
+    retry: 0,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["libraries"] });
+    },
   });
 }
 

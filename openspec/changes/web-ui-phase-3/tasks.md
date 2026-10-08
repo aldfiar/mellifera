@@ -46,10 +46,10 @@ this change with the serial layout gated on its presence. Max concurrency 2
 
 ## 6. Admin — collections management
 
-- [ ] 6.1 Collections table: name + description, type badge, root folder, Items/Updated from summary, per-row Scan (inline result) + Edit, sticky header at 20+ rows [probe:107d8a9a99bec216]
-- [ ] 6.2 Edit overlay: Name/Description inputs, read-only Type + Root folder with the re-identification warning, PATCH submission with inline 400/404 canonical errors, table re-fetch on success [probe:fdc92080f01735e6]
-- [ ] 6.3 Add-collection form gains Description; Status section removed from the SPA (no plugin/enrich UI anywhere in `web/src/pages/admin/`); `GET /admin/status` contract untouched [probe:bbfedb503f8ff6ff]
-- [ ] 6.4 Add-collection form renders Description and POSTs it on create [probe:43d0b2ce71a94805]
+- [x] 6.1 Collections table: name + description, type badge, root folder, Items/Updated from summary, per-row Scan (inline result) + Edit, sticky header at 20+ rows [probe:107d8a9a99bec216]
+- [x] 6.2 Edit overlay: Name/Description inputs, read-only Type + Root folder with the re-identification warning, PATCH submission with inline 400/404 canonical errors, table re-fetch on success [probe:fdc92080f01735e6]
+- [x] 6.3 Add-collection form gains Description; Status section removed from the SPA (no plugin/enrich UI anywhere in `web/src/pages/admin/`); `GET /admin/status` contract untouched [probe:bbfedb503f8ff6ff]
+- [x] 6.4 Add-collection form renders Description and POSTs it on create [probe:43d0b2ce71a94805]
 
 ## 7. QA + delivery
 
