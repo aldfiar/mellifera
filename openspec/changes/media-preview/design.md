@@ -151,5 +151,9 @@ schema, or contract migration exists to undo.
 
 - Card preview tile count (single tile now; collage later) — visual review at
   the gate may upgrade D8 without touching specs.
-- Whether ItemDetail should also surface the item's own media hero image —
-  not requested; deferred so the disclosure change stays reviewable alone.
+- ~~Whether ItemDetail should also surface the item's own media hero image~~
+  RESOLVED at the GATE 2 walkthrough (operator feedback: an item page without
+  its image reads broken): YES — shipped as the "Hero image leads the details
+  surface" scenario in the web-ui delta (probe d209cc37dda978ea, tasks 3.3),
+  using the already-landed media channel; no design change (D5/D6 applied
+  as-is to the new surface).

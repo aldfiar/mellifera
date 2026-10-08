@@ -153,6 +153,100 @@ describe("ItemDetail — Technical details disclosure", () => {
   });
 });
 
+describe("ItemDetail — hero media (media-preview walkthrough feedback)", () => {
+  // Same seams as the Collection tile tests: jsdom has no
+  // createObjectURL/revokeObjectURL (stubbed observable), and the media bytes
+  // travel the global fetch — spied here while getItem stays mocked at the
+  // module seam, so the ONLY network call a render makes is the hero's.
+  function stubObjectUrls(): { create: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> } {
+    const create = vi.fn(
+      (blob: Blob) => `blob:mock-${String(blob.size)}-${String(create.mock.calls.length)}`,
+    );
+    const revoke = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revoke, configurable: true, writable: true });
+    return { create, revoke };
+  }
+
+  function mediaResponse(): Response {
+    return new Response("jpeg-bytes", {
+      status: 200,
+      headers: { "Content-Type": "image/jpeg" },
+    });
+  }
+
+  function mediaCalls(spy: { mock: { calls: unknown[][] } }): string[] {
+    return spy.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/media"));
+  }
+
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const IMAGE_ITEM: ItemResponse = {
+    item: {
+      ...ITEM_RESPONSE.item,
+      id: "itm_1_img",
+      file_id: "img",
+      relative_path: "photos/vacation.jpg",
+      media_type: "image",
+      document: {
+        parsed: { absolute_path: "/libs/photos/vacation.jpg" },
+      },
+    },
+  };
+
+  const THUMB_ITEM: ItemResponse = {
+    item: {
+      ...ITEM_RESPONSE.item,
+      id: "itm_1_ep",
+      relative_path: "shows/Оська/s01e02.mkv",
+      document: {
+        sources: { "frame-grabber": { thumbnail_path: "/data/thumbs/ep.jpg" } },
+      },
+    },
+  };
+
+  it("leads the Details surface with the original for an image-typed item with an absolute-path fact", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(IMAGE_ITEM);
+    stubObjectUrls();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mediaResponse());
+
+    renderAtId("itm_1_img", freshClient());
+
+    const img = await screen.findByRole("img", { name: "photos/vacation.jpg" });
+    expect(img.getAttribute("src")).toMatch(/^blob:/);
+    // The ORIGINAL variant (no ?variant=) through the authenticated channel —
+    // exactly one media request; the core fields still render beneath it.
+    expect(mediaCalls(fetchSpy)).toEqual(["/api/v1/items/itm_1_img/media"]);
+    expect(screen.getByText("itm_1_img")).toBeDefined();
+  });
+
+  it("uses the thumb variant for an item carrying the frame-grabber fact", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(THUMB_ITEM);
+    stubObjectUrls();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mediaResponse());
+
+    renderAtId("itm_1_ep", freshClient());
+
+    await screen.findByRole("img", { name: "shows/Оська/s01e02.mkv" });
+    expect(mediaCalls(fetchSpy)).toEqual([
+      "/api/v1/items/itm_1_ep/media?variant=thumb",
+    ]);
+  });
+
+  it("renders no hero and fires no media request when no image resolvable (video, no thumb fact)", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(ITEM_RESPONSE);
+    stubObjectUrls();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mediaResponse());
+
+    renderAtId("itm_1_9", freshClient());
+
+    expect(await screen.findByText("itm_1_9")).toBeDefined();
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(mediaCalls(fetchSpy)).toEqual([]);
+  });
+});
+
 describe("ItemDetail — error edges", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());

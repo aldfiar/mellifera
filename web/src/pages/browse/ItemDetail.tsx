@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 import { useParams } from "react-router-dom";
 
 import type { ApiError, ItemDTO } from "@/lib/api";
-import { useItem } from "@/lib/queries";
+import {
+  ENDPOINTS,
+  hasFrameGrabberThumb,
+  hasOriginalFile,
+} from "@/lib/api";
+import { useItem, useItemMedia } from "@/lib/queries";
 import {
   provenanceEntries,
   sourcesOf,
@@ -20,6 +25,10 @@ import { Card, CardContent } from "@/components/ui/card";
 // ItemDetail — the full §3.1 document for one item (/items/:id), rendered
 // VERBATIM (INV-no-rounding, INV-no-merge) in two visual tiers:
 //   Details surface (always visible — the viewer-facing reading view):
+//     hero    media image       — the item's own media (walkthrough feedback:
+//                               an item page without its image reads broken)
+//                               via the same authenticated channel as the
+//                               collection tiles
 //     core    item-managed fields — id/module/library/path/type/status/version
 //     Tier 1  identifiers        — plain list
 //     Tier 3  _view              — <ViewFields> (values verbatim via JsonValue)
@@ -90,8 +99,27 @@ function ItemDetailView(props: { item: ItemDTO }): ReactElement {
     viewEntries(doc).map((e) => [e.fieldPath, e.entry]),
   );
 
+  // Hero media URL — the same client-side pre-selection the collection tiles
+  // use (media-preview D6): the frame-grabber thumb when the document names
+  // one, else the original only for image-typed items (a video original
+  // downloads rather than renders in an <img>). null → no hero section and no
+  // request at all; a fetch failure nulls the URL inside useItemMedia, so the
+  // page just falls back to the fields-only layout — never a broken-image.
+  const heroUrl = hasFrameGrabberThumb(doc)
+    ? ENDPOINTS.itemMedia(item.id, "thumb")
+    : item.media_type === "image" && hasOriginalFile(doc)
+      ? ENDPOINTS.itemMedia(item.id)
+      : null;
+  const hero = useItemMedia(heroUrl);
+
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6">
+      {hero !== null ? (
+        <section aria-label="Media">
+          <HeroImage src={hero} alt={item.relative_path} />
+        </section>
+      ) : null}
+
       <section>
         <h2 className="mb-3 text-base font-semibold">Item</h2>
         <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -205,5 +233,25 @@ function ItemDetailView(props: { item: ItemDTO }): ReactElement {
         </div>
       </details>
     </main>
+  );
+}
+
+// HeroImage — the Details surface's lead image, filling the content column
+// with its aspect preserved (object-contain; 80vh caps tall photos so the
+// fields stay reachable). Same error contract as the collection tiles'
+// <img>: a decode failure hides the element (fetch failures already null the
+// URL inside useItemMedia) — never a broken-image glyph.
+function HeroImage(props: { src: string; alt: string }): ReactElement | null {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return null;
+  }
+  return (
+    <img
+      src={props.src}
+      alt={props.alt}
+      className="max-h-[80vh] w-full rounded-lg border bg-card object-contain"
+      onError={() => setFailed(true)}
+    />
   );
 }

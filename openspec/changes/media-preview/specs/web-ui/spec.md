@@ -13,8 +13,15 @@ and `<StagesProgress>` for `_stages` entries (stage, plugin_id, status,
 advanced_to, started_at, finished_at, error?) — SHALL be collapsed (hidden)
 until the operator expands its disclosure, and SHALL render those tiers
 exactly as before once expanded: verbatim values, per-source namespaces never
-merged. A missing item (404 not_found) SHALL render a clear not-found state,
-not a crash.
+merged. The Details surface SHALL lead with the item's own media image when
+one is resolvable — the frame-grabber thumb fact
+(`sources["frame-grabber"].thumbnail_path`), else the original
+(`parsed.absolute_path`) for an image-typed item — fetched through the
+authenticated media channel at content-column width, aspect preserved; an
+item whose media cannot render as an image (a video without the thumb fact,
+a document with no media facts) SHALL render no hero image and no
+broken-image state. A missing item (404 not_found) SHALL render a clear
+not-found state, not a crash.
 
 #### Scenario: All document tiers render
 - **WHEN** the operator opens `/items/:id` for an enriched item carrying identifiers, sources, _view, _provenance, and _stages and expands the Technical details disclosure
@@ -42,6 +49,22 @@ grep -q "identifiers" web/src/pages/browse/ItemDetail.tsx
 ```bash
 set -e
 grep -qiE '<details|technical' web/src/pages/browse/ItemDetail.tsx
+```
+<!-- /wf:probe -->
+
+#### Scenario: Hero image leads the details surface
+- **WHEN** the operator opens `/items/:id` for an item whose document carries the frame-grabber thumb fact or, for an image-typed item, the original-path fact
+- **THEN** the Details surface leads with that image fetched through the authenticated media channel (thumb variant only for the thumb fact, original only for an image-typed item) at content-column width with its aspect preserved, while an item whose media cannot render as an image renders no hero image and fires no media request
+
+<!-- wf:probe id=d209cc37dda978ea -->
+```bash
+set -e
+grep -q "useItemMedia" web/src/pages/browse/ItemDetail.tsx
+grep -q "ENDPOINTS.itemMedia" web/src/pages/browse/ItemDetail.tsx
+grep -q "hasFrameGrabberThumb" web/src/pages/browse/ItemDetail.tsx
+grep -q "hasOriginalFile" web/src/pages/browse/ItemDetail.tsx
+grep -q 'media_type === "image"' web/src/pages/browse/ItemDetail.tsx
+grep -qi "hero" web/src/pages/browse/ItemDetail.test.tsx
 ```
 <!-- /wf:probe -->
 

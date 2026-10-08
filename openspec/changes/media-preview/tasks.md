@@ -24,6 +24,7 @@ group 1). Max concurrency 2: (1 + 3), then 2, then 4.
 
 - [x] 3.1 Details surface: core fields, identifiers, and `<ViewFields>` render directly; one "Technical details" disclosure wraps the existing `<SourceCard>`/`<ProvenanceBadge>`/`<StagesProgress>` renders verbatim (components and fidelity untouched) [probe:baed5580f9176115]
 - [x] 3.2 Collapsed by default; ItemDetail vitest updated and green (`cd web && npm test`, dev-time) [probe:280103bdebbb44df]
+- [x] 3.3 Hero image leads the Details surface (resolved GATE-2-walkthrough open question): thumb variant on the frame-grabber fact, original for image-typed items, no hero + no request when nothing image-resolvable; ItemDetail vitest covers all three [probe:d209cc37dda978ea]
 
 ## 4. QA + delivery
 
