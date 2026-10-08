@@ -18,7 +18,7 @@ embeds the **committed** artifacts (`internal/web/dist/*`,
 
 ```bash
 make build          # server + all packages (CGO_ENABLED=0)
-make build-plugin   # bin/base-scanner bin/tv-parser bin/image-enricher
+make build-plugin   # bin/{base-scanner,serial-scanner,tv-parser,image-enricher,serial-parser,frame-grabber}
 make web-build      # dev/CI only — regenerates the embedded web artifacts (§6)
 
 export MELLIFERA_ADMIN_TOKEN='change-me'
@@ -59,6 +59,9 @@ every other malformed/missing value falls back to its default with a warning
 | `MELLIFERA_BASE_SCANNER` | `bin/base-scanner` | Plugin binary path (dev-mode loading). |
 | `MELLIFERA_TV_PARSER` | `bin/tv-parser` | Plugin binary path. |
 | `MELLIFERA_IMAGE_ENRICHER` | `bin/image-enricher` | Plugin binary path. |
+| `MELLIFERA_SERIAL_SCANNER` | `bin/serial-scanner` | Plugin binary path. |
+| `MELLIFERA_SERIAL_PARSER` | `bin/serial-parser` | Plugin binary path. |
+| `MELLIFERA_FRAME_GRABBER` | `bin/frame-grabber` | Plugin binary path (needs `ffmpeg` at runtime). |
 | `MELLIFERA_ENRICH_WORKERS` | `4` | Async worker-pool size (§5). |
 | `MELLIFERA_ENRICH_MAX_ATTEMPTS` | `3` | In-memory retries per source before terminal `exhausted`. |
 | `MELLIFERA_ENRICH_LEASE_TTL` | `60s` | Per-item in-memory lease lifetime (lazy expiry). |

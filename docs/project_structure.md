@@ -114,7 +114,7 @@ The differentiator versus the Jellyfin/Emby lineage is **subprocess plugin isola
 
 CGO is avoided (pure-Go SQLite chosen to fit single-binary + cross-compile). No DI framework. No `reflect` (depguard-denied).
 
-## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a)
+## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a + `serials-library` + `web-ui-phase-3` + `media-preview`)
 
 Directory tree as realized by the foundational slice PLUS the additive Phase A,
 Phase B1, Phase B2, web-ui Phase 1, and web-ui Phase 2a layers (grounded in
@@ -140,19 +140,22 @@ mellifera/
 │   ├── plugin/                     # subprocess lifecycle + gRPC clients + capability routing (10 WARN; +MetadataSource accessor)
 │   ├── module/                     # config-driven module registry (7; +MetadataSourceBinding; tv-parser seed [A] + image-enricher image-module seed [B2])
 │   ├── scan/                       # scan-side orchestrator: Run/Deps/Result (3; B1: persists pending + Notify(libraryID), drops inline enrich, re-scan→stale; B2: stamps absolute_path into parsed for all items)
-│   ├── api/                        # chi router — PURE DELEGATION, zero logic (7 [web-ui]: +Role +AdminStatus/PluginHealth/EnrichStats; role-aware auth Principal{Role}+requireRole; 3 GETs /libraries /items/{id} /admin/status via Deps.Status closure; swag annotations)
+│   ├── api/                        # chi router — PURE DELEGATION, zero logic (7 exported symbols [web-ui]: +Role +AdminStatus/PluginHealth/EnrichStats; role-aware auth Principal{Role}+requireRole into TWO route groups — browse admin+client read-only, admin admin-only mutating; [phase-3] +PATCH /libraries/{id} +summary +folders +progress GET/PUT + [serials] +/series* + [media-preview] +GET/HEAD /items/{id}/media — 16 routes total; every handler swag-annotated; committed openapi.{json,yaml} regenerate via make web-build)
 │   ├── web/                        # [web-ui] embedding + composition layer (2: Handler+Options) — //go:embed all:dist (SPA) + embedded openapi.{yaml,json} + /docs (Swagger UI via swaggo/http-swagger); SPA fallback + immutable /assets cache; public surface (/, /assets, /openapi, /docs) unauthenticated; [2a] dist/* = the REAL hashed Vite build (placeholder app.js removed; embed target + 2 symbols unchanged)
 │   ├── enrich/                     # metadata-side orchestrator + async derived-queue: Enrich/Deps/Result + Queue/QueueConfig/Stats/NewQueue (7; B1: queue.go/worker.go/lease.go/retry.go) — UNCHANGED in B2/web-ui
-│   ├── itest/                      # [all features] black-box integration + QA suite (18 files, package `itest`) — external test package at internal/itest, NOT beside code: integration_* = per-feature AC-1 goldens (scan/pipeline/async/image) + web keystone; qa_* = independent acceptance + regression + pinned-baseline guards (git-diff additivity vs merge-bases, node-free build-gate dry-run). The server+plugin subprocess harness (startServer/qaStartServer/…, moduleRoot/buildBinary) is HERMETIC: every plugin is built into t.TempDir and pinned via MELLIFERA_* absolute paths, and make/git calls run with Dir=moduleRoot — the suite passes from any cwd (incl. a fresh checkout with no bin/ artifacts)
+│   ├── itest/                      # [all features] black-box integration + QA suite (19 files, package `itest`) — external test package at internal/itest, NOT beside code: integration_* = per-feature AC-1 goldens (scan/pipeline/async/image/web/web-items/media) ; qa_* = independent acceptance + regression + pinned-baseline guards (git-diff additivity vs merge-bases, node-free build-gate dry-run). The server+plugin subprocess harness (startServer/qaStartServer/…, moduleRoot/buildBinary) is HERMETIC: every plugin is built into t.TempDir and pinned via MELLIFERA_* absolute paths, and make/git calls run with Dir=moduleRoot — the suite passes from any cwd (incl. a fresh checkout with no bin/ artifacts)
 │   ├── stream/                     # DEFERRED
 │   └── janitor/                    # DEFERRED
 ├── plugins/
 │   ├── base-scanner/               # scanner subprocess: walk + ffprobe + withinRoot (media-type-agnostic; parseTV extracted); B2: image.go — module-type-gated image discovery + stdlib base info (jpeg/png dims; webp/heic soft-fail)
 │   ├── tv-parser/                  # metadata_source subprocess: parseTV moved here verbatim; serves metadata.v1.MetadataSource
-│   └── image-enricher/             # metadata_source subprocess [B2]: EXIF via the system exiftool (os/exec arg-slice); structural mirror of tv-parser; serves metadata.v1.MetadataSource
+│   ├── image-enricher/             # metadata_source subprocess [B2]: EXIF via the system exiftool (os/exec arg-slice); structural mirror of tv-parser; serves metadata.v1.MetadataSource
+│   ├── serial-scanner/             # scanner subprocess [serials-library]: walks the serial root into series candidates (S/E-structured dirs)
+│   ├── serial-parser/              # metadata_source subprocess [serials-library]: serial-level + episode-level facts from directory structure (no network)
+│   └── frame-grabber/              # metadata_source subprocess [serials-library]: ffmpeg JPEG grabs under <dataDir>/thumbs/, stamped sources["frame-grabber"].thumbnail_path into episode documents (the fact the media endpoint serves as ?variant=thumb)
 ├── cmd/
-│   └── mellifera/                  # flat main.go — constructor wiring (loads base-scanner + tv-parser + image-enricher [B2]; builds enrich.Deps; B1: enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs; B2: MELLIFERA_IMAGE_ENRICHER env; [web-ui]: composes web.Handler(api.New(deps),opts) as sole handler + builds Deps.Status closure + MELLIFERA_WEB_DEV; UNCHANGED in 2a)
-└── web/                            # [web-ui 2a] React SPA (npm project root; node/npm DEV-ONLY): Vite 5 + React 18 + TS strict + react-router-dom + TanStack Query + Tailwind/shadcn (8 copy-in primitives); src/lib api.ts (typed DTOs + Bearer fetch wrapper; 4 pre-existing routes ONLY), auth.ts (localStorage token), queries.ts (4 hooks); pages Login + admin/{Admin,Libraries,Status}; Vitest 16 cases
+│   └── mellifera/                  # flat main.go — constructor wiring (loads all SIX plugin subprocesses — base-scanner, serial-scanner, tv-parser, image-enricher, serial-parser, frame-grabber — paths overridable via MELLIFERA_<PLUGIN> env, default bin/; builds enrich.Deps; enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs; composes web.Handler(api.New(deps),opts) as sole handler + builds Deps.Status closure + MELLIFERA_WEB_DEV)
+└── web/                            # React SPA (npm project root; node/npm DEV-ONLY): Vite 5 + React 18 + TS strict + react-router-dom + TanStack Query + Tailwind/shadcn (8 copy-in primitives); src/lib api.ts (typed DTOs mirroring the Go json tags verbatim + Bearer fetch wrapper + authenticated media objectURL channel + endpoint allowlist + MediaVariant union), auth.ts (localStorage token), document.ts (§3.1 accessors), queries.ts (TanStack hooks + useItemMedia); pages Login + Home (collections + Continue/Next-up rails) + Browse + ItemDetail (Details surface + collapsed Technical details + hero media) + collections/{Collection,serial episode flow} + admin/{Admin,Libraries,Status}; components/{Sidebar shell, metadata/*, states, ui/*}; Vitest 96 cases
 ```
 
 Dependency direction points **down only**: `web → api → scan → enrich → {module, plugin} → store` (web-ui Phase 1: `internal/web` composes `internal/api`; api does not import web). Phase B1: scan no longer calls enrich inline — after persisting items `pending` it hands the library to the `enrich.Queue` via `Deps.Notify` (wired in `cmd/mellifera`); enrich still never imports scan. The worker pool is a process-lifetime component (started before serving, stopped on shutdown). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4). web-ui Phase 2a adds ZERO Go import edges — the SPA in `web/` is a same-origin HTTP client of `/api/v1/*` (Bearer header; no CORS), not an importer.
@@ -214,28 +217,23 @@ All DECIDED or DEFAULTED in `docs/open-questions.md`; none OPEN. Load-bearing fo
 
 Q1–Q28 carry reversible defaults with named revisit triggers (see `docs/open-questions.md`). Risk register R1–R14 lives there too.
 
-## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a)
+## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a + `serials-library` + `web-ui-phase-3` + `media-preview`)
 
-The foundational slice plus the additive Phase A, Phase B1, Phase B2, web-ui
-Phase 1, and web-ui Phase 2a layers are implemented. For the five committed
-layers all verification gates are green — `gofmt`/`build`/`vet`/`test`/`-race`/
-`lint`/`check.sh` all PASS (no data races; reviewer PROCEED, health-check
-HEALTHY PROCEED (P0/P1: 0), QA green; B1 `completed_count=13`; B2
-`completed_count=11`; web-ui `completed_count=21`). **web-ui Phase 2a is NOT
-yet committed**: it lives uncommitted on `feature/web-ui-phase-2` (HEAD =
-`47f276e`), pipeline at **reviewer** — coder T01–T12 done
-(`completed_count=11/16`; the T12 blocker was resolved by reviewer-accepted
-test-only adjustments), `reviews/review_coder.md` verdict **PROCEED to commit +
-merge**; the independent QA pass + docs tasks are still PENDING. Gates on the
-working tree: `make build`/`check`/`lint` green, `go test ./internal/web/`
-passes against the real Vite build, and the web/ Vitest suite is 16/16; the
-`swag init` step of `make web-build` has a PRE-EXISTING `json.RawMessage` parse
-issue (Phase-1-era; the committed `openapi.{json,yaml}` stay valid).
+The foundational slice plus the additive Phase A, B1, B2, web-ui Phase 1/2a/2b+2c,
+serials-library, web-ui-phase-3, and media-preview layers are implemented — all
+committed on `feature/web-ui-phase-3` (merged to `main` 2026-10-09), eight
+living specs under `openspec/specs/`, and the per-change gate records in
+`openspec/changes/archive/`. All verification gates are green at the merge
+point: `make build && make check && make test` node-free PASS,
+`cd web && npm test` 96/96 Vitest + `tsc --noEmit` + eslint clean, and every
+archived change's probe set re-runs exit 0 (the `swag init` step of
+`make web-build` was fixed in media-preview: `-d internal/api -g doc.go`
+reproduces the committed `openapi.{json,yaml}` byte-identically).
 
-- `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0). **Unchanged** across Phase A/B1/B2/2a (additive). web-ui Phase 1 adds the first new Go runtime dep — `github.com/swaggo/http-swagger v1.3.4` (+ transitives) for the Swagger UI at `/docs/`; NOTICE-documented. `swag`/`swagfmt` stay dev/CI CLIs (not in `go.mod` as runtime). Phase 2a adds ZERO Go deps (the React toolchain lives in `web/package.json`, dev-only).
-- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich,web}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser,image-enricher}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged**), and (Phase 2a) the `web/` React SPA.
-- `mellifera` binary (server) + `base-scanner` + `tv-parser` + `image-enricher` binaries via `make build` / `make build-plugin` (3 plugin binaries). The server serves the embedded React SPA (Phase 2a real build).
-- `internal/itest/` — the black-box integration + QA suite, 18 files in package `itest` (moved off the repo root into Go-idiomatic layout; unit tests stay beside the code they test): `integration_test.go` (scan-library) + `integration_pipeline_test.go` (Phase A) + `integration_async_test.go` (Phase B1 AC-1 async golden) + `integration_image_test.go` (Phase B2 AC-1 async image golden) + `integration_web_test.go` (web-ui keystone) + `integration_web_items_test.go` (2a items contract) + `qa_*_test.go` (independent acceptance + regression for all slices) + `web/src/**/*.test.{ts,tsx}` (Vitest — Phase 2a+).
+- `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0). **Unchanged** across Phase A/B1/B2/2a (additive). web-ui Phase 1 adds the first new Go runtime dep — `github.com/swaggo/http-swagger v1.3.4` (+ transitives) for the Swagger UI at `/docs/`; NOTICE-documented. `swag`/`swagfmt` stay dev/CI CLIs (not in `go.mod` as runtime). Phase 2a and every layer since add ZERO Go deps (the React toolchain lives in `web/package.json`, dev-only).
+- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich,web}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser,image-enricher,serial-scanner,serial-parser,frame-grabber}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged** — serials-library added ZERO new protos), and the `web/` React SPA.
+- `mellifera` binary (server) + 6 plugin binaries via `make build` / `make build-plugin` (`base-scanner`, `serial-scanner`, `tv-parser`, `image-enricher`, `serial-parser`, `frame-grabber`). The server serves the embedded React SPA.
+- `internal/itest/` — the black-box integration + QA suite, 19 files in package `itest` (moved off the repo root into Go-idiomatic layout; unit tests stay beside the code they test): `integration_test.go` (scan-library) + `integration_pipeline_test.go` (Phase A) + `integration_async_test.go` (Phase B1 AC-1 async golden) + `integration_image_test.go` (Phase B2 AC-1 async image golden) + `integration_web_test.go` (web-ui keystone) + `integration_web_items_test.go` (2a items contract) + `integration_media_test.go` (media-preview media E2E) + serial E2E (`qa_serial_e2e_test.go`) + `qa_*_test.go` (independent acceptance + regression for all slices) + `web/src/**/*.test.{ts,tsx}` (Vitest — Phase 2a+).
 - Inputs, still read-only: `docs/{architecture,ai-architecture,prior-art,open-questions}.md`, `.claude/skills/mellifera-build/`, `.golangci.yml`.
 
 ### Phase A additions (additive — `plugin-pipeline`)
@@ -354,6 +352,76 @@ pagination constants 50/200, full-document byte-fidelity, 404 shape):
 - **Polish (2c).** `ThemeToggle` (light/dark, persisted in `localStorage` `mellifera.theme`), shared loading/error/empty states (`components/states.tsx`), `AppNav` navigation, and SPA route polish.
 - **`internal/web/dist/*` regenerated** for the new build. Client roles, `RoleClient` minting, and the recent-items widget remain deferred ([`backlog.md`](backlog.md)); behavior: `openspec/specs/web-ui/spec.md`.
 
+### serials-library additions (additive — archived 2026-10-08)
+
+Serial (episodic TV box-set) libraries as a second first-class library kind,
+with ZERO new protos (decision D-1 pattern holds — the serial trio are
+`scanner`/`metadata_source` subprocesses):
+
+- **`plugins/serial-scanner`** (scanner): walks the serial root into series
+  candidates; **`plugins/serial-parser`** (`metadata_source`): serial-level +
+  episode-level facts from directory structure (local, no network);
+  **`plugins/frame-grabber`** (`metadata_source`): ffmpeg JPEG grabs under
+  `<dataDir>/thumbs/` stamped as `sources["frame-grabber"].thumbnail_path`
+  into episode documents — the fact media-preview later serves.
+- **Series tables + wire**: `ser_<libraryID>_<sha16>` opaque ids; `GET
+  /api/v1/series`, `/series/{id}`, `/series/{id}/episodes` in the browse
+  group (the serial document is opaque on the wire exactly like an item
+  document). `ready`/`stale`/`deleted` series lifecycle.
+- **SPA**: the serial collection page (series grid + episode flow into the
+  same ItemDetail), module-`serial` sidebar/type accents.
+
+### web-ui-phase-3 additions (additive — archived 2026-10-08)
+
+The viewer-shaped SPA shell on top of the admin/browse skeleton:
+
+- **Sidebar shell** (`components/Sidebar.tsx` + `.side*` CSS): hidden by
+  default, FAB toggle, independently-scrolling collections list with pinned
+  nav + profile footer; detail pages highlight the parent collection entry
+  (shared `["item", id]` cache key — one request total).
+- **Home** (`pages/home/Home.tsx`): collection cards (+ summaries via `GET
+  /libraries/{id}/summary`, folders via `/libraries/{id}/folders`), Continue /
+  Next-up rails over the playback-progress endpoints (`GET /progress`,
+  `GET/PUT /progress/{item_id}` — PUT is a viewer action, browse group).
+- **Collections** (`pages/collections/Collection.tsx`): tv body (parsed chips
+  + raw filename + limit/offset paging), photos body (folder-chip client-side
+  filter + CSS-columns masonry with capture-date footers), serial body (the
+  series grid + episode flow).
+- **Admin**: collections table (sticky header, edit overlay over
+  `PATCH /libraries/{id}` — identity fields immutable), no plugin/enrich UI.
+- **Library mutations in the SPA**: `UpdateLibraryRequest` sends only present
+  fields (Go decodes pointers); root_path/module_id are unrepresentable in
+  the TS type (server 400s them regardless).
+
+### media-preview additions (additive — archived 2026-10-09)
+
+Real media bytes + the viewer-first detail page (the first NEW capability
+spec since async-enrichment: `openspec/specs/media-serving/spec.md`):
+
+- **`GET /api/v1/items/{id}/media`** (+ explicit HEAD — chi does not fold
+  HEAD into Get) in the browse group, `internal/api/handlers.go itemMedia`:
+  `http.ServeContent` bytes, Content-Type by extension, strong ETag +
+  `Cache-Control: private, immutable`, 304s. Paths resolve ONLY from the
+  stored document — `parsed.absolute_path` for the original,
+  `sources["frame-grabber"].thumbnail_path` for `?variant=thumb`; a thumb
+  miss is a 404 (no server-side fallback — strict D6). Non-image bytes carry
+  `Content-Disposition: attachment` — **video downloads, it does not
+  stream**; `internal/stream` stays deferred.
+- **SPA media channel** (`web/src/lib/api.ts fetchItemMediaObjectUrl` +
+  `queries.ts useItemMedia`): an `<img>` cannot carry the bearer header, so
+  bytes are fetched through the authenticated wrapper into ONE blob object
+  URL, revoked on unmount/URL-change (deliberately not TanStack-cached —
+  cached object URLs would be dead). Photo masonry tiles, movie/episode
+  cards, and Home collection-card previews render real images over the
+  ratio-correct placeholder fallback; a thumb-less video is not previewable.
+- **ItemDetail viewer-first restructure**: the Details surface (core fields,
+  identifiers, `_view`, and the item's own HERO IMAGE) leads; Sources/
+  Provenance/Pipeline stages collapse into one native `<details>` "Technical
+  details" disclosure — content byte-identical when expanded (visibility
+  changed, fidelity did not).
+- **E2E**: `internal/itest/integration_media_test.go` (built server, real
+  scanned fixtures, bytes + headers + 304 + error contract).
+
 ### Capability model
 
 Two capability types now ship (the open-set the core knows): `scanner` (base-scanner) and
@@ -383,13 +451,27 @@ deferred):** the real React app — `web/` (`package.json` + `vite.config.ts` + 
 token-entry auth layer (`localStorage` + `<RequireAuth>`), the admin panel (libraries list/add/scan +
 status), the client **browse** panel + item detail with §3.1 metadata rendering, and the polish layer
 (theme toggle, shared states) — embedded as the REAL Vite build at `internal/web/dist/` (the Phase-1
-placeholder shell is gone). **Still deferred:** client panels for non-admin roles + the
-`RoleClient` resolver (type exists, no minter yet), B3 (TMDB + `AuthContext`), Phase C
-(post-action) — see [`backlog.md`](backlog.md).
+placeholder shell is gone). **Realized in web-ui 2b+2c (no longer deferred):** the full
+user-facing browse/detail surface + theme + shared states. **Realized in
+serials-library (no longer deferred):** serial libraries end-to-end (the
+serial trio of plugins, series tables + `/series*` wire, the series grid +
+episode flow) — with the frame-grabber thumbnail fact that media-preview
+serves. **Realized in web-ui-phase-3 (no longer deferred):** the sidebar
+shell, Home rails over playback progress, the three collection bodies, the
+admin collections table + edit overlay, `PATCH /libraries/{id}`. **Realized
+in media-preview (no longer deferred):** item media byte serving (the
+`media-serving` capability — originals + frame-grabber thumbs, document-only
+path resolution) and the SPA's real-image rendering + the viewer-first
+ItemDetail. **Still deferred:** `internal/stream` (range-request video
+serving — media MVP *downloads* video instead), `internal/janitor`, client
+panels for non-admin roles + the `RoleClient` resolver (type exists, no
+minter yet), B3 (TMDB + `AuthContext`), Phase C (post-action) — see
+[`backlog.md`](backlog.md).
 
 The per-feature wf records (plans, contracts, reviews, qa, state) were removed on
 2026-10-06 — behavior lives in `openspec/specs/` (scan-library, plugin-pipeline,
-async-enrichment, image-enrichment, web-ui), the gate records in
+async-enrichment, image-enrichment, web-ui, serial-library, media-serving, and
+the playback-progress additions inside web-ui), the gate records in
 `openspec/changes/archive/`, and the full records in git history.
 
 ## Open questions the planner must resolve

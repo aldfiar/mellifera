@@ -6,13 +6,15 @@
 > `docs/architecture.md` (§2 protos, §3.1 document model, §7.3 restart, §9.1
 > schema, §11.5 Principal, §11.6 errors); behavioral requirements:
 > `openspec/specs/` (scan-library, plugin-pipeline, async-enrichment,
-> image-enrichment, web-ui). Operations (env knobs, build, plugins, async queue):
+> image-enrichment, web-ui, serial-library, media-serving). Operations (env
+> knobs, build, plugins, async queue):
 > [`operator-runbook.md`](operator-runbook.md).
 >
 > Consolidated 2026-10-06 from the per-feature references that shipped with
 > scan-library → plugin-pipeline (Phase A) → async-enrichment (B1) → web-ui
-> (Phase 1/2a); the per-feature records live in git history and
-> `openspec/changes/archive/`.
+> (Phase 1/2a); re-actualized 2026-10-09 for web-ui 2b+2c → serials-library →
+> web-ui-phase-3 → media-preview; the per-feature records live in git history
+> and `openspec/changes/archive/`.
 
 ## 1. Surfaces and authentication
 
@@ -34,9 +36,10 @@ invoked:
 
 A valid token resolves a `Principal{Role}` into the request context
 (arch §11.5): a valid **admin** token → `RoleAdmin` (everything). `RoleClient`
-exists and the read-only routes admit admin+client, but no resolver mints client
+exists and the browse routes admit admin+client, but no resolver mints client
 tokens yet (the D18 multi-user swap point). Handler groups
-(`internal/api`): **browse** = admin+client read-only; **admin** = admin-only
+(`internal/api`): **browse** = admin+client (the read-only views plus the one
+viewer action, `PUT /progress/{item_id}`); **admin** = admin-only
 mutating + liveness. Handlers never fork on `Role`.
 
 ## 2. Endpoints
@@ -73,7 +76,26 @@ pure delegation: parse → call ONE domain function → write the response
 ### `GET /api/v1/libraries` — list libraries
 
 `200 OK` with `{"libraries":[{ "id":1, "module_id":"tv", "root_path":"/media/TV",
-"display_name":"TV" }]}`.
+"display_name":"TV", "description":"" }]}`.
+
+### `PATCH /api/v1/libraries/{id}` — edit a library (admin-only)
+
+Body carries only the fields being changed (Go decodes pointers; an absent
+field stays unchanged): `{"display_name":"…","description":"…"}`.
+`root_path`/`module_id` are immutable — including them is `400 bad_request`;
+`404` for an unknown id. Success: `200 OK` with the updated library.
+
+### `GET /api/v1/libraries/{id}/summary` — items count + last update
+
+Constant-time aggregate (no row scan): `200 OK` with
+`{"library_id":1,"items":12,"updated_at":"2026-10-08T10:00:00Z"}` (`updated_at`
+is `""` for a library with no items); `404` for an unknown library.
+
+### `GET /api/v1/libraries/{id}/folders` — depth-1 folder prefixes
+
+`200 OK` with `{"folders":[{"path":"Season 1","items":8},{"path":"","items":3}]}`
+— depth-1 subfolder prefixes path-sorted with item counts; top-level files
+report `path:""`; `404` for an unknown library.
 
 ### `GET /api/v1/items?library={id}&status=&limit=&offset=` — list/filter items
 
@@ -112,6 +134,66 @@ pure delegation: parse → call ONE domain function → write the response
 
 `200 OK` with the same item shape as above; `404` with
 `{"error":{"code":"not_found", ...  "retryable":false}}` when absent.
+
+### `GET /api/v1/items/{id}/media` — serve the item's media bytes
+
+Browse-group byte serving for the SPA's `<img>` surfaces (media-serving spec).
+`http.ServeContent` semantics: `Content-Type` by file extension, a strong
+`ETag` + `Cache-Control: private, immutable` (`If-None-Match` → `304`), and an
+explicit `HEAD` route answering headers-only.
+
+- No variant: the item's original file, resolved ONLY from the stored
+  document's `parsed.absolute_path`.
+- `?variant=thumb`: the frame-grabber JPEG from
+  `sources["frame-grabber"].thumbnail_path` — a thumb the document does not
+  name is `404` (no server-side fallback to the original).
+- Errors: `404` unknown id / no path fact / file missing on disk; `400`
+  unknown `variant` value. Client-supplied values never steer path resolution.
+- Content-Disposition: `inline` for image content; `attachment` otherwise —
+  **video files download, they do not stream** (no range-seeking UI, no
+  transcode; `internal/stream` stays deferred).
+
+The SPA never points an `<img src>` at this route (that channel cannot carry
+the bearer header) — it fetches the bytes through the authenticated wrapper
+and renders the resulting object URL.
+
+### `GET /api/v1/series?library={id}` — list a library's series
+
+Serial-level views (`serial-library` spec). `library` is required (a
+non-integer value is `400`); the list comes back whole — no limit/offset —
+`relative_path`-ordered, `{"items":[seriesDTO]}`. A seriesDTO mirrors itemDTO:
+`id` is the opaque `ser_<libraryID>_<sha16>`, plus `module_id`, `library_id`,
+`relative_path`, the full serial-level `document` (opaque bytes),
+`schema_version`, and the series lifecycle `status` (`pending`/`stale`/
+`ready`/`deleted`).
+
+### `GET /api/v1/series/{id}` — fetch one series
+
+`200 OK` with the seriesDTO; `404` for an unknown series id.
+
+### `GET /api/v1/series/{id}/episodes` — a series' episode items
+
+`200 OK` with the SAME wire shape as `GET /api/v1/items`
+(`{"items":[itemDTO]}`); `404` for an unknown series id.
+
+### `GET /api/v1/progress?limit=` — recent playback positions
+
+Newest-first, positive positions only: `200 OK` with
+`{"items":[{"item_id":"itm_…","position_seconds":42,"updated_at":"…"}]}`.
+`limit` defaults to `20`, clamps to `100`; a PRESENT non-integer or
+non-positive limit is `400` (stricter than the item tables' silent fallbacks —
+this feeds a user-facing rail).
+
+### `GET /api/v1/progress/{item_id}` — one stored position
+
+`200 OK` with the progressDTO; `404` when the item has no stored position.
+
+### `PUT /api/v1/progress/{item_id}` — save a playback position
+
+Browse-group BY DESIGN — writing a position is a viewer action, not an
+operator mutation. Body: `{"position_seconds":42}` (`>= 0`; missing or
+negative is `400`; malformed JSON is `400`); `404` for an unknown item.
+Success: `200 OK` with the stored progressDTO.
 
 ### `GET /api/v1/admin/status` — liveness snapshot (admin-only)
 
