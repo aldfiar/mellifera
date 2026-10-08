@@ -204,7 +204,11 @@ export default function Collection(): ReactElement {
 
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6">
-      <CollectionHeader lib={lib} />
+      <CollectionHeader
+        lib={lib}
+        itemCount={summary.data?.items}
+        updatedAt={summary.data?.updated_at}
+      />
       <CollectionBody module_id={lib.module_id} libraryId={lib.id} summaryLoaded={!summary.isLoading} itemCount={summary.data?.items} />
     </main>
   );
@@ -213,7 +217,11 @@ export default function Collection(): ReactElement {
 // CollectionHeader — name, pastel type badge (module_id), description, item
 // count and updated stamp from the summary. The count shows once the summary
 // lands; the header itself never waits on it.
-function CollectionHeader(props: { lib: LibraryDTO }): ReactElement {
+function CollectionHeader(props: {
+  lib: LibraryDTO;
+  itemCount?: number;
+  updatedAt?: string;
+}): ReactElement {
   const { lib } = props;
 
   return (
@@ -225,6 +233,12 @@ function CollectionHeader(props: { lib: LibraryDTO }): ReactElement {
       </div>
       {lib.description ? (
         <p className="text-sm text-muted-foreground">{lib.description}</p>
+      ) : null}
+      {typeof props.itemCount === "number" ? (
+        <p className="text-xs text-muted-foreground">
+          {props.itemCount} items
+          {props.updatedAt ? ` · updated ${formatDatePart(props.updatedAt)}` : ""}
+        </p>
       ) : null}
     </header>
   );
