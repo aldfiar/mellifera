@@ -94,6 +94,12 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Get("/libraries/{id}/folders", h.libraryFolders)
 		r.Get("/items", h.listItems)
 		r.Get("/items/{id}", h.getItem)
+		// Series routes (serials-library): read-only serial-level views, same
+		// browse group as items — the serial document is opaque on the wire,
+		// exactly like an item document.
+		r.Get("/series", h.listSeries)
+		r.Get("/series/{id}", h.getSeries)
+		r.Get("/series/{id}/episodes", h.seriesEpisodes)
 		// Playback progress (web-ui-phase-3): the PUT lives in the browse
 		// group by design (admin+client) — writing a position is a viewer
 		// action, not an operator mutation.

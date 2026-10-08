@@ -50,8 +50,8 @@ existing proto only). Max concurrency 2 (1+2, then 3+4, then 5).
 
 > Depends on: Group 1
 
-- [ ] 4.1 Series routes in the browse group (`internal/api`, unexported handlers + unexported DTOs — the api package is at its exported-symbol warn threshold): `GET /api/v1/series?library={id}` (integer required → `400 bad_request`), `GET /api/v1/series/{id}` (full serial-level document, opaque; unknown → `404 not_found` with the canonical error body); handlers are pure delegation; mounted inside `mountV1Routes` browse group (router.go:89); regenerate the committed `internal/web/api/openapi.{json,yaml}` with the three new GETs; scan endpoints and the admin group untouched; no write endpoints [probe:e2feb234c74967df]
-- [ ] 4.2 `GET /api/v1/series/{id}/episodes` returning the series' episode items in the item wire shape (mirrors itemDTO delegation); 404 edge for an unknown series id on both `{id}` routes [probe:18b31cb62db7ceff]
+- [x] 4.1 Series routes in the browse group (`internal/api`, unexported handlers + unexported DTOs — the api package is at its exported-symbol warn threshold): `GET /api/v1/series?library={id}` (integer required → `400 bad_request`), `GET /api/v1/series/{id}` (full serial-level document, opaque; unknown → `404 not_found` with the canonical error body); handlers are pure delegation; mounted inside `mountV1Routes` browse group (router.go:89); regenerate the committed `internal/web/api/openapi.{json,yaml}` with the three new GETs; scan endpoints and the admin group untouched; no write endpoints [probe:e2feb234c74967df]
+- [x] 4.2 `GET /api/v1/series/{id}/episodes` returning the series' episode items in the item wire shape (mirrors itemDTO delegation); 404 edge for an unknown series id on both `{id}` routes [probe:18b31cb62db7ceff]
 
 ## 5. QA + delivery — joint contracts, regression, close-out
 

@@ -133,6 +133,33 @@ type itemsResponse struct {
 	Items []itemDTO `json:"items"`
 }
 
+// seriesDTO is the ONE wire shape for a series (no store.Series leaked — INV4),
+// mirroring itemDTO: the row identity fields plus the FULL §3.1 serial-level
+// document carried opaque (INV-full-document). Timestamps are intentionally
+// omitted (the document is the source of truth; carrying time.Time here would
+// force a disallowed time import).
+type seriesDTO struct {
+	ID            string          `json:"id"`
+	ModuleID      string          `json:"module_id"`
+	LibraryID     int64           `json:"library_id"`
+	RelativePath  string          `json:"relative_path"`
+	Document      json.RawMessage `json:"document"`
+	SchemaVersion int             `json:"schema_version"`
+	Status        string          `json:"status"`
+}
+
+// seriesListResponse is the wire shape for GET /series.
+type seriesListResponse struct {
+	Items []seriesDTO `json:"items"`
+}
+
+// seriesResponse is the wire shape for a single series detail view (GET
+// /series/{id}). It reuses seriesDTO as-is — seriesDTO.Document already carries
+// the FULL serial-level document opaque.
+type seriesResponse struct {
+	Series seriesDTO `json:"series"`
+}
+
 // itemResponse is the wire shape for a single item detail view (GET /items/{id}).
 // It reuses itemDTO as-is — itemDTO.Document already carries the FULL §3.1
 // document opaque (INV-full-document; no projection/filtering).
@@ -563,6 +590,99 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, itemResponse{Item: toItemDTO(it)})
 }
 
+// listSeries: parse ?library (required integer) → store.QuerySeries → write
+// seriesListResponse. One domain call (pure delegation, INV1). A missing or
+// non-integer ?library= is a 400 (parse step) — unlike the items listing there
+// is no all-libraries form, because a serial catalog is always browsed within
+// one library. All statuses are returned (the store's "" status pass-through);
+// api does not validate the status set (store/enrich own it).
+//
+// @Summary      List a library's series
+// @Tags         series
+// @ID           list-series
+// @Router       /series [get]
+// @Param        library query int true "library id filter"
+// @Success      200 {object} seriesListResponse
+// @Failure      400 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.URL.Query().Get("library"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "library query param must be an integer", false)
+		return
+	}
+	series, err := a.deps.Store.QuerySeries(r.Context(), id, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, seriesListResponse{Items: toSeriesDTOs(series)})
+}
+
+// getSeries: parse {id} → store.GetSeries → write seriesResponse. One domain
+// call (pure delegation, INV1). The id is the opaque ser_ string id, so it is
+// NOT integer-parsed — chi.URLParam returns the raw string. A missing row
+// surfaces from store as a wrapped sql.ErrNoRows → 404 not_found. The
+// serial-level document is returned FULL and opaque (INV-full-document).
+//
+// @Summary      Get a single series with its full serial-level document
+// @Tags         series
+// @ID           get-series
+// @Router       /series/{id} [get]
+// @Param        id path string true "series id (ser_...)"
+// @Success      200 {object} seriesResponse
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	sr, err := a.deps.Store.GetSeries(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "series "+id+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, seriesResponse{Series: toSeriesDTO(sr)})
+}
+
+// seriesEpisodes: parse {id} → store.GetSeries → store.QueryItemsBySeries →
+// write itemsResponse. Two domain calls, still pure delegation (the second
+// needs the loaded row: the backing kind is an explicit store argument — the
+// store never reads documents). The backing comes from the series document's
+// `parsed.backing` marker fact (serials-library design.md §Interfaces §1) via
+// the one-fact read in seriesBacking; episodes are emitted in the SAME item
+// wire shape as GET /items (mirrors itemDTO delegation). An unknown series id
+// is 404 not_found, identical to getSeries.
+//
+// @Summary      List a series' episode items
+// @Tags         series
+// @ID           list-series-episodes
+// @Router       /series/{id}/episodes [get]
+// @Param        id path string true "series id (ser_...)"
+// @Success      200 {object} itemsResponse
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	sr, err := a.deps.Store.GetSeries(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "series "+id+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	items, err := a.deps.Store.QueryItemsBySeries(r.Context(), sr, seriesBacking(sr.Document))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, itemsResponse{Items: toItemDTOs(items)})
+}
+
 // adminStatus: deps.Status → write statusResponse. One closure call (pure
 // delegation, INV1). A nil Deps.Status means the endpoint is disabled (the api
 // package never imports plugin/enrich, so a nil closure is the disabled state)
@@ -652,6 +772,50 @@ func toLibraryDTO(l store.Library) libraryDTO {
 		DisplayName: l.DisplayName,
 		Description: l.Description,
 	}
+}
+
+// toSeriesDTOs performs the boundary struct conversion (INV4): every
+// store.Series becomes a seriesDTO before it leaves the package.
+func toSeriesDTOs(srs []store.Series) []seriesDTO {
+	out := make([]seriesDTO, len(srs))
+	for i, sr := range srs {
+		out[i] = toSeriesDTO(sr)
+	}
+	return out
+}
+
+// toSeriesDTO maps a single store.Series to its wire shape. Factored out so
+// the list and detail responses share one conversion (DRY).
+func toSeriesDTO(sr store.Series) seriesDTO {
+	return seriesDTO{
+		ID:            sr.ID,
+		ModuleID:      sr.ModuleID,
+		LibraryID:     sr.LibraryID,
+		RelativePath:  sr.RelativePath,
+		Document:      sr.Document,
+		SchemaVersion: sr.SchemaVersion,
+		Status:        sr.Status,
+	}
+}
+
+// seriesBacking extracts the `parsed.backing` marker fact from a series
+// document (serials-library design.md §Interfaces §1) — the one fact the
+// episodes route needs, because store.QueryItemsBySeries takes the backing as
+// an explicit argument and the store itself never reads documents. The
+// document stays opaque otherwise: this is a targeted one-fact read, never a
+// typed document mapping (the wire DTO carries the document raw). An absent or
+// unreadable marker falls back to the directory backing — the dominant kind
+// for serial libraries.
+func seriesBacking(raw json.RawMessage) string {
+	var doc struct {
+		Parsed struct {
+			Backing string `json:"backing"`
+		} `json:"parsed"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil || doc.Parsed.Backing == "" {
+		return store.SeriesBackingDirectory
+	}
+	return doc.Parsed.Backing
 }
 
 // toProgressDTO maps a single store.PlaybackProgress to its wire shape (INV4).

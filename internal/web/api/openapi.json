@@ -499,6 +499,120 @@
                     }
                 }
             }
+        },
+        "/series": {
+            "get": {
+                "tags": [
+                    "series"
+                ],
+                "summary": "List a library's series",
+                "operationId": "list-series",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id filter",
+                        "name": "library",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.seriesListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/series/{id}": {
+            "get": {
+                "tags": [
+                    "series"
+                ],
+                "summary": "Get a single series with its full serial-level document",
+                "operationId": "get-series",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "series id (ser_...)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.seriesResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/series/{id}/episodes": {
+            "get": {
+                "tags": [
+                    "series"
+                ],
+                "summary": "List a series' episode items",
+                "operationId": "list-series-episodes",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "series id (ser_...)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.itemsResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -746,6 +860,54 @@
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "api.seriesDTO": {
+            "type": "object",
+            "properties": {
+                "document": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "id": {
+                    "type": "string"
+                },
+                "library_id": {
+                    "type": "integer"
+                },
+                "module_id": {
+                    "type": "string"
+                },
+                "relative_path": {
+                    "type": "string"
+                },
+                "schema_version": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.seriesListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.seriesDTO"
+                    }
+                }
+            }
+        },
+        "api.seriesResponse": {
+            "type": "object",
+            "properties": {
+                "series": {
+                    "$ref": "#/definitions/api.seriesDTO"
                 }
             }
         },

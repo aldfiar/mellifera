@@ -159,6 +159,37 @@ definitions:
           type: string
         type: array
     type: object
+  api.seriesDTO:
+    properties:
+      document:
+        items:
+          type: integer
+        type: array
+      id:
+        type: string
+      library_id:
+        type: integer
+      module_id:
+        type: string
+      relative_path:
+        type: string
+      schema_version:
+        type: integer
+      status:
+        type: string
+    type: object
+  api.seriesListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/api.seriesDTO'
+        type: array
+    type: object
+  api.seriesResponse:
+    properties:
+      series:
+        $ref: '#/definitions/api.seriesDTO'
+    type: object
   api.statusResponse:
     properties:
       enrich:
@@ -511,4 +542,79 @@ paths:
       summary: Store the playback position for an item
       tags:
       - progress
+  /series:
+    get:
+      operationId: list-series
+      parameters:
+      - description: library id filter
+        in: query
+        name: library
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.seriesListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List a library's series
+      tags:
+      - series
+  /series/{id}:
+    get:
+      operationId: get-series
+      parameters:
+      - description: series id (ser_...)
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.seriesResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Get a single series with its full serial-level document
+      tags:
+      - series
+  /series/{id}/episodes:
+    get:
+      operationId: list-series-episodes
+      parameters:
+      - description: series id (ser_...)
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.itemsResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List a series' episode items
+      tags:
+      - series
 swagger: "2.0"
