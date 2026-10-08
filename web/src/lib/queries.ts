@@ -12,6 +12,7 @@ import {
   getItem,
   getLibrarySummary,
   listItems,
+  listProgress,
   type AdminStatus,
   type ApiError,
   type CreateLibraryRequest,
@@ -21,6 +22,7 @@ import {
   type LibraryDTO,
   type LibrarySummary,
   type ListItemsParams,
+  type ProgressListResponse,
   type ScanResponse,
 } from "@/lib/api";
 
@@ -138,6 +140,18 @@ export function useItem(id: string): UseQueryResult<ItemResponse> {
   return useQuery({
     queryKey: ["item", id],
     queryFn: () => getItem(id),
+  });
+}
+
+// useProgressList — GET /api/v1/progress via listProgress. Keyed ["progress"]:
+// the Home Continue/Next up rows share one cache entry, and the per-item
+// documents they fan out into reuse the ["item", id] entries the detail page
+// owns. Wire shape mirrored verbatim (progressListResponse — newest-first,
+// positive positions only, server-side limit default 20 / max 100).
+export function useProgressList(): UseQueryResult<ProgressListResponse> {
+  return useQuery({
+    queryKey: ["progress"],
+    queryFn: () => listProgress(),
   });
 }
 

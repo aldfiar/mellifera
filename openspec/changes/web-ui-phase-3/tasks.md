@@ -33,9 +33,9 @@ this change with the serial layout gated on its presence. Max concurrency 2
 
 ## 4. Home — collections grid, Continue, Next up
 
-- [ ] 4.1 Collections grid from libraries + summary (name, pastel type badge, description, count, updated; zero-item empty card), type chips as client-side filter, no paths / no lifecycle pills [probe:25c42c993ff9a6c8]
-- [ ] 4.2 Continue row from `GET /progress` (positive positions, newest-first, progress bars, Play deep-links to `/items/{id}`) with shared empty state [probe:b95db436defdd04e]
-- [ ] 4.3 Next up row: lowest-numbered unstarted episode per touched series from episode facts, Play deep-link, empty state [probe:d337c75bf42912ac]
+- [x] 4.1 Collections grid from libraries + summary (name, pastel type badge, description, count, updated; zero-item empty card), type chips as client-side filter, no paths / no lifecycle pills [probe:25c42c993ff9a6c8]
+- [x] 4.2 Continue row from `GET /progress` (positive positions, newest-first, progress bars, Play deep-links to `/items/{id}`) with shared empty state [probe:b95db436defdd04e]
+- [x] 4.3 Next up row: lowest-numbered unstarted episode per touched series from episode facts, Play deep-link, empty state [probe:d337c75bf42912ac]
 
 ## 5. Collection pages — `/collections/{id}`
 

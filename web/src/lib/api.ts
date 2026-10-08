@@ -69,6 +69,20 @@ export interface AdminStatus {
   enrich: EnrichStats;
 }
 
+// handlers.go progressDTO — the ONE wire shape for a stored playback position
+// (web-ui-phase-3 group 2). updated_at is the raw RFC3339 stamp as persisted.
+export interface ProgressDTO {
+  item_id: string;
+  position_seconds: number; // int64, > 0 in list responses
+  updated_at: string;
+}
+
+// handlers.go progressListResponse — newest-first, positive positions only
+// (server INV); limit defaults to 20, max 100.
+export interface ProgressListResponse {
+  items: ProgressDTO[];
+}
+
 // handlers.go:129-139 (itemDTO) — the §3.1 document travels as json.RawMessage
 // on the Go side (opaque there) and is typed here via ItemDocument. Field names
 // match the JSON tags EXACTLY.
@@ -140,6 +154,7 @@ export const ENDPOINTS = {
   adminStatus: "/api/v1/admin/status",
   items: "/api/v1/items",
   item: (id: string): string => `/api/v1/items/${id}`,
+  progress: "/api/v1/progress",
 } as const;
 
 // getLibrarySummary — GET /api/v1/libraries/{id}/summary (handlers.go
@@ -166,6 +181,19 @@ export async function listItems(params: ListItemsParams): Promise<ItemsResponse>
     qs.set("offset", String(params.offset));
   }
   return apiRequest<ItemsResponse>(`${ENDPOINTS.items}?${qs.toString()}`);
+}
+
+// listProgress — GET /api/v1/progress[?limit=] (handlers.go listProgress).
+// Newest-first, positive positions only (server INV); the limit is sent only
+// when provided (server default 20, clamped to max 100; a PRESENT
+// non-integer limit is a 400 — omit it unless the caller really wants a
+// specific page size).
+export async function listProgress(limit?: number): Promise<ProgressListResponse> {
+  const path =
+    limit !== undefined
+      ? `${ENDPOINTS.progress}?limit=${String(limit)}`
+      : ENDPOINTS.progress;
+  return apiRequest<ProgressListResponse>(path);
 }
 
 // getItem — GET /api/v1/items/{id} (handlers.go:266-278). The id is the item's

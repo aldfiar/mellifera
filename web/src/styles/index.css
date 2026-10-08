@@ -325,14 +325,23 @@ body.side-open .app-content {
   color: hsl(var(--muted-foreground));
 }
 
-/* Small metadata chips (collection page item cards). */
+/* Small metadata chips (collection page item cards; Home type filter). */
 .chip {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   border-radius: 9999px;
   border: 1px solid hsl(var(--border));
   padding: 1px 8px;
   font-size: 10.5px;
   color: hsl(var(--muted-foreground));
   white-space: nowrap;
+}
+
+/* Active filter chip (Home type chips) — the primary token as selection;
+   pastel stays a small-dot accent (palette decision open). */
+.chip-active {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
 }
