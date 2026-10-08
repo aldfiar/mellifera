@@ -16,7 +16,7 @@ this change with the serial layout gated on its presence. Max concurrency 2
 - [x] 1.4 PATCH rejects `root_path`/`module_id` changes with 400 (row untouched), unknown id → 404 [probe:77928e420935e248]
 - [x] 1.5 `GET /api/v1/libraries/{id}/summary` (browse): constant-time `{library_id, items, updated_at}`, empty library → `items: 0` + `""`, 404 unknown, 400 non-integer [probe:2b30942d278fb480]
 - [x] 1.6 `GET /api/v1/libraries/{id}/folders` (browse): depth-1 prefixes + counts, path-sorted, SQL aggregate, 404 unknown [probe:7e1d32a64d7043ff]
-- [ ] 1.7 Regenerate committed `internal/web/api/openapi.{json,yaml}` with the new routes and DTO field [probe:fe5d7468a0e434f4]
+- [x] 1.7 Regenerate committed `internal/web/api/openapi.{json,yaml}` with the new routes and DTO field [probe:fe5d7468a0e434f4] — shared probe green after 7.2's dist regen; openapi already carries group-1/2 routes + description (regen'd + committed by the owning groups, incl. serials group 4)
 
 ## 2. Playback-progress capability
 
@@ -53,6 +53,6 @@ this change with the serial layout gated on its presence. Max concurrency 2
 
 ## 7. QA + delivery
 
-- [ ] 7.1 SPA endpoint-allowlist audit (all calls within the versioned surface) + `go build ./...` [probe:6c03f9c2829e0509]
-- [ ] 7.2 Regenerate committed `internal/web/dist/` carrying the `/collections` route literal; embed directive and node-free gate untouched [probe:fe5d7468a0e434f4]
-- [ ] 7.3 Close-out: `make build && make check && make test` green node-free; manual e2e walkthrough (home, 20+ collection sidebar, photos folders, admin overlay) against the mockup `.tmp/webui-mockup.html`; golden `tv`/`image` scans unchanged; note the softened-pastel base as a proposal against the shipped slate tokens [unprobeable]
+- [x] 7.1 SPA endpoint-allowlist audit (all calls within the versioned surface) + `go build ./...` [probe:6c03f9c2829e0509] — probe exit 0; manual sweep: every call funnels through `endpoints` (web/src/lib/api.ts:196-206) inside /api/v1; no violations
+- [x] 7.2 Regenerate committed `internal/web/dist/` carrying the `/collections` route literal; embed directive and node-free gate untouched [probe:fe5d7468a0e434f4] — stale hashes cleared, fresh bundle (index-CK75eZbF.js / index-BlCKS-vY.css), /collections literal verified in the bundle; web.go + Makefile untouched
+- [x] 7.3 Close-out: `make build && make check && make test` green node-free; manual e2e walkthrough (home, 20+ collection sidebar, photos folders, admin overlay) against the mockup `.tmp/webui-mockup.html`; golden `tv`/`image` scans unchanged; note the softened-pastel base as a proposal against the shipped slate tokens [unprobeable] — full gate green (16 pkgs, check.sh OK); walkthrough 4/4 areas PASS vs mockup (grid/Continue/Next-up, hidden sidebar with scroll-independent collections list + pinned footer, photos chips-over-masonry, admin sticky table + edit overlay); goldens by name: TestIntegrationAsyncPipeline (tv), TestImageE2E_GoldenReady (image); pastel-vs-slate proposal recorded for GATE 2 review
