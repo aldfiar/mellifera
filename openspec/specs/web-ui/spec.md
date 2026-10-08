@@ -182,12 +182,15 @@ The SPA SHALL be a pure HTTP client over the versioned API — calling only
 `GET /api/v1/libraries`, `POST /api/v1/libraries`, `PATCH
 /api/v1/libraries/{id}`, `GET /api/v1/libraries/{id}/summary`,
 `GET /api/v1/libraries/{id}/folders`, `POST /api/v1/libraries/{id}/scan`,
-`GET /api/v1/items`, `GET /api/v1/items/{id}`, `GET /api/v1/series`,
-`GET /api/v1/series/{id}`, `GET /api/v1/series/{id}/episodes`,
-`GET /api/v1/progress`, `PUT /api/v1/progress/{item_id}`, and `GET
-/api/v1/admin/status` — with wire shapes mirrored verbatim. Every new SPA
-consumer SHALL keep the byte-identical Go contract posture: no client-side
-shaping that the server does not send.
+`GET /api/v1/items`, `GET /api/v1/items/{id}`, `GET /api/v1/items/{id}/media`,
+`GET /api/v1/series`, `GET /api/v1/series/{id}`, `GET
+/api/v1/series/{id}/episodes`, `GET /api/v1/progress`, `PUT
+/api/v1/progress/{item_id}`, and `GET /api/v1/admin/status` — with wire shapes
+mirrored verbatim. Media loads SHALL go through the authenticated fetch
+wrapper into object URLs (an `<img>` channel cannot carry the bearer header),
+keeping the media endpoint's bearer gate intact. Every new SPA consumer SHALL
+keep the byte-identical Go contract posture: no client-side shaping that the
+server does not send.
 
 #### Scenario: No off-contract calls
 
@@ -223,13 +226,32 @@ grep -q "media_type" web/src/lib/api.ts
 
 ### Requirement: Item detail view
 
-The SPA SHALL offer an `/items/:id` route (wrapped in `<RequireAuth>`) that fetches the pre-existing `GET /api/v1/items/{id}` and renders the full §3.1 document: Tier-1 `identifiers` and core-managed fields; one `<SourceCard>` per `sources.<plugin>` namespace; a `<ProvenanceBadge>` per `_provenance` entry; `<ViewFields>` for `_view` entries (value + source + reason); and `<StagesProgress>` for `_stages` entries (stage, plugin_id, status, advanced_to, started_at, finished_at, error? — internal/enrich/enrich.go:137-149). A missing item (404 not_found) SHALL render a clear not-found state, not a crash.
+The SPA SHALL offer an `/items/:id` route (wrapped in `<RequireAuth>`) that
+fetches the pre-existing `GET /api/v1/items/{id}` and renders the §3.1
+document in two visual tiers. The **Details** surface renders directly on the
+page: Tier-1 `identifiers`, the core-managed item fields, and `<ViewFields>`
+for `_view` entries (value + source + reason) — the viewer-facing reading
+view. The **Technical details** section — one `<SourceCard>` per
+`sources.<plugin>` namespace, a `<ProvenanceBadge>` per `_provenance` entry,
+and `<StagesProgress>` for `_stages` entries (stage, plugin_id, status,
+advanced_to, started_at, finished_at, error?) — SHALL be collapsed (hidden)
+until the operator expands its disclosure, and SHALL render those tiers
+exactly as before once expanded: verbatim values, per-source namespaces never
+merged. The Details surface SHALL lead with the item's own media image when
+one is resolvable — the frame-grabber thumb fact
+(`sources["frame-grabber"].thumbnail_path`), else the original
+(`parsed.absolute_path`) for an image-typed item — fetched through the
+authenticated media channel at content-column width, aspect preserved; an
+item whose media cannot render as an image (a video without the thumb fact,
+a document with no media facts) SHALL render no hero image and no
+broken-image state. A missing item (404 not_found) SHALL render a clear
+not-found state, not a crash.
 
 #### Scenario: All document tiers render
-- **WHEN** the operator opens `/items/:id` for an enriched item carrying identifiers, sources, _view, _provenance, and _stages
-- **THEN** the page renders the identifiers, one card per source namespace, the view fields, one badge per provenance entry, and the stage progress including any per-stage error
+- **WHEN** the operator opens `/items/:id` for an enriched item carrying identifiers, sources, _view, _provenance, and _stages and expands the Technical details disclosure
+- **THEN** the Details surface renders the core fields, identifiers, and view fields, and the expanded disclosure renders one card per source namespace, one badge per provenance entry, and the stage progress including any per-stage error
 
-<!-- wf:probe id=b79d00b806de225d -->
+<!-- wf:probe id=baed5580f9176115 -->
 ```bash
 set -e
 test -f web/src/pages/browse/ItemDetail.tsx
@@ -240,6 +262,33 @@ for c in SourceCard ProvenanceBadge ViewFields StagesProgress; do
   grep -q "$c" web/src/pages/browse/ItemDetail.tsx
 done
 grep -q "identifiers" web/src/pages/browse/ItemDetail.tsx
+```
+<!-- /wf:probe -->
+
+#### Scenario: Technical details collapsed by default
+- **WHEN** the operator opens `/items/:id` for an enriched item
+- **THEN** the core fields, identifiers, and view fields render immediately while sources, provenance, and pipeline stages stay hidden until the Technical details disclosure is expanded
+
+<!-- wf:probe id=280103bdebbb44df -->
+```bash
+set -e
+grep -qiE '<details|technical' web/src/pages/browse/ItemDetail.tsx
+```
+<!-- /wf:probe -->
+
+#### Scenario: Hero image leads the details surface
+- **WHEN** the operator opens `/items/:id` for an item whose document carries the frame-grabber thumb fact or, for an image-typed item, the original-path fact
+- **THEN** the Details surface leads with that image fetched through the authenticated media channel (thumb variant only for the thumb fact, original only for an image-typed item) at content-column width with its aspect preserved, while an item whose media cannot render as an image renders no hero image and fires no media request
+
+<!-- wf:probe id=d209cc37dda978ea -->
+```bash
+set -e
+grep -q "useItemMedia" web/src/pages/browse/ItemDetail.tsx
+grep -q "ENDPOINTS.itemMedia" web/src/pages/browse/ItemDetail.tsx
+grep -q "hasFrameGrabberThumb" web/src/pages/browse/ItemDetail.tsx
+grep -q "hasOriginalFile" web/src/pages/browse/ItemDetail.tsx
+grep -q 'media_type === "image"' web/src/pages/browse/ItemDetail.tsx
+grep -qi "hero" web/src/pages/browse/ItemDetail.test.tsx
 ```
 <!-- /wf:probe -->
 
@@ -347,8 +396,10 @@ UNPROBEABLE
 
 The committed embedded build (`internal/web/dist/`) SHALL be regenerated from
 this phase's `web/src` via the dev-time `make web-build` and committed, so the
-served SPA carries the `/collections` routes; the Go embed directive
-(`//go:embed all:dist`) and the node-free Go build gate stay untouched.
+served SPA carries the `/collections` routes and the media surface; the Go
+embed directive (`//go:embed all:dist`) and the node-free Go build gate stay
+untouched. The regenerated OpenAPI contract (`internal/web/api/openapi.{json,yaml}`)
+SHALL list the media route.
 
 #### Scenario: Committed dist carries the new routes
 
@@ -371,6 +422,27 @@ grep -qF '"description": {' internal/web/api/openapi.json
 grep -A6 'api.libraryDTO:' internal/web/api/openapi.yaml | grep -q 'description:'
 ```
 <!-- /wf:probe -->
+
+#### Scenario: Committed dist carries the media surface
+- **WHEN** the committed `internal/web/dist` bundle and the OpenAPI contract are inspected
+- **THEN** the bundle contains the media endpoint literal from this phase's build and both `internal/web/api/openapi.{json,yaml}` list `/items/{id}/media`
+
+<!-- wf:probe id=df34ab4dbc6e3d38 -->
+```bash
+set -e
+test -f internal/web/dist/index.html
+grep -qrs "/media" internal/web/dist/assets
+for f in internal/web/api/openapi.json internal/web/api/openapi.yaml; do
+  grep -qF '/items/{id}/media' "$f"
+done
+```
+<!-- /wf:probe -->
+
+#### Scenario: Delivery bar and visual walkthrough
+- **WHEN** the full delivery gate runs — `make build && make check && make test` node-free, `cd web && npm test` green, and a manual walkthrough of the served SPA
+- **THEN** every gate is green, the committed dist is the freshly rebuilt bundle, and the walkthrough shows photo tiles, episode thumbnails, collection card previews, and the collapsed Technical details disclosure
+
+UNPROBEABLE
 
 ### Requirement: Sidebar shell
 
@@ -525,16 +597,24 @@ zero-item collections) and a body keyed by the library's `module_id`:
 
 - `tv` (movies) — a card grid over `GET /api/v1/items?library={id}` (parsed
   title, year/resolution chips, duration, raw filename), paginated
-  limit/offset;
+  limit/offset; each card renders the item's frame-grabber thumbnail from the
+  media endpoint (thumb variant) when the document carries one, over the
+  placeholder fallback;
 - `image` (photos) — a subfolder chip row from
   `GET /api/v1/libraries/{id}/folders` (client-side filtering) above a masonry
-  grid of item tiles with capture-date footers;
+  grid of item tiles with capture-date footers; each tile renders the item's
+  media from the media endpoint — thumb variant when the document carries the
+  frame-grabber fact, else the original — over the ratio-correct placeholder
+  fallback;
 - `serial` — a series grid from `GET /api/v1/series?library={id}` (the
-  serials-library surface) whose cards open the series' episode flow.
+  serials-library surface) whose cards open the series' episode flow; episode
+  cards render the episode's frame-grabber thumbnail when the document carries
+  one, over the placeholder fallback.
 
-The shared empty, loading, and error states, the pagination controls, and the
-metadata-fidelity rules (verbatim values, per-source namespaces) SHALL apply to
-every layout.
+Items whose documents carry no resolvable media fact keep their placeholders —
+never a broken-image state. The shared empty, loading, and error states, the
+pagination controls, and the metadata-fidelity rules (verbatim values,
+per-source namespaces) SHALL apply to every layout.
 
 #### Scenario: Movies collection page
 
@@ -574,5 +654,42 @@ grep -q 'masonry' web/src/pages/collections/Collection.tsx
 ```bash
 set -e
 grep -q 'series' web/src/pages/collections/Collection.tsx
+```
+<!-- /wf:probe -->
+
+#### Scenario: Tiles and cards render real media with a placeholder fallback
+- **WHEN** a photos masonry, a movies grid, and a serial episode flow render items whose documents carry resolvable media facts alongside items that carry none
+- **THEN** tiles with a resolvable fact render an image loaded through the authenticated media fetch and items without one keep the ratio-correct placeholder — never a broken-image state
+
+<!-- wf:probe id=5c27ecc8715cde3b -->
+```bash
+set -e
+grep -qE 'itemMedia|/media' web/src/lib/api.ts
+grep -q '<img' web/src/pages/collections/Collection.tsx
+grep -qE 'itemMedia|/media' web/src/pages/collections/Collection.tsx
+```
+<!-- /wf:probe -->
+
+### Requirement: Collection card previews
+
+Home collection cards SHALL carry a preview image above the badge row: for a
+collection with items, the card SHALL attempt a representative item's media
+through the media endpoint (thumb variant when the item's document carries the
+frame-grabber fact, else the original), loaded through the authenticated
+media fetch. When no item's media resolves, or the load fails, the card SHALL
+keep the existing badge-only layout — never a broken-image state. Zero-item
+collections SHALL render the explicit "not scanned yet" card without a
+preview area. Cards continue to show name, pastel type badge, description,
+item count, and updated date, and MUST NOT render root paths or lifecycle
+pills.
+
+#### Scenario: Collection card previews render with a fallback
+- **WHEN** the home grid renders collections — one whose representative item resolves media, one with no resolvable media, and one with zero items
+- **THEN** the first card renders a preview image from the media endpoint, the second keeps the badge-only card, and the empty collection renders the explicit "not scanned yet" state without a preview area
+
+<!-- wf:probe id=bd1f5bcea31d67d8 -->
+```bash
+set -e
+grep -qE 'itemMedia|/media' web/src/pages/home/Home.tsx
 ```
 <!-- /wf:probe -->
