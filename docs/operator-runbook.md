@@ -31,6 +31,7 @@ export MELLIFERA_ADMIN_TOKEN='change-me'
 |---|---|---|
 | `ffmpeg` / `ffprobe` | base-scanner (video probe) | per-file soft-fail: empty probe blob + warning; scan succeeds |
 | `exiftool` | image-enricher (EXIF) | per-source soft-fail: empty namespace → `no_data` cooldown; scan succeeds |
+| `ffmpeg` | frame-grabber (episode thumbnails, serial module) | OPTIONAL: per-source soft-fail: empty namespace → `no_data` cooldown; episodes still settle `ready` |
 
 exiftool install: macOS `brew install exiftool` · Debian/Ubuntu
 `apt install libimage-exiftool-perl` · Fedora/RHEL `dnf install perl-Image-ExifTool`

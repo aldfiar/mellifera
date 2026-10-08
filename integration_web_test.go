@@ -429,18 +429,23 @@ func TestWeb_Integration(t *testing.T) {
 				t.Errorf("make %s: exit %v (output: %s)", target, err, out)
 			}
 		}
-		// Additive probe: proto/ pkg/sdk/ internal/scan/ internal/enrich/
-		// internal/plugin/ internal/module/ byte-identical vs the 58a1130
-		// baseline (the web-ui feature is purely additive where claimed).
+		// Additive probe: proto/ + pkg/sdk/ byte-identical vs the 58a1130
+		// baseline (the wire/plugin CONTRACT trees stay frozen). RETIRED for
+		// internal/scan/ internal/enrich/ internal/plugin/ internal/module/:
+		// serials-library legitimately extended those sources (the spec'd
+		// two-level enrichment queue, serial-record routing, the series sweep,
+		// the serial module seed), so they are no longer byte-identical to the
+		// web-ui baseline; forward behavior there is guarded by each feature's
+		// own spec probes (the serials-library probe set), not by this diff
+		// pin.
 		diff := exec.Command("git", "diff", "--stat", "58a1130", "HEAD", "--",
-			"proto/", "pkg/sdk/", "internal/scan/", "internal/enrich/",
-			"internal/plugin/", "internal/module/")
+			"proto/", "pkg/sdk/")
 		out, err := diff.CombinedOutput()
 		if err != nil {
 			t.Logf("git diff additive probe: %v (output: %s) — continuing", err, out)
 		}
 		if strings.TrimSpace(string(out)) != "" {
-			t.Errorf("additive probe: git diff 58a1130 HEAD over proto/sdk/scan/enrich/plugin/module is NON-empty:\n%s", out)
+			t.Errorf("additive probe: git diff 58a1130 HEAD over proto/sdk is NON-empty:\n%s", out)
 		}
 	})
 }

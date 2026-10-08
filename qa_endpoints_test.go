@@ -4,10 +4,12 @@
 // QA3 (AC-3/AC-4/AC-5, independent re-derivation) — the two endpoint failure
 // modes the coder's tests structurally CANNOT catch:
 //  1. INV4 library wire key set is EXACTLY {id, module_id, root_path,
-//     display_name}: the coder decodes into a struct that silently ignores
-//     extra fields, so a `created_at` leak (an INV4 breach) would pass.
-//     Decoding into map[string]any and comparing the KEY SET catches it on
-//     BOTH the create response and the list response.
+//     display_name, description}: the coder decodes into a struct that
+//     silently ignores extra fields, so a `created_at` leak (an INV4 breach)
+//     would pass. Decoding into map[string]any and comparing the KEY SET
+//     catches it on BOTH the create response and the list response.
+//     (`description` joined the spec'd wire DTO in web-ui-phase-3 task 1.2;
+//     the invariant — no store.Library internals — is unchanged.)
 //  2. getItem 404 canonical body retryable field: the coder asserts code=
 //     not_found but skips retryable (which must be false — a not_found is a
 //     permanent client error, not a transient one to retry).
@@ -70,12 +72,18 @@ func qa3Req(method, target, body string) *http.Request {
 }
 
 // TestQA_LibraryWireKeySet_INV4 proves the library wire object exposes EXACTLY
-// the 4 INV4 keys (no created_at, no extras) on BOTH the create response and
-// the list response. A struct decode (the coder's approach) cannot catch a
-// created_at leak; decoding into a map and diffing the key set can.
+// the INV4 key set on BOTH the create response and the list response — no
+// store.Library internals (created_at and friends) leak across the boundary.
+// A struct decode (the coder's approach) cannot catch a created_at leak;
+// decoding into a map and diffing the key set can. The spec'd `description`
+// field (web-ui-phase-3 task 1.2) is part of the wire contract and is
+// expected; the invariant — no store persistence internals — still holds.
 func TestQA_LibraryWireKeySet_INV4(t *testing.T) {
 	h, _ := qa3Handler(t)
-	wantKeys := map[string]bool{"id": true, "module_id": true, "root_path": true, "display_name": true}
+	wantKeys := map[string]bool{
+		"id": true, "module_id": true, "root_path": true, "display_name": true,
+		"description": true,
+	}
 
 	checkKeys := func(label string, obj map[string]any) {
 		t.Helper()

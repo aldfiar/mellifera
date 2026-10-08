@@ -34,11 +34,17 @@ check:
 # See docs/architecture.md §1.2 (runtime deps) + the operator runbook.
 # build-plugin: build every plugin binary. base-scanner is wired in T08;
 # tv-parser (the first metadata_source plugin) in T06; image-enricher (EXIF
-# via the system exiftool subprocess) in B2/Task 06.
+# via the system exiftool subprocess) in B2/Task 06; the serial trio
+# (serial-scanner, serial-parser, frame-grabber) in serials-library — the
+# registry seeds all six, so a fresh-checkout `go test .` (whose startServer
+# harness launches the default bin/ paths) needs all six built here.
 build-plugin:
 	CGO_ENABLED=0 go build -o bin/base-scanner ./plugins/base-scanner
 	CGO_ENABLED=0 go build -o bin/tv-parser ./plugins/tv-parser
 	CGO_ENABLED=0 go build -o bin/image-enricher ./plugins/image-enricher
+	CGO_ENABLED=0 go build -o bin/serial-scanner ./plugins/serial-scanner
+	CGO_ENABLED=0 go build -o bin/serial-parser ./plugins/serial-parser
+	CGO_ENABLED=0 go build -o bin/frame-grabber ./plugins/frame-grabber
 
 # web-build: regenerate the embedded web artifacts (OpenAPI spec + the React
 # SPA build). DEV/CI-ONLY — the same kind of regen step as `proto` (buf) and

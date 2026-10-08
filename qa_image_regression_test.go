@@ -41,31 +41,29 @@ const b2MergeBase = "e2a7562"
 const b2Token = "qa-b2-regression-token"
 
 // TestB2_Ac3Additive is the AC-3/AC-queue regression guard: B2 touched NONE of the
-// shipped proto/api/enrich/sdk contract trees, and the B1 queue source
-// (internal/enrich) is byte-identical. This is the user's hardest constraint
+// shipped proto/sdk contract trees. This is the user's hardest constraint
 // ("image support is purely additive"). Pinned as a Go test so it runs on every
 // `go test ./...` (the pipeline-local bash gate does not survive into CI). Anchored
-// at b2MergeBase; asserts the no_seam trees have ZERO changed paths.
+// at b2MergeBase; asserts the no_seam trees have ZERO changed paths. The enrich
+// clause is RETIRED (see the comment inside): serials-library spec'd a two-level
+// enrichment queue and legitimately moved internal/enrich past B2's baseline.
 func TestB2_Ac3Additive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("additive probe: skips under -short (shells git)")
 	}
 	root := moduleRoot(t)
 
-	// AC-3: B2's additivity — proto/enrich/sdk untouched (B2's plugin/queue/sdk contract).
+	// AC-3: B2's additivity — proto/sdk untouched (B2's plugin/sdk contract).
 	// internal/api is no longer guarded here: later features (web-ui) legitimately extend
 	// the api source (roles, endpoints); web-ui's own AC-7 probe guards forward additivity.
-	noSeam := []string{"proto/", "internal/enrich/", "pkg/sdk/"}
+	// internal/enrich is no longer guarded either: serials-library legitimately
+	// extended the queue source (the spec'd two-level serial enrichment), so it is
+	// no longer byte-identical to B2's baseline; forward behavior is guarded by
+	// serials-library's own probe set.
+	noSeam := []string{"proto/", "pkg/sdk/"}
 	out := b2Git(t, root, append([]string{"diff", "--name-only", b2MergeBase, "--"}, noSeam...)...)
 	if changed := strings.TrimSpace(string(out)); changed != "" {
 		t.Errorf("AC-3/AC-queue ADDITIVITY BREACH: B2 modified no_seam trees (must be additive only):\n%s", changed)
-	}
-
-	// AC-queue: B1 queue source (internal/enrich) untouched — assert on the stat
-	// (byte-identical: zero insertions/deletions).
-	statOut := b2Git(t, root, "diff", "--stat", b2MergeBase, "--", "internal/enrich/")
-	if changed := strings.TrimSpace(string(statOut)); changed != "" {
-		t.Errorf("AC-queue B1 QUEUE MODIFIED: internal/enrich must be byte-identical:\n%s", changed)
 	}
 
 	// AC-2 (no-dep) RETIRED for go.mod/go.sum: web-ui Phase 1 legitimately adds the
