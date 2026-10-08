@@ -39,9 +39,9 @@ this change with the serial layout gated on its presence. Max concurrency 2
 
 ## 5. Collection pages — `/collections/{id}`
 
-- [ ] 5.1 Route + header from library + summary (name, type badge, description, count, updated; no paths/pills) with the body keyed by `module_id` [probe:25c42c993ff9a6c8]
-- [ ] 5.2 Movies (`tv`): paginated item card grid with parsed chips + raw filenames [probe:b9c48ae1b98f0c79]
-- [ ] 5.3 Photos (`image`): folder chip row from the folders endpoint (client-side filter) over an item masonry grid with capture-date footers [probe:b44fac0b43f4f086]
+- [x] 5.1 Route + header from library + summary (name, type badge, description, count, updated; no paths/pills) with the body keyed by `module_id` [probe:25c42c993ff9a6c8]
+- [x] 5.2 Movies (`tv`): paginated item card grid with parsed chips + raw filenames [probe:b9c48ae1b98f0c79]
+- [x] 5.3 Photos (`image`): folder chip row from the folders endpoint (client-side filter) over an item masonry grid with capture-date footers [probe:b44fac0b43f4f086]
 - [ ] 5.4 Serials (`serial`): series grid from `GET /series?library={id}` linking into the episode flow (consumes serials-library; gate on its merge) [probe:df3ca14e8db184a5]
 
 ## 6. Admin — collections management

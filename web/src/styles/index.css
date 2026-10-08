@@ -345,3 +345,62 @@ body.side-open .app-content {
   background: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
 }
+
+/* ---- Photo masonry (collection page, image module_id) --------------------- */
+
+/* CSS-columns masonry: variable aspect ratios pack naturally; the 210px floor
+   reflows the column count down to one at phone width with no media query. */
+.masonry {
+  columns: 4 210px;
+  column-gap: 12px;
+}
+
+/* One masonry tile: no column breaks inside, token-bordered like the cards. */
+.ptile {
+  display: block;
+  break-inside: avoid;
+  margin: 0 0 12px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.ptile:hover {
+  background: hsl(var(--accent));
+}
+@media (prefers-reduced-motion: reduce) {
+  .ptile {
+    transition: none;
+  }
+}
+
+/* The placeholder block: media serving is a deferred capability, so the tile
+   shows the item's real aspect ratio (from the enricher's width/height facts)
+   over a quiet token gradient instead of an <img>. */
+.ptile .ph {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: linear-gradient(
+    140deg,
+    hsl(var(--secondary)),
+    hsl(var(--muted))
+  );
+}
+
+/* Tile footer: raw filename + capture date (date omitted when the document
+   has none). */
+.ptile footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.ptile footer .nm {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

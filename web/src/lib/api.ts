@@ -34,6 +34,20 @@ export interface LibrarySummary {
   updated_at: string;
 }
 
+// handlers.go folderDTO — one depth-1 folder prefix + its item count (GET
+// /api/v1/libraries/{id}/folders, web-ui-phase-3 group 1). Top-level files
+// report path "".
+export interface LibraryFolderDTO {
+  path: string;
+  items: number; // int64
+}
+
+// handlers.go libraryFoldersResponse — depth-1 prefixes, path-sorted; empty
+// array, never null
+export interface LibraryFoldersResponse {
+  folders: LibraryFolderDTO[];
+}
+
 // handlers.go:54-56 (librariesResponse) — empty array, never null
 export interface LibrariesResponse {
   items: LibraryDTO[];
@@ -151,6 +165,7 @@ export const ENDPOINTS = {
   libraries: "/api/v1/libraries",
   scan: (id: number): string => `/api/v1/libraries/${id}/scan`,
   librarySummary: (id: number): string => `/api/v1/libraries/${id}/summary`,
+  libraryFolders: (id: number): string => `/api/v1/libraries/${id}/folders`,
   adminStatus: "/api/v1/admin/status",
   items: "/api/v1/items",
   item: (id: string): string => `/api/v1/items/${id}`,
@@ -162,6 +177,15 @@ export const ENDPOINTS = {
 // canonical not_found body for an unknown library.
 export async function getLibrarySummary(id: number): Promise<LibrarySummary> {
   return apiRequest<LibrarySummary>(ENDPOINTS.librarySummary(id));
+}
+
+// getLibraryFolders — GET /api/v1/libraries/{id}/folders (handlers.go
+// libraryFolders). Depth-1 subfolder prefixes + item counts, path-sorted; 404
+// with the canonical not_found body for an unknown library.
+export async function getLibraryFolders(
+  id: number,
+): Promise<LibraryFoldersResponse> {
+  return apiRequest<LibraryFoldersResponse>(ENDPOINTS.libraryFolders(id));
 }
 
 // listItems — GET /api/v1/items?library=&status=&limit=&offset= (handlers.go:

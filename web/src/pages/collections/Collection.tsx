@@ -4,23 +4,34 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import type { ApiError, ItemDTO, LibraryDTO, ListItemsParams } from "@/lib/api";
-import { useItems, useLibraries, useLibrarySummary } from "@/lib/queries";
+import {
+  useItems,
+  useLibraries,
+  useLibraryFolders,
+  useLibrarySummary,
+} from "@/lib/queries";
 import type { ItemDocument } from "@/lib/document";
 import { viewEntries } from "@/lib/document";
+import { cn } from "@/lib/utils";
+import { formatPosition } from "@/pages/home/Home";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 
 // Collection — the per-collection page at /collections/:id (web-ui-phase-3
-// group 3, minimal-but-real). The header comes from GET /api/v1/libraries +
+// group 5, boxes 5.1–5.3). The header comes from GET /api/v1/libraries +
 // GET /api/v1/libraries/{id}/summary: name, pastel type badge, description,
 // item count, updated stamp — never a root path, never a lifecycle pill (D5).
 //
-// The body is keyed by the library's module_id (D6). Group 5 replaces the
-// shared body with the per-type layouts (tv → parsed movie file cards,
-// image → masonry + subfolder chips from the folders endpoint, serial →
-// series grid from the series endpoint); group 3 ships ONE real body for
-// every type — a chip-tagged, paginated item grid over
-// GET /api/v1/items?library={id} with limit/offset — so the route is honest
-// end-to-end today.
+// The body is keyed by the library's module_id (D6):
+//   tv     → MoviesBody: paginated parsed-chip file cards (box 5.2)
+//   image  → PhotosBody: subfolder chips from the folders endpoint over a
+//            masonry grid with capture-date footers (box 5.3)
+//   serial → the generic ItemGrid fallthrough, still honest end-to-end; the
+//            serial series grid lands with the serials-library change
+//            (box 5.4). No /series call is made here.
+//
+// Metadata fidelity: every rendered value is read verbatim out of the item
+// document (per-source namespaces, `_view`) — a chip whose fact is absent is
+// omitted, never guessed (INV-no-rounding, arch §3.4).
 //
 // INV-no-rounding: the title comes out of `_view` verbatim via viewEntries;
 // the filename is the relative_path's last segment rendered verbatim.
@@ -46,6 +57,98 @@ function viewTitle(doc: ItemDocument): string {
 function fileName(relativePath: string): string {
   const parts = relativePath.split("/");
   return parts[parts.length - 1] ?? relativePath;
+}
+
+// namespaces — the document's sources namespaces as plain records (insertion
+// order). Missing/non-object namespaces are skipped, mirroring sourcesOf's
+// normalization while keeping raw field access (the fields are plugin-defined).
+function namespaces(doc: ItemDocument): Record<string, unknown>[] {
+  const sources = doc.sources;
+  if (!sources || typeof sources !== "object") {
+    return [];
+  }
+  return Object.values(sources).filter(
+    (ns): ns is Record<string, unknown> => !!ns && typeof ns === "object",
+  );
+}
+
+// numberField — an integer field out of a dynamic source namespace, or null
+// (same contract as Home's local copy).
+function numberField(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+// stringField — a non-empty string field out of a dynamic source namespace.
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+// episodeLabel — zero-padded "S01E02" display form from the parsed season +
+// episode facts (tv-parser's filename parse).
+function episodeLabel(season: number, episode: number): string {
+  return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+}
+
+// parsedChips — the parsed-fact chips for a movie file card, read generically
+// across the document's source namespaces: the season/episode token
+// ("S01E02", tv-parser), the release year, and the resolution. Any fact that
+// is absent is omitted — chips never invent a value. Exported pure for tests.
+export function parsedChips(doc: ItemDocument): string[] {
+  const chips: string[] = [];
+  for (const ns of namespaces(doc)) {
+    const season = numberField(ns.season);
+    const episode = numberField(ns.episode);
+    if (season !== null && episode !== null) {
+      chips.push(episodeLabel(season, episode));
+    }
+    const year = numberField(ns.year);
+    if (year !== null) {
+      chips.push(String(year));
+    }
+    const resolution = stringField(ns.resolution);
+    if (resolution !== null) {
+      chips.push(resolution);
+    }
+    if (chips.length > 0) {
+      break; // one parser's facts are enough — never mix across namespaces
+    }
+  }
+  return chips;
+}
+
+// captureDate — the item's capture date, read from the enricher's `date_taken`
+// fact (image-enricher stamps the EXIF DateTimeOriginal, RFC3339 when
+// parseable, else the verbatim machine string). Null when no namespace carries
+// one — the caller omits the footer, never fakes a date. Exported pure for
+// tests.
+export function captureDate(doc: ItemDocument): string | null {
+  for (const ns of namespaces(doc)) {
+    const date = stringField(ns.date_taken);
+    if (date !== null) {
+      return date;
+    }
+  }
+  return null;
+}
+
+// aspectRatio — the tile's real aspect ratio from the enricher's width/height
+// facts, or null when either is absent (the tile then uses the CSS default).
+function aspectRatio(doc: ItemDocument): string | null {
+  for (const ns of namespaces(doc)) {
+    const width = numberField(ns.width);
+    const height = numberField(ns.height);
+    if (width !== null && height !== null && width > 0 && height > 0) {
+      return `${String(width)} / ${String(height)}`;
+    }
+  }
+  return null;
+}
+
+// formatDatePart — the display form of a stored date stamp: the YYYY-MM-DD
+// prefix of an RFC3339 stamp, or the raw string verbatim (unparseable EXIF
+// values pass through image-enricher untouched — never re-encode them here).
+function formatDatePart(stamp: string): string {
+  return /^\d{4}-\d{2}-\d{2}T/.test(stamp) ? stamp.slice(0, 10) : stamp;
 }
 
 // dotClass — mirrors the sidebar's pastel type dots (same module_id keys;
@@ -118,8 +221,9 @@ function CollectionHeader(props: { lib: LibraryDTO }): ReactElement {
   );
 }
 
-// CollectionBody — the module_id-keyed arm. Group 5 fills the per-type
-// layouts; every type currently shares ItemGrid.
+// CollectionBody — the module_id-keyed arm (D6). Every type gets its honest
+// layout; the serial/unknown fallthrough keeps the generic grid until the
+// serials-library change lands (box 5.4).
 function CollectionBody(props: {
   module_id: string;
   libraryId: number;
@@ -131,35 +235,298 @@ function CollectionBody(props: {
   if (props.summaryLoaded && props.itemCount === 0) {
     return <EmptyState message="Not scanned yet — run a scan from Admin." />;
   }
-  return <ItemGrid libraryId={props.libraryId} />;
+  switch (props.module_id) {
+    case "tv":
+      return <MoviesBody libraryId={props.libraryId} />;
+    case "image":
+      return <PhotosBody libraryId={props.libraryId} />;
+    default:
+      // Serial layout lands with the serials-library change (box 5.4);
+      // until then serial collections render the generic item grid.
+      return <ItemGrid libraryId={props.libraryId} />;
+  }
 }
 
-// ItemGrid — the shared paginated body: one card per item with its title
-// (verbatim from `_view`), type/status chips, and the raw filename, deep-
-// linking into the item detail. Offset paging at the server's default page
-// size ceiling (limit) exactly like the old browse table did.
-function ItemGrid(props: { libraryId: number }): ReactElement {
-  const { libraryId } = props;
-  const [offset, setOffset] = useState(0);
+// ---- Shared pagination ------------------------------------------------------
 
+// Pagination — the shared limit/offset controls (Previous/Next + the rendered
+// range), used by every body layout. Next is enabled only on a FULL page —
+// the server says "maybe more" the only way it can.
+function Pagination(props: {
+  offset: number;
+  count: number;
+  onPrev: () => void;
+  onNext: () => void;
+}): ReactElement {
+  const full = props.count === PAGE_SIZE;
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        className="rounded-md border px-3 py-1.5 text-sm ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
+        onClick={props.onPrev}
+        disabled={props.offset === 0}
+      >
+        Previous
+      </button>
+      <button
+        type="button"
+        className="rounded-md border px-3 py-1.5 text-sm ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
+        onClick={props.onNext}
+        disabled={!full}
+      >
+        Next
+      </button>
+      <span className="text-sm text-muted-foreground">
+        items {props.count === 0 ? props.offset : props.offset + 1}–
+        {props.offset + props.count}
+      </span>
+    </div>
+  );
+}
+
+// usePagedItems — the shared paged items query (limit/offset at PAGE_SIZE) +
+// the page-turn/reset callbacks every body reuses.
+function usePagedItems(libraryId: number) {
+  const [offset, setOffset] = useState(0);
   const params: ListItemsParams = {
     library: libraryId,
     limit: PAGE_SIZE,
     offset,
   };
-  const { data, isLoading, error, refetch } = useItems(params);
+  const query = useItems(params);
+  return {
+    query,
+    items: query.data?.items ?? [],
+    offset,
+    prev: () => setOffset(Math.max(0, offset - PAGE_SIZE)),
+    next: () => setOffset(offset + PAGE_SIZE),
+    reset: () => setOffset(0),
+  };
+}
 
-  if (isLoading) {
+// ---- tv (movies) — box 5.2 --------------------------------------------------
+
+// MoviesBody — the movies layout: a paginated card grid over
+// GET /api/v1/items?library={id}. Each card shows the parsed title (verbatim
+// from `_view`), the parsed fact chips (season/episode token, year,
+// resolution — from the document's source namespaces), the ffprobe duration
+// when known, and the raw filename; cards deep-link into /items/{id}. No
+// paths, no lifecycle pills (D5).
+function MoviesBody(props: { libraryId: number }): ReactElement {
+  const { query, items, offset, prev, next } = usePagedItems(props.libraryId);
+
+  if (query.isLoading) {
     return <LoadingState label="Loading items…" />;
   }
-  if (error) {
-    return <ErrorState error={error as ApiError} onRetry={refetch} />;
+  if (query.error) {
+    return <ErrorState error={query.error as ApiError} onRetry={query.refetch} />;
+  }
+  if (items.length === 0 && offset === 0) {
+    return <EmptyState message="No items in this collection." />;
   }
 
-  const items: ItemDTO[] = data?.items ?? [];
-  const hasPrev = offset > 0;
-  const hasNext = items.length === PAGE_SIZE;
+  return (
+    <section className="flex flex-col gap-3">
+      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {items.map((item) => (
+          <li key={item.id}>
+            <MovieCard item={item} />
+          </li>
+        ))}
+      </ul>
+      <Pagination offset={offset} count={items.length} onPrev={prev} onNext={next} />
+    </section>
+  );
+}
 
+// MovieCard — one movie file card: title, parsed chips + duration, raw
+// filename, deep-link into the item detail.
+function MovieCard(props: { item: ItemDTO }): ReactElement {
+  const { item } = props;
+  const duration = durationSeconds(item.document);
+
+  return (
+    <Link
+      to={`/items/${item.id}`}
+      className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
+    >
+      <span className="text-sm font-medium">{viewTitle(item.document)}</span>
+      <span className="flex flex-wrap gap-1">
+        {parsedChips(item.document).map((chip) => (
+          <span key={chip} className="chip">
+            {chip}
+          </span>
+        ))}
+        {duration !== null ? (
+          <span className="chip">{formatPosition(duration)}</span>
+        ) : null}
+      </span>
+      <span className="break-all font-mono text-xs text-muted-foreground">
+        {fileName(item.relative_path)}
+      </span>
+    </Link>
+  );
+}
+
+// durationSeconds — the item's total whole-second duration, read from the
+// verbatim ffprobe blob (ffprobe writes format.duration as a decimal-seconds
+// STRING). Anything missing/unparseable → null: the card then renders without
+// the duration chip, never a guessed value (same contract as Home's copy).
+function durationSeconds(doc: ItemDocument): number | null {
+  const ffprobe = doc.ffprobe;
+  if (!ffprobe || typeof ffprobe !== "object") {
+    return null;
+  }
+  const format = (ffprobe as { format?: unknown }).format;
+  if (!format || typeof format !== "object") {
+    return null;
+  }
+  const raw = (format as { duration?: unknown }).duration;
+  if (typeof raw !== "string" && typeof raw !== "number") {
+    return null;
+  }
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
+// ---- image (photos) — box 5.3 -----------------------------------------------
+
+// PhotosBody — the photos layout: the subfolder chip row from
+// GET /api/v1/libraries/{id}/folders (client-side filtering — a picked chip
+// narrows the grid to that folder's relative_path prefix, All resets), above
+// a CSS-columns masonry grid of item tiles with capture-date footers. Paging
+// stays limit/offset; a folder switch restarts at offset 0 (a filtered
+// continuation page of the unfiltered list would skip items).
+//
+// `folder` is the selected prefix: null = All, "" = top-level files (the
+// folders endpoint reports them with path ""), otherwise the depth-1 prefix.
+function PhotosBody(props: { libraryId: number }): ReactElement {
+  const { query, items, offset, prev, next, reset } = usePagedItems(props.libraryId);
+  const folders = useLibraryFolders(props.libraryId);
+  const [folder, setFolder] = useState<string | null>(null);
+
+  if (query.isLoading) {
+    return <LoadingState label="Loading items…" />;
+  }
+  if (query.error) {
+    return <ErrorState error={query.error as ApiError} onRetry={query.refetch} />;
+  }
+
+  const visible =
+    folder === null
+      ? items
+      : folder === ""
+        ? items.filter((i) => !i.relative_path.includes("/"))
+        : items.filter((i) => i.relative_path.startsWith(`${folder}/`));
+
+  const pickFolder = (path: string | null): void => {
+    setFolder(path);
+    reset();
+  };
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by folder">
+        <FolderChip
+          label="All"
+          active={folder === null}
+          onClick={() => pickFolder(null)}
+        />
+        {(folders.data?.folders ?? []).map((f) => (
+          <FolderChip
+            key={f.path}
+            label={f.path === "" ? "Top level" : f.path}
+            count={f.items}
+            active={folder === f.path}
+            onClick={() => pickFolder(f.path)}
+          />
+        ))}
+      </div>
+
+      {visible.length === 0 && offset === 0 ? (
+        <EmptyState message="No items in this collection." />
+      ) : (
+        <ul className="masonry">
+          {visible.map((item) => (
+            <li key={item.id}>
+              <PhotoTile item={item} />
+            </li>
+          ))}
+        </ul>
+      )}
+      <Pagination offset={offset} count={visible.length} onPrev={prev} onNext={next} />
+    </section>
+  );
+}
+
+// FolderChip — one subfolder filter chip (client-side; the folders endpoint
+// only names the prefixes). The count rides along as a tabular figure.
+function FolderChip(props: {
+  label: string;
+  count?: number;
+  active: boolean;
+  onClick: () => void;
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      className={cn("chip", props.active && "chip-active")}
+      aria-pressed={props.active}
+      onClick={props.onClick}
+    >
+      {props.label}
+      {props.count !== undefined ? (
+        <span className="tabular-nums">{String(props.count)}</span>
+      ) : null}
+    </button>
+  );
+}
+
+// PhotoTile — one masonry tile: a real-ratio placeholder block (aspect from
+// the enricher's width/height facts — media serving is a deferred capability,
+// so there is nothing to <img> yet), the raw filename, and the capture-date
+// footer from the document's date_taken fact. A document without a date
+// renders no footer — never a faked one. Deep-links into /items/{id}.
+function PhotoTile(props: { item: ItemDTO }): ReactElement {
+  const { item } = props;
+  const ratio = aspectRatio(item.document);
+  const date = captureDate(item.document);
+
+  return (
+    <Link
+      to={`/items/${item.id}`}
+      aria-label={`Open ${fileName(item.relative_path)}`}
+      className="ptile"
+    >
+      <span
+        className="ph"
+        style={ratio ? { aspectRatio: ratio } : undefined}
+        aria-hidden="true"
+      />
+      <footer>
+        <span className="nm">{fileName(item.relative_path)}</span>
+        {date !== null ? <span>{formatDatePart(date)}</span> : null}
+      </footer>
+    </Link>
+  );
+}
+
+// ---- serial + unknown — the shared fallthrough -------------------------------
+
+// ItemGrid — the generic paginated body (the group-3 interim, kept honest):
+// one card per item with its title (verbatim from `_view`), type/status
+// chips, and the raw filename, deep-linking into the item detail. Serial
+// collections land here until box 5.4 swaps in the series grid.
+function ItemGrid(props: { libraryId: number }): ReactElement {
+  const { query, items, offset, prev, next } = usePagedItems(props.libraryId);
+
+  if (query.isLoading) {
+    return <LoadingState label="Loading items…" />;
+  }
+  if (query.error) {
+    return <ErrorState error={query.error as ApiError} onRetry={query.refetch} />;
+  }
   if (items.length === 0 && offset === 0) {
     return <EmptyState message="No items in this collection." />;
   }
@@ -185,28 +552,7 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
           </li>
         ))}
       </ul>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className="rounded-md border px-3 py-1.5 text-sm ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
-          onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-          disabled={!hasPrev}
-        >
-          Previous
-        </button>
-        <button
-          type="button"
-          className="rounded-md border px-3 py-1.5 text-sm ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
-          onClick={() => setOffset(offset + PAGE_SIZE)}
-          disabled={!hasNext}
-        >
-          Next
-        </button>
-        <span className="text-sm text-muted-foreground">
-          items {items.length === 0 ? offset : offset + 1}–{offset + items.length}
-        </span>
-      </div>
+      <Pagination offset={offset} count={items.length} onPrev={prev} onNext={next} />
     </section>
   );
 }

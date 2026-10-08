@@ -10,6 +10,7 @@ import {
 import {
   apiRequest,
   getItem,
+  getLibraryFolders,
   getLibrarySummary,
   listItems,
   listProgress,
@@ -20,6 +21,7 @@ import {
   type ItemsResponse,
   type LibrariesResponse,
   type LibraryDTO,
+  type LibraryFoldersResponse,
   type LibrarySummary,
   type ListItemsParams,
   type ProgressListResponse,
@@ -113,6 +115,22 @@ export function useLibrarySummary(id: number): UseQueryResult<LibrarySummary> {
   return useQuery({
     queryKey: ["library-summary", id],
     queryFn: () => getLibrarySummary(id),
+    enabled: Number.isFinite(id),
+  });
+}
+
+// useLibraryFolders — GET /api/v1/libraries/{id}/folders via getLibraryFolders
+// (web-ui-phase-3 group 5). Keyed ["library-folders", id]: one cache entry per
+// library, mirroring the summary hook's per-library keying. Wire shape
+// mirrored verbatim (libraryFoldersResponse — depth-1 prefixes path-sorted;
+// top-level files report path ""). `enabled` guards a not-yet-parsed route id
+// (NaN) like useLibrarySummary.
+export function useLibraryFolders(
+  id: number,
+): UseQueryResult<LibraryFoldersResponse> {
+  return useQuery({
+    queryKey: ["library-folders", id],
+    queryFn: () => getLibraryFolders(id),
     enabled: Number.isFinite(id),
   });
 }
