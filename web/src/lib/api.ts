@@ -192,6 +192,12 @@ export class ApiError extends Error {
 // Endpoint path constants — ALL pre-existing (router.go:92-94,98-100 + the
 // web-ui-phase-3 additions + the media-preview media route). GET
 // /api/v1/items[/{id}[/media]] are the routes the item surfaces consume.
+// MediaVariant — the variants GET /api/v1/items/{id}/media serves today
+// (reviewer FLAG S2): "thumb" is the frame-grabber JPEG. A union (not string)
+// makes an illegal variant unrepresentable at compile time — the server would
+// 400 it, but the type keeps the mistake local.
+export type MediaVariant = "thumb";
+
 export const ENDPOINTS = {
   libraries: "/api/v1/libraries",
   library: (id: number): string => `/api/v1/libraries/${id}`,
@@ -207,7 +213,7 @@ export const ENDPOINTS = {
   // because a thumb miss is a 404 (D6's strict contract). The bytes go through
   // fetchItemMediaObjectUrl, never an <img src> (an img channel cannot carry
   // the bearer header — D5).
-  itemMedia: (id: string, variant?: string): string =>
+  itemMedia: (id: string, variant?: MediaVariant): string =>
     variant === undefined
       ? `/api/v1/items/${id}/media`
       : `/api/v1/items/${id}/media?variant=${variant}`,
@@ -360,13 +366,7 @@ export async function fetchItemMediaObjectUrl(
   const res: Response = await fetch(path, { headers, signal });
 
   if (res.status === 401) {
-    clearToken();
-    redirectToLogin();
-    throw new ApiError(401, {
-      code: "unauthorized",
-      message: "session expired",
-      retryable: false,
-    });
+    handle401();
   }
   if (!res.ok) {
     throw new ApiError(res.status, await errorBody(res));
@@ -379,6 +379,20 @@ export async function fetchItemMediaObjectUrl(
 // SOLE signal that rotates the client to /login.
 function redirectToLogin(): void {
   window.location.assign("/login");
+}
+
+// handle401 — the shared 401 rotation sequence (reviewer FLAG S1): clearToken +
+// redirectToLogin + reject with the canonical session-expired ApiError. Both
+// channels (apiRequest, fetchItemMediaObjectUrl) route their 401s here so the
+// sequence exists exactly once and cannot drift.
+function handle401(): never {
+  clearToken();
+  redirectToLogin();
+  throw new ApiError(401, {
+    code: "unauthorized",
+    message: "session expired",
+    retryable: false,
+  });
 }
 
 // errorBody — the canonical {"error":{code,message,retryable}} parser shared by
@@ -443,13 +457,7 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   const res: Response = await fetch(path, { ...init, headers, body });
 
   if (res.status === 401) {
-    clearToken();
-    redirectToLogin();
-    throw new ApiError(401, {
-      code: "unauthorized",
-      message: "session expired",
-      retryable: false,
-    });
+    handle401();
   }
 
   if (!res.ok) {
