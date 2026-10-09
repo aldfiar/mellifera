@@ -32,6 +32,15 @@ export MELLIFERA_ADMIN_TOKEN='change-me'
 | `ffmpeg` / `ffprobe` | base-scanner (video probe) | per-file soft-fail: empty probe blob + warning; scan succeeds |
 | `exiftool` | image-enricher (EXIF) | per-source soft-fail: empty namespace → `no_data` cooldown; scan succeeds |
 | `ffmpeg` | frame-grabber (episode thumbnails, serial module) | OPTIONAL: per-source soft-fail: empty namespace → `no_data` cooldown; episodes still settle `ready` |
+| `ffmpeg` | packaged-playback pack lane (remux-only fMP4-HLS, `streams_enabled` libraries) | per-item soft-fail: pack run fails → `pack_failed` ledger row (flat 30-day cooldown); the item keeps its direct floor (original bytes over `/media`) and can be retried via `POST /api/v1/items/{id}/play` with `retry` |
+
+Packaged playback (2026-10-09, `packaged-playback`): without `ffmpeg` on PATH the
+server still serves every item at original bytes — only background packaging is
+unavailable, and the SPA surfaces a retry affordance on failed packs. Artifacts live
+under `<data dir>/streams/` under the `MELLIFERA_ORCH_BUDGET_GB` budget (default 32,
+`0` = off); playback is token-gated (`MELLIFERA_MEDIA_SECRET`, cookie-first + query
+fallback). Walkthrough beats: play a packaged MKV past the 600 s head-first chunk, seek
+via chapter sections, watch the eviction log line under a small budget.
 
 exiftool install: macOS `brew install exiftool` · Debian/Ubuntu
 `apt install libimage-exiftool-perl` · Fedora/RHEL `dnf install perl-Image-ExifTool`

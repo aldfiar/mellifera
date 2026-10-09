@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-10-09
+goal: Fast video shipping on weak servers without encoding; structural seeks for
+  TV scrubbing; section navigation via chapters

@@ -21,10 +21,11 @@ response SHALL carry a Content-Type derived from the file extension, a strong
 ETag, and `Cache-Control: private, immutable`; conditional requests
 (`If-None-Match`) SHALL revalidate to 304, and `HEAD` SHALL be answered with
 the same headers and no body. Non-image content SHALL carry
-`Content-Disposition: attachment` — video files download, they are not
-presented inline. The endpoint serves static bytes only: no transcoding, no
-adaptive streaming, no in-browser playback capability (the deferred
-`internal/stream` surface).
+`Content-Disposition: attachment` — through this endpoint video files
+download, they are not presented inline. The endpoint serves static bytes
+only: no transcoding, no adaptive streaming on this surface — in-browser
+video playback is served by the packaged-playback capability's token-gated
+playback surface, not here.
 
 #### Scenario: Media sits behind the bearer gate
 - **WHEN** `/api/v1/items/{id}/media` is called with no credentials, and then with a valid bearer token
