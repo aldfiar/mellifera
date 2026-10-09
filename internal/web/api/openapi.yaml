@@ -108,6 +108,8 @@ definitions:
         type: string
       root_path:
         type: string
+      streams_enabled:
+        type: boolean
     type: object
   api.libraryFoldersResponse:
     properties:
@@ -123,6 +125,32 @@ definitions:
       library_id:
         type: integer
       updated_at:
+        type: string
+    type: object
+  api.playRequest:
+    properties:
+      from_seconds:
+        type: number
+      retry:
+        type: boolean
+    type: object
+  api.playResponse:
+    properties:
+      queued:
+        type: boolean
+    type: object
+  api.playbackResponse:
+    properties:
+      mode:
+        type: string
+      play_url:
+        type: string
+      sections:
+        items:
+          additionalProperties: {}
+          type: object
+        type: array
+      state:
         type: string
     type: object
   api.progressDTO:
@@ -209,6 +237,8 @@ definitions:
         type: string
       root_path:
         type: string
+      streams_enabled:
+        type: boolean
     type: object
 host: localhost:8080
 info:
@@ -332,6 +362,70 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: Serve an item's media bytes
+      tags:
+      - items
+  /items/{id}/play:
+    post:
+      operationId: item-play
+      parameters:
+      - description: item id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: play options
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.playRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.playResponse'
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/api.playResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Play one item (the only playback mutation)
+      tags:
+      - items
+  /items/{id}/playback:
+    get:
+      operationId: item-playback
+      parameters:
+      - description: item id
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.playbackResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Playback descriptor for one item
       tags:
       - items
   /libraries:

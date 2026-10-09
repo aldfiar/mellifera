@@ -23,16 +23,19 @@ export interface CreateLibraryRequest {
 export interface UpdateLibraryRequest {
   display_name?: string;
   description?: string;
+  streams_enabled?: boolean;
 }
 
 // handlers.go libraryDTO — description is always present in responses (""
-// when never set; web-ui-phase-3 group 1).
+// when never set; web-ui-phase-3 group 1). streams_enabled is the
+// packaged-playback packaging gate (always present; column default true).
 export interface LibraryDTO {
   id: number; // int64
   module_id: string;
   root_path: string;
   display_name: string;
   description: string;
+  streams_enabled: boolean;
 }
 
 // handlers.go librarySummaryResponse — the constant-time count + last-update
@@ -125,6 +128,32 @@ export interface ItemDTO {
 // handlers.go itemsResponse — empty array, never null
 export interface ItemsResponse {
   items: ItemDTO[];
+}
+
+// handlers.go playbackResponse — the ONE wire shape for GET
+// /api/v1/items/{id}/playback (packaged-playback). mode is "direct" | "hls";
+// state is the packaging state "none" | "partial" | "complete" | "failed";
+// play_url is the token-carrying /media URL the player opens (the descriptor
+// ALSO sets the cookie-primary media token — the query token in the URL is
+// the cookie-less fallback); sections lists the chapter-kind projections.
+export interface PlaybackSection {
+  kind: string; // "chapter" in v1; "marker" reserved, never produced
+  start: number;
+  end?: number;
+  title?: string;
+}
+
+export interface PlaybackDescriptor {
+  mode: string; // "direct" | "hls"
+  state: string; // "none" | "partial" | "complete" | "failed"
+  play_url: string;
+  sections: PlaybackSection[];
+}
+
+// handlers.go playResponse — the wire shape for POST /api/v1/items/{id}/play.
+// queued reports whether a packaging (re-)enqueue actually happened.
+export interface PlayResponse {
+  queued: boolean;
 }
 
 // handlers.go seriesDTO — the ONE wire shape for a series, mirroring itemDTO:
@@ -220,6 +249,14 @@ export const ENDPOINTS = {
   series: "/api/v1/series",
   seriesEpisodes: (id: string): string => `/api/v1/series/${id}/episodes`,
   progress: "/api/v1/progress",
+  // Playback verbs (packaged-playback): the read-only descriptor and the
+  // single playback mutation (POST /play with {retry:true} re-enqueues a
+  // failed packaging run; from_seconds is reserved server-side).
+  playback: (id: string): string => `/api/v1/items/${id}/playback`,
+  play: (id: string): string => `/api/v1/items/${id}/play`,
+  // progressItem — PUT /api/v1/progress/{item_id} (the player's position
+  // reporting channel; same browse bearer posture as every other call).
+  progressItem: (id: string): string => `/api/v1/progress/${id}`,
 } as const;
 
 // updateLibrary — PATCH /api/v1/libraries/{id} (handlers.go updateLibrary).
@@ -307,6 +344,47 @@ export async function getSeries(libraryId: number): Promise<SeriesListResponse> 
 // body (surfaced as ApiError{code:"not_found"}).
 export async function getSeriesEpisodes(seriesId: string): Promise<ItemsResponse> {
   return apiRequest<ItemsResponse>(ENDPOINTS.seriesEpisodes(seriesId));
+}
+
+// getPlayback — GET /api/v1/items/{id}/playback (handlers.go itemPlayback,
+// packaged-playback). Read-only descriptor: mode/state/play_url/sections.
+// The handler ALSO sets the cookie-primary media token on the response — the
+// browser carries it to /media automatically; play_url's query token is the
+// cookie-less fallback. An unknown item 404s with the canonical not_found
+// body (surfaced as ApiError{code:"not_found"}).
+export async function getPlayback(id: string): Promise<PlaybackDescriptor> {
+  return apiRequest<PlaybackDescriptor>(ENDPOINTS.playback(id));
+}
+
+// playItem — POST /api/v1/items/{id}/play (handlers.go itemPlay, D-7: the
+// ONLY playback mutation). A retry request ({retry:true}) re-enqueues a
+// FAILED packaging run (202 {queued:true}; 400 "nothing_failed" when nothing
+// failed); a plain play ({}) is an acknowledgement (200) that may still
+// enqueue a pack-on-play packaging run (202 when it did). An unknown item
+// 404s with the canonical not_found body. Callers surface errors inline —
+// no auto-retry (mutations are non-idempotent).
+export async function playItem(
+  id: string,
+  req: { retry?: boolean } = {},
+): Promise<PlayResponse> {
+  return apiRequest<PlayResponse>(ENDPOINTS.play(id), {
+    method: "POST",
+    body: req as unknown as BodyInit,
+  });
+}
+
+// putProgress — PUT /api/v1/progress/{item_id} (handlers.go putProgress,
+// web-ui-phase-3). The player's position-reporting channel: integer seconds,
+// best-effort (a progress failure never interrupts playback). 404 for an
+// unknown item; 400 for a missing/negative position.
+export async function putProgress(
+  itemId: string,
+  positionSeconds: number,
+): Promise<ProgressDTO> {
+  return apiRequest<ProgressDTO>(ENDPOINTS.progressItem(itemId), {
+    method: "PUT",
+    body: { position_seconds: positionSeconds } as unknown as BodyInit,
+  });
 }
 
 // getItem — GET /api/v1/items/{id} (handlers.go:266-278). The id is the item's

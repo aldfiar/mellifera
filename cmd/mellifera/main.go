@@ -22,6 +22,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -38,6 +42,7 @@ import (
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
+	"github.com/mellifera/mellifera/internal/stream"
 	"github.com/mellifera/mellifera/internal/web"
 	"github.com/mellifera/mellifera/pkg/sdk"
 )
@@ -143,6 +148,20 @@ func main() {
 		Plugins: mgr,
 		Enrich:  enrich.Deps{Store: st, Modules: reg, Plugins: mgr},
 	}
+
+	// Packaged-playback pack lane (D-3/D-4/D-5): the enrich queue's PackItem
+	// seam closes over the stream Service (Interface 2 — enrich never imports
+	// stream; this closure is the only bridge). The artifact root lives inside
+	// the server's own data space, never a library directory.
+	mediaSvc := &stream.Service{
+		Root:     cfg.streamsRoot,
+		Secret:   cfg.mediaSecret,
+		Original: originalResolver(st),
+	}
+	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any) (enrich.PackOutcome, error) {
+		build, err := mediaSvc.Pack(ctx, itemID, absPath, ffprobe)
+		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce}, err
+	}
 	// Async enrich queue (arch §4.4): a bounded worker pool that derives pending
 	// (item, plugin) work from items + the ledger and drains it for the process
 	// lifetime. Constructed + started BEFORE the server serves so the first
@@ -204,13 +223,77 @@ func main() {
 			return scan.Run(ctx, scanDeps, libraryID)
 		},
 		Status: statusClosure,
+		// Playback descriptor (D-7): pure delegation over the stream Service's
+		// Describe + a fresh media token (the anti-corruption seam keeps api
+		// free of a stream import, mirroring Status above).
+		Playback: func(ctx context.Context, itemID string) (api.Playback, error) {
+			row, err := st.GetItem(ctx, itemID)
+			if err != nil {
+				return api.Playback{}, err // sql.ErrNoRows → 404 at the handler
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(row.Document, &doc); err != nil {
+				return api.Playback{}, err
+			}
+			mode, state, playURL, sections := mediaSvc.Describe(itemID, doc)
+			token, _ := mediaSvc.Issue(itemID, time.Now()) // cookie-primary delivery
+			return api.Playback{
+				Mode:     mode,
+				State:    state,
+				PlayURL:  playURL,
+				Sections: sections,
+				Token:    token,
+			}, nil
+		},
+		// Play verb (D-7 — the ONLY playback mutation): retry re-enqueues a
+		// failed packaging run through the streams lane; fromSeconds is
+		// reserved (a v1 no-op carried through). The failed check reads the
+		// item's stored streams namespace — the lane is its only writer.
+		Play: func(ctx context.Context, itemID string, retry bool, _ *float64) (bool, error) {
+			row, err := st.GetItem(ctx, itemID)
+			if err != nil {
+				return false, err // sql.ErrNoRows → 404 at the handler
+			}
+			if !retry {
+				// Pack-on-play (D-8): the played item (a movie the frontier
+				// never fronts, or any unpackaged packable item) gets its
+				// packaging enqueued by the play that asked for it; the
+				// direct floor answers everything else. queued=true → 202.
+				return packOnPlay(ctx, st, enrichQueue.EnqueuePack, row)
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(row.Document, &doc); err != nil {
+				return false, err
+			}
+			streams, _ := doc["streams"].(map[string]any)
+			state, _ := streams["state"].(string)
+			if state != stream.StateFailed {
+				return false, nil // nothing failed → 400 nothing_failed at the handler
+			}
+			if err := enrichQueue.EnqueuePack(itemID); err != nil {
+				return false, err
+			}
+			return true, nil // 202 accepted
+		},
 	})
 
+	// Packaged-playback orchestrator (D-8/D-9): the watch-driven frontier +
+	// budget eviction sweep. Boot sweep FIRST (a restarted server resumes
+	// its frontier before serving), then the ≥60 s ticker for the process
+	// lifetime; both execute the policy's decisions through the streams
+	// lane's EnqueuePack seam and the filesystem. The budget knob is GiB
+	// (default 32; 0 = off — see loadConfig).
+	sweep := newSweep(st, cfg.streamsRoot, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30)
+	sweep(ctx)
+	go runSweepTicker(ctx, sweep)
+
 	// Single top-level http.Handler: web.Handler composes the api router
-	// (mounted at /api/* inside web.Handler) with the embedded SPA + Swagger
-	// surface (INV-single-handler — no second http.Server). DevMode loosens the
-	// cache headers for the Vite dev proxy (MELLIFERA_WEB_DEV).
-	handler := web.Handler(apiHandler, web.Options{DevMode: cfg.webDev})
+	// (mounted at /api/* inside web.Handler) with the token-gated /media
+	// playback surface (Interface 3, ahead of the SPA fallback) + the embedded
+	// SPA + Swagger surface (INV-single-handler — no second http.Server).
+	// DevMode loosens the cache headers for the Vite dev proxy
+	// (MELLIFERA_WEB_DEV).
+	handler := web.Handler(apiHandler, web.Options{DevMode: cfg.webDev, Media: mediaSvc})
 
 	srv := &http.Server{
 		Addr:              cfg.listenAddr,
@@ -248,6 +331,9 @@ func main() {
 // config is the resolved startup configuration read from the environment.
 type config struct {
 	dsn               string
+	streamsRoot       string
+	mediaSecret       []byte
+	orchBudgetGB      int
 	adminToken        string
 	baseScannerPath   string
 	serialScannerPath string
@@ -274,7 +360,20 @@ func loadConfig() config {
 		os.Exit(1)
 	}
 	return config{
-		dsn:               filepath.Join(dataDir, "mellifera.db"),
+		dsn: filepath.Join(dataDir, "mellifera.db"),
+		// Packaged-playback: the artifact root inside the server's own data
+		// space (never a library directory) and the media-token HMAC secret
+		// (D-6 — distinct from the admin token by construction: it is a
+		// separate env var, and an unset one falls back to a fresh random
+		// 32-byte secret, never to the admin credential). The secret is never
+		// logged.
+		streamsRoot: filepath.Join(dataDir, "streams"),
+		mediaSecret: mediaSecret(),
+		// Packaged-playback budget knob (D-9): the artifact budget in GiB,
+		// default 32; `0` disables the cap entirely. Non-positive reads as
+		// off (the orchestrator's Evictions contract), so the knob can never
+		// accidentally evict everything.
+		orchBudgetGB:      envInt("MELLIFERA_ORCH_BUDGET_GB", 32),
 		adminToken:        adminToken,
 		baseScannerPath:   envOr("MELLIFERA_BASE_SCANNER", "bin/base-scanner"),
 		serialScannerPath: envOr("MELLIFERA_SERIAL_SCANNER", "bin/serial-scanner"),
@@ -339,6 +438,53 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// mediaSecret resolves the media-token HMAC secret: MELLIFERA_MEDIA_SECRET
+// (hex) when set, else a fresh random 32-byte secret. A random fallback means
+// outstanding media tokens die at restart (they are 4 h playback grants, not
+// identities — re-fetching the descriptor re-mints). Never logged; a
+// malformed hex value is fatal (a silently ignored secret would look healthy
+// while every token verify fails).
+func mediaSecret() []byte {
+	if v := os.Getenv("MELLIFERA_MEDIA_SECRET"); v != "" {
+		b, err := hex.DecodeString(v)
+		if err != nil || len(b) == 0 {
+			fatal("parse MELLIFERA_MEDIA_SECRET", errors.New("must be non-empty hex"))
+		}
+		return b
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		fatal("generate media secret", err)
+	}
+	return b
+}
+
+// originalResolver builds the stream Service's direct-floor resolver over the
+// store: the item's parsed.absolute_path (the stamp scan assembles) — the
+// same single file-location channel the enrich chain reads. ok is false for
+// any absent/unreadable stamp; the /media handler answers 404.
+func originalResolver(st *store.Store) func(ctx context.Context, itemID string) (string, bool) {
+	return func(ctx context.Context, itemID string) (string, bool) {
+		row, err := st.GetItem(ctx, itemID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", false
+			}
+			slog.Warn("media: original lookup failed", "item", itemID, "error", err)
+			return "", false
+		}
+		var doc struct {
+			Parsed struct {
+				AbsolutePath string `json:"absolute_path"`
+			} `json:"parsed"`
+		}
+		if err := json.Unmarshal(row.Document, &doc); err != nil {
+			return "", false
+		}
+		return doc.Parsed.AbsolutePath, doc.Parsed.AbsolutePath != ""
+	}
 }
 
 // envBool reads a boolean env var (1/t/T/true/TRUE/True → true; everything else

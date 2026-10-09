@@ -11,17 +11,21 @@
 //
 // # Public API (≤3 symbols — under the 8-symbol target)
 //
-//   - Handler: composes apiHandler (/api/*) + the embedded SPA (+ swagger).
-//   - Options: DevMode flag (loose cache headers for the Vite dev proxy).
+//   - Handler: composes apiHandler (/api/*) + the media surface (/media,
+//     packaged-playback Interface 3, when Options.Media is set) + the embedded
+//     SPA (+ swagger).
+//   - Options: DevMode flag (loose cache headers for the Vite dev proxy) and
+//     the Media handler (mounted before the SPA fallback; nil = no mount).
 //
 // # Embedding + fallback rule
 //
 // The SPA is embedded via //go:embed all:dist over internal/web/dist/ (the
 // Phase-1 placeholder now; the real Vite/React build in Phase 2). The fallback
-// rule: any path NOT under /api/, /openapi, or /docs AND not a real embedded
-// asset serves index.html with 200 (client-side routing). A real asset miss
-// under /assets/<missing> returns 404 — broken hashed URLs fail fast
-// (conventions §SPA fallback rule).
+// rule: any path NOT under /api/, /media, /openapi, or /docs AND not a real
+// embedded asset serves index.html with 200 (client-side routing). A real
+// asset miss under /assets/<missing> returns 404 — broken hashed URLs fail
+// fast (conventions §SPA fallback rule). /media paths never fall through to
+// index.html: the media mount registers ahead of the fallback.
 //
 // # Cache headers
 //

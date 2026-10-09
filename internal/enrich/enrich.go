@@ -31,10 +31,20 @@ type metadataResolver func(pluginID, capabilityID string) (sdk.MetadataSource, e
 // Deps are the collaborators Enrich orchestrates. Store and Modules are carried
 // for API fidelity (the composition root wires them; Phase B persistence/retry
 // uses Store). Phase A resolves metadata_source clients via Plugins only.
+// PackItem is the streams lane's packaging seam (packaged-playback D-10): a
+// nil PackItem disables the lane. It is wired flat in cmd/mellifera to the
+// stream package's pack lane — enrich stays ignorant of stream (Interface 2).
 type Deps struct {
 	Store   *store.Store
 	Plugins *plugin.Manager
 	Modules *module.Registry
+	// PackItem packages one item's original file (absPath) into fMP4-HLS and
+	// returns the published build pointer. ffprobe carries the stored verbatim
+	// facts (the lane reads them only for this call). An error is a terminal
+	// packaging failure: the lane records a pack_failed ledger row under
+	// __streams__ and persists the failed state — metadata completion is never
+	// touched either way.
+	PackItem func(ctx context.Context, itemID, absPath string, ffprobe map[string]any) (PackOutcome, error)
 }
 
 // Result is the outcome of enriching one item: how many sources were attempted,

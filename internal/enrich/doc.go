@@ -26,16 +26,36 @@
 // Leases are in-memory and expire lazily; pending work survives a restart in
 // items + the ledger and is re-derived on the next Start.
 //
-// # Public API (7 symbols)
+// # Public API (8 symbols)
 //
-//   - Deps: the collaborators (store, plugin manager, module registry).
+//   - Deps: the collaborators (store, plugin manager, module registry) plus
+//     the streams lane's PackItem packaging seam (nil = lane disabled).
 //   - Result: per-item enrichment outcome (stages attempted/succeeded + warnings).
 //   - Enrich: the SYNC per-item chain for one item (worker-internal + preserved
 //     for sync/tests; AC-3 deprecate-don't-delete).
-//   - Queue: the in-process async dispatcher (derived queue + worker pool).
+//   - Queue: the in-process async dispatcher (derived queue + worker pool);
+//     its EnqueuePack method is the streams lane's dispatch entry.
 //   - QueueConfig: the §4.4 knobs (zero-value = defaults).
 //   - Stats: a best-effort liveness snapshot (pending/in-flight/done/failed).
 //   - NewQueue: construct a Queue over Deps + QueueConfig (not yet running).
+//   - PackOutcome: one published packaging build returned over the PackItem
+//     seam (artifact pointer + build nonce).
+//
+// # The streams lane (packaged-playback D-10)
+//
+// Packaging jobs ride the SAME queue as metadata sources as a dedicated lane
+// keyed `__streams__` (streams.go, its own file): EnqueuePack buffers a lane
+// task, a worker routes it to the lane driver, and the driver runs the
+// Deps.PackItem seam — wired flat in cmd/mellifera to the stream package, so
+// enrich never imports stream (Interface 2). The lane holds the item's lease
+// for the run and RENEWS it while a long pack proceeds; it persists by
+// replacing ONLY the document's `streams` namespace through its own path
+// (fresh row reload immediately before the writeMu-guarded write); a terminal
+// failure records a pack_failed ledger row under `__streams__` with a FLAT
+// 30-day cooldown (no doubling), success clears the row. Metadata completion —
+// lifecycle states, metadata namespaces, derivation, settlement — is untouched
+// by packaging work, and `__streams__` ledger rows are exempt from any future
+// unregistered-plugin purge.
 //
 // # Invariants
 //

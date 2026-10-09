@@ -29,6 +29,16 @@ type Deps struct {
 	// — this is the anti-corruption seam that keeps api free of plugin/enrich
 	// imports (INV2; mirrors the Deps.Scan func-field).
 	Status func(ctx context.Context) (AdminStatus, error)
+	// Playback is the read-only descriptor closure (packaged-playback D-7):
+	// built in cmd/mellifera over the stream Service's Describe and returning
+	// the api-local Playback. Nil-safe (503 when nil), mirroring Status.
+	Playback func(ctx context.Context, itemID string) (Playback, error)
+	// Play is the ONLY playback mutation closure (D-7): retry re-enqueues a
+	// failed packaging run (queued=true when one existed), fromSeconds is
+	// reserved (a v1 no-op carried through for future resume semantics).
+	// Nil-safe (503 when nil). sql.ErrNoRows from either closure surfaces as
+	// 404 in the handlers.
+	Play func(ctx context.Context, itemID string, retry bool, fromSeconds *float64) (queued bool, err error)
 }
 
 // Role is the authorization role resolved from the credential. MVP issues
@@ -107,6 +117,11 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Get("/series", h.listSeries)
 		r.Get("/series/{id}", h.getSeries)
 		r.Get("/series/{id}/episodes", h.seriesEpisodes)
+		// Playback verbs (packaged-playback D-7): the read-only descriptor and
+		// the single playback mutation, both in the browse group — playback is
+		// a viewer action, exactly like progress.
+		r.Get("/items/{id}/playback", h.itemPlayback)
+		r.Post("/items/{id}/play", h.itemPlay)
 		// Playback progress (web-ui-phase-3): the PUT lives in the browse
 		// group by design (admin+client) — writing a position is a viewer
 		// action, not an operator mutation.

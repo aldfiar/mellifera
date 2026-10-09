@@ -59,15 +59,18 @@ func priorAttempts(idx failureIndex, rowID, pluginID string) int {
 // terminal RecordFailure, owning the §4.4 doubling schedule in enrich (the store
 // is value-agnostic). exhausted doubles ExhaustedCool per exhaustion round
 // (7d -> 14d -> 28d ...), capped at CoolCap; no_data is a flat NoDataCool (30d)
-// with no doubling. The first exhaustion (priorAttempts == 0) records the
-// in-memory attempt budget (MaxAttempts) and yields ExhaustedCool; each later
-// exhaustion increments the stored attempts so the round stays recoverable.
+// with no doubling; pack_failed (the __streams__ lane, D-10) reuses the flat
+// no_data shape at the same flat cooldown — a play-time retry re-enqueues
+// before eligibility, so doubling would only punish explicit retries. The
+// first exhaustion (priorAttempts == 0) records the in-memory attempt budget
+// (MaxAttempts) and yields ExhaustedCool; each later exhaustion increments the
+// stored attempts so the round stays recoverable.
 //
 // The dispatch passes the runSourceRetryable attempt count as the seed for the
 // FIRST round (attempts == MaxAttempts), matching the retry->ledger joint seed.
 func terminalCooldown(status string, priorAttempts int, cfg QueueConfig) (storeAttempts int, cool time.Duration) {
-	if status == ledgerNoData {
-		// no_data: clean run produced nothing; flat cooldown, no doubling.
+	if status == ledgerNoData || status == ledgerPackFailed {
+		// no_data / pack_failed: flat cooldown, no doubling.
 		return nextAttempts(priorAttempts, cfg.MaxAttempts), cfg.NoDataCool
 	}
 	storeAttempts = nextAttempts(priorAttempts, cfg.MaxAttempts)

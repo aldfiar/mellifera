@@ -28,15 +28,18 @@
 // requireRole (Task 04/08). RoleClient is defined but gated (not minted by any
 // resolver yet; the Phase-2 swap point).
 //
-// # Public API (7 symbols — under the 8-symbol target)
+// # Public API (8 symbols — at the 8-symbol target)
 //
-//   - Deps: the collaborators + admin token New wires into the router.
+//   - Deps: the collaborators + admin token New wires into the router (now
+//     including the Playback and Play playback-verb closures, D-7).
 //   - Principal: the authenticated caller resolved by the middleware.
 //   - New: builds the chi router with the auth middleware + routes.
 //   - Role: the authorization role (RoleAdmin minted; RoleClient gated).
 //   - AdminStatus: the api-local liveness aggregate the Deps.Status closure returns.
 //   - PluginHealth: one plugin's liveness (exported seam input; built by the closure).
 //   - EnrichStats: the enrich-queue snapshot (exported seam input; built by the closure).
+//   - Playback: the playback descriptor (exported seam input; built by the
+//     Deps.Playback closure; its Token rides Set-Cookie only, json:"-").
 //
 // # Invariants
 //
@@ -57,7 +60,7 @@
 //     exported seam-input structs (PluginHealth/EnrichStats) which are the wire
 //     shape for /admin/status. The wire envelope (statusResponse) stays
 //     unexported (ai-architecture §2 corollary; no shared mutable types).
-//   - INV5: 7 exported symbols (Deps, Principal, New, Role, AdminStatus,
-//     PluginHealth, EnrichStats). Handlers, DTOs, the middleware, and
-//     IsAdmin are unexported or methods (excluded from the count).
+//   - INV5: 8 exported symbols (Deps, Principal, New, Role, AdminStatus,
+//     PluginHealth, EnrichStats, Playback). Handlers, DTOs, the middleware,
+//     and IsAdmin are unexported or methods (excluded from the count).
 package api

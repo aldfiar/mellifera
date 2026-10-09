@@ -12,13 +12,18 @@ import (
 )
 
 // Library is a configured scan root bound to a module (arch §9.1).
+// StreamsEnabled is the packaged-playback packaging gate (D-8): the column
+// defaults ON (every existing library keeps packaging permitted) and PATCH
+// /libraries flips it per library; what the flag drives lives in the
+// orchestrator, not here (INV-value-agnostic-store).
 type Library struct {
-	ID          int64
-	ModuleID    string
-	RootPath    string
-	DisplayName string
-	Description string
-	CreatedAt   time.Time
+	ID             int64
+	ModuleID       string
+	RootPath       string
+	DisplayName    string
+	Description    string
+	StreamsEnabled bool
+	CreatedAt      time.Time
 }
 
 // FolderCount is one depth-1 relative-path prefix of a library's items with the
@@ -53,18 +58,20 @@ func (s *Store) CreateLibrary(ctx context.Context, moduleID, rootPath, displayNa
 }
 
 // UpdateLibrary applies a partial update to the library row: a nil argument
-// leaves the column unchanged (PATCH {display_name?, description?}); a
-// non-nil pointer overwrites it. The identity columns (module_id, root_path)
-// are NOT updatable here — moving a root re-identifies every item and is not
-// an API operation (web-ui-phase-3 D2). A missing row yields a wrapped
-// sql.ErrNoRows (the api layer maps it to 404); the updated row is returned.
-func (s *Store) UpdateLibrary(ctx context.Context, id int64, displayName, description *string) (Library, error) {
+// leaves the column unchanged (PATCH {display_name?, description?,
+// streams_enabled?}); a non-nil pointer overwrites it. The identity columns
+// (module_id, root_path) are NOT updatable here — moving a root
+// re-identifies every item and is not an API operation (web-ui-phase-3 D2).
+// A missing row yields a wrapped sql.ErrNoRows (the api layer maps it to
+// 404); the updated row is returned.
+func (s *Store) UpdateLibrary(ctx context.Context, id int64, displayName, description *string, streamsEnabled *bool) (Library, error) {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE libraries SET
-  display_name = COALESCE(?, display_name),
-  description  = COALESCE(?, description)
+  display_name    = COALESCE(?, display_name),
+  description     = COALESCE(?, description),
+  streams_enabled = COALESCE(?, streams_enabled)
 WHERE id = ?`,
-		displayName, description, id,
+		displayName, description, streamsEnabled, id,
 	)
 	if err != nil {
 		return Library{}, fmt.Errorf("store: update library %d: %w", id, err)
@@ -163,10 +170,10 @@ func (s *Store) GetLibrary(ctx context.Context, id int64) (Library, error) {
 		createdText string
 	)
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, module_id, root_path, display_name, description, created_at FROM libraries WHERE id = ?",
+		"SELECT id, module_id, root_path, display_name, description, streams_enabled, created_at FROM libraries WHERE id = ?",
 		id,
 	)
-	if err := row.Scan(&l.ID, &l.ModuleID, &l.RootPath, &l.DisplayName, &l.Description, &createdText); err != nil {
+	if err := row.Scan(&l.ID, &l.ModuleID, &l.RootPath, &l.DisplayName, &l.Description, &l.StreamsEnabled, &createdText); err != nil {
 		return Library{}, fmt.Errorf("store: get library %d: %w", id, err)
 	}
 	created, err := parseTime(createdText)
@@ -186,7 +193,7 @@ func (s *Store) GetLibrary(ctx context.Context, id int64) (Library, error) {
 // library list relies on).
 func (s *Store) ListLibraries(ctx context.Context) ([]Library, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, module_id, root_path, display_name, description, created_at FROM libraries ORDER BY id",
+		"SELECT id, module_id, root_path, display_name, description, streams_enabled, created_at FROM libraries ORDER BY id",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list libraries: %w", err)
@@ -198,7 +205,7 @@ func (s *Store) ListLibraries(ctx context.Context) ([]Library, error) {
 			l           Library
 			createdText string
 		)
-		if err := rows.Scan(&l.ID, &l.ModuleID, &l.RootPath, &l.DisplayName, &l.Description, &createdText); err != nil {
+		if err := rows.Scan(&l.ID, &l.ModuleID, &l.RootPath, &l.DisplayName, &l.Description, &l.StreamsEnabled, &createdText); err != nil {
 			return nil, fmt.Errorf("store: list libraries scan: %w", err)
 		}
 		created, err := parseTime(createdText)

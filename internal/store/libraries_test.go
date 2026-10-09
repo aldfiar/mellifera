@@ -101,3 +101,72 @@ func TestLibraryDescriptionRoundtrip(t *testing.T) {
 		}
 	})
 }
+
+// TestLibraryStreamsEnabledRoundtrip covers packaged-playback D-8: the
+// streams_enabled gate column exists via an idempotent migration, every
+// library defaults ON (packaging permitted — the rollback knob), and
+// UpdateLibrary flips it per library while leaving it untouched when the
+// pointer is nil.
+func TestLibraryStreamsEnabledRoundtrip(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+
+	t.Run("create_defaults_enabled", func(t *testing.T) {
+		id, err := s.CreateLibrary(ctx, "tv", "/data/streams-default", "Default Gate")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		got, err := s.GetLibrary(ctx, id)
+		if err != nil {
+			t.Fatalf("GetLibrary: %v", err)
+		}
+		if !got.StreamsEnabled {
+			t.Fatalf("GetLibrary.StreamsEnabled = false, want true (column default ON)")
+		}
+	})
+
+	t.Run("patch_flips_gate_off_then_on", func(t *testing.T) {
+		id, err := s.CreateLibrary(ctx, "tv", "/data/streams-flip", "Flip Gate")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		off := false
+		got, err := s.UpdateLibrary(ctx, id, nil, nil, &off)
+		if err != nil {
+			t.Fatalf("UpdateLibrary(off): %v", err)
+		}
+		if got.StreamsEnabled {
+			t.Fatalf("UpdateLibrary(off).StreamsEnabled = true, want false")
+		}
+		// A nil pointer leaves the gate untouched (partial-update contract).
+		got, err = s.UpdateLibrary(ctx, id, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("UpdateLibrary(nil): %v", err)
+		}
+		if got.StreamsEnabled {
+			t.Fatalf("UpdateLibrary(nil).StreamsEnabled = true, want false (nil = unchanged)")
+		}
+		on := true
+		got, err = s.UpdateLibrary(ctx, id, nil, nil, &on)
+		if err != nil {
+			t.Fatalf("UpdateLibrary(on): %v", err)
+		}
+		if !got.StreamsEnabled {
+			t.Fatalf("UpdateLibrary(on).StreamsEnabled = false, want true")
+		}
+	})
+
+	t.Run("list_roundtrips_gate", func(t *testing.T) {
+		libs, err := s.ListLibraries(ctx)
+		if err != nil {
+			t.Fatalf("ListLibraries: %v", err)
+		}
+		byRoot := map[string]bool{}
+		for _, l := range libs {
+			byRoot[l.RootPath] = l.StreamsEnabled
+		}
+		if !byRoot["/data/streams-default"] || !byRoot["/data/streams-flip"] {
+			t.Fatalf("ListLibraries gates = %v, want both enabled", byRoot)
+		}
+	})
+}

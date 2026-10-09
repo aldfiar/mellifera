@@ -1,0 +1,1171 @@
+{
+  "schema_version": 1,
+  "generated_from_commit": "4dfdc9e",
+  "source_fingerprint": "b6e2fd5331784ea7d66a6c0c8272ea85cd0d823256814d5379efd8649c48b8f3",
+  "generated_by": "tools/wf/index.py",
+  "workspace_root": "docs/",
+  "scope": {
+    "includes": "source code + tests (programming languages)",
+    "excludes": [
+      "markdown/docs",
+      "config (json/yaml/toml)",
+      "framework scaffold (claude/, opencode/)",
+      ".phase_cache/",
+      "IDE files"
+    ],
+    "agent_command_skill_inventory": "project_structure.md + .project_context.json",
+    "ast_backends": "python3-ast (.py); regex-floor fallback for other langs"
+  },
+  "counts": {
+    "files_total": 191,
+    "by_extension": {
+      ".go": 148,
+      ".sh": 1,
+      ".js": 2,
+      ".tsx": 31,
+      ".ts": 9
+    },
+    "by_role": {
+      "source": 114,
+      "test": 77
+    },
+    "tests": 77
+  },
+  "stack": {
+    "primary": "go",
+    "languages": {
+      "go": 148,
+      "bash": 1,
+      "javascript": 2,
+      "typescript": 40
+    },
+    "frameworks": []
+  },
+  "tree": {
+    ".claude/skills/mellifera-build/module-template/doc.go": {
+      "lines": 17,
+      "lang": "go",
+      "role": "source"
+    },
+    ".claude/skills/mellifera-build/module-template/greet.go": {
+      "lines": 24,
+      "lang": "go",
+      "role": "source"
+    },
+    ".claude/skills/mellifera-build/module-template/greet_test.go": {
+      "lines": 48,
+      "lang": "go",
+      "role": "test"
+    },
+    ".claude/skills/mellifera-build/scripts/check.sh": {
+      "lines": 54,
+      "lang": "bash",
+      "role": "source"
+    },
+    "cmd/mellifera/config_test.go": {
+      "lines": 65,
+      "lang": "go",
+      "role": "test"
+    },
+    "cmd/mellifera/main.go": {
+      "lines": 526,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/api/admin_status_test.go": {
+      "lines": 98,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/doc.go": {
+      "lines": 66,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/api/handlers.go": {
+      "lines": 974,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/api/item_media_test.go": {
+      "lines": 295,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/libraries_test.go": {
+      "lines": 375,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/middleware.go": {
+      "lines": 91,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/api/middleware_test.go": {
+      "lines": 144,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/progress_test.go": {
+      "lines": 250,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/qa_roles_test.go": {
+      "lines": 77,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/role_gating_test.go": {
+      "lines": 122,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/roles_test.go": {
+      "lines": 32,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/router.go": {
+      "lines": 139,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/api/router_test.go": {
+      "lines": 402,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/scan_inline_test.go": {
+      "lines": 152,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/series_test.go": {
+      "lines": 293,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/enrich/chain.go": {
+      "lines": 145,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/doc.go": {
+      "lines": 95,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/enrich.go": {
+      "lines": 215,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/enrich_test.go": {
+      "lines": 390,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/enrich/lease.go": {
+      "lines": 87,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/lease_test.go": {
+      "lines": 130,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/enrich/provenance.go": {
+      "lines": 66,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/qa_c01_stages_roundtrip_test.go": {
+      "lines": 203,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/enrich/queue.go": {
+      "lines": 587,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/queue_test.go": {
+      "lines": 558,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/enrich/retry.go": {
+      "lines": 71,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/retry_test.go": {
+      "lines": 158,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/enrich/series_queue_test.go": {
+      "lines": 588,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/enrich/state.go": {
+      "lines": 101,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/worker.go": {
+      "lines": 402,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/worker_test.go": {
+      "lines": 130,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/integration_async_test.go": {
+      "lines": 433,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/integration_image_test.go": {
+      "lines": 503,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/integration_media_test.go": {
+      "lines": 260,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/integration_pipeline_test.go": {
+      "lines": 34,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/integration_test.go": {
+      "lines": 588,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/integration_web_items_test.go": {
+      "lines": 391,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/integration_web_test.go": {
+      "lines": 486,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_acceptance_test.go": {
+      "lines": 576,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_async_acceptance_test.go": {
+      "lines": 370,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_auth_test.go": {
+      "lines": 136,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_embed_buildgate_test.go": {
+      "lines": 92,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_endpoints_test.go": {
+      "lines": 160,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_image_e2e_test.go": {
+      "lines": 350,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_image_fixtures_test.go": {
+      "lines": 368,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_image_regression_test.go": {
+      "lines": 193,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_pipeline_acceptance_test.go": {
+      "lines": 33,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_pipeline_regression_test.go": {
+      "lines": 161,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_resilience_test.go": {
+      "lines": 200,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_serial_e2e_test.go": {
+      "lines": 881,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/module/doc.go": {
+      "lines": 41,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/module/parse_test.go": {
+      "lines": 90,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/module/registry.go": {
+      "lines": 316,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/module/registry_test.go": {
+      "lines": 292,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/plugin/doc.go": {
+      "lines": 62,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/plugin/lifecycle.go": {
+      "lines": 376,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/plugin/manager.go": {
+      "lines": 248,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/plugin/manager_test.go": {
+      "lines": 439,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/plugin/testdata/fakeplugin/main.go": {
+      "lines": 104,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/scan/doc.go": {
+      "lines": 51,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/scan/parsed_abs_test.go": {
+      "lines": 128,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/scan/run.go": {
+      "lines": 579,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/scan/run_test.go": {
+      "lines": 692,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/scan/series_test.go": {
+      "lines": 372,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/store/doc.go": {
+      "lines": 73,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/store/items.go": {
+      "lines": 163,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/store/ledger.go": {
+      "lines": 105,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/store/ledger_test.go": {
+      "lines": 117,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/store/libraries.go": {
+      "lines": 222,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/store/libraries_test.go": {
+      "lines": 172,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/store/open.go": {
+      "lines": 330,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/store/progress.go": {
+      "lines": 103,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/store/progress_test.go": {
+      "lines": 215,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/store/series.go": {
+      "lines": 292,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/store/series_test.go": {
+      "lines": 284,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/store/store_test.go": {
+      "lines": 450,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/web/doc.go": {
+      "lines": 44,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/web/qa_swagger_test.go": {
+      "lines": 106,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/web/swagger.go": {
+      "lines": 56,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/web/web.go": {
+      "lines": 157,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/web/web_test.go": {
+      "lines": 257,
+      "lang": "go",
+      "role": "test"
+    },
+    "pkg/sdk/doc.go": {
+      "lines": 44,
+      "lang": "go",
+      "role": "source"
+    },
+    "pkg/sdk/metadata.go": {
+      "lines": 101,
+      "lang": "go",
+      "role": "source"
+    },
+    "pkg/sdk/metadata_test.go": {
+      "lines": 189,
+      "lang": "go",
+      "role": "test"
+    },
+    "pkg/sdk/scanner.go": {
+      "lines": 132,
+      "lang": "go",
+      "role": "source"
+    },
+    "pkg/sdk/sdk_test.go": {
+      "lines": 249,
+      "lang": "go",
+      "role": "test"
+    },
+    "pkg/sdk/serve.go": {
+      "lines": 59,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/base-scanner/doc.go": {
+      "lines": 38,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/base-scanner/ffprobe.go": {
+      "lines": 57,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/base-scanner/ffprobe_test.go": {
+      "lines": 95,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/base-scanner/helpers_test.go": {
+      "lines": 45,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/base-scanner/image.go": {
+      "lines": 93,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/base-scanner/image_test.go": {
+      "lines": 235,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/base-scanner/main.go": {
+      "lines": 42,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/base-scanner/pathguard.go": {
+      "lines": 63,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/base-scanner/pathguard_test.go": {
+      "lines": 84,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/base-scanner/pluginsvc.go": {
+      "lines": 74,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/base-scanner/qa_injection_test.go": {
+      "lines": 60,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/base-scanner/scanner.go": {
+      "lines": 95,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/base-scanner/scanner_test.go": {
+      "lines": 132,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/base-scanner/smoke_test.go": {
+      "lines": 123,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/base-scanner/walk.go": {
+      "lines": 146,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/frame-grabber/ffmpeg.go": {
+      "lines": 66,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/frame-grabber/grabber.go": {
+      "lines": 194,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/frame-grabber/grabber_test.go": {
+      "lines": 254,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/frame-grabber/main.go": {
+      "lines": 52,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/frame-grabber/pluginsvc.go": {
+      "lines": 77,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/image-enricher/doc.go": {
+      "lines": 51,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/image-enricher/enricher.go": {
+      "lines": 246,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/image-enricher/enricher_test.go": {
+      "lines": 262,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/image-enricher/exiftool.go": {
+      "lines": 66,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/image-enricher/exiftool_test.go": {
+      "lines": 211,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/image-enricher/main.go": {
+      "lines": 49,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/image-enricher/pluginsvc.go": {
+      "lines": 77,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-parser/main.go": {
+      "lines": 44,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-parser/parser.go": {
+      "lines": 169,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-parser/parser_test.go": {
+      "lines": 228,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/serial-parser/pluginsvc.go": {
+      "lines": 77,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-parser/serialparse.go": {
+      "lines": 103,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-scanner/doc.go": {
+      "lines": 56,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-scanner/ffprobe.go": {
+      "lines": 60,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-scanner/helpers_test.go": {
+      "lines": 27,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/serial-scanner/main.go": {
+      "lines": 42,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-scanner/pathguard.go": {
+      "lines": 65,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-scanner/pluginsvc.go": {
+      "lines": 74,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-scanner/scanner.go": {
+      "lines": 237,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-scanner/serial_test.go": {
+      "lines": 631,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/serial-scanner/sidecar.go": {
+      "lines": 147,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/serial-scanner/walk.go": {
+      "lines": 386,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/tv-parser/doc.go": {
+      "lines": 39,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/tv-parser/main.go": {
+      "lines": 47,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/tv-parser/parser.go": {
+      "lines": 153,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/tv-parser/parser_test.go": {
+      "lines": 316,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/tv-parser/pluginsvc.go": {
+      "lines": 77,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/tv-parser/tvparse.go": {
+      "lines": 111,
+      "lang": "go",
+      "role": "source"
+    },
+    "proto/mellifera/common/v1/common.pb.go": {
+      "lines": 512,
+      "lang": "go",
+      "role": "source"
+    },
+    "proto/mellifera/metadata/v1/metadata.pb.go": {
+      "lines": 925,
+      "lang": "go",
+      "role": "source"
+    },
+    "proto/mellifera/metadata/v1/metadata_grpc.pb.go": {
+      "lines": 259,
+      "lang": "go",
+      "role": "source"
+    },
+    "proto/mellifera/metadata/v1/request_spec.pb.go": {
+      "lines": 370,
+      "lang": "go",
+      "role": "source"
+    },
+    "proto/mellifera/plugin/v1/plugin.pb.go": {
+      "lines": 688,
+      "lang": "go",
+      "role": "source"
+    },
+    "proto/mellifera/plugin/v1/plugin_grpc.pb.go": {
+      "lines": 203,
+      "lang": "go",
+      "role": "source"
+    },
+    "proto/mellifera/scanner/v1/scanner.pb.go": {
+      "lines": 442,
+      "lang": "go",
+      "role": "source"
+    },
+    "proto/mellifera/scanner/v1/scanner_grpc.pb.go": {
+      "lines": 173,
+      "lang": "go",
+      "role": "source"
+    },
+    "web/eslint.config.js": {
+      "lines": 15,
+      "lang": "javascript",
+      "role": "source"
+    },
+    "web/postcss.config.js": {
+      "lines": 9,
+      "lang": "javascript",
+      "role": "source"
+    },
+    "web/src/App.tsx": {
+      "lines": 86,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "App"
+      ]
+    },
+    "web/src/components/RequireAuth.tsx": {
+      "lines": 25,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "RequireAuth"
+      ]
+    },
+    "web/src/components/Sidebar.test.tsx": {
+      "lines": 307,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/components/Sidebar.tsx": {
+      "lines": 278,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "SIDE_KEY",
+        "Sidebar"
+      ]
+    },
+    "web/src/components/ThemeToggle.tsx": {
+      "lines": 99,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "THEME_KEY",
+        "ThemeToggle"
+      ]
+    },
+    "web/src/components/metadata/JsonValue.tsx": {
+      "lines": 64,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "JsonValue"
+      ]
+    },
+    "web/src/components/metadata/ProvenanceBadge.tsx": {
+      "lines": 42,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "ProvenanceBadge"
+      ]
+    },
+    "web/src/components/metadata/SourceCard.tsx": {
+      "lines": 46,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "SourceCard"
+      ]
+    },
+    "web/src/components/metadata/StagesProgress.tsx": {
+      "lines": 46,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "StagesProgress"
+      ]
+    },
+    "web/src/components/metadata/ViewFields.tsx": {
+      "lines": 41,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "ViewFields"
+      ]
+    },
+    "web/src/components/metadata/metadata.test.tsx": {
+      "lines": 264,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/components/states.tsx": {
+      "lines": 59,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "LoadingState",
+        "EmptyState",
+        "ErrorState"
+      ]
+    },
+    "web/src/components/ui/alert.tsx": {
+      "lines": 52,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "Alert",
+        "AlertTitle",
+        "AlertDescription"
+      ]
+    },
+    "web/src/components/ui/badge.tsx": {
+      "lines": 36,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "Badge",
+        "badgeVariants"
+      ]
+    },
+    "web/src/components/ui/button.tsx": {
+      "lines": 58,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "Button",
+        "buttonVariants"
+      ]
+    },
+    "web/src/components/ui/card.tsx": {
+      "lines": 58,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "Card",
+        "CardHeader",
+        "CardFooter",
+        "CardTitle",
+        "CardDescription",
+        "CardContent"
+      ]
+    },
+    "web/src/components/ui/input.tsx": {
+      "lines": 24,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "Input"
+      ]
+    },
+    "web/src/components/ui/label.tsx": {
+      "lines": 22,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "Label"
+      ]
+    },
+    "web/src/components/ui/select.tsx": {
+      "lines": 150,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "Select",
+        "SelectGroup",
+        "SelectValue",
+        "SelectTrigger",
+        "SelectContent",
+        "SelectLabel",
+        "SelectItem",
+        "SelectSeparator",
+        "SelectScrollUpButton",
+        "SelectScrollDownButton"
+      ]
+    },
+    "web/src/components/ui/table.tsx": {
+      "lines": 115,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "Table",
+        "TableHeader",
+        "TableBody",
+        "TableFooter",
+        "TableHead",
+        "TableRow",
+        "TableCell",
+        "TableCaption"
+      ]
+    },
+    "web/src/lib/api.test.ts": {
+      "lines": 280,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/lib/api.ts": {
+      "lines": 548,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "ApiError",
+        "ENDPOINTS",
+        "updateLibrary",
+        "getLibrarySummary",
+        "getLibraryFolders",
+        "listItems",
+        "listProgress",
+        "getSeries",
+        "getSeriesEpisodes",
+        "getPlayback",
+        "playItem",
+        "putProgress",
+        "getItem",
+        "hasFrameGrabberThumb",
+        "hasOriginalFile",
+        "fetchItemMediaObjectUrl",
+        "apiRequest"
+      ]
+    },
+    "web/src/lib/auth.ts": {
+      "lines": 66,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "TOKEN_KEY",
+        "getToken",
+        "setToken",
+        "clearToken",
+        "useToken"
+      ]
+    },
+    "web/src/lib/document.test.ts": {
+      "lines": 127,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/lib/document.ts": {
+      "lines": 125,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "sourcesOf",
+        "viewEntries",
+        "provenanceEntries",
+        "stageEntries"
+      ]
+    },
+    "web/src/lib/queries.test.tsx": {
+      "lines": 213,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/lib/queries.ts": {
+      "lines": 294,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "queryClient",
+        "useLibraries",
+        "useCreateLibrary",
+        "useScanLibrary",
+        "useUpdateLibrary",
+        "useLibrarySummary",
+        "useLibraryFolders",
+        "useAdminStatus",
+        "useItem",
+        "useProgressList",
+        "useItems",
+        "useSeries",
+        "useSeriesEpisodes",
+        "useItemMedia"
+      ]
+    },
+    "web/src/lib/utils.ts": {
+      "lines": 9,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "cn"
+      ]
+    },
+    "web/src/main.tsx": {
+      "lines": 32,
+      "lang": "typescript",
+      "role": "source"
+    },
+    "web/src/pages/Login.tsx": {
+      "lines": 106,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "Login"
+      ]
+    },
+    "web/src/pages/admin/Collections.test.tsx": {
+      "lines": 289,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/pages/admin/Collections.tsx": {
+      "lines": 474,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "Collections"
+      ]
+    },
+    "web/src/pages/browse/ItemDetail.test.tsx": {
+      "lines": 288,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/pages/browse/ItemDetail.tsx": {
+      "lines": 292,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "ItemDetail"
+      ]
+    },
+    "web/src/pages/collections/Collection.test.tsx": {
+      "lines": 666,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/pages/collections/Collection.tsx": {
+      "lines": 814,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "parsedChips",
+        "captureDate",
+        "Collection"
+      ]
+    },
+    "web/src/pages/home/Home.test.tsx": {
+      "lines": 571,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/pages/home/Home.tsx": {
+      "lines": 674,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "formatPosition",
+        "episodeFacts",
+        "startedSeries",
+        "nextUpEntries",
+        "durationSeconds",
+        "representativeItem",
+        "Home"
+      ]
+    },
+    "web/tailwind.config.ts": {
+      "lines": 76,
+      "lang": "typescript",
+      "role": "source"
+    },
+    "web/vite.config.ts": {
+      "lines": 41,
+      "lang": "typescript",
+      "role": "source"
+    }
+  },
+  "symbols": {},
+  "importers": {},
+  "entry_points": [
+    "cmd/mellifera/main.go",
+    "internal/plugin/testdata/fakeplugin/main.go",
+    "plugins/base-scanner/main.go",
+    "plugins/frame-grabber/main.go",
+    "plugins/image-enricher/main.go",
+    "plugins/serial-parser/main.go",
+    "plugins/serial-scanner/main.go",
+    "plugins/tv-parser/main.go"
+  ],
+  "tests": []
+}

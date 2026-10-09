@@ -184,6 +184,103 @@
                 }
             }
         },
+        "/items/{id}/play": {
+            "post": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "Play one item (the only playback mutation)",
+                "operationId": "item-play",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "play options",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.playRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.playResponse"
+                        }
+                    },
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/api.playResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/playback": {
+            "get": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "Playback descriptor for one item",
+                "operationId": "item-playback",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.playbackResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/libraries": {
             "get": {
                 "tags": [
@@ -832,6 +929,9 @@
                 },
                 "root_path": {
                     "type": "string"
+                },
+                "streams_enabled": {
+                    "type": "boolean"
                 }
             }
         },
@@ -856,6 +956,46 @@
                     "type": "integer"
                 },
                 "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.playRequest": {
+            "type": "object",
+            "properties": {
+                "from_seconds": {
+                    "type": "number"
+                },
+                "retry": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.playResponse": {
+            "type": "object",
+            "properties": {
+                "queued": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.playbackResponse": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string"
+                },
+                "play_url": {
+                    "type": "string"
+                },
+                "sections": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": {}
+                    }
+                },
+                "state": {
                     "type": "string"
                 }
             }
@@ -989,6 +1129,9 @@
                 },
                 "root_path": {
                     "type": "string"
+                },
+                "streams_enabled": {
+                    "type": "boolean"
                 }
             }
         }

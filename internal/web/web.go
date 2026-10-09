@@ -33,6 +33,12 @@ type Options struct {
 	// Vite dev proxy, where dist/ is served by Vite and the Go server only
 	// proxies the API. Default false (production embedded dist).
 	DevMode bool
+	// Media is the token-gated playback surface (packaged-playback Interface
+	// 3): mounted at /media and /media/* BEFORE the SPA fallback, so media
+	// paths never fall through to index.html. It carries its own auth (the
+	// media token); web adds none. Nil = no playback surface (the mount is
+	// skipped — tests and playback-disabled deployments).
+	Media http.Handler
 }
 
 // Handler composes the api router with the embedded SPA. apiHandler is mounted
@@ -47,6 +53,13 @@ func Handler(apiHandler http.Handler, opts Options) http.Handler {
 	if apiHandler != nil {
 		// All methods: the api router dispatches by its own method table.
 		r.Handle("/api/*", apiHandler)
+	}
+	if opts.Media != nil {
+		// All methods: the media surface dispatches by its own rules (GET/HEAD
+		// only, 405 otherwise) and MUST register ahead of the SPA fallback —
+		// /media paths are byte surfaces, never client routes.
+		r.Handle("/media", opts.Media)
+		r.Handle("/media/*", opts.Media)
 	}
 	registerSwagger(r) // /openapi.{yaml,json} + /docs — ahead of the SPA fallback.
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) { serveIndex(w, opts) })

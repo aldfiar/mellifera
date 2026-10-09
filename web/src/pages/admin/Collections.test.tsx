@@ -59,6 +59,7 @@ function fakeLibs(n: number): LibraryDTO[] {
     root_path: `/media/lib-${i + 1}`,
     display_name: `Library ${i + 1}`,
     description: i === 0 ? "First collection" : "",
+    streams_enabled: true, // the column default (packaged-playback D-8)
   }));
 }
 

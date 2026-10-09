@@ -216,3 +216,42 @@ func TestHandler_SwaggerNotFallback(t *testing.T) {
 
 // Ensure path import is used (for potential future asset-path construction).
 var _ = path.Base
+
+// TestHandler_MediaMount is the packaged-playback Interface-3 floor: a
+// non-nil Options.Media is mounted at /media and /media/* AHEAD of the SPA
+// fallback (media paths are byte surfaces, never client routes), and a nil
+// Media leaves the SPA fallback in place. The stub records hits; web must add
+// no auth and no header rewriting of its own (INV1).
+func TestHandler_MediaMount(t *testing.T) {
+	hits := []string{}
+	stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.Method+" "+r.URL.Path)
+		w.WriteHeader(http.StatusTeapot)
+	})
+
+	t.Run("mounted_media_never_falls_through_to_spa", func(t *testing.T) {
+		hits = nil
+		h := Handler(nil, Options{Media: stub})
+		for _, path := range []string{"/media/it1/n1/index.m3u8", "/media", "/media/it1/original"} {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusTeapot {
+				t.Fatalf("GET %s status = %d, want the media handler (418); SPA fallback answered instead", path, rec.Code)
+			}
+		}
+		if len(hits) != 3 {
+			t.Fatalf("media handler hits = %v, want one per request", hits)
+		}
+	})
+
+	t.Run("nil_media_keeps_spa_fallback", func(t *testing.T) {
+		h := Handler(nil, Options{})
+		req := httptest.NewRequest(http.MethodGet, "/media/it1/n1/index.m3u8", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<html") {
+			t.Fatalf("nil Media: /media answered %d, want the SPA fallback (200 index.html)", rec.Code)
+		}
+	})
+}

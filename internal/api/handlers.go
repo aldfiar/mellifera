@@ -47,11 +47,13 @@ type createLibraryRequest struct {
 // updateLibraryRequest is the body of PATCH /api/v1/libraries/{id}. Pointers
 // carry presence: a nil field leaves the column unchanged; RootPath/ModuleID
 // are read only to REJECT identity changes with 400 (web-ui-phase-3 D2).
+// StreamsEnabled is the packaged-playback packaging gate (pass-through only).
 type updateLibraryRequest struct {
-	DisplayName *string `json:"display_name"`
-	Description *string `json:"description"`
-	RootPath    *string `json:"root_path"`
-	ModuleID    *string `json:"module_id"`
+	DisplayName    *string `json:"display_name"`
+	Description    *string `json:"description"`
+	StreamsEnabled *bool   `json:"streams_enabled"`
+	RootPath       *string `json:"root_path"`
+	ModuleID       *string `json:"module_id"`
 }
 
 // libraryDTO is the ONE wire shape for a library (no store.Library leaked) —
@@ -61,11 +63,12 @@ type updateLibraryRequest struct {
 // (the document is the source of truth; carrying time.Time here would force a
 // disallowed time import) — INV4.
 type libraryDTO struct {
-	ID          int64  `json:"id"`
-	ModuleID    string `json:"module_id"`
-	RootPath    string `json:"root_path"`
-	DisplayName string `json:"display_name"`
-	Description string `json:"description"`
+	ID             int64  `json:"id"`
+	ModuleID       string `json:"module_id"`
+	RootPath       string `json:"root_path"`
+	DisplayName    string `json:"display_name"`
+	Description    string `json:"description"`
+	StreamsEnabled bool   `json:"streams_enabled"`
 }
 
 // librariesResponse is the wire shape for GET /libraries.
@@ -258,11 +261,12 @@ func (a *app) createLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, libraryDTO{
-		ID:          id,
-		ModuleID:    req.ModuleID,
-		RootPath:    req.RootPath,
-		DisplayName: req.DisplayName,
-		Description: req.Description,
+		ID:             id,
+		ModuleID:       req.ModuleID,
+		RootPath:       req.RootPath,
+		DisplayName:    req.DisplayName,
+		Description:    req.Description,
+		StreamsEnabled: true, // the column default (D-8): a new library packages
 	})
 }
 
@@ -299,7 +303,7 @@ func (a *app) patchLibrary(w http.ResponseWriter, r *http.Request) {
 			"root_path and module_id are immutable (moving a root re-identifies all items)", false)
 		return
 	}
-	lib, err := a.deps.Store.UpdateLibrary(r.Context(), id, req.DisplayName, req.Description)
+	lib, err := a.deps.Store.UpdateLibrary(r.Context(), id, req.DisplayName, req.Description, req.StreamsEnabled)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
@@ -882,11 +886,12 @@ func toLibraryDTOs(libs []store.Library) []libraryDTO {
 // the list, create, and patch responses share one conversion (DRY).
 func toLibraryDTO(l store.Library) libraryDTO {
 	return libraryDTO{
-		ID:          l.ID,
-		ModuleID:    l.ModuleID,
-		RootPath:    l.RootPath,
-		DisplayName: l.DisplayName,
-		Description: l.Description,
+		ID:             l.ID,
+		ModuleID:       l.ModuleID,
+		RootPath:       l.RootPath,
+		DisplayName:    l.DisplayName,
+		Description:    l.Description,
+		StreamsEnabled: l.StreamsEnabled,
 	}
 }
 

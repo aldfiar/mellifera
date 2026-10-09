@@ -78,11 +78,14 @@ func qa3Req(method, target, body string) *http.Request {
 // decoding into a map and diffing the key set can. The spec'd `description`
 // field (web-ui-phase-3 task 1.2) is part of the wire contract and is
 // expected; the invariant — no store persistence internals — still holds.
+// The spec'd `streams_enabled` field (packaged-playback task 3.1, the
+// per-library packaging gate + PATCH field) joined the wire contract the
+// same way.
 func TestQA_LibraryWireKeySet_INV4(t *testing.T) {
 	h, _ := qa3Handler(t)
 	wantKeys := map[string]bool{
 		"id": true, "module_id": true, "root_path": true, "display_name": true,
-		"description": true,
+		"description": true, "streams_enabled": true,
 	}
 
 	checkKeys := func(label string, obj map[string]any) {

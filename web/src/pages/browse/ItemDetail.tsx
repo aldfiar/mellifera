@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState, type ReactElement } from "react";
 import { useParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { ApiError, ItemDTO } from "@/lib/api";
 import {
   ENDPOINTS,
+  getPlayback,
   hasFrameGrabberThumb,
   hasOriginalFile,
+  playItem,
 } from "@/lib/api";
 import { useItem, useItemMedia } from "@/lib/queries";
+import Player from "@/components/playback/Player";
 import {
   provenanceEntries,
   sourcesOf,
@@ -39,10 +43,12 @@ import { Card, CardContent } from "@/components/ui/card";
 //     audit   _provenance        — one <ProvenanceBadge> per provenance entry
 //     trail   _stages            — <StagesProgress> (per-stage error when present)
 //
-// INV-no-direct-fetch: the page touches the API only through useItem.
-// Error edges: ApiError code "not_found" (HTTP 404) → a clear not-found state,
-// never a crash; any other failure → the canonical error (code + message)
-// surfaced inline.
+// INV-no-direct-fetch: the page touches the API only through its client-layer
+// seams — useItem (queries.ts) for the document, plus the packaged-playback
+// pair (getPlayback via useQuery; playItem via useMutation — the retry
+// affordance, D-7's only playback mutation). Error edges: ApiError code
+// "not_found" (HTTP 404) → a clear not-found state, never a crash; any other
+// failure → the canonical error (code + message) surfaced inline.
 
 export default function ItemDetail(): ReactElement {
   const { id } = useParams<{ id: string }>();
@@ -112,12 +118,41 @@ function ItemDetailView(props: { item: ItemDTO }): ReactElement {
       : null;
   const hero = useItemMedia(heroUrl);
 
+  // Playback (packaged-playback): the descriptor for video items — mode hls
+  // plays the packaged stream, mode direct the original floor. A descriptor
+  // failure never breaks the page: the fields below stay, the player is
+  // simply not rendered (playback is an augmentation, not the identity).
+  const playback = useQuery({
+    queryKey: ["playback", item.id],
+    queryFn: () => getPlayback(item.id),
+    enabled: item.media_type === "video",
+  });
+  // Retry affordance (D-7): POST /play {retry:true} re-enqueues a failed
+  // packaging run, then the descriptor refetches so the player state flips.
+  const queryClient = useQueryClient();
+  const playRetry = useMutation({
+    mutationFn: () => playItem(item.id, { retry: true }),
+    retry: 0,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["playback", item.id] });
+    },
+  });
+
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6">
       {hero !== null ? (
         <section aria-label="Media">
           <HeroImage src={hero} alt={item.relative_path} />
         </section>
+      ) : null}
+
+      {item.media_type === "video" && playback.data ? (
+        <Player
+          itemId={item.id}
+          descriptor={playback.data}
+          onRetry={() => playRetry.mutate()}
+          retrying={playRetry.isPending}
+        />
       ) : null}
 
       <section>

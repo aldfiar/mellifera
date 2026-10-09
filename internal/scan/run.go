@@ -227,7 +227,9 @@ func sweepSeries(ctx context.Context, st *store.Store, libraryID int64, observed
 // the prior status so a settled record is not regressed. Identify/persist
 // failures are soft (AC-6); a cancelled context is returned as an error so
 // runScan stops draining (B6) and takes precedence over any concurrent soft
-// failure.
+// failure. An unchanged re-scan additionally carries the prior document's
+// `streams` namespace forward; a changed one drops it (D-11 — packaging state
+// keys on the parsed+ffprobe base, so a changed base invalidates it).
 func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, rootPath string, libraryID int64, observed map[string]bool, res *Result) error {
 	identified, err := sc.Identify(ctx, &scannerv1.IdentifyRequest{File: f, ModuleType: mod.MediaType})
 	if err != nil {
@@ -239,7 +241,10 @@ func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.
 		return persistSeries(ctx, st, f, parsed, mod, rootPath, libraryID, observed, res)
 	}
 	base := assembleBaseDoc(f, identified, mod.MediaType, mod.SchemaVersion, rootPath)
-	status := nextScanStatus(ctx, st, libraryID, f.GetFileId(), base, res)
+	status, streams := nextScanState(ctx, st, libraryID, f.GetFileId(), base, res)
+	if streams != nil {
+		base["streams"] = streams // D-11 carry-forward: unchanged base, derived state survives
+	}
 	if err := st.PutItem(ctx, newItem(f, mod, libraryID, marshalDoc(base), status)); err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("persist %q: %v", f.GetRelativePath(), err))
 		return ctx.Err()
@@ -333,7 +338,7 @@ func assembleSeriesDoc(f *scannerv1.DiscoveredFile, parsed map[string]any, rootP
 }
 
 // nextSeriesStatus decides the lifecycle status scan persists for one serial
-// record — the series mirror of nextScanStatus over the same baseChanged /
+// record — the series mirror of nextScanState over the same baseChanged /
 // canonical-JSON compare (serials-library box 1.4): "pending" for a first
 // sight, "stale" when the serial facts (parsed + ffprobe) changed, and the
 // prior status preserved for an unchanged re-scan (a ready series is not
@@ -361,22 +366,44 @@ const (
 	scanStatusStale   = "stale"
 )
 
-// nextScanStatus decides the lifecycle status scan persists for one file:
+// nextScanState decides the lifecycle status scan persists for one file AND
+// which derived namespaces survive the re-scan (packaged-playback D-11):
 // "pending" for a first scan (no prior row) or an unreadable prior; "stale" for
 // a re-scan whose base identity changed (AC-states(c), minimal B1 basis); and
 // the prior status preserved for an unchanged re-scan (so a settled/ready item
-// is not regressed back to pending). A GetItem error is soft (AC-6): it falls
-// back to "pending" — the queue re-derives either way, and a transient read
-// failure must never abort the scan.
-func nextScanStatus(ctx context.Context, st *store.Store, libraryID int64, fileID string, refreshed map[string]any, res *Result) string {
+// is not regressed back to pending). Alongside the status it returns the prior
+// document's `streams` namespace: carried forward verbatim when the base is
+// unchanged (packaging state and artifact pointers key on parsed+ffprobe, so an
+// unchanged base keeps them valid), dropped (nil) when the base changed — the
+// changed media invalidates any packaged artifact — or when there is no prior
+// row to carry from. The prior document is loaded exactly once here and its
+// streams value is returned as-is (lossless: no namespace-shape assumption).
+// A GetItem error is soft (AC-6): it falls back to "pending" — the queue
+// re-derives either way, and a transient read failure must never abort the scan.
+func nextScanState(ctx context.Context, st *store.Store, libraryID int64, fileID string, refreshed map[string]any, res *Result) (string, any) {
 	prior, err := st.GetItem(ctx, itemID(libraryID, fileID))
 	if err != nil {
-		return scanStatusPending // no prior row (first scan) or unreadable -> re-queue
+		return scanStatusPending, nil // no prior row (first scan) or unreadable -> re-queue
 	}
 	if baseChanged(prior.Document, refreshed) {
-		return scanStatusStale
+		return scanStatusStale, nil // base changed: drop streams (stale packaging state)
 	}
-	return prior.Status // unchanged re-scan: preserve (don't regress ready/enriched)
+	return prior.Status, docStreams(prior.Document) // unchanged re-scan: preserve (don't regress ready/enriched)
+}
+
+// docStreams reads the `streams` namespace (packaged-playback Interfaces §1)
+// out of a stored document, whatever its JSON shape (the scan core does not
+// interpret it — the streams lane owns the schema). A missing or unparseable
+// document yields nil.
+func docStreams(docRaw json.RawMessage) any {
+	if len(docRaw) == 0 {
+		return nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(docRaw, &doc); err != nil {
+		return nil
+	}
+	return doc["streams"]
 }
 
 // baseChanged is the minimal B1 stale-on-rescan basis (R-stale): it reports

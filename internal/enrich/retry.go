@@ -16,8 +16,9 @@ import (
 // cancelled). Owned here as the producer of the classification; the store is
 // value-agnostic and persists exactly these strings.
 const (
-	ledgerExhausted = "exhausted" // source exhausted its in-memory retries
-	ledgerNoData    = "no_data"   // source ran clean but produced no metadata
+	ledgerExhausted  = "exhausted"   // source exhausted its in-memory retries
+	ledgerNoData     = "no_data"     // source ran clean but produced no metadata
+	ledgerPackFailed = "pack_failed" // streams lane: a failed packaging run (flat cooldown, D-10)
 )
 
 // runSourceRetryable wraps runSource (chain.go:49) with bounded in-memory

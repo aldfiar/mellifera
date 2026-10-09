@@ -103,12 +103,13 @@ type Queue struct {
 	libs   map[int64]struct{} // known libraries (registered via Notify)
 	libsMu sync.Mutex
 
-	work chan string // row ids, items and series alike (bounded buffer); closed by Stop
+	work chan laneTask // bounded buffer of dispatch tasks; closed by Stop
 
 	wg       sync.WaitGroup // worker goroutines
 	feederWG sync.WaitGroup // active derive-and-feed goroutines
 	cancel   context.CancelFunc
 	writeMu  sync.Mutex // serializes store writes (see storeWrite)
+	sendMu   sync.Mutex // serializes channel sends (EnqueuePack) against Stop's close
 
 	statPending  atomic.Int64
 	statInFlight atomic.Int64
@@ -150,7 +151,7 @@ func (q *Queue) Start(ctx context.Context) error {
 	if !q.running.CompareAndSwap(false, true) {
 		return errAlreadyStarted
 	}
-	q.work = make(chan string, q.cfg.Workers*4) // bounded buffer: backpressure on slow drains
+	q.work = make(chan laneTask, q.cfg.Workers*4) // bounded buffer: backpressure on slow drains
 	ctx, q.cancel = context.WithCancel(ctx)
 	q.leases = newLeaseMap()
 	for i := 0; i < q.cfg.Workers; i++ {
@@ -183,7 +184,9 @@ func (q *Queue) Stop() {
 		q.cancel() // halt feeders (they select on ctx.Done); workers hard-abort current item
 	}
 	q.feederWG.Wait() // no feeder writes after this point
+	q.sendMu.Lock()   // no EnqueuePack send can race the close
 	close(q.work)     // workers drain remaining buffered items, then range ends
+	q.sendMu.Unlock()
 	q.wg.Wait()
 	q.cancel = nil
 }
@@ -244,7 +247,7 @@ func (q *Queue) feed(ctx context.Context, libs []int64) {
 			select {
 			case <-ctx.Done():
 				return
-			case q.work <- itemID:
+			case q.work <- laneTask{rowID: itemID}:
 				q.statPending.Add(1)
 			}
 		}
@@ -267,14 +270,20 @@ func uniqueItems(tasks []queueTask) []string {
 	return out
 }
 
-// worker is one pool goroutine. It ranges over the channel, running the per-row
-// driver until Stop closes the channel. The driver honors ctx per-source (a
-// cancelled ctx hard-aborts the in-flight row to failed, then the loop continues
-// draining remaining buffered rows before the close ends the range).
+// worker is one pool goroutine. It ranges over the channel, routing each task
+// to its lane's driver — the metadata dispatch (workItem) or the streams lane
+// (workStreams) — until Stop closes the channel. The driver honors ctx
+// per-source (a cancelled ctx hard-aborts the in-flight row to failed, then
+// the loop continues draining remaining buffered rows before the close ends
+// the range).
 func (q *Queue) worker(ctx context.Context) {
 	defer q.wg.Done()
-	for rowID := range q.work {
-		q.workItem(ctx, rowID)
+	for t := range q.work {
+		if t.streams {
+			q.workStreams(ctx, t.rowID)
+			continue
+		}
+		q.workItem(ctx, t.rowID)
 	}
 }
 
@@ -460,6 +469,9 @@ func (q *Queue) workItem(ctx context.Context, rowID string) {
 		return // live lease held -> another worker owns this row
 	}
 	defer q.leases.release(rowID)
+	done := make(chan struct{})
+	defer close(done)
+	go q.renewLease(rowID, q.cfg.LeaseTTL, done) // a live long run is never treated as dead mid-flight
 	q.statPending.Add(-1)
 	q.statInFlight.Add(1)
 	defer q.statInFlight.Add(-1)

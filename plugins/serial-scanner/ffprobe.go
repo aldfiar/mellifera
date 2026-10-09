@@ -36,11 +36,15 @@ func probe(ctx context.Context, absPath string) ([]byte, string, error) {
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	// Arg-slice ONLY. absPath is a single argument; never shelled out.
+	// -show_chapters adds container chapters to the same verbatim JSON blob
+	// (packaged-playback Interfaces §5: chapters ride the stored ffprobe facts;
+	// no new parsing here — the blob is persisted verbatim).
 	cmd := exec.CommandContext(pctx, ffprobeBin,
 		"-v", "quiet",
 		"-print_format", "json",
 		"-show_format",
 		"-show_streams",
+		"-show_chapters",
 		absPath,
 	)
 	out, err := cmd.Output()

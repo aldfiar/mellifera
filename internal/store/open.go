@@ -61,6 +61,7 @@ var schemaSQL = []string{
   root_path    TEXT NOT NULL,
   display_name TEXT,
   description  TEXT NOT NULL DEFAULT '',
+  streams_enabled INTEGER NOT NULL DEFAULT 1,
   created_at   TEXT NOT NULL,
   UNIQUE (module_id, root_path)
 )`,
@@ -178,6 +179,10 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureLibrariesStreamsEnabled(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := ensurePlaybackProgressSeconds(ctx, db); err != nil {
 		db.Close()
 		return nil, err
@@ -278,6 +283,19 @@ func ensureItemsStatus(ctx context.Context, db *sql.DB) error {
 func ensureLibrariesDescription(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "libraries", "description",
 		"ALTER TABLE libraries ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+}
+
+// ensureLibrariesStreamsEnabled makes Open additive for libraries.streams_enabled
+// (packaged-playback D-8): the per-library packaging gate, DEFAULT 1 (ON) —
+// every existing library keeps packaging permitted, and the knob is the
+// rollback (switch a library off; its artifacts are then reaped by the
+// budget policy). Fresh DBs get the column from the CREATE TABLE in
+// schemaSQL; pre-existing DBs get it via ensureColumn's guarded ALTER.
+// Store stays value-agnostic about what the flag drives: the frontier gate
+// lives in internal/orchestrator via callers.
+func ensureLibrariesStreamsEnabled(ctx context.Context, db *sql.DB) error {
+	return ensureColumn(ctx, db, "libraries", "streams_enabled",
+		"ALTER TABLE libraries ADD COLUMN streams_enabled INTEGER NOT NULL DEFAULT 1")
 }
 
 // ensurePlaybackProgressSeconds bridges PRE-phase-3 databases whose
