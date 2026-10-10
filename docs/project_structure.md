@@ -85,6 +85,34 @@
 > archived 2026-10-06 — one additive Go integration test
 > `integration_web_items_test.go` is the only Go diff beyond test-only
 > adjustments). Behavior: `openspec/specs/web-ui/spec.md`.
+>
+> **packaged-playback layered on top (archived 2026-10-09).** Remux-only video
+> playback without transcoding: a NEW `internal/stream` package (the playback
+> mechanism — pure classification over stored ffprobe facts, the fMP4-HLS pack
+> lane, the HMAC media token, the token-gated `/media` surface, the playback
+> descriptor), a NEW `internal/orchestrator` package (the pure watch-driven
+> policy core — pack-on-play + serial frontier; `cmd/mellifera/playback.go` is
+> its thin shell), a `__streams__` enrichment lane riding the B1 queue
+> (`internal/enrich/streams.go`), and two additive endpoints
+> (`GET /items/{id}/playback` + `POST /items/{id}/play`, both browse group via
+> nil-safe `Deps.Playback`/`Deps.Play` closures). `ffmpeg` becomes a runtime
+> dep of the pack lane (per-item soft-fail → `pack_failed` ledger cooldown).
+> Behavior: `openspec/specs/packaged-playback/spec.md`.
+>
+> **element-pages layered on top (archived 2026-10-10).** Media-first element
+> detail pages + per-item parser attachments: `display_fields`/`identity_fields`
+> presentation declarations in module seed config (`internal/module` — config
+> IS render order, the core never branches on the literals), new
+> `item_parsers`/`library_parsers` control tables + `internal/store/item_parsers.go`,
+> `PUT/DELETE /items/{id}/parsers` + the `parsers` field on
+> `PATCH /libraries/{id}` + the additive `module` presentation block on
+> `GET /libraries/{id}` (`internal/api/parsers.go`; 16→17 paths), element-attached
+> sources in the enrich queue derivation (chain order = queue priority;
+> `enrich.Enrich` gains backward-compatible variadic extras), and the SPA's
+> identity block + chain-ordered `ParserFooter` (chain groups first,
+> element-only groups last) with prev/next browsing and the photo slideshow.
+> NEW capability spec: `openspec/specs/parser-display/spec.md`; web deltas in
+> `openspec/specs/web-ui/spec.md`.
 
 ## Overview
 
@@ -114,11 +142,13 @@ The differentiator versus the Jellyfin/Emby lineage is **subprocess plugin isola
 
 CGO is avoided (pure-Go SQLite chosen to fit single-binary + cross-compile). No DI framework. No `reflect` (depguard-denied).
 
-## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a + `serials-library` + `web-ui-phase-3` + `media-preview`)
+## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a + `serials-library` + `web-ui-phase-3` + `media-preview` + `packaged-playback` + `element-pages`)
 
 Directory tree as realized by the foundational slice PLUS the additive Phase A,
-Phase B1, Phase B2, web-ui Phase 1, and web-ui Phase 2a layers (grounded in
-`docs/ai-architecture.md` §4 module map + `docs/architecture.md` §10). Symbol
+Phase B1, Phase B2, web-ui Phase 1, web-ui Phase 2a, serials-library,
+web-ui-phase-3, media-preview, packaged-playback, and element-pages layers
+(grounded in `docs/ai-architecture.md` §4 module map + `docs/architecture.md`
+§10). Symbol
 counts are exported symbols per
 `scripts/check.sh`, which counts **top-level** `func/type/var/const` decls only
 (method receivers excluded); `WARN` = >8 but ≤12:
@@ -136,15 +166,16 @@ mellifera/
 │   └── plugin/v1/                  # Plugin service: Handshake, Health, Shutdown (arch §2.2.2)
 ├── pkg/sdk/                        # plugin SDK (7): + MetadataSource + MetadataSourcePlugin in Phase A
 ├── internal/
-│   ├── store/                      # SQLite: docs + control + reserved tables (5 top-level; +ledger.go FailureRow + busy_timeout in B1; methods excluded by check.sh)
+│   ├── store/                      # SQLite: docs + control + reserved tables (5 top-level; +ledger.go FailureRow + busy_timeout in B1; methods excluded by check.sh; [packaged-playback] streams facts ride the item document; [element-pages] +item_parsers.go — SetItemParsers/ListItemParsers over the new item_parsers table + SetLibraryChain/GetLibraryChain/TestLibraryChain over library_parsers, all FULL-replacement ordered control tables in open.go schemaSQL)
 │   ├── plugin/                     # subprocess lifecycle + gRPC clients + capability routing (10 WARN; +MetadataSource accessor)
-│   ├── module/                     # config-driven module registry (7; +MetadataSourceBinding; tv-parser seed [A] + image-enricher image-module seed [B2])
+│   ├── module/                     # config-driven module registry (7; +MetadataSourceBinding; tv-parser seed [A] + image-enricher image-module seed [B2] + serial seed [serials-library]; [element-pages] +identity_fields per module + display_fields per binding in ALL seeds + the IdentityFields/DisplayFields presentation accessors — methods, outside the symbol budget)
 │   ├── scan/                       # scan-side orchestrator: Run/Deps/Result (3; B1: persists pending + Notify(libraryID), drops inline enrich, re-scan→stale; B2: stamps absolute_path into parsed for all items)
-│   ├── api/                        # chi router — PURE DELEGATION, zero logic (7 exported symbols [web-ui]: +Role +AdminStatus/PluginHealth/EnrichStats; role-aware auth Principal{Role}+requireRole into TWO route groups — browse admin+client read-only, admin admin-only mutating; [phase-3] +PATCH /libraries/{id} +summary +folders +progress GET/PUT + [serials] +/series* + [media-preview] +GET/HEAD /items/{id}/media — 16 routes total; every handler swag-annotated; committed openapi.{json,yaml} regenerate via make web-build)
-│   ├── web/                        # [web-ui] embedding + composition layer (2: Handler+Options) — //go:embed all:dist (SPA) + embedded openapi.{yaml,json} + /docs (Swagger UI via swaggo/http-swagger); SPA fallback + immutable /assets cache; public surface (/, /assets, /openapi, /docs) unauthenticated; [2a] dist/* = the REAL hashed Vite build (placeholder app.js removed; embed target + 2 symbols unchanged)
-│   ├── enrich/                     # metadata-side orchestrator + async derived-queue: Enrich/Deps/Result + Queue/QueueConfig/Stats/NewQueue (7; B1: queue.go/worker.go/lease.go/retry.go) — UNCHANGED in B2/web-ui
-│   ├── itest/                      # [all features] black-box integration + QA suite (19 files, package `itest`) — external test package at internal/itest, NOT beside code: integration_* = per-feature AC-1 goldens (scan/pipeline/async/image/web/web-items/media) ; qa_* = independent acceptance + regression + pinned-baseline guards (git-diff additivity vs merge-bases, node-free build-gate dry-run). The server+plugin subprocess harness (startServer/qaStartServer/…, moduleRoot/buildBinary) is HERMETIC: every plugin is built into t.TempDir and pinned via MELLIFERA_* absolute paths, and make/git calls run with Dir=moduleRoot — the suite passes from any cwd (incl. a fresh checkout with no bin/ artifacts)
-│   ├── stream/                     # DEFERRED
+│   ├── api/                        # chi router — PURE DELEGATION, zero logic (10 exported symbols — WARN band: +Role +AdminStatus/PluginHealth/EnrichStats [web-ui] + Playback [packaged-playback] + ParserBinding/ModulePresentation [element-pages]; role-aware auth Principal{Role}+requireRole into TWO route groups — browse admin+client read-only + viewer actions, admin admin-only mutating; [phase-3] +PATCH /libraries/{id} +summary +folders +progress GET/PUT + [serials] +/series* + [media-preview] +GET/HEAD /items/{id}/media + [packaged-playback] +playback.go GET /items/{id}/playback + POST /items/{id}/play (Deps.Playback/Play closures) + [element-pages] +parsers.go PUT/DELETE /items/{id}/parsers + parsers field on PATCH /libraries/{id} + module block on GET /libraries/{id} (Deps.ModulePresentation/PluginCapabilities closures) — 17 paths; every handler swag-annotated; committed openapi.{json,yaml} regenerate via make web-build)
+│   ├── web/                        # [web-ui] embedding + composition layer (2: Handler+Options) — //go:embed all:dist (SPA) + embedded openapi.{yaml,json} + /docs (Swagger UI via swaggo/http-swagger); SPA fallback + immutable /assets cache; public surface (/, /assets, /openapi, /docs) unauthenticated; [2a] dist/* = the REAL hashed Vite build; [packaged-playback] mounts the token-gated /media + /media/* stream surface BEFORE the SPA fallback (Options.Media)
+│   ├── enrich/                     # metadata-side orchestrator + async derived-queue: Enrich/Deps/Result + Queue/QueueConfig/Stats/NewQueue (7; B1: queue.go/worker.go/lease.go/retry.go; [packaged-playback] +streams.go — the __streams__ pack lane riding the same queue via the Deps.PackItem seam; [element-pages] Enrich gains backward-compatible variadic extras (element-attached sources run after the chain) + queue derivation reads ListItemParsers + the library chain (chain order = queue priority))
+│   ├── orchestrator/               # [packaged-playback] PURE watch-driven policy core (no I/O: snapshots in, decisions out): Budget (32GB LRU artifact budget + .trash eviction), Frontier (serial watch frontier + movies pack-on-play), Job/Episode/ArtifactDir — executed by cmd/mellifera/playback.go (never execs ffmpeg, never writes documents)
+│   ├── itest/                      # [all features] black-box integration + QA suite (23 files + testdata/, package `itest`) — external test package at internal/itest, NOT beside code: integration_* = per-feature AC-1 goldens (scan/pipeline/async/image/web/web-items/media) ; qa_* = independent acceptance + regression + pinned-baseline guards (git-diff additivity vs merge-bases, node-free build-gate dry-run) + packaged-playback joint harness/roundtrip/streams tests + [element-pages] element_hermetic_e2e_test.go + element_parsers_test.go over the testdata/element-parser fixture plugin (hermetic attach→drain→namespace E2E). The server+plugin subprocess harness (startServer/qaStartServer/…, moduleRoot/buildBinary) is HERMETIC: every plugin is built into t.TempDir and pinned via MELLIFERA_* absolute paths, and make/git calls run with Dir=moduleRoot — the suite passes from any cwd (incl. a fresh checkout with no bin/ artifacts)
+│   ├── stream/                     # [packaged-playback] REALIZED (was DEFERRED): packaged-playback mechanism — Classify (pure over stored ffprobe), the remux-only fMP4-HLS pack lane (one ffmpeg exec site, `-c copy`, head-first 600s chunk, build-nonce atomic publish), HMAC media tokens (cookie-first + query fallback, 4h), the token-gated /media ServeHTTP surface, Describe (mode direct|hls); counted exports 4 (Build/Class/Classify/Service; grouped consts + methods excluded)
 │   └── janitor/                    # DEFERRED
 ├── plugins/
 │   ├── base-scanner/               # scanner subprocess: walk + ffprobe + withinRoot (media-type-agnostic; parseTV extracted); B2: image.go — module-type-gated image discovery + stdlib base info (jpeg/png dims; webp/heic soft-fail)
@@ -154,11 +185,11 @@ mellifera/
 │   ├── serial-parser/              # metadata_source subprocess [serials-library]: serial-level + episode-level facts from directory structure (no network)
 │   └── frame-grabber/              # metadata_source subprocess [serials-library]: ffmpeg JPEG grabs under <dataDir>/thumbs/, stamped sources["frame-grabber"].thumbnail_path into episode documents (the fact the media endpoint serves as ?variant=thumb)
 ├── cmd/
-│   └── mellifera/                  # flat main.go — constructor wiring (loads all SIX plugin subprocesses — base-scanner, serial-scanner, tv-parser, image-enricher, serial-parser, frame-grabber — paths overridable via MELLIFERA_<PLUGIN> env, default bin/; builds enrich.Deps; enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs; composes web.Handler(api.New(deps),opts) as sole handler + builds Deps.Status closure + MELLIFERA_WEB_DEV)
-└── web/                            # React SPA (npm project root; node/npm DEV-ONLY): Vite 5 + React 18 + TS strict + react-router-dom + TanStack Query + Tailwind/shadcn (8 copy-in primitives); src/lib api.ts (typed DTOs mirroring the Go json tags verbatim + Bearer fetch wrapper + authenticated media objectURL channel + endpoint allowlist + MediaVariant union), auth.ts (localStorage token), document.ts (§3.1 accessors), queries.ts (TanStack hooks + useItemMedia); pages Login + Home (collections + Continue/Next-up rails) + Browse + ItemDetail (Details surface + collapsed Technical details + hero media) + collections/{Collection,serial episode flow} + admin/{Admin,Libraries,Status}; components/{Sidebar shell, metadata/*, states, ui/*}; Vitest 96 cases
+│   └── mellifera/                  # flat main.go — constructor wiring (loads all SIX plugin subprocesses — base-scanner, serial-scanner, tv-parser, image-enricher, serial-parser, frame-grabber — paths overridable via MELLIFERA_<PLUGIN> env, default bin/; builds enrich.Deps; enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs; composes web.Handler(api.New(deps),opts) as sole handler + builds Deps.Status closure + MELLIFERA_WEB_DEV; [packaged-playback] playback.go — the orchestrator shell: builds stream.Service + the Deps.Playback/Play closures + EnqueuePack dispatch + budget eviction; MELLIFERA_ORCH_BUDGET_GB + MELLIFERA_MEDIA_SECRET knobs; [element-pages] loadPlugin factors the per-plugin Load+Start pair so loadedCaps (declared capability types) is captured at the declaration site — feeds the Deps.PluginCapabilities parser-validation closure + builds Deps.ModulePresentation over module.Registry)
+└── web/                            # React SPA (npm project root; node/npm DEV-ONLY): Vite 5 + React 18 + TS strict + react-router-dom + TanStack Query + Tailwind/shadcn (8 copy-in primitives); src/lib api.ts (typed DTOs mirroring the Go json tags verbatim + Bearer fetch wrapper + authenticated media objectURL channel + endpoint allowlist + MediaVariant union + [packaged-playback] PlaybackDescriptor + play/playback calls + [element-pages] ParserBinding/ModulePresentation DTOs + getLibrary), auth.ts (localStorage token), document.ts (§3.1 accessors), queries.ts (TanStack hooks + useItemMedia + useLibrary); pages Login + Home (collections + Continue/Next-up rails) + Browse + ItemDetail (Details surface + collapsed Technical details + hero media; [packaged-playback] hls.js player + click-to-seek; [element-pages] identity-field badges + chain-ordered ParserFooter + prev/next browsing + photo slideshow w/ S toggle) + collections/{Collection,serial episode flow; [element-pages] browse handoff to the element page} + admin/{Admin,Libraries,Status}; components/{Sidebar shell, metadata/* (incl. [element-pages] ParserFooter.tsx), states, ui/*}; Vitest 119 cases
 ```
 
-Dependency direction points **down only**: `web → api → scan → enrich → {module, plugin} → store` (web-ui Phase 1: `internal/web` composes `internal/api`; api does not import web). Phase B1: scan no longer calls enrich inline — after persisting items `pending` it hands the library to the `enrich.Queue` via `Deps.Notify` (wired in `cmd/mellifera`); enrich still never imports scan. The worker pool is a process-lifetime component (started before serving, stopped on shutdown). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4). web-ui Phase 2a adds ZERO Go import edges — the SPA in `web/` is a same-origin HTTP client of `/api/v1/*` (Bearer header; no CORS), not an importer.
+Dependency direction points **down only**: `web → api → scan → enrich → {module, plugin} → store` (web-ui Phase 1: `internal/web` composes `internal/api`; api does not import web). Phase B1: scan no longer calls enrich inline — after persisting items `pending` it hands the library to the `enrich.Queue` via `Deps.Notify` (wired in `cmd/mellifera`); enrich still never imports scan. The worker pool is a process-lifetime component (started before serving, stopped on shutdown). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4). web-ui Phase 2a adds ZERO Go import edges — the SPA in `web/` is a same-origin HTTP client of `/api/v1/*` (Bearer header; no CORS), not an importer. packaged-playback keeps the shape: `internal/orchestrator` imports only stdlib (`time`) — snapshots in, decisions out, executed by `cmd/mellifera/playback.go`; `internal/stream` is mounted by `internal/web` (`Options.Media`) and reached from enrich ONLY through the `Deps.PackItem` func seam — enrich never imports stream (D-10). element-pages adds no import edges at all: api reads module config through the `Deps.ModulePresentation`/`PluginCapabilities` closures (INV2/INV4), and the SPA consumes existing endpoints.
 
 ## Entry points
 
@@ -217,23 +248,25 @@ All DECIDED or DEFAULTED in `docs/open-questions.md`; none OPEN. Load-bearing fo
 
 Q1–Q28 carry reversible defaults with named revisit triggers (see `docs/open-questions.md`). Risk register R1–R14 lives there too.
 
-## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a + `serials-library` + `web-ui-phase-3` + `media-preview`)
+## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a + `serials-library` + `web-ui-phase-3` + `media-preview` + `packaged-playback` + `element-pages`)
 
 The foundational slice plus the additive Phase A, B1, B2, web-ui Phase 1/2a/2b+2c,
-serials-library, web-ui-phase-3, and media-preview layers are implemented — all
-committed on `feature/web-ui-phase-3` (merged to `main` 2026-10-09), eight
+serials-library, web-ui-phase-3, media-preview, packaged-playback (committed on
+`main` 2026-10-09), and element-pages layers are implemented — element-pages
+landed as the uncommitted working tree on `main` (base `e5cff66`), ten
 living specs under `openspec/specs/`, and the per-change gate records in
-`openspec/changes/archive/`. All verification gates are green at the merge
+`openspec/changes/archive/` (latest: `2026-10-10-element-pages`). All
+verification gates are green at the merge
 point: `make build && make check && make test` node-free PASS,
-`cd web && npm test` 96/96 Vitest + `tsc --noEmit` + eslint clean, and every
+`cd web && npm test` Vitest (119 cases / 10 files) + `tsc --noEmit` + eslint clean, and every
 archived change's probe set re-runs exit 0 (the `swag init` step of
 `make web-build` was fixed in media-preview: `-d internal/api -g doc.go`
 reproduces the committed `openapi.{json,yaml}` byte-identically).
 
 - `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0). **Unchanged** across Phase A/B1/B2/2a (additive). web-ui Phase 1 adds the first new Go runtime dep — `github.com/swaggo/http-swagger v1.3.4` (+ transitives) for the Swagger UI at `/docs/`; NOTICE-documented. `swag`/`swagfmt` stay dev/CI CLIs (not in `go.mod` as runtime). Phase 2a and every layer since add ZERO Go deps (the React toolchain lives in `web/package.json`, dev-only).
-- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich,web}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser,image-enricher,serial-scanner,serial-parser,frame-grabber}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged** — serials-library added ZERO new protos), and the `web/` React SPA.
-- `mellifera` binary (server) + 6 plugin binaries via `make build` / `make build-plugin` (`base-scanner`, `serial-scanner`, `tv-parser`, `image-enricher`, `serial-parser`, `frame-grabber`). The server serves the embedded React SPA.
-- `internal/itest/` — the black-box integration + QA suite, 19 files in package `itest` (moved off the repo root into Go-idiomatic layout; unit tests stay beside the code they test): `integration_test.go` (scan-library) + `integration_pipeline_test.go` (Phase A) + `integration_async_test.go` (Phase B1 AC-1 async golden) + `integration_image_test.go` (Phase B2 AC-1 async image golden) + `integration_web_test.go` (web-ui keystone) + `integration_web_items_test.go` (2a items contract) + `integration_media_test.go` (media-preview media E2E) + serial E2E (`qa_serial_e2e_test.go`) + `qa_*_test.go` (independent acceptance + regression for all slices) + `web/src/**/*.test.{ts,tsx}` (Vitest — Phase 2a+).
+- Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich,web,orchestrator,stream}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser,image-enricher,serial-scanner,serial-parser,frame-grabber}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged** — serials-library added ZERO new protos), and the `web/` React SPA.
+- `mellifera` binary (server) + 6 plugin binaries via `make build` / `make build-plugin` (`base-scanner`, `serial-scanner`, `tv-parser`, `image-enricher`, `serial-parser`, `frame-grabber`). The server serves the embedded React SPA plus the token-gated `/media` playback surface.
+- `internal/itest/` — the black-box integration + QA suite, 23 files + `testdata/` in package `itest` (moved off the repo root into Go-idiomatic layout; unit tests stay beside the code they test): `integration_test.go` (scan-library) + `integration_pipeline_test.go` (Phase A) + `integration_async_test.go` (Phase B1 AC-1 async golden) + `integration_image_test.go` (Phase B2 AC-1 async image golden) + `integration_web_test.go` (web-ui keystone) + `integration_web_items_test.go` (2a items contract) + `integration_media_test.go` (media-preview media E2E) + serial E2E (`qa_serial_e2e_test.go`) + packaged-playback joint tests (`qa_playback_harness_test.go`, `qa_playback_roundtrip_test.go`, `qa_streams_joint_test.go`) + [element-pages] `element_hermetic_e2e_test.go` + `element_parsers_test.go` (hermetic attach→drain→namespace E2E over the `testdata/element-parser` fixture plugin) + `qa_*_test.go` (independent acceptance + regression for all slices) + `web/src/**/*.test.{ts,tsx}` (Vitest — Phase 2a+).
 - Inputs, still read-only: `docs/{architecture,ai-architecture,prior-art,open-questions}.md`, `.claude/skills/mellifera-build/`, `.golangci.yml`.
 
 ### Phase A additions (additive — `plugin-pipeline`)
@@ -422,16 +455,124 @@ spec since async-enrichment: `openspec/specs/media-serving/spec.md`):
 - **E2E**: `internal/itest/integration_media_test.go` (built server, real
   scanned fixtures, bytes + headers + 304 + error contract).
 
+### packaged-playback additions (additive — archived 2026-10-09)
+
+Remux-only playback without transcoding — playback time degenerates to static
+file serving (no sessions, no per-play processes, no encode anywhere):
+
+- **`internal/stream` (NEW — realized from DEFERRED; 4 counted symbols:
+  `Build`, `Class`, `Classify`, `Service`).** The playback mechanism: pure
+  playback classification over stored ffprobe facts (D-2 — never stored, never
+  client-driven), the fMP4-HLS pack lane (one ffmpeg exec site, `-c copy`
+  stream-copy only; head-first 600 s first chunk published playable; atomic
+  build-nonce publish), the short-lived HMAC media token (cookie-first +
+  query fallback, 4 h — never the admin secret, never logged), the
+  token-gated `/media` ServeHTTP surface (playlists, segments, direct
+  originals with `Range`), and `Describe` (the read-only playback
+  descriptor). The direct floor (original bytes) is unconditional for every
+  class.
+- **`internal/orchestrator` (NEW — pure policy core, stdlib-only imports).**
+  Watch-driven serial frontier + movies pack-on-play as pure functions:
+  snapshots in (store read passed IN as data), decisions out (jobs, budget
+  evictions). `cmd/mellifera/playback.go` is the thin shell that executes the
+  decisions — the policy core never execs ffmpeg, never writes item
+  documents, never touches a library directory.
+- **`internal/enrich` (+`streams.go` — the `__streams__` lane).** Packaging
+  jobs ride the SAME derived queue as metadata sources under the dedicated
+  `__streams__` key, through the `Deps.PackItem` func seam (enrich never
+  imports stream — D-10). Lease RENEWAL while a long pack runs; failure =
+  `pack_failed` ledger row with a FLAT 30-day cooldown; the lane replaces
+  ONLY the document's `streams` namespace.
+- **`internal/api` (+`playback.go`; +`Playback` exported → 8).**
+  `GET /items/{id}/playback` (read half) + `POST /items/{id}/play` (write
+  half — `retry` re-enqueues a failed pack), both browse group over nil-safe
+  `Deps.Playback`/`Deps.Play` closures (nil → 503). The fresh media token
+  rides `Set-Cookie`, never a body field (INV4).
+- **`internal/web` (+`Options.Media`).** Mounts the stream surface at
+  `/media` + `/media/*` BEFORE the SPA fallback.
+- **`cmd/mellifera` (+`playback.go`).** Builds `stream.Service`, the api
+  closures, the EnqueuePack dispatch and budget evictions; new env knobs
+  `MELLIFERA_ORCH_BUDGET_GB` (default 32, `0` = off) and
+  `MELLIFERA_MEDIA_SECRET`. `ffmpeg` is now a pack-lane runtime dep
+  (per-item soft-fail — see the runbook).
+- **`internal/itest` (+3)**: `qa_playback_harness_test.go` +
+  `qa_playback_roundtrip_test.go` + `qa_streams_joint_test.go` (real graph
+  end to end).
+- OpenAPI + `internal/web/dist` regenerated. Gate-review fixes landed in the
+  same commit (tail-segment serving, `TestDirectFloor`). Behavior:
+  `openspec/specs/packaged-playback/spec.md`; operations:
+  [`operator-runbook.md`](operator-runbook.md) §1/§2.
+
+### element-pages additions (additive — archived 2026-10-10)
+
+Media-first element detail pages + per-item parser attachments. NEW living
+capability spec: `openspec/specs/parser-display/spec.md`; web deltas in
+`openspec/specs/web-ui/spec.md`. Presentation declarations are CONFIG, not
+code — the core carries `identity_fields`/`display_fields` as opaque strings
+and never branches on them (AC-4; INV5 in `internal/module`):
+
+- **`internal/module` (stays 7).** Every seed config (tv, image, serial)
+  gains `identity_fields` per module + `display_fields` per scanner and
+  metadata_source binding; pure presentation accessors `IdentityFields`/
+  `DisplayFields` are methods (outside the symbol budget).
+- **`internal/store` (+`item_parsers.go`; tables in `open.go` schemaSQL).**
+  `item_parsers` (element-only attachments, keyed `(item_id, plugin_id)`,
+  position = attachment order; follow the item's IDENTITY — survive
+  id-preserving re-scans, die with a re-identified item) and
+  `library_parsers` (the per-library parser chain). `SetItemParsers`/
+  `ListItemParsers`, `SetLibraryChain`/`GetLibraryChain`/`TestLibraryChain`
+  — all FULL-replacement, transactional, orphan-tolerant reads (the
+  `playback_progress` pattern).
+- **`internal/api` (+`parsers.go`; +`ParserBinding` + `ModulePresentation`
+  → 10, WARN band).** `PUT/DELETE /items/{id}/parsers` (admin group; 400
+  validation via `Deps.PluginCapabilities` BEFORE any write; 404 with
+  nothing written for a ghost item), the optional ordered `parsers`
+  full-replacement field on `PATCH /libraries/{id}` (empty list = 400 — a
+  chain is reordered, never cleared), `extra_parsers` on the item detail
+  DTO, and the additive `module` presentation block on
+  `GET /libraries/{id}` via `Deps.ModulePresentation` (nil closure = block
+  omitted; stored chain overlaid onto config order). OpenAPI regenerated:
+  16→17 paths; `internal/web/dist` rebuilt.
+- **`internal/enrich`.** Queue derivation adds two inputs: element-attached
+  sources (`ListItemParsers`, items only, same D-Q1 predicate — a
+  chain-declared CLIENT source stays unqueueable) and the library chain
+  (`GetLibraryChain` → `chainOrderedSources`: chain order IS the queue
+  priority; absent chain = config order). `Enrich` gains backward-compatible
+  variadic extras — attached sources run after the chain in attachment
+  order through the identical per-source path (element attachment changes
+  WHO runs, not how a source writes).
+- **`cmd/mellifera`.** `loadPlugin` factors the per-plugin Load+Start pair so
+  `loadedCaps` is captured at the declaration site (one source for the
+  validation closure); builds `Deps.ModulePresentation` over
+  `module.Registry`. No new env knobs.
+- **`web/src`.** ItemDetail restructured media-first: identity block from
+  `identity_fields`, `components/metadata/ParserFooter.tsx` (one group per
+  parser in chain order — element-only groups last, pill-marked; values
+  verbatim from the parser's own namespace; absent pairs skipped
+  silently), prev/next browsing with the position handoff passed from every
+  grid surface (collections + serial flow), photo slideshow (fixed 2.5 s
+  cadence, `s`/`S` toggle, never survives navigation). `lib/api.ts` gained
+  `ParserBinding`/`ModulePresentation` DTOs + `getLibrary`; `lib/queries.ts`
+  the `useLibrary` hook (non-fatal failure — the page degrades).
+- **`internal/itest` (+2 + fixture).** `element_hermetic_e2e_test.go` +
+  `element_parsers_test.go` over `testdata/element-parser/main.go` — the
+  hermetic attach→drain→namespace E2E.
+
 ### Capability model
 
-Two capability types now ship (the open-set the core knows): `scanner` (base-scanner) and
-`metadata_source` (tv-parser + image-enricher — two shipping plugins, still ZERO new capability types;
+Two capability types now ship (the open-set the core knows): `scanner` (base-scanner, serial-scanner) and
+`metadata_source` (tv-parser, image-enricher, serial-parser, frame-grabber — still ZERO new capability types;
 `image_provider` stays reserved). Phase A MAPS the user's parser/enricher categories
 onto these two capabilities with **zero new protos** (decision D-1): tv-parser, image-enricher, and any enricher
 implement `metadata.v1.MetadataSource`. Plugin selection is driven strictly by `module.MetadataSources[]`
 (config), never by `if mediaType == "..."` (AC-4 — media-type literals appear only in `internal/module` seed config).
+element-pages reuses exactly this pair as the attachable parser types: the
+`PUT /items/{id}/parsers` and `PATCH /libraries/{id}` validation accepts a
+plugin id only when its declared capabilities include `scanner` or
+`metadata_source` (via the `Deps.PluginCapabilities` closure over the same
+`[]sdk.Capability` literals the `cmd` Load sites carry).
 
-**Still NOT built** (deferred): `internal/stream` (range-request file serving), `internal/janitor`
+**Still NOT built** (deferred): `internal/janitor`
 (cleanup cron); **Phase B3** — external enrichers (`tmdb`/`kinopoisk` real fetch + `AuthContext`
 population, `_view` arbitration); **Phase C** — post-actions (needs arch design). Also: `go:embed`
 first-run plugin extraction (dev-mode filesystem-path loading is used instead — D11/Q20); session-based
@@ -462,8 +603,17 @@ admin collections table + edit overlay, `PATCH /libraries/{id}`. **Realized
 in media-preview (no longer deferred):** item media byte serving (the
 `media-serving` capability — originals + frame-grabber thumbs, document-only
 path resolution) and the SPA's real-image rendering + the viewer-first
-ItemDetail. **Still deferred:** `internal/stream` (range-request video
-serving — media MVP *downloads* video instead), `internal/janitor`, client
+ItemDetail. **Realized in packaged-playback (no longer deferred):**
+`internal/stream` — video no longer merely downloads: remux-only fMP4-HLS
+pack playback over the token-gated `/media` surface (stream-copy only, no
+encode; the direct floor keeps original bytes with `Range` for every item),
+plus the `__streams__` enrichment lane and the watch-driven orchestrator
+policy. **Realized in element-pages (no longer deferred):** per-item parser
+attachments + the library parser chain (the `parser-display` capability —
+`item_parsers`/`library_parsers` tables, `PUT/DELETE /items/{id}/parsers`,
+`PATCH …parsers`, the `module` presentation block) and the media-first
+element detail page (identity badges, chain-ordered footer, prev/next,
+slideshow). **Still deferred:** `internal/janitor`, client
 panels for non-admin roles + the `RoleClient` resolver (type exists, no
 minter yet), B3 (TMDB + `AuthContext`), Phase C (post-action) — see
 [`backlog.md`](backlog.md).

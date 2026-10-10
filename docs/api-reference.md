@@ -1,19 +1,22 @@
 # Mellifera API Reference
 
 > Scope: the current HTTP edge of the single Go binary. Grounded in
-> `internal/api/{router,handlers,middleware}.go`, `internal/web/{web,swagger}.go`,
+> `internal/api/{router,handlers,playback,parsers,middleware}.go`,
+> `internal/web/{web,swagger}.go`, `internal/stream/doc.go`,
 > `internal/enrich/state.go`, and `cmd/mellifera/main.go`. Authoritative design:
 > `docs/architecture.md` (§2 protos, §3.1 document model, §7.3 restart, §9.1
 > schema, §11.5 Principal, §11.6 errors); behavioral requirements:
 > `openspec/specs/` (scan-library, plugin-pipeline, async-enrichment,
-> image-enrichment, web-ui, serial-library, media-serving). Operations (env
+> image-enrichment, web-ui, serial-library, media-serving, playback-progress,
+> packaged-playback, parser-display). Operations (env
 > knobs, build, plugins, async queue):
 > [`operator-runbook.md`](operator-runbook.md).
 >
 > Consolidated 2026-10-06 from the per-feature references that shipped with
 > scan-library → plugin-pipeline (Phase A) → async-enrichment (B1) → web-ui
 > (Phase 1/2a); re-actualized 2026-10-09 for web-ui 2b+2c → serials-library →
-> web-ui-phase-3 → media-preview; the per-feature records live in git history
+> web-ui-phase-3 → media-preview; re-actualized 2026-10-10 for packaged-playback
+> + element-pages; the per-feature records live in git history
 > and `openspec/changes/archive/`.
 
 ## 1. Surfaces and authentication
@@ -24,6 +27,7 @@
 | `/assets/*` (hashed JS/CSS) | **public** | no — static assets (`immutable`, 365d) |
 | `/openapi.yaml`, `/openapi.json` | **public** | no — the API contract (no row data) |
 | `/docs/` (Swagger UI, `swaggo/http-swagger`) | **public** | no — static UI (calls `/openapi.json`) |
+| `/media`, `/media/*` (packaged-playback) | **media-token** | yes — fMP4-HLS playlists + segments, direct originals with `Range` (HMAC media token, cookie-first + query fallback, 4 h — never the admin secret; `packaged-playback` spec) |
 | `/api/v1/*` (all data) | **role-gated** | yes — `Authorization: Bearer <token>` |
 
 Every `/api/v1` route requires the admin bearer token. A missing, malformed, or
@@ -38,15 +42,22 @@ A valid token resolves a `Principal{Role}` into the request context
 (arch §11.5): a valid **admin** token → `RoleAdmin` (everything). `RoleClient`
 exists and the browse routes admit admin+client, but no resolver mints client
 tokens yet (the D18 multi-user swap point). Handler groups
-(`internal/api`): **browse** = admin+client (the read-only views plus the one
-viewer action, `PUT /progress/{item_id}`); **admin** = admin-only
-mutating + liveness. Handlers never fork on `Role`.
+(`internal/api`): **browse** = admin+client (the read-only views plus the
+viewer actions — `PUT /progress/{item_id}`, `GET /items/{id}/playback`,
+`POST /items/{id}/play`); **admin** = admin-only
+mutating + liveness (library create/edit/scan, the item parser-attachment
+endpoints, `GET /admin/status`). Handlers never fork on `Role`.
 
 ## 2. Endpoints
 
-All routes are mounted under `/api/v1` (`internal/api/router.go`). Handlers are
-pure delegation: parse → call ONE domain function → write the response
-(ai-arch §3).
+All routes are mounted under `/api/v1` (`internal/api/router.go`) — 17 paths
+(18 registrations: `HEAD /items/{id}/media` is served beside its GET). Handlers
+are pure delegation: parse → call ONE domain function → write the response
+(ai-arch §3). Four handlers read cmd-built closures instead of domain packages
+(the INV2 anti-corruption seams, each nil-safe with a defined degradation):
+`Status` (`/admin/status`, nil → `503`), `Playback`/`Play` (packaged-playback,
+nil → `503`), `ModulePresentation` (nil → the `module` block is omitted), and
+`PluginCapabilities` (nil → parser validation is skipped).
 
 ### `POST /api/v1/libraries` — create a library
 
@@ -78,12 +89,36 @@ pure delegation: parse → call ONE domain function → write the response
 `200 OK` with `{"libraries":[{ "id":1, "module_id":"tv", "root_path":"/media/TV",
 "display_name":"TV", "description":"" }]}`.
 
+### `GET /api/v1/libraries/{id}` — fetch one library (browse group)
+
+`200 OK` with the bare library DTO plus the ADDITIVE `module` presentation
+block (element-pages):
+`{…,"module":{"identity_fields":["title","year"],"parsers":[{"id":"tv-parser",
+"capability":"default","display_fields":[…]},…]}}`.
+`identity_fields` names the element page's mandatory identity badges;
+`parsers` is the ordered parser chain — the stored per-library chain when one
+was set via `PATCH …parsers`, else the module seed config's order — each entry
+carrying its `display_fields` declaration (the footer render order, config
+data per `parser-display`). The block comes from the `Deps.ModulePresentation`
+closure built in `cmd/mellifera` over `module.Registry`; a nil closure serves
+the row without the block (the SPA degrades, never errors). `404` for an
+unknown id. List/create/patch responses never carry the block.
+
 ### `PATCH /api/v1/libraries/{id}` — edit a library (admin-only)
 
 Body carries only the fields being changed (Go decodes pointers; an absent
 field stays unchanged): `{"display_name":"…","description":"…"}`.
 `root_path`/`module_id` are immutable — including them is `400 bad_request`;
 `404` for an unknown id. Success: `200 OK` with the updated library.
+
+Optional ordered `parsers` (element-pages): a PRESENT list replaces the
+library's parser chain — FULL replacement, order defines the footer group
+order and the enrichment-queue priority. An explicitly EMPTY list is
+`400 bad_request` (a chain is reordered, never cleared — the module seed's
+chain is the floor); an unknown or non-parser plugin id (serves neither
+`scanner` nor `metadata_source`) is `400` via the `Deps.PluginCapabilities`
+closure; validation runs BEFORE any write, so a rejected body leaves the row
+and chain untouched. A nil `parsers` field changes nothing.
 
 ### `GET /api/v1/libraries/{id}/summary` — items count + last update
 
@@ -134,6 +169,31 @@ report `path:""`; `404` for an unknown library.
 
 `200 OK` with the same item shape as above; `404` with
 `{"error":{"code":"not_found", ...  "retryable":false}}` when absent.
+Additive (element-pages): `extra_parsers` — the item's element-attached
+parser ids in attachment order (`[]string`, absent until a first attachment).
+Populated ONLY by this detail handler; the listings stay N+1-free.
+
+### `PUT /api/v1/items/{id}/parsers` — replace an item's parser attachments (admin-only)
+
+Body: `{"parsers":["tv-parser","anitomy"]}` — the FULL replacement attachment
+list, in order (element-pages). An empty (or missing) array clears the
+attachments entirely (`DELETE` is the named affordance for that). Validation
+is the parse step, BEFORE any write: an unknown plugin id or one serving
+neither `scanner` nor `metadata_source` is `400 bad_request` via the
+`Deps.PluginCapabilities` closure (a nil closure degrades to accept — the
+closure is the loaded-plugin knowledge wired in `cmd/mellifera`). Unknown item
+→ `404 not_found` with nothing written. Success: `200 OK` with
+`{"parsers":[…]}` — the stored list in attachment order.
+
+### `DELETE /api/v1/items/{id}/parsers` — clear an item's parser attachments (admin-only)
+
+The clearing affordance (element-pages): the same full-replacement store call
+with an empty list, so the unknown-item `404` and nothing-written guarantee
+are identical to `PUT`. Success: `200 OK` with `{"parsers":[]}`.
+
+Behavior requirements: `openspec/specs/parser-display/spec.md` (attachments
+follow the item's identity — they survive id-preserving re-scans and die with
+a re-identified item).
 
 ### `GET /api/v1/items/{id}/media` — serve the item's media bytes
 
@@ -175,6 +235,28 @@ non-integer value is `400`); the list comes back whole — no limit/offset —
 
 `200 OK` with the SAME wire shape as `GET /api/v1/items`
 (`{"items":[itemDTO]}`); `404` for an unknown series id.
+
+### `GET /api/v1/items/{id}/playback` — the playback descriptor (browse group)
+
+Packaged-playback verb split — the read half. `200 OK` via the
+`Deps.Playback` closure (built in `cmd/mellifera` over `stream.Service`'s
+`Describe`; nil closure → `503`):
+
+```json
+{ "mode": "direct" | "hls", "state": "none|partial|complete|failed",
+  "play_url": "/media/<id>/<nonce>/index.m3u8", "sections": [ … ] }
+```
+
+`sections` carries the container-chapter projection. The fresh HMAC media
+token rides the `Set-Cookie` header — deliberately NEVER a body field.
+`404` for an unknown item.
+
+### `POST /api/v1/items/{id}/play` — play / retry packaging (browse group)
+
+The write half. Body: `{}` (plain play acknowledgement) or
+`{"retry":true}` (re-enqueue a failed packaging run — `{"queued":true}` when
+one existed) or `{"from_seconds":…}` (accepted, reserved — a v1 no-op).
+`404` unknown item; nil closure → `503`.
 
 ### `GET /api/v1/progress?limit=` — recent playback positions
 

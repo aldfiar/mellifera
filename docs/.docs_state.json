@@ -1,8 +1,8 @@
 {
   "last_commit": "",
   "last_commit_note": "docs cleanup 2026-10-06: the six docs/<feature>/ wf records removed (git history + openspec/changes/archive/ preserve them); live operator/API docs consolidated into docs/{api-reference,operator-runbook}.md; future work extracted to docs/backlog.md",
-  "updated_at": "2026-10-06",
-  "synced_feature": "docs cleanup (post web-ui-phase-2 archive) — all six implemented feature folders (scan-library, plugin-pipeline, async-enrichment, image-enrichment, web-ui, web-ui-phase-2) deleted; references repointed in ai-architecture.md, project_structure.md, open-questions.md Q29, .project_context.json docs_index; behavior lives in openspec/specs/",
+  "updated_at": "2026-10-10",
+  "synced_feature": "re-actualization 2026-10-10 for packaged-playback (archived 2026-10-09; the 2026-10-09 runbook update had covered it, but api-reference/project_structure/ai-architecture/.project_context.json predated commit 79cb50c) + element-pages (archived 2026-10-10 as openspec/changes/archive/2026-10-10-element-pages; NEW capability spec parser-display): api-reference.md gained /media surface row, GET /libraries/{id} module block, PUT/DELETE /items/{id}/parsers, PATCH parsers, GET /items/{id}/playback + POST /items/{id}/play, extra_parsers (17 paths); project_structure.md + ai-architecture.md §4 gained the packaged-playback layer (internal/stream realized, internal/orchestrator) and the element-pages layer (item_parsers/library_parsers, parsers.go, ParserFooter, itest 23 files + testdata/); api symbol count corrected to 10 WARN per check.sh; .project_context.json src_layout/stack.test/last_updated refreshed",
   "extracted_docs": [
     "mellifera/docs/architecture.md",
     "mellifera/docs/ai-architecture.md",
