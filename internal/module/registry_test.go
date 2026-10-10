@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/mellifera/mellifera/internal/store"
@@ -288,5 +289,120 @@ func TestSerialModuleSeed(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("serial seed rows = %d, want 1 (no duplicate after re-Open)", n)
+	}
+}
+
+// TestPresentationFields covers the element-pages presentation declarations
+// (box 1.1): every seeded module carries identity_fields and every declared
+// parser binding carries its display_fields order — read back through the
+// Registry accessors. AC-4: the declarations are config data; the core never
+// branches on them.
+func TestPresentationFields(t *testing.T) {
+	r, _ := openRegistry(t)
+
+	tests := []struct {
+		name       string
+		moduleID   string
+		wantIdent  []string
+		pluginID   string
+		wantFields []string
+	}{
+		{
+			name:       "tv identity + tv-parser order",
+			moduleID:   "tv",
+			wantIdent:  []string{"title", "year"},
+			pluginID:   "tv-parser",
+			wantFields: []string{"title", "year", "resolution", "parsed_from"},
+		},
+		{
+			name:       "tv scanner binding order",
+			moduleID:   "tv",
+			wantIdent:  []string{"title", "year"},
+			pluginID:   "base-scanner",
+			wantFields: []string{"container", "duration", "video", "audio", "size"},
+		},
+		{
+			name:       "serial identity + serial-parser order",
+			moduleID:   "serial",
+			wantIdent:  []string{"display_title", "season", "episode"},
+			pluginID:   "serial-parser",
+			wantFields: []string{"display_title", "season", "parsed_from"},
+		},
+		{
+			name:       "serial frame-grabber order",
+			moduleID:   "serial",
+			wantIdent:  []string{"display_title", "season", "episode"},
+			pluginID:   "frame-grabber",
+			wantFields: []string{"thumbnail", "grabbed_at"},
+		},
+		{
+			name:       "image identity + image-enricher composite order",
+			moduleID:   "image",
+			wantIdent:  []string{"date_taken"},
+			pluginID:   "image-enricher",
+			wantFields: []string{"date_taken", "camera", "dimensions", "gps"},
+		},
+		{
+			name:       "image scanner binding order",
+			moduleID:   "image",
+			wantIdent:  []string{"date_taken"},
+			pluginID:   "base-scanner",
+			wantFields: []string{"container", "duration", "video", "audio", "size"},
+		},
+		{
+			name:       "seeded-but-unloaded parser declares no fields (pill only)",
+			moduleID:   "tv",
+			wantIdent:  []string{"title", "year"},
+			pluginID:   "tmdb",
+			wantFields: []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ident, err := r.IdentityFields(tt.moduleID)
+			if err != nil {
+				t.Fatalf("IdentityFields(%s): %v", tt.moduleID, err)
+			}
+			if !reflect.DeepEqual(ident, tt.wantIdent) {
+				t.Errorf("IdentityFields(%s) = %v, want %v", tt.moduleID, ident, tt.wantIdent)
+			}
+			fields, err := r.DisplayFields(tt.moduleID, tt.pluginID)
+			if err != nil {
+				t.Fatalf("DisplayFields(%s, %s): %v", tt.moduleID, tt.pluginID, err)
+			}
+			if !reflect.DeepEqual(fields, tt.wantFields) {
+				t.Errorf("DisplayFields(%s, %s) = %v, want %v", tt.moduleID, tt.pluginID, fields, tt.wantFields)
+			}
+		})
+	}
+
+	// Accessor error cases: unknown module and unbound plugin both wrap
+	// errNotFound; the declared order is exactly the seed order (the footer's
+	// contract — config order IS render order).
+	if _, err := r.IdentityFields("does-not-exist"); !errors.Is(err, errNotFound) {
+		t.Errorf("IdentityFields(unknown) = %v, want errNotFound", err)
+	}
+	if _, err := r.DisplayFields("tv", "unbound-parser"); !errors.Is(err, errNotFound) {
+		t.Errorf("DisplayFields(tv, unbound) = %v, want errNotFound", err)
+	}
+	fields, err := r.DisplayFields("tv", "tv-parser")
+	if err != nil {
+		t.Fatalf("DisplayFields(tv, tv-parser): %v", err)
+	}
+	want := []string{"title", "year", "resolution", "parsed_from"}
+	for i, f := range want {
+		if fields[i] != f {
+			t.Fatalf("DisplayFields(tv, tv-parser) = %v, want declared order %v (config order IS footer render order)", fields, want)
+		}
+	}
+
+	// Defensive copies: mutating a returned slice must not alias registry state.
+	fields[0] = "mutated"
+	again, err := r.DisplayFields("tv", "tv-parser")
+	if err != nil {
+		t.Fatalf("DisplayFields after caller mutation: %v", err)
+	}
+	if again[0] != "title" {
+		t.Errorf("DisplayFields aliased registry state: got %v, want title first", again)
 	}
 }

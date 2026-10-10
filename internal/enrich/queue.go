@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -87,12 +88,13 @@ type Stats struct {
 
 // Queue is the in-process async enrichment dispatcher (arch §4.4). It DERIVES
 // pending (row, plugin) work from items AND series rows + the document
-// namespaces + the enrichment_failures ledger (there is NO queue/claim/lease
-// table — INV-derived-not-stored), feeds a bounded channel, and a worker pool
-// drains it under per-row leases (one per row id; serials-library D5). Row ids
-// never collide across the two stores (opaque itm_/ser_ prefixes). Single-
-// instance MVP: leases are in-memory and vanish on restart; pending work is
-// re-derived from the rows on the next Start.
+// namespaces + the item_parsers attachments (element-pages D-4, items only) +
+// the enrichment_failures ledger (there is NO queue/claim/lease table —
+// INV-derived-not-stored), feeds a bounded channel, and a worker pool drains it
+// under per-row leases (one per row id; serials-library D5). Row ids never
+// collide across the two stores (opaque itm_/ser_ prefixes). Single-instance
+// MVP: leases are in-memory and vanish on restart; pending work is re-derived
+// from the rows on the next Start.
 type Queue struct {
 	deps    Deps
 	cfg     QueueConfig
@@ -302,9 +304,14 @@ type task = queueTask
 // deriveLibrary computes the pending (row, plugin) set for one library per the
 // §4.4 derivation predicate (B8) applied IDENTICALLY to both stores
 // (serials-library D5): row EXISTS, source applicable + Enabled + AuthMode !=
-// CLIENT (D-Q1), namespace ABSENT (not done), NOT in-ledger-cooldown. It reads
-// items and series rows (all statuses; the predicate filters) + the ledger; it
-// never touches a queue table (INV-derived-not-stored). Parameterized SQL only.
+// CLIENT (D-Q1), namespace ABSENT (not done), NOT in-ledger-cooldown. The
+// collection-common candidates iterate in the library's stored parser-chain
+// order (element-pages 3.1: the chain is the enrichment queue priority; absent
+// chain = config order). Items add one input the chain does not have: the
+// element-attached plugins (item_parsers, element-pages D-4) under the SAME
+// predicate (pendingExtras). It reads items and series rows (all statuses; the
+// predicate filters) + the attachments + the ledger; it never touches a queue
+// table (INV-derived-not-stored). Parameterized SQL only.
 func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask, error) {
 	items, err := q.allItems(ctx, libraryID)
 	if err != nil {
@@ -313,6 +320,10 @@ func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask
 	seriesRows, err := q.allSeries(ctx, libraryID)
 	if err != nil {
 		return nil, err
+	}
+	chain, err := q.deps.Store.GetLibraryChain(ctx, libraryID)
+	if err != nil {
+		return nil, fmt.Errorf("enrich: derive chain lib %d: %w", libraryID, err)
 	}
 	idx, err := q.fetchFailureIndex(ctx)
 	if err != nil {
@@ -325,30 +336,65 @@ func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask
 		if err != nil {
 			continue // module unresolvable -> row not derivable (soft)
 		}
-		for _, pluginID := range pendingSources(mod, decodeDoc(it.Document), it.ID, idx, nowt) {
+		doc := decodeDoc(it.Document)
+		chainPending := pendingSources(chainOrderedSources(mod.MetadataSources, chain), doc, it.ID, idx, nowt)
+		for _, pluginID := range chainPending {
 			tasks = append(tasks, queueTask{rowID: it.ID, pluginID: pluginID})
 		}
+		tasks = append(tasks, q.pendingExtras(ctx, mod, doc, it.ID, chainPending, idx, nowt)...)
 	}
 	for _, sr := range seriesRows {
 		mod, err := q.deps.Modules.Get(sr.ModuleID)
 		if err != nil {
 			continue // module unresolvable -> row not derivable (soft)
 		}
-		for _, pluginID := range pendingSources(mod, decodeDoc(sr.Document), sr.ID, idx, nowt) {
+		for _, pluginID := range pendingSources(chainOrderedSources(mod.MetadataSources, chain), decodeDoc(sr.Document), sr.ID, idx, nowt) {
 			tasks = append(tasks, queueTask{rowID: sr.ID, pluginID: pluginID})
 		}
 	}
 	return tasks, nil
 }
 
+// chainOrderedSources overlays a library's stored parser chain onto the
+// module's config order (element-pages 3.1: the parser order defines the
+// enrichment queue priority for collection-common sources). Sources the chain
+// names come first, in chain position order; config sources the chain does not
+// name retain their relative config order after them. An empty chain (never
+// set, cleared) returns the config order unchanged — the module seed's chain
+// is the default. Chain ids matching no config source contribute nothing (a
+// scanner id in the chain is not a collection-common source). The module's
+// config slice is never mutated.
+func chainOrderedSources(srcs []module.MetadataSourceBinding, chain []string) []module.MetadataSourceBinding {
+	if len(srcs) == 0 || len(chain) == 0 {
+		return srcs
+	}
+	pos := make(map[string]int, len(chain))
+	for i, id := range chain {
+		if _, dup := pos[id]; !dup {
+			pos[id] = i
+		}
+	}
+	chained := make([]module.MetadataSourceBinding, 0, len(srcs))
+	rest := make([]module.MetadataSourceBinding, 0, len(srcs))
+	for _, src := range srcs {
+		if _, ok := pos[src.PluginID]; ok {
+			chained = append(chained, src)
+		} else {
+			rest = append(rest, src)
+		}
+	}
+	sort.SliceStable(chained, func(i, j int) bool { return pos[chained[i].PluginID] < pos[chained[j].PluginID] })
+	return append(chained, rest...)
+}
+
 // pendingSources is the shared per-row derivation predicate: the plugin ids of
-// the module's metadata chain that still have pending work for the row —
-// queueable (D-Q1), namespace absent (not done), not in-ledger-cooldown. The
-// SAME predicate runs over items and series rows; nothing here names a media
-// type (INV-media-type-agnostic).
-func pendingSources(mod module.Module, doc map[string]any, rowID string, idx failureIndex, nowt time.Time) []string {
+// the given (chain-ordered) metadata sources that still have pending work for
+// the row — queueable (D-Q1), namespace absent (not done), not in
+// ledger-cooldown. The SAME predicate runs over items and series rows; nothing
+// here names a media type (INV-media-type-agnostic).
+func pendingSources(srcs []module.MetadataSourceBinding, doc map[string]any, rowID string, idx failureIndex, nowt time.Time) []string {
 	out := make([]string, 0)
-	for _, src := range mod.MetadataSources {
+	for _, src := range srcs {
 		if !queueable(src) || hasNamespace(doc, src.PluginID) {
 			continue
 		}
@@ -356,6 +402,43 @@ func pendingSources(mod module.Module, doc map[string]any, rowID string, idx fai
 			continue
 		}
 		out = append(out, src.PluginID)
+	}
+	return out
+}
+
+// pendingExtras derives one item's (item, element-attached plugin) work
+// (element-pages D-4): each item_parsers attachment is a task candidate under
+// the SAME predicate as the chain — queueable (D-Q1: a CLIENT-locked attachment
+// is never queued; its declared AuthMode is the lock), namespace absent, not in
+// ledger-cooldown. Attachments the chain already queued this pass are skipped
+// (one task per (item, plugin), never two). Attachments are item-keyed only —
+// series rows have none (the control table joins the items table). A store read
+// error leaves the item's extras underived for this pass (soft; re-derived on
+// the next sweep).
+func (q *Queue) pendingExtras(
+	ctx context.Context, mod module.Module, doc map[string]any, itemID string,
+	chainPending []string, idx failureIndex, nowt time.Time,
+) []queueTask {
+	attached, err := q.deps.Store.ListItemParsers(ctx, itemID)
+	if err != nil || len(attached) == 0 {
+		return nil
+	}
+	queued := make(map[string]struct{}, len(chainPending))
+	for _, id := range chainPending {
+		queued[id] = struct{}{}
+	}
+	out := make([]queueTask, 0)
+	for _, src := range resolveExtraSources(mod, attached) {
+		if _, taken := queued[src.PluginID]; taken {
+			continue // already derived via the chain this pass
+		}
+		if !queueable(src) || hasNamespace(doc, src.PluginID) {
+			continue
+		}
+		if inCooldown(idx, itemID, src.PluginID, nowt) {
+			continue
+		}
+		out = append(out, queueTask{rowID: itemID, pluginID: src.PluginID})
 	}
 	return out
 }
@@ -421,11 +504,15 @@ func hasNamespace(doc map[string]any, pluginID string) bool {
 // queueRow is one loaded queue target — an item OR a series row
 // (serials-library D5). Document, lifecycle, lease, and ledger machinery are
 // identical for both; only the persist sink differs (PutItem vs PutSeries).
+// extras carries the row's element-attached plugin ids (element-pages D-4) —
+// loaded for items only; a series row never has attachments (the item_parsers
+// control table joins the items table).
 type queueRow struct {
 	id       string
 	moduleID string
 	status   string
 	doc      json.RawMessage
+	extras   []string
 	persist  func(ctx context.Context, status string, doc json.RawMessage)
 }
 
@@ -438,6 +525,7 @@ func (q *Queue) loadRow(ctx context.Context, id string) (queueRow, error) {
 	if err == nil {
 		return queueRow{
 			id: it.ID, moduleID: it.ModuleID, status: it.Status, doc: it.Document,
+			extras: q.itemExtras(ctx, it.ID),
 			persist: func(ctx context.Context, status string, doc json.RawMessage) {
 				q.putItem(ctx, it, status, doc)
 			},
@@ -456,6 +544,17 @@ func (q *Queue) loadRow(ctx context.Context, id string) (queueRow, error) {
 			q.putSeries(ctx, sr, status, doc)
 		},
 	}, nil
+}
+
+// itemExtras reads one item's element-attached plugin ids in attachment order
+// (element-pages D-4). A read error leaves the extras empty (soft-fail: the row
+// still drains its chain; the extras re-derive on a later pass).
+func (q *Queue) itemExtras(ctx context.Context, itemID string) []string {
+	ids, err := q.deps.Store.ListItemParsers(ctx, itemID)
+	if err != nil {
+		return nil
+	}
+	return ids
 }
 
 // workItem is the per-row worker driver: claim the row's lease, drive its
@@ -490,7 +589,8 @@ func (q *Queue) workItem(ctx context.Context, rowID string) {
 	}
 	doc := decodeDoc(row.doc)
 	status := reengage(row.status)
-	dr := q.driveSources(ctx, mod, doc, reconstructBase(doc), rowID, idx, &status)
+	extras := runExtras(mod, row.extras) // chain-declared attachments stay chain-driven (no double run)
+	dr := q.driveSources(ctx, mod, extras, doc, reconstructBase(doc), rowID, idx, &status)
 	if dr.hardAbort {
 		q.hardFail(ctx, row, doc, dr.err)
 		return
@@ -498,7 +598,7 @@ func (q *Queue) workItem(ctx context.Context, rowID string) {
 	if dr.begun && dr.succeeded > 0 {
 		status = advance(status, evEnriched) // parsed -> enriched
 	}
-	status = q.settle(ctx, mod, doc, rowID, status)
+	status = q.settle(ctx, mod, extras, doc, rowID, status)
 	q.persistRow(ctx, row, status, doc)
 	if status == statusReady {
 		q.statDone.Add(1)
@@ -524,7 +624,7 @@ func reengage(status string) string {
 // re-fetched here (not reused from workItem entry) because driveSources may have
 // just written a terminal ledger row that makes a source terminal — a stale
 // index would leave a fully-drained item stuck at enriched.
-func (q *Queue) settle(ctx context.Context, mod module.Module, doc map[string]any, itemID string, status string) string {
+func (q *Queue) settle(ctx context.Context, mod module.Module, extras []module.MetadataSourceBinding, doc map[string]any, itemID string, status string) string {
 	if status != statusEnriched {
 		return status
 	}
@@ -532,7 +632,7 @@ func (q *Queue) settle(ctx context.Context, mod module.Module, doc map[string]an
 	if err != nil {
 		return status
 	}
-	if !allSourcesTerminal(idx, mod, doc, itemID, now()) {
+	if !allSourcesTerminal(idx, mod, extras, doc, itemID, now()) {
 		return status
 	}
 	return advance(status, evSettled) // enriched -> ready

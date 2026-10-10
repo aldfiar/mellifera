@@ -41,14 +41,21 @@ const listModulesSQL = `SELECT id, media_type, config_json, schema_version
 // document validation is a deferred feature and module does not read it. The
 // scanner binding is what scan resolves via Get("tv"). display_name carries
 // Russian first-class (arch §1.2). tv-parser is a local parser: no auth_mode.
+// Presentation declarations are CONFIG, not code (element-pages D-1, AC-4):
+// display_fields per binding is the footer render order, identity_fields per
+// module is the mandatory identity block — both media-type literals live only
+// here. kinopoisk/tmdb declare none: seeded-but-unloaded slot groups render
+// their pill only.
 const tvConfigJSON = `{
   "id": "tv",
   "schema_version": 1,
   "display_name": {"ru": "Сериалы", "en": "TV Series"},
   "media_type": "tv",
+  "identity_fields": ["title", "year"],
   "scanner": {
     "plugin_id": "base-scanner",
     "capability_id": "default",
+    "display_fields": ["container", "duration", "video", "audio", "size"],
     "options": {
       "filename_format": "SxxExx",
       "exclude_patterns": ["*.nfo", "*.jpg", "*.srt"],
@@ -59,6 +66,7 @@ const tvConfigJSON = `{
     {
       "plugin_id": "tv-parser", "capability_id": "default",
       "priority": 1, "enabled": true,
+      "display_fields": ["title", "year", "resolution", "parsed_from"],
       "options": {}
     },
     {
@@ -90,15 +98,22 @@ const tvConfigJSON = `{
 // walk.go:48-49) and intentionally does NOT exclude *.jpg. No display block —
 // image has no display-priority sources in B2. display_name carries Russian
 // first-class (arch §1.2). One metadata_source (image-enricher) — RAW/external
-// enrichers are deferred (B3).
+// enrichers are deferred (B3). Presentation declarations are CONFIG, not code
+// (element-pages D-1, AC-4): base-scanner carries the same parser declaration
+// as the tv module (absent pairs are skipped silently by the renderer),
+// image-enricher declares the composite display order (camera = make + model,
+// dimensions = width×height — joined by the renderer), identity_fields names
+// the mandatory identity block.
 const imageConfigJSON = `{
   "id": "image",
   "schema_version": 1,
   "display_name": {"ru": "Фотографии", "en": "Photos"},
   "media_type": "image",
+  "identity_fields": ["date_taken"],
   "scanner": {
     "plugin_id": "base-scanner",
     "capability_id": "default",
+    "display_fields": ["container", "duration", "video", "audio", "size"],
     "options": {
       "exclude_patterns": ["*.thm", "*.xmp"],
       "follow_symlinks": false
@@ -108,6 +123,7 @@ const imageConfigJSON = `{
     {
       "plugin_id": "image-enricher", "capability_id": "default",
       "priority": 1, "enabled": true,
+      "display_fields": ["date_taken", "camera", "dimensions", "gps"],
       "options": {}
     }
   ]
@@ -121,12 +137,18 @@ const imageConfigJSON = `{
 // under media_type "serial", schema_version 1. Both enrichers are LOCAL plugins:
 // no auth_mode (queueable per D-Q1). No display block — external show-metadata
 // sources are B3 territory; serial documents land ready for it.
-// display_name carries Russian first-class (arch §1.2).
+// display_name carries Russian first-class (arch §1.2). Presentation
+// declarations are CONFIG, not code (element-pages D-1, AC-4): display_fields
+// per binding (serial-parser's footer order; frame-grabber's thumbnail/
+// grabbed_at resolve from the frame-grabber namespace in the renderer),
+// identity_fields per module (episode names the episode-name slot case until
+// B3/NFO lands).
 const serialConfigJSON = `{
   "id": "serial",
   "schema_version": 1,
   "display_name": {"ru": "Сериалы (каталоги)", "en": "Serial Libraries"},
   "media_type": "serial",
+  "identity_fields": ["display_title", "season", "episode"],
   "scanner": {
     "plugin_id": "serial-scanner",
     "capability_id": "default",
@@ -139,11 +161,13 @@ const serialConfigJSON = `{
     {
       "plugin_id": "serial-parser", "capability_id": "default",
       "priority": 1, "enabled": true,
+      "display_fields": ["display_title", "season", "parsed_from"],
       "options": {}
     },
     {
       "plugin_id": "frame-grabber", "capability_id": "default",
       "priority": 2, "enabled": true,
+      "display_fields": ["thumbnail", "grabbed_at"],
       "options": {}
     }
   ]
@@ -156,36 +180,44 @@ type Registry struct {
 }
 
 // Module is one module config entity. media_type is a string the core carries
-// and never branches on.
+// and never branches on. IdentityFields is the module's presentation
+// declaration (element-pages D-1): the mandatory identity-block fields, in
+// declared order — config data the SPA serves and renders, never core logic.
 type Module struct {
 	ID              string
 	MediaType       string
 	SchemaVersion   int
+	IdentityFields  []string                // mandatory identity block, declared order
 	Scanner         ScannerBinding          // scan-side capability slot
 	MetadataSources []MetadataSourceBinding // enrichment chain, config order
 }
 
 // ScannerBinding is the scanner capability slot a module binds: which plugin
-// serves it, which capability id, and the opaque options forwarded to every
-// scan RPC.
+// serves it, which capability id, the ordered display_fields declaration (the
+// footer render order for this parser's namespace — element-pages D-1), and
+// the opaque options forwarded to every scan RPC.
 type ScannerBinding struct {
-	PluginID     string
-	CapabilityID string
-	Options      json.RawMessage
+	PluginID      string
+	CapabilityID  string
+	DisplayFields []string
+	Options       json.RawMessage
 }
 
 // MetadataSourceBinding is one enrichment-source config slot: which plugin +
 // capability serves it, its chain priority (lower runs first), whether it is
 // active, its auth mode (opaque config string; Phase B interprets SERVER /
-// CLIENT), and the opaque options forwarded to its RPCs. Core selection reads
-// this slice from config and never branches on media type (AC-4).
+// CLIENT), the ordered display_fields declaration (footer render order —
+// element-pages D-1), and the opaque options forwarded to its RPCs. Core
+// selection reads this slice from config and never branches on media type
+// (AC-4).
 type MetadataSourceBinding struct {
-	PluginID     string
-	CapabilityID string
-	Priority     int
-	Enabled      bool
-	AuthMode     string
-	Options      json.RawMessage
+	PluginID      string
+	CapabilityID  string
+	Priority      int
+	Enabled       bool
+	AuthMode      string
+	DisplayFields []string
+	Options       json.RawMessage
 }
 
 // Open seeds the built-in module configs (tv, image, serial — idempotent), then
@@ -263,10 +295,54 @@ func (r *Registry) List() ([]Module, error) {
 	return out, nil
 }
 
+// IdentityFields returns a defensive copy of the module's declared
+// identity_fields (cache-only — pure). Unknown module id → wrapped errNotFound.
+func (r *Registry) IdentityFields(moduleID string) ([]string, error) {
+	m, err := r.Get(moduleID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(m.IdentityFields))
+	copy(out, m.IdentityFields)
+	return out, nil
+}
+
+// DisplayFields returns a defensive copy of the declared display_fields order
+// for one parser binding (scanner or metadata_source) within a module
+// (cache-only — pure). The binding is looked up by plugin id across both slot
+// kinds; unknown module or unbound plugin → wrapped errNotFound. A bound
+// parser without a display_fields declaration yields an empty slice (the
+// seeded-but-unloaded slot-group case: pill only).
+func (r *Registry) DisplayFields(moduleID, pluginID string) ([]string, error) {
+	m, err := r.Get(moduleID)
+	if err != nil {
+		return nil, err
+	}
+	if m.Scanner.PluginID == pluginID {
+		return copyFields(m.Scanner.DisplayFields), nil
+	}
+	for _, src := range m.MetadataSources {
+		if src.PluginID == pluginID {
+			return copyFields(src.DisplayFields), nil
+		}
+	}
+	return nil, fmt.Errorf("module %q parser %q: %w", moduleID, pluginID, errNotFound)
+}
+
+// copyFields clones a declared-field slice so callers can never alias registry
+// state. Test helper grade: nil-safe.
+func copyFields(src []string) []string {
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+
 // parseModule decodes a config_json blob into a Module, extracting the scanner
-// slot and the ordered metadata_sources enrichment chain. The remaining config
-// (display, ...) is intentionally not modeled in Go (arch §2.4.2: options are
-// opaque pass-through; module is a config entity, not a typed schema).
+// slot, the ordered metadata_sources enrichment chain, and the presentation
+// declarations (identity_fields per module, display_fields per binding —
+// element-pages D-1). The remaining config (display, ...) is intentionally not
+// modeled in Go (arch §2.4.2: options are opaque pass-through; module is a
+// config entity, not a typed schema).
 //
 // The metadata_sources are modeled verbatim in CONFIG order: Enabled is carried
 // (not filtered) so the binding stays lossless; the enrich orchestrator
@@ -274,42 +350,48 @@ func (r *Registry) List() ([]Module, error) {
 // (INV-config-driven, AC-4). The tiebreak for equal priorities is this order.
 func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (Module, error) {
 	var cfg struct {
-		Scanner struct {
-			PluginID     string          `json:"plugin_id"`
-			CapabilityID string          `json:"capability_id"`
-			Options      json.RawMessage `json:"options"`
+		IdentityFields []string `json:"identity_fields"`
+		Scanner        struct {
+			PluginID      string          `json:"plugin_id"`
+			CapabilityID  string          `json:"capability_id"`
+			DisplayFields []string        `json:"display_fields"`
+			Options       json.RawMessage `json:"options"`
 		} `json:"scanner"`
 		MetadataSources []struct {
-			PluginID     string          `json:"plugin_id"`
-			CapabilityID string          `json:"capability_id"`
-			Priority     int             `json:"priority"`
-			Enabled      bool            `json:"enabled"`
-			AuthMode     string          `json:"auth_mode"`
-			Options      json.RawMessage `json:"options"`
+			PluginID      string          `json:"plugin_id"`
+			CapabilityID  string          `json:"capability_id"`
+			Priority      int             `json:"priority"`
+			Enabled       bool            `json:"enabled"`
+			AuthMode      string          `json:"auth_mode"`
+			DisplayFields []string        `json:"display_fields"`
+			Options       json.RawMessage `json:"options"`
 		} `json:"metadata_sources"`
 	}
 	if err := json.Unmarshal(configBytes, &cfg); err != nil {
 		return Module{}, fmt.Errorf("module %q: parse config_json: %w", id, err)
 	}
 	m := Module{
-		ID:            id,
-		MediaType:     mediaType,
-		SchemaVersion: schemaVersion,
+		ID:             id,
+		MediaType:      mediaType,
+		SchemaVersion:  schemaVersion,
+		IdentityFields: cfg.IdentityFields,
 		Scanner: ScannerBinding{
-			PluginID:     cfg.Scanner.PluginID,
-			CapabilityID: cfg.Scanner.CapabilityID,
-			Options:      cfg.Scanner.Options,
+			PluginID:      cfg.Scanner.PluginID,
+			CapabilityID:  cfg.Scanner.CapabilityID,
+			DisplayFields: cfg.Scanner.DisplayFields,
+			Options:       cfg.Scanner.Options,
 		},
 	}
 	m.MetadataSources = make([]MetadataSourceBinding, len(cfg.MetadataSources))
 	for i, src := range cfg.MetadataSources {
 		m.MetadataSources[i] = MetadataSourceBinding{
-			PluginID:     src.PluginID,
-			CapabilityID: src.CapabilityID,
-			Priority:     src.Priority,
-			Enabled:      src.Enabled,
-			AuthMode:     src.AuthMode,
-			Options:      src.Options,
+			PluginID:      src.PluginID,
+			CapabilityID:  src.CapabilityID,
+			Priority:      src.Priority,
+			Enabled:       src.Enabled,
+			AuthMode:      src.AuthMode,
+			DisplayFields: src.DisplayFields,
+			Options:       src.Options,
 		}
 	}
 	return m, nil

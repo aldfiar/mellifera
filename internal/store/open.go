@@ -139,6 +139,33 @@ var schemaSQL = []string{
   position_seconds INTEGER NOT NULL CHECK (position_seconds >= 0),
   updated_at       TEXT NOT NULL
 )`,
+	// item_parsers is the element-only parser attachment control table
+	// (parser-display D-3): ONE row per attached (item, plugin), position
+	// carrying the attachment order. Attachments follow the item's IDENTITY,
+	// not the file: re-scans upsert the item row preserving its id, so the
+	// rows survive; a re-identified file mints a NEW item id that starts with
+	// no attachments. Reads JOIN to items (orphan-tolerant, the
+	// playback_progress pattern), so rows whose item is gone are skipped.
+	`CREATE TABLE IF NOT EXISTS item_parsers (
+  item_id   TEXT NOT NULL,
+  plugin_id TEXT NOT NULL,
+  position  INTEGER NOT NULL,
+  PRIMARY KEY (item_id, plugin_id)
+)`,
+	// library_parsers is the library-level parser chain control table
+	// (parser-display): ONE row per chained (library, plugin), position
+	// carrying the chain order — durable per-library state the footer group
+	// order and the enrichment queue priority derive from. The module seed's
+	// chain is the default when the field is absent: an absent chain READS as
+	// an empty slice (seeding is the api layer's concern, not store's). Reads
+	// JOIN to libraries (orphan-tolerant, the item_parsers pattern), so rows
+	// whose library is gone are skipped.
+	`CREATE TABLE IF NOT EXISTS library_parsers (
+  library_id INTEGER NOT NULL,
+  plugin_id  TEXT NOT NULL,
+  position   INTEGER NOT NULL,
+  PRIMARY KEY (library_id, plugin_id)
+)`,
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
 	// series_library backs the per-library series listing/sweep paths

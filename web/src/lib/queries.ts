@@ -12,6 +12,7 @@ import {
   apiRequest,
   fetchItemMediaObjectUrl,
   getItem,
+  getLibrary,
   getLibraryFolders,
   getLibrarySummary,
   getSeries,
@@ -128,6 +129,21 @@ export function useUpdateLibrary(): UseMutationResult<
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["libraries"] });
     },
+  });
+}
+
+// useLibrary — GET /api/v1/libraries/{id} via getLibrary (element-pages 3.4
+// consumer). Keyed ["library", id]: one cache entry per library, mirroring the
+// summary/folders hooks' per-library keying. The element detail page consumes
+// the additive module presentation block (identity_fields + the ordered parser
+// chain); its failure is NON-fatal there — identity badges and chain footer
+// degrade, the page itself never blocks. `enabled` guards a not-yet-parsed
+// route id (NaN) like useLibrarySummary.
+export function useLibrary(id: number): UseQueryResult<LibraryDTO> {
+  return useQuery({
+    queryKey: ["library", id],
+    queryFn: () => getLibrary(id),
+    enabled: Number.isFinite(id),
   });
 }
 

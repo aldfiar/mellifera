@@ -184,6 +184,95 @@
                 }
             }
         },
+        "/items/{id}/parsers": {
+            "put": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "Replace an item's element-only parser attachments",
+                "operationId": "put-item-parsers",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "ordered parser ids (full replacement; empty clears)",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.itemParsersRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.itemParsersResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "Clear an item's element-only parser attachments",
+                "operationId": "delete-item-parsers",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.itemParsersResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/items/{id}/play": {
             "post": {
                 "tags": [
@@ -343,11 +432,53 @@
             }
         },
         "/libraries/{id}": {
+            "get": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "Get a single library with its module presentation block",
+                "operationId": "get-library",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.libraryDTO"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            },
             "patch": {
                 "tags": [
                     "libraries"
                 ],
-                "summary": "Update a library's display name and/or description",
+                "summary": "Update a library's display name, description, and/or parser chain",
                 "operationId": "update-library",
                 "parameters": [
                     {
@@ -780,6 +911,40 @@
                 }
             }
         },
+        "api.ModulePresentation": {
+            "type": "object",
+            "properties": {
+                "identity_fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "parsers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.ParserBinding"
+                    }
+                }
+            }
+        },
+        "api.ParserBinding": {
+            "type": "object",
+            "properties": {
+                "capability": {
+                    "type": "string"
+                },
+                "display_fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "id": {
+                    "type": "string"
+                }
+            }
+        },
         "api.PluginHealth": {
             "type": "object",
             "properties": {
@@ -856,6 +1021,12 @@
                         "type": "integer"
                     }
                 },
+                "extra_parsers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "file_id": {
                     "type": "string"
                 },
@@ -879,6 +1050,28 @@
                 },
                 "status": {
                     "type": "string"
+                }
+            }
+        },
+        "api.itemParsersRequest": {
+            "type": "object",
+            "properties": {
+                "parsers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "api.itemParsersResponse": {
+            "type": "object",
+            "properties": {
+                "parsers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -923,6 +1116,9 @@
                 },
                 "id": {
                     "type": "integer"
+                },
+                "module": {
+                    "$ref": "#/definitions/api.ModulePresentation"
                 },
                 "module_id": {
                     "type": "string"
@@ -1126,6 +1322,12 @@
                 },
                 "module_id": {
                     "type": "string"
+                },
+                "parsers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "root_path": {
                     "type": "string"

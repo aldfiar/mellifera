@@ -61,10 +61,13 @@ func TestNew_RoleGating(t *testing.T) {
 		{"browse_list_libraries", http.MethodGet, "/api/v1/libraries", "", map[Role]int{RoleAdmin: http.StatusOK, RoleClient: http.StatusOK}},
 		{"browse_list_items", http.MethodGet, "/api/v1/items?library=1", "", map[Role]int{RoleAdmin: http.StatusOK, RoleClient: http.StatusOK}},
 		{"browse_get_item", http.MethodGet, "/api/v1/items/anything", "", map[Role]int{RoleAdmin: http.StatusNotFound, RoleClient: http.StatusNotFound}},
+		{"browse_get_library", http.MethodGet, "/api/v1/libraries/999", "", map[Role]int{RoleAdmin: http.StatusNotFound, RoleClient: http.StatusNotFound}},
 		// Admin group (admin only) — admin reaches (handler-level non-403),
 		// client denied (403 forbidden).
 		{"admin_create_library", http.MethodPost, "/api/v1/libraries", `{"module_id":"x","root_path":"/x","display_name":"X"}`, map[Role]int{RoleAdmin: http.StatusCreated, RoleClient: http.StatusForbidden}},
 		{"admin_scan_library", http.MethodPost, "/api/v1/libraries/1/scan", "", map[Role]int{RoleAdmin: http.StatusOK, RoleClient: http.StatusForbidden}},
+		{"admin_put_item_parsers", http.MethodPut, "/api/v1/items/itm_x/parsers", `{"parsers":[]}`, map[Role]int{RoleAdmin: http.StatusNotFound, RoleClient: http.StatusForbidden}},
+		{"admin_delete_item_parsers", http.MethodDelete, "/api/v1/items/itm_x/parsers", "", map[Role]int{RoleAdmin: http.StatusNotFound, RoleClient: http.StatusForbidden}},
 		{"admin_status", http.MethodGet, "/api/v1/admin/status", "", map[Role]int{RoleAdmin: http.StatusServiceUnavailable, RoleClient: http.StatusForbidden}},
 	}
 

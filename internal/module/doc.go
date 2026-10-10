@@ -14,14 +14,21 @@
 // # Public API (7 symbols — under 8)
 //
 //   - Registry: the in-memory cache of module configs.
-//   - Module: one module config (id, media_type, schema_version, scanner slot +
-//     ordered metadata_sources enrichment chain).
-//   - ScannerBinding: the (plugin_id, capability_id, options) slot scan uses.
+//   - Module: one module config (id, media_type, schema_version, identity_fields
+//     declaration, scanner slot + ordered metadata_sources enrichment chain).
+//   - ScannerBinding: the (plugin_id, capability_id, display_fields, options)
+//     slot scan uses.
 //   - MetadataSourceBinding: one enrichment-source slot (plugin, capability,
-//     priority, enabled, auth_mode, options) the enrich chain reads from config.
+//     priority, enabled, auth_mode, display_fields, options) the enrich chain
+//     reads from config.
 //   - Open: seeds the built-in TV module, loads enabled modules, returns *Registry.
 //   - Get: cache-only lookup of one module by id.
 //   - List: cache-only snapshot of all enabled modules.
+//
+// Registry also carries pure presentation accessors (methods are outside the
+// symbol budget): IdentityFields(moduleID) serves the element page's mandatory
+// identity block and DisplayFields(moduleID, pluginID) serves the metadata
+// footer's per-parser render order (element-pages D-1).
 //
 // # Invariants
 //
@@ -38,4 +45,8 @@
 //     models the metadata_sources config slot; the seeded TV module lists
 //     tv-parser at priority 1 so a fresh install runs the local parser (AC-1),
 //     with kinopoisk/tmdb retained as the designed Phase B sources.
+//   - INV5 (element-pages D-1, AC-4): presentation declarations (identity_fields,
+//     display_fields) and every media-type/field literal live ONLY in module
+//     seed config — the core carries them as opaque strings and never branches
+//     on them.
 package module

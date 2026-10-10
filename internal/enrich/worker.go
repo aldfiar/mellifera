@@ -271,17 +271,21 @@ type driveResult struct {
 }
 
 // driveSources runs every queueable source that still has pending work for the
-// item, in Priority order (serial within the item — D8). It mutates doc + status
-// and writes the ledger (RecordFailure on terminal, ClearFailure on success after
-// a prior row). Soft-fail: a source's terminal failure / unavailable / skipped
-// outcome never aborts the chain — only ctx.Done() does (INV-soft-fail).
+// item — the module chain in Priority order (serial within the item — D8), then
+// the element-attached extras in attachment order (element-pages D-4), all
+// through the identical predicate, retry, and ledger path. It mutates doc +
+// status and writes the ledger (RecordFailure on terminal, ClearFailure on
+// success after a prior row). Soft-fail: a source's terminal failure /
+// unavailable / skipped outcome never aborts the chain — only ctx.Done() does
+// (INV-soft-fail).
 func (q *Queue) driveSources(
-	ctx context.Context, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult,
+	ctx context.Context, mod module.Module, extras []module.MetadataSourceBinding,
+	doc map[string]any, base *scannerv1.IdentifyResult,
 	rowID string, idx failureIndex, status *string,
 ) driveResult {
 	res := driveResult{}
 	nowt := now()
-	for _, src := range orderedSources(mod.MetadataSources) {
+	for _, src := range append(orderedSources(mod.MetadataSources), extras...) {
 		if err := ctx.Err(); err != nil {
 			res.hardAbort = true
 			res.err = err
@@ -356,14 +360,15 @@ func (q *Queue) applyOutcome(
 	})
 }
 
-// allSourcesTerminal reports whether every queueable source for the item has
-// reached a terminal state: done (namespace present), in-ledger-cooldown, OR
+// allSourcesTerminal reports whether every queueable source for the item —
+// chain and element-attached extras alike (element-pages D-4) — has reached a
+// terminal state: done (namespace present), in-ledger-cooldown, OR
 // attempted-this-run-but-produced-no-work (an unavailable/skipped _stages entry).
 // When true, the item has no pending work and may settle to ready (arch §4.4). A
 // source with neither a namespace, a ledger row, nor a recorded attempt still has
 // genuine pending work and must not settle.
-func allSourcesTerminal(idx failureIndex, mod module.Module, doc map[string]any, rowID string, nowt time.Time) bool {
-	for _, src := range mod.MetadataSources {
+func allSourcesTerminal(idx failureIndex, mod module.Module, extras []module.MetadataSourceBinding, doc map[string]any, rowID string, nowt time.Time) bool {
+	for _, src := range append(mod.MetadataSources, extras...) {
 		if !queueable(src) {
 			continue
 		}

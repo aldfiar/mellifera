@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -370,6 +371,355 @@ func TestLibraryFolders(t *testing.T) {
 		}
 		if eb := decodeError(t, resp); eb.Error.Code != "bad_request" {
 			t.Fatalf("error code = %q, want bad_request", eb.Error.Code)
+		}
+	})
+}
+
+// TestLibraryPatchParsers covers PATCH /api/v1/libraries/{id} with an ordered
+// parsers array (element-pages 3.1/3.2): a present list is a FULL replacement
+// of the collection's parser chain (footer group order + enrichment queue
+// priority derive from the stored order), an ABSENT field changes nothing, and
+// the validation rejects with 400 — before anything is written — an empty
+// array, an unknown plugin id, and a plugin serving no parser capability.
+// Validation reuses the item-attachment validator over the same loaded-set
+// closure (anitomy attachable though unbound; the loaded set is the validation
+// set, not module config).
+func TestLibraryPatchParsers(t *testing.T) {
+	ctx := context.Background()
+
+	newChainAPI := func(t *testing.T) (http.Handler, *store.Store, int64) {
+		t.Helper()
+		st := openAPIStore(t)
+		id, err := st.CreateLibrary(ctx, "serial", "/media/chain", "Anime")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		h := New(Deps{
+			AdminToken:         adminToken,
+			Store:              st,
+			PluginCapabilities: fakePluginCapabilities(serialTestPlugins),
+		})
+		return h, st, id
+	}
+
+	chainOf := func(t *testing.T, st *store.Store, id int64) []string {
+		t.Helper()
+		chain, err := st.GetLibraryChain(ctx, id)
+		if err != nil {
+			t.Fatalf("GetLibraryChain: %v", err)
+		}
+		return chain
+	}
+
+	assertChain := func(t *testing.T, st *store.Store, id int64, want []string) {
+		t.Helper()
+		got := chainOf(t, st, id)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("stored chain = %q, want %q", got, want)
+		}
+	}
+
+	t.Run("replacement_persists_in_order", func(t *testing.T) {
+		h, st, id := newChainAPI(t)
+		body := `{"parsers":["frame-grabber","serial-parser","anitomy"]}`
+		resp := doRequest(t, h, http.MethodPatch, "/api/v1/libraries/"+itoa64(id), body, adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		assertChain(t, st, id, []string{"frame-grabber", "serial-parser", "anitomy"})
+
+		// A second PATCH with a shorter list REPLACES: no append residue.
+		body = `{"parsers":["serial-parser"]}`
+		resp = doRequest(t, h, http.MethodPatch, "/api/v1/libraries/"+itoa64(id), body, adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		assertChain(t, st, id, []string{"serial-parser"})
+	})
+
+	t.Run("absent_field_changes_nothing", func(t *testing.T) {
+		h, st, id := newChainAPI(t)
+		body := `{"parsers":["serial-parser","frame-grabber"]}`
+		resp := doRequest(t, h, http.MethodPatch, "/api/v1/libraries/"+itoa64(id), body, adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("seed PATCH status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		body = `{"display_name":"Renamed","description":"no parsers field"}`
+		resp = doRequest(t, h, http.MethodPatch, "/api/v1/libraries/"+itoa64(id), body, adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var lr libraryDTO
+		if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+			t.Fatalf("decode libraryDTO: %v", err)
+		}
+		if lr.DisplayName != "Renamed" {
+			t.Fatalf("display_name = %q, want the patched value", lr.DisplayName)
+		}
+		// The chain survives the parsers-less PATCH untouched.
+		assertChain(t, st, id, []string{"serial-parser", "frame-grabber"})
+	})
+
+	t.Run("empty_array_bad_request", func(t *testing.T) {
+		h, st, id := newChainAPI(t)
+		resp := doRequest(t, h, http.MethodPatch, "/api/v1/libraries/"+itoa64(id), `{"parsers":[]}`, adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+		}
+		if eb := decodeError(t, resp); eb.Error.Code != "bad_request" || eb.Error.Retryable {
+			t.Fatalf("error body = %+v, want bad_request/non-retryable", eb.Error)
+		}
+		// Rejected before any write: the chain is unchanged (still the seed
+		// default — no rows).
+		assertChain(t, st, id, nil)
+	})
+
+	t.Run("unknown_plugin_bad_request", func(t *testing.T) {
+		h, st, id := newChainAPI(t)
+		resp := doRequest(t, h, http.MethodPatch, "/api/v1/libraries/"+itoa64(id),
+			`{"parsers":["serial-parser","ghost-parser"]}`, adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+		}
+		if eb := decodeError(t, resp); eb.Error.Code != "bad_request" {
+			t.Fatalf("error code = %q, want bad_request", eb.Error.Code)
+		}
+		assertChain(t, st, id, nil)
+	})
+
+	t.Run("capability_mismatch_bad_request", func(t *testing.T) {
+		h, st, id := newChainAPI(t)
+		// not-a-parser IS loaded but serves neither parser capability type.
+		resp := doRequest(t, h, http.MethodPatch, "/api/v1/libraries/"+itoa64(id),
+			`{"parsers":["not-a-parser"]}`, adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+		}
+		if eb := decodeError(t, resp); eb.Error.Code != "bad_request" {
+			t.Fatalf("error code = %q, want bad_request", eb.Error.Code)
+		}
+		assertChain(t, st, id, nil)
+	})
+
+	t.Run("nil_closure_degrades_write_proceeds", func(t *testing.T) {
+		// Mirrors the item-attachment degrade: without the closure the handler
+		// has no loaded-plugin knowledge, so validation is skipped and the
+		// store write proceeds.
+		st := openAPIStore(t)
+		id, err := st.CreateLibrary(ctx, "serial", "/media/chain-nil", "Anime")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		h := New(Deps{AdminToken: adminToken, Store: st})
+		resp := doRequest(t, h, http.MethodPatch, "/api/v1/libraries/"+itoa64(id),
+			`{"parsers":["serial-parser"]}`, adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		assertChain(t, st, id, []string{"serial-parser"})
+	})
+
+	t.Run("unknown_library_not_found", func(t *testing.T) {
+		h, _, _ := newChainAPI(t)
+		resp := doRequest(t, h, http.MethodPatch, "/api/v1/libraries/99999",
+			`{"parsers":["serial-parser"]}`, adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+		}
+		if eb := decodeError(t, resp); eb.Error.Code != "not_found" {
+			t.Fatalf("error code = %q, want not_found", eb.Error.Code)
+		}
+	})
+}
+
+// TestLibraryDetailPresentation covers GET /api/v1/libraries/{id}
+// (element-pages 3.4): the row plus the additive module presentation block —
+// identity_fields and the ordered parser bindings with display_fields, served
+// verbatim from the Deps.ModulePresentation closure (module config is the
+// render-order source; api never restates field names). The block is ADDITIVE:
+// a nil closure serves the row without it, and the list/create/patch surfaces
+// never carry it.
+func TestLibraryDetailPresentation(t *testing.T) {
+	ctx := context.Background()
+
+	// fakeModulePresentation stands in for the cmd/mellifera closure over
+	// module.Registry — the api contract is the api-local shape, not the
+	// registry type (INV4).
+	fakeModulePresentation := func(mp ModulePresentation) func(context.Context, string) (ModulePresentation, error) {
+		return func(context.Context, string) (ModulePresentation, error) {
+			return mp, nil
+		}
+	}
+	presentation := ModulePresentation{
+		IdentityFields: []string{"title", "year"},
+		Parsers: []ParserBinding{
+			{ID: "tv-parser", Capability: "default", DisplayFields: []string{"title", "year", "resolution", "parsed_from"}},
+			{ID: "kinopoisk", Capability: "", DisplayFields: nil},
+		},
+	}
+
+	t.Run("carries_module_presentation_block", func(t *testing.T) {
+		st := openAPIStore(t)
+		id, err := st.CreateLibrary(ctx, "tv", "/media/present", "TV")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		h := New(Deps{AdminToken: adminToken, Store: st, ModulePresentation: fakeModulePresentation(presentation)})
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/libraries/"+itoa64(id), "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var lr libraryDTO
+		if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+			t.Fatalf("decode libraryDTO: %v", err)
+		}
+		if lr.Module == nil {
+			t.Fatalf("module block missing, want identity_fields %v + %d parsers", presentation.IdentityFields, len(presentation.Parsers))
+		}
+		if got := strings.Join(lr.Module.IdentityFields, ","); got != "title,year" {
+			t.Fatalf("identity_fields = %q, want %q", got, "title,year")
+		}
+		if len(lr.Module.Parsers) != 2 {
+			t.Fatalf("parsers = %+v, want 2 bindings in chain order", lr.Module.Parsers)
+		}
+		if lr.Module.Parsers[0].ID != "tv-parser" || lr.Module.Parsers[0].Capability != "default" {
+			t.Fatalf("parsers[0] = %+v, want tv-parser (capability default)", lr.Module.Parsers[0])
+		}
+		if got := strings.Join(lr.Module.Parsers[0].DisplayFields, ","); got != "title,year,resolution,parsed_from" {
+			t.Fatalf("display_fields = %q, want the declared order", got)
+		}
+		if lr.Module.Parsers[1].ID != "kinopoisk" || lr.Module.Parsers[1].Capability != "" {
+			t.Fatalf("parsers[1] = %+v, want kinopoisk with capability omitted", lr.Module.Parsers[1])
+		}
+	})
+
+	t.Run("nil_closure_omits_block_row_still_served", func(t *testing.T) {
+		st := openAPIStore(t)
+		id, err := st.CreateLibrary(ctx, "tv", "/media/omitted", "TV")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		h := New(Deps{AdminToken: adminToken, Store: st})
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/libraries/"+itoa64(id), "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var lr libraryDTO
+		if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+			t.Fatalf("decode libraryDTO: %v", err)
+		}
+		if lr.Module != nil {
+			t.Fatalf("module block = %+v, want absent (additive block, nil closure degrades)", lr.Module)
+		}
+		if lr.RootPath != "/media/omitted" {
+			t.Fatalf("root_path = %q, want the persisted row", lr.RootPath)
+		}
+	})
+
+	t.Run("unknown_id_not_found", func(t *testing.T) {
+		st := openAPIStore(t)
+		h := New(Deps{AdminToken: adminToken, Store: st, ModulePresentation: fakeModulePresentation(presentation)})
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/libraries/99999", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+		}
+		if eb := decodeError(t, resp); eb.Error.Code != "not_found" {
+			t.Fatalf("error code = %q, want not_found", eb.Error.Code)
+		}
+	})
+
+	t.Run("non_integer_id_bad_request", func(t *testing.T) {
+		st := openAPIStore(t)
+		h := New(Deps{AdminToken: adminToken, Store: st})
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/libraries/abc", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+		}
+		if eb := decodeError(t, resp); eb.Error.Code != "bad_request" {
+			t.Fatalf("error code = %q, want bad_request", eb.Error.Code)
+		}
+	})
+}
+
+// TestLibraryChainOrderServed covers the consumer half of the stored
+// per-library chain (element-pages 3.1: the parser order defines the footer
+// group order): GET /libraries/{id} overlays store.GetLibraryChain onto the
+// ModulePresentation closure's config order, so a PATCHed reorder is what the
+// SPA footer renders. Chain-named parsers come first in chain order;
+// config-bound parsers the chain omits retain their relative config order
+// after them; an absent chain serves config order (the module seed default).
+func TestLibraryChainOrderServed(t *testing.T) {
+	ctx := context.Background()
+	presentation := ModulePresentation{
+		IdentityFields: []string{"title", "year"},
+		Parsers: []ParserBinding{
+			{ID: "tv-parser", Capability: "default", DisplayFields: []string{"title"}},
+			{ID: "kinopoisk", DisplayFields: []string{"rating"}},
+			{ID: "tmdb", DisplayFields: []string{"overview"}},
+		},
+	}
+	fakeModulePresentation := func(mp ModulePresentation) func(context.Context, string) (ModulePresentation, error) {
+		return func(context.Context, string) (ModulePresentation, error) {
+			return mp, nil
+		}
+	}
+	parserOrder := func(t *testing.T, h http.Handler, id int64) string {
+		t.Helper()
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/libraries/"+itoa64(id), "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var lr libraryDTO
+		if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+			t.Fatalf("decode libraryDTO: %v", err)
+		}
+		if lr.Module == nil {
+			t.Fatal("module block missing, want the presentation block")
+		}
+		ids := make([]string, 0, len(lr.Module.Parsers))
+		for _, p := range lr.Module.Parsers {
+			ids = append(ids, p.ID)
+		}
+		return strings.Join(ids, ",")
+	}
+
+	t.Run("patched_chain_reorders_served_parsers", func(t *testing.T) {
+		st := openAPIStore(t)
+		id, err := st.CreateLibrary(ctx, "tv", "/media/chain-order", "TV")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		h := New(Deps{AdminToken: adminToken, Store: st, ModulePresentation: fakeModulePresentation(presentation)})
+
+		// Absent chain: config order (the seed default)...
+		if got := parserOrder(t, h, id); got != "tv-parser,kinopoisk,tmdb" {
+			t.Fatalf("absent-chain parsers = %q, want %q (config order)", got, "tv-parser,kinopoisk,tmdb")
+		}
+
+		// ...then a PATCHed reorder: chain ids first in chain order, the
+		// unchained config parser after them.
+		patch := doRequest(t, h, http.MethodPatch, "/api/v1/libraries/"+itoa64(id),
+			`{"parsers":["tmdb","tv-parser"]}`, adminToken)
+		defer patch.Body.Close()
+		if patch.StatusCode != http.StatusOK {
+			t.Fatalf("PATCH status = %d, want %d", patch.StatusCode, http.StatusOK)
+		}
+		if got := parserOrder(t, h, id); got != "tmdb,tv-parser,kinopoisk" {
+			t.Fatalf("patched-chain parsers = %q, want %q (chain order, unchained last)", got, "tmdb,tv-parser,kinopoisk")
 		}
 	})
 }

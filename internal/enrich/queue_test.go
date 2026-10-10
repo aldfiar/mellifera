@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -554,5 +555,52 @@ func TestTerminalCooldown(t *testing.T) {
 				t.Fatalf("cooldown = %v, want %v", cool, tc.wantCool)
 			}
 		})
+	}
+}
+
+// TestDerivationChainPriority covers the consumer half of the stored
+// per-library parser chain (element-pages 3.1: the parser order defines the
+// enrichment queue priority for collection-common sources). With no chain the
+// derivation emits the module's queueable sources in config order (the seed
+// default); after a SetLibraryChain reorder the same row's tasks emit in chain
+// order. D-Q1 holds either way — the CLIENT source stays out of the queue
+// whatever its chain position.
+func TestDerivationChainPriority(t *testing.T) {
+	ctx := context.Background()
+	s, reg := queueTestStore(t)
+	libID, err := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	putItem(t, s, "i_chain", libID, statusPending, baseDoc("Show/S01E09.mkv"))
+	q := NewQueue(Deps{Store: s, Modules: reg}, QueueConfig{})
+
+	rowTasks := func(t *testing.T) string {
+		t.Helper()
+		tasks, err := q.deriveLibrary(ctx, libID)
+		if err != nil {
+			t.Fatalf("deriveLibrary: %v", err)
+		}
+		ids := make([]string, 0, 2)
+		for _, tk := range tasks {
+			if tk.rowID == "i_chain" {
+				ids = append(ids, tk.pluginID)
+			}
+		}
+		return strings.Join(ids, ",")
+	}
+
+	// Absent chain: config order (tv-parser, kinopoisk, tmdb) with the D-Q1
+	// CLIENT exclusion -> [tv-parser tmdb].
+	if got := rowTasks(t); got != "tv-parser,tmdb" {
+		t.Fatalf("absent-chain derivation = %q, want %q (config order)", got, "tv-parser,tmdb")
+	}
+
+	// Reorder the stored chain: derivation priority follows it.
+	if err := s.SetLibraryChain(ctx, libID, []string{"tmdb", "tv-parser"}); err != nil {
+		t.Fatalf("SetLibraryChain: %v", err)
+	}
+	if got := rowTasks(t); got != "tmdb,tv-parser" {
+		t.Fatalf("chain-ordered derivation = %q, want %q (chain order)", got, "tmdb,tv-parser")
 	}
 }

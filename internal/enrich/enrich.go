@@ -69,15 +69,24 @@ type Result struct {
 // helpers (enrichDoc, runSource/runSourceRetryable, applyContribution,
 // orderedSources, nextState) but adds per-source retry + the ledger. Enrich is
 // preserved (deprecate-don't-delete, AC-3) for sync use and tests — its
-// signature and behavior are unchanged.
-func Enrich(ctx context.Context, deps Deps, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult) (map[string]any, string, Result, error) {
-	return enrichDoc(ctx, deps.Plugins.MetadataSource, mod, doc, base)
+// original five-argument behavior is unchanged.
+//
+// extraPlugins (element-pages D-4) are the item's element-attached plugin ids
+// (the item_parsers attachment order). They run AFTER the chain, in attachment
+// order, through the identical runSource path — the standard
+// namespace/_provenance/_stages writes; element attachment changes WHO runs,
+// not how a source writes. A CLIENT-locked extra is honored here (the sync
+// Mode-B run is allowed what the async queue excludes under D-Q1).
+func Enrich(ctx context.Context, deps Deps, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult, extraPlugins ...string) (map[string]any, string, Result, error) {
+	return enrichDoc(ctx, deps.Plugins.MetadataSource, mod, doc, base, runExtras(mod, extraPlugins))
 }
 
 // enrichDoc is the orchestrator body, factored out so the test can inject a fake
 // metadata resolver (the production *plugin.Manager cannot be faked from outside
-// the plugin package — mirror of scan.runScan/scannerResolver).
-func enrichDoc(ctx context.Context, resolve metadataResolver, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult) (map[string]any, string, Result, error) {
+// the plugin package — mirror of scan.runScan/scannerResolver). extras are the
+// resolved element-attached bindings (runExtras), run after the chain in
+// attachment order through the same per-source path.
+func enrichDoc(ctx context.Context, resolve metadataResolver, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult, extras []module.MetadataSourceBinding) (map[string]any, string, Result, error) {
 	res := Result{}
 	if doc == nil {
 		doc = map[string]any{}
@@ -88,7 +97,7 @@ func enrichDoc(ctx context.Context, resolve metadataResolver, mod module.Module,
 	status := statusNew
 	begun := false
 	succeeded, failed := 0, 0
-	for _, src := range orderedSources(mod.MetadataSources) {
+	for _, src := range append(orderedSources(mod.MetadataSources), extras...) {
 		if err := ctx.Err(); err != nil {
 			return doc, statusFailed, res, hardError(doc, err)
 		}
@@ -129,6 +138,63 @@ func orderedSources(bindings []module.MetadataSourceBinding) []module.MetadataSo
 	out := make([]module.MetadataSourceBinding, len(bindings))
 	copy(out, bindings)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Priority < out[j].Priority })
+	return out
+}
+
+// defaultExtraCapability is the capability id an element-attached plugin is
+// resolved under when the module chain does not declare it — the same id every
+// seeded metadata_source binding carries.
+const defaultExtraCapability = "default"
+
+// resolveExtraSources maps element-attached plugin ids (the item_parsers
+// attachment order, element-pages D-3/D-4) onto source bindings. A plugin the
+// module chain declares keeps its DECLARED binding — its AuthMode is the D-Q1
+// truth (a CLIENT-locked attachment must stay unqueueable in the async queue).
+// An undeclared plugin is a local metadata source: enabled, default capability,
+// empty auth_mode (the anitomy case — D-4). Attachment order is preserved; a
+// chain-declared id is kept too, so callers that DERIVE work see the same D-Q1
+// facts the chain derivation saw.
+func resolveExtraSources(mod module.Module, attached []string) []module.MetadataSourceBinding {
+	if len(attached) == 0 {
+		return nil
+	}
+	declared := make(map[string]module.MetadataSourceBinding, len(mod.MetadataSources))
+	for _, src := range mod.MetadataSources {
+		declared[src.PluginID] = src
+	}
+	out := make([]module.MetadataSourceBinding, 0, len(attached))
+	for _, id := range attached {
+		if src, ok := declared[id]; ok {
+			out = append(out, src)
+			continue
+		}
+		out = append(out, module.MetadataSourceBinding{
+			PluginID:     id,
+			CapabilityID: defaultExtraCapability,
+			Enabled:      true,
+		})
+	}
+	return out
+}
+
+// runExtras narrows resolveExtraSources to the bindings a RUN may execute: a
+// chain-declared plugin is dropped because the chain already drives it (the
+// queue dispatch and the sync Enrich must not run a source twice). Derivation
+// keeps the full resolution instead — it must observe a declared CLIENT
+// AuthMode to hold the D-Q1 lock on attached chain sources.
+func runExtras(mod module.Module, attached []string) []module.MetadataSourceBinding {
+	resolved := resolveExtraSources(mod, attached)
+	chain := make(map[string]struct{}, len(mod.MetadataSources))
+	for _, src := range mod.MetadataSources {
+		chain[src.PluginID] = struct{}{}
+	}
+	out := resolved[:0]
+	for _, src := range resolved {
+		if _, ok := chain[src.PluginID]; ok {
+			continue
+		}
+		out = append(out, src)
+	}
 	return out
 }
 

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -48,12 +49,17 @@ type createLibraryRequest struct {
 // carry presence: a nil field leaves the column unchanged; RootPath/ModuleID
 // are read only to REJECT identity changes with 400 (web-ui-phase-3 D2).
 // StreamsEnabled is the packaged-playback packaging gate (pass-through only).
+// Parsers (element-pages 3.1) is the ordered parser-chain replacement: a nil
+// pointer (absent field) changes nothing, a PRESENT list replaces the chain —
+// an explicitly empty list is 400 (the chain edit is a reorder, never a clear;
+// the module seed's chain is the default a library starts on).
 type updateLibraryRequest struct {
-	DisplayName    *string `json:"display_name"`
-	Description    *string `json:"description"`
-	StreamsEnabled *bool   `json:"streams_enabled"`
-	RootPath       *string `json:"root_path"`
-	ModuleID       *string `json:"module_id"`
+	DisplayName    *string   `json:"display_name"`
+	Description    *string   `json:"description"`
+	StreamsEnabled *bool     `json:"streams_enabled"`
+	RootPath       *string   `json:"root_path"`
+	ModuleID       *string   `json:"module_id"`
+	Parsers        *[]string `json:"parsers"`
 }
 
 // libraryDTO is the ONE wire shape for a library (no store.Library leaked) —
@@ -61,14 +67,42 @@ type updateLibraryRequest struct {
 // responses (mirrors the itemResponse-reuses-itemDTO pattern: one type per wire
 // noun). CreatedAt is intentionally omitted, mirroring itemDTO time-omission
 // (the document is the source of truth; carrying time.Time here would force a
-// disallowed time import) — INV4.
+// disallowed time import) — INV4. Module is the additive presentation block
+// (element-pages 3.4), present only on GET /libraries/{id} and only when the
+// Deps.ModulePresentation closure is wired — the list/create/patch responses
+// never carry it.
 type libraryDTO struct {
-	ID             int64  `json:"id"`
-	ModuleID       string `json:"module_id"`
-	RootPath       string `json:"root_path"`
-	DisplayName    string `json:"display_name"`
-	Description    string `json:"description"`
-	StreamsEnabled bool   `json:"streams_enabled"`
+	ID             int64               `json:"id"`
+	ModuleID       string              `json:"module_id"`
+	RootPath       string              `json:"root_path"`
+	DisplayName    string              `json:"display_name"`
+	Description    string              `json:"description"`
+	StreamsEnabled bool                `json:"streams_enabled"`
+	Module         *ModulePresentation `json:"module,omitempty"`
+}
+
+// ParserBinding is one entry of the module presentation block's ordered parser
+// chain (element-pages 3.4): the binding's plugin id, its capability id as
+// declared by the module config (omitted when the binding declares none), and
+// the ordered display_fields declaration — the footer render order for this
+// parser's namespace (config data, never core logic — element-pages D-1).
+type ParserBinding struct {
+	ID            string   `json:"id"`
+	Capability    string   `json:"capability,omitempty"`
+	DisplayFields []string `json:"display_fields"`
+}
+
+// ModulePresentation is the additive module block on GET /libraries/{id}
+// (element-pages 3.4): the module's mandatory identity_fields (the element
+// page's identity badges) plus the collection's ordered parser chain. It is
+// ALSO the Deps.ModulePresentation seam-input shape (like PluginHealth for
+// Status): the closure is built in cmd/mellifera over module.Registry, so the
+// type is exported and its fields carry the JSON tags — the handler embeds the
+// closure's value as-is (INV4: no module.Registry type crosses into api; this
+// is a plain api-local struct).
+type ModulePresentation struct {
+	IdentityFields []string        `json:"identity_fields"`
+	Parsers        []ParserBinding `json:"parsers"`
 }
 
 // librariesResponse is the wire shape for GET /libraries.
@@ -225,7 +259,10 @@ type statusResponse struct {
 // itemDTO is the wire shape for one item. store.Item is converted here at the
 // boundary (INV4): nothing in store.Item is serialized directly. Timestamps are
 // intentionally omitted (the document is the source of truth for item state and
-// carrying time.Time here would force a disallowed time import).
+// carrying time.Time here would force a disallowed time import). ExtraParsers
+// is the additive element-only attachment list (element-pages 3.3) — populated
+// ONLY by the detail handler (getItem); the listings stay N+1-free and the
+// field is absent until a first attachment.
 type itemDTO struct {
 	ID            string          `json:"id"`
 	ModuleID      string          `json:"module_id"`
@@ -236,6 +273,7 @@ type itemDTO struct {
 	Document      json.RawMessage `json:"document"`
 	SchemaVersion int             `json:"schema_version"`
 	Status        string          `json:"status"`
+	ExtraParsers  []string        `json:"extra_parsers,omitempty"`
 }
 
 // createLibrary: parse createLibraryRequest → store.CreateLibrary → write
@@ -270,14 +308,21 @@ func (a *app) createLibrary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// patchLibrary: parse {id} + updateLibraryRequest → store.UpdateLibrary →
-// write libraryDTO. One domain call. Presence of root_path/module_id is
-// rejected with 400 BEFORE the store call (identity is (module_id, root_path);
-// moving a root re-identifies every item — D2). A nil display_name/description
-// leaves the column unchanged; a missing id surfaces from store as a wrapped
-// sql.ErrNoRows → 404 not_found. Handlers do not retry or auto-correct.
+// patchLibrary: parse {id} + updateLibraryRequest → store.UpdateLibrary (+
+// store.SetLibraryChain when the body carries parsers) → write libraryDTO. One
+// domain call per store surface. Presence of root_path/module_id is rejected
+// with 400 BEFORE the store call (identity is (module_id, root_path); moving a
+// root re-identifies every item — D2). A present parsers array is validated
+// BEFORE any write (element-pages 3.1): an explicitly empty list and an
+// unknown or non-parser plugin id are 400 bad_request with the stored chain
+// unchanged (the validation is pure — nothing is written to reject). A nil
+// parsers field changes nothing; a present list is a FULL replacement whose
+// order defines the footer group order and the enrichment queue priority.
+// A nil display_name/description leaves the column unchanged; a missing id
+// surfaces from store as a wrapped sql.ErrNoRows → 404 not_found. Handlers do
+// not retry or auto-correct.
 //
-// @Summary      Update a library's display name and/or description
+// @Summary      Update a library's display name, description, and/or parser chain
 // @Tags         libraries
 // @ID           update-library
 // @Router       /libraries/{id} [patch]
@@ -303,6 +348,21 @@ func (a *app) patchLibrary(w http.ResponseWriter, r *http.Request) {
 			"root_path and module_id are immutable (moving a root re-identifies all items)", false)
 		return
 	}
+	// Chain validation (element-pages 3.1): pure checks, run BEFORE either
+	// store call so a rejected body leaves row and chain untouched. Empty is
+	// 400 here — unlike item attachments, a library chain is never cleared
+	// through this endpoint (the module seed chain is the floor).
+	if req.Parsers != nil {
+		if len(*req.Parsers) == 0 {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"parsers must be a non-empty ordered plugin id list (omit the field to keep the current chain)", false)
+			return
+		}
+		if code, msg := a.validateParsers(r, *req.Parsers); code != 0 {
+			writeError(w, code, "bad_request", msg, false)
+			return
+		}
+	}
 	lib, err := a.deps.Store.UpdateLibrary(r.Context(), id, req.DisplayName, req.Description, req.StreamsEnabled)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -312,7 +372,107 @@ func (a *app) patchLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
+	if req.Parsers != nil {
+		if err := a.deps.Store.SetLibraryChain(r.Context(), id, *req.Parsers); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, toLibraryDTO(lib))
+}
+
+// getLibrary: parse {id} → store.GetLibrary → write libraryDTO plus the
+// additive module presentation block (element-pages 3.4): identity_fields and
+// the ordered parser bindings with display_fields — the element page's
+// chain/identity source, served from module config via the
+// Deps.ModulePresentation closure (INV2/INV4: module.Registry never crosses
+// into api; the closure returns this api-local shape) with the stored
+// per-library chain (store.GetLibraryChain) overlaid as the footer group
+// order (element-pages 3.1; absent/empty chain = config order). The block is
+// additive: a nil closure serves the row without it (the SPA degrades to a
+// footer without the presentation data — the block is absent, never an empty
+// stub). A missing row surfaces from store as a wrapped sql.ErrNoRows → 404
+// not_found; a closure or chain-read error is a real failure → 500.
+//
+// @Summary      Get a single library with its module presentation block
+// @Tags         libraries
+// @ID           get-library
+// @Router       /libraries/{id} [get]
+// @Param        id path int true "library id"
+// @Success      200 {object} libraryDTO
+// @Failure      400 {object} errorBody
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) getLibrary(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "library id must be an integer", false)
+		return
+	}
+	lib, err := a.deps.Store.GetLibrary(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dto := toLibraryDTO(lib)
+	if a.deps.ModulePresentation != nil {
+		mp, err := a.deps.ModulePresentation(r.Context(), lib.ModuleID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		// Chain overlay (element-pages 3.1): the stored per-library chain is the
+		// footer group order, so the served parser order overlays it onto the
+		// closure's config order. Absent/empty chain = config order (the seed
+		// default). A chain read error is a real failure → 500, like any other
+		// store read here.
+		chain, err := a.deps.Store.GetLibraryChain(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		mp.Parsers = orderParserBindings(mp.Parsers, chain)
+		dto.Module = &mp
+	}
+	writeJSON(w, http.StatusOK, dto)
+}
+
+// orderParserBindings overlays a library's stored parser chain onto the module
+// config order (element-pages 3.1: the parser order defines the footer group
+// order). Bindings the chain names come first, in chain position order;
+// config-bound bindings the chain does not name retain their relative config
+// order after them. An empty chain (never set, cleared) is a no-op — the
+// module seed's chain (config order) is the default. The input slice is never
+// mutated.
+func orderParserBindings(bindings []ParserBinding, chain []string) []ParserBinding {
+	if len(bindings) == 0 || len(chain) == 0 {
+		return bindings
+	}
+	pos := make(map[string]int, len(chain))
+	for i, id := range chain {
+		if _, dup := pos[id]; !dup {
+			pos[id] = i
+		}
+	}
+	chained := make([]ParserBinding, 0, len(bindings))
+	rest := make([]ParserBinding, 0, len(bindings))
+	for _, b := range bindings {
+		if _, ok := pos[b.ID]; ok {
+			chained = append(chained, b)
+		} else {
+			rest = append(rest, b)
+		}
+	}
+	sort.SliceStable(chained, func(i, j int) bool { return pos[chained[i].ID] < pos[chained[j].ID] })
+	return append(chained, rest...)
 }
 
 // librarySummary: parse {id} → store.LibrarySummary → write
@@ -572,8 +732,11 @@ func (a *app) listLibraries(w http.ResponseWriter, r *http.Request) {
 }
 
 // getItem: parse {id} → store.GetItem → write itemResponse. One domain call
-// (pure delegation, INV1). The id is a string UUID (store.Item.ID), so it is
-// NOT integer-parsed — chi.URLParam returns the raw string. A missing row
+// plus the additive attachment read (element-pages 3.3): the detail view also
+// carries extra_parsers (the item's element-only parser ids in attachment
+// order) so the element page renders the element-only footer groups without a
+// second fetch. The id is a string UUID (store.Item.ID), so it is NOT
+// integer-parsed — chi.URLParam returns the raw string. A missing row
 // surfaces from store as a wrapped sql.ErrNoRows → 404 not_found
 // (INV-full-document: itemDTO.Document carries the full §3.1 document opaque).
 //
@@ -596,7 +759,14 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusOK, itemResponse{Item: toItemDTO(it)})
+	dto := toItemDTO(it)
+	extras, err := a.deps.Store.ListItemParsers(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dto.ExtraParsers = extras
+	writeJSON(w, http.StatusOK, itemResponse{Item: dto})
 }
 
 // mediaVariantThumb is the only media variant served today: the frame-grabber

@@ -147,6 +147,77 @@ ORDER BY prefix`, id)
 	return out, nil
 }
 
+// SetLibraryChain replaces libraryID's parser chain with pluginIDs, in order:
+// position 0..n-1 follows the slice (parser-display). It is FULL replacement —
+// chain entries absent from pluginIDs are removed, and an empty (or nil) slice
+// clears the chain entirely. The library must exist: a missing libraries row
+// yields a wrapped sql.ErrNoRows (the api layer maps it to 404) and NOTHING is
+// written. The delete+insert pair runs in one transaction, so a failed write
+// can never leave the library half-chained.
+//
+// The chain is durable per-library state — the footer group order and the
+// enrichment queue priority derive from it; the module seed's chain being the
+// default when absent is the api layer's concern, not store's.
+func (s *Store) SetLibraryChain(ctx context.Context, libraryID int64, pluginIDs []string) error {
+	if err := libraryExists(ctx, s.db, libraryID); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: set library chain %d (begin): %w", libraryID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM library_parsers WHERE library_id = ?", libraryID); err != nil {
+		return fmt.Errorf("store: set library chain %d (clear): %w", libraryID, err)
+	}
+	for pos, pluginID := range pluginIDs {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO library_parsers (library_id, plugin_id, position)
+VALUES (?, ?, ?)
+ON CONFLICT(library_id, plugin_id) DO UPDATE SET
+  position = excluded.position`,
+			libraryID, pluginID, pos,
+		); err != nil {
+			return fmt.Errorf("store: set library chain %d/%s: %w", libraryID, pluginID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: set library chain %d (commit): %w", libraryID, err)
+	}
+	return nil
+}
+
+// GetLibraryChain returns libraryID's parser chain in position order — the
+// footer group order and the enrichment queue priority input (parser-display).
+// The read JOINs to the library's row, so rows whose library no longer exists
+// read as absent — the orphan-tolerant read (the item_parsers pattern). A
+// library with no chain (never set, or cleared) also lists empty.
+func (s *Store) GetLibraryChain(ctx context.Context, libraryID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT p.plugin_id
+FROM library_parsers p
+JOIN libraries l ON l.id = p.library_id
+WHERE p.library_id = ?
+ORDER BY p.position, p.plugin_id`, libraryID)
+	if err != nil {
+		return nil, fmt.Errorf("store: get library chain %d: %w", libraryID, err)
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var pluginID string
+		if err := rows.Scan(&pluginID); err != nil {
+			return nil, fmt.Errorf("store: get library chain scan: %w", err)
+		}
+		out = append(out, pluginID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: get library chain: %w", err)
+	}
+	return out, nil
+}
+
 // libraryExists maps a missing libraries row to the same wrapped sql.ErrNoRows
 // the other library reads yield, so every caller's 404 path is one errors.Is
 // check.

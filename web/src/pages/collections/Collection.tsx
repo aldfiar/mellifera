@@ -26,6 +26,7 @@ import type { ItemDocument } from "@/lib/document";
 import { viewEntries } from "@/lib/document";
 import { cn } from "@/lib/utils";
 import { formatPosition } from "@/pages/home/Home";
+import type { BrowseHandoff } from "@/pages/browse/ItemDetail";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 
 // Collection — the per-collection page at /collections/:id (web-ui-phase-3
@@ -204,6 +205,24 @@ function dotClass(moduleId: string): string {
   }
 }
 
+// browseState — the position handoff every grid surface passes into the item
+// detail (element-pages 6.2): the loaded view's ids in served order, the
+// clicked tile/card/row's position (index) within that view, and the
+// collection to Esc back to. The detail page browses (prev/next, wrap-around)
+// within exactly this view — the clicked position opens the clicked item, not
+// the first one.
+function browseState(
+  ids: string[],
+  position: number,
+  libraryId: number,
+): BrowseHandoff {
+  return {
+    items: ids,
+    position,
+    backTo: `/collections/${String(libraryId)}`,
+  };
+}
+
 export default function Collection(): ReactElement {
   const { id } = useParams<{ id: string }>();
   const libraryId = Number(id);
@@ -380,9 +399,16 @@ function MoviesBody(props: { libraryId: number }): ReactElement {
   return (
     <section className="flex flex-col gap-3">
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {items.map((item) => (
+        {items.map((item, index) => (
           <li key={item.id}>
-            <MovieCard item={item} />
+            <MovieCard
+              item={item}
+              handoff={browseState(
+                items.map((i) => i.id),
+                index,
+                props.libraryId,
+              )}
+            />
           </li>
         ))}
       </ul>
@@ -397,8 +423,8 @@ function MoviesBody(props: { libraryId: number }): ReactElement {
 // duration, raw filename, deep-link into the item detail. A document without
 // the fact renders exactly the text card — never a broken-image state (D6:
 // the thumb variant is requested only when the fact exists).
-function MovieCard(props: { item: ItemDTO }): ReactElement {
-  const { item } = props;
+function MovieCard(props: { item: ItemDTO; handoff: BrowseHandoff }): ReactElement {
+  const { item, handoff } = props;
   const duration = durationSeconds(item.document);
   const hasThumb = hasFrameGrabberThumb(item.document);
   const thumb = useItemMedia(hasThumb ? ENDPOINTS.itemMedia(item.id, "thumb") : null);
@@ -406,6 +432,7 @@ function MovieCard(props: { item: ItemDTO }): ReactElement {
   return (
     <Link
       to={`/items/${item.id}`}
+      state={handoff}
       className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
     >
       {hasThumb ? (
@@ -513,9 +540,16 @@ function PhotosBody(props: { libraryId: number }): ReactElement {
         <EmptyState message="No items in this collection." />
       ) : (
         <ul className="masonry">
-          {visible.map((item) => (
+          {visible.map((item, index) => (
             <li key={item.id}>
-              <PhotoTile item={item} />
+              <PhotoTile
+                item={item}
+                handoff={browseState(
+                  visible.map((i) => i.id),
+                  index,
+                  props.libraryId,
+                )}
+              />
             </li>
           ))}
         </ul>
@@ -558,8 +592,8 @@ function FolderChip(props: {
 // keeps the pure placeholder — never a broken-image state (D6: the thumb
 // variant is requested only when the fact exists). Deep-links into
 // /items/{id}.
-function PhotoTile(props: { item: ItemDTO }): ReactElement {
-  const { item } = props;
+function PhotoTile(props: { item: ItemDTO; handoff: BrowseHandoff }): ReactElement {
+  const { item, handoff } = props;
   const ratio = aspectRatio(item.document);
   const date = captureDate(item.document);
   const hasThumb = hasFrameGrabberThumb(item.document);
@@ -572,6 +606,7 @@ function PhotoTile(props: { item: ItemDTO }): ReactElement {
   return (
     <Link
       to={`/items/${item.id}`}
+      state={handoff}
       aria-label={`Open ${fileName(item.relative_path)}`}
       className="ptile"
     >
@@ -607,6 +642,7 @@ function SerialsBody(props: { libraryId: number }): ReactElement {
     return (
       <EpisodesView
         seriesId={seriesId}
+        libraryId={props.libraryId}
         onBack={() => setSearchParams({})}
       />
     );
@@ -727,6 +763,7 @@ function SeriesCard(props: { sr: SeriesDTO }): ReactElement {
 // deep-linking into /items/{id}), fetched once per series.
 function EpisodesView(props: {
   seriesId: string;
+  libraryId: number;
   onBack: () => void;
 }): ReactElement {
   const episodes = useSeriesEpisodes(props.seriesId);
@@ -757,9 +794,16 @@ function EpisodesView(props: {
         <EmptyState message="No episodes found for this series." />
       ) : (
         <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {items.map((item) => (
+          {items.map((item, index) => (
             <li key={item.id}>
-              <MovieCard item={item} />
+              <MovieCard
+                item={item}
+                handoff={browseState(
+                  items.map((i) => i.id),
+                  index,
+                  props.libraryId,
+                )}
+              />
             </li>
           ))}
         </ul>
@@ -790,10 +834,15 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
   return (
     <section className="flex flex-col gap-3">
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {items.map((item) => (
+        {items.map((item, index) => (
           <li key={item.id}>
             <Link
               to={`/items/${item.id}`}
+              state={browseState(
+                items.map((i) => i.id),
+                index,
+                props.libraryId,
+              )}
               className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
             >
               <span className="text-sm font-medium">{viewTitle(item.document)}</span>

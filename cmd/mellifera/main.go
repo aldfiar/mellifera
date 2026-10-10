@@ -92,55 +92,67 @@ func main() {
 	// sites and the status closure cannot diverge. A Phase-2+ Manager.List()
 	// would replace this literal (INV-known-plugin-set).
 	pluginIDs := []string{"base-scanner", "serial-scanner", "tv-parser", "image-enricher", "serial-parser", "frame-grabber"}
-	fatalOn(mgr.Load("base-scanner", cfg.baseScannerPath, []sdk.Capability{
+	// loadedCaps is each loaded plugin's declared capability TYPES, captured at
+	// its Load site — the Deps.PluginCapabilities closure's validation set
+	// (element-pages 3.1/3.3). Derived from the same []sdk.Capability literals
+	// the Manager.Load calls carry, so the declaration has one source: a plugin
+	// added to the load list (an anitomy, when it lands) is validated-attachable
+	// with no second place to update.
+	loadedCaps := map[string][]string{}
+	// loadPlugin registers one plugin binary + its capability declaration and
+	// starts the subprocess — the flat per-plugin Load+Start pair, factored so
+	// loadedCaps is captured at the declaration site. fatalOn keeps the
+	// fail-fast startup posture of the calls it replaces.
+	loadPlugin := func(pluginID, binaryPath string, caps []sdk.Capability) {
+		fatalOn(mgr.Load(pluginID, binaryPath, caps), "load "+pluginID)
+		fatalOn(mgr.Start(ctx, pluginID), "start "+pluginID)
+		types := make([]string, 0, len(caps))
+		for _, c := range caps {
+			types = append(types, c.Type)
+		}
+		loadedCaps[pluginID] = types
+	}
+
+	// base-scanner is the tv/image scanner plugin.
+	loadPlugin("base-scanner", cfg.baseScannerPath, []sdk.Capability{
 		{Type: "scanner", ID: "default", ProtoService: scannerService},
-	}), "load base-scanner")
-	fatalOn(mgr.Start(ctx, "base-scanner"), "start base-scanner")
+	})
 
 	// serial-scanner is the second scanner-capability plugin (serials-library
 	// D2): directory-structured discovery, selected purely by module config
 	// (the structure knob). Same dev-mode pattern + cookie pair as
-	// base-scanner; loaded/started BEFORE the server serves
-	// (INV-start-before-serve).
-	fatalOn(mgr.Load("serial-scanner", cfg.serialScannerPath, []sdk.Capability{
+	// base-scanner.
+	loadPlugin("serial-scanner", cfg.serialScannerPath, []sdk.Capability{
 		{Type: "scanner", ID: "default", ProtoService: scannerService},
-	}), "load serial-scanner")
-	fatalOn(mgr.Start(ctx, "serial-scanner"), "start serial-scanner")
+	})
 
 	// tv-parser is the first metadata_source plugin (parseTV extracted from
 	// base-scanner in T06/T07). It loads from a filesystem path with the same
 	// dev-mode pattern + cookie pair as base-scanner; its capability declaration
 	// matches the plugin's Handshake (T06).
-	fatalOn(mgr.Load("tv-parser", cfg.tvParserPath, []sdk.Capability{
+	loadPlugin("tv-parser", cfg.tvParserPath, []sdk.Capability{
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
-	}), "load tv-parser")
-	fatalOn(mgr.Start(ctx, "tv-parser"), "start tv-parser")
+	})
 
 	// image-enricher is the image metadata_source plugin (EXIF via the system
 	// exiftool subprocess — Task 01). Same dev-mode pattern + cookie pair +
-	// capability declaration as tv-parser; its Handshake advertises the same
-	// metadata_source capability (Task 01). Loaded/started BEFORE the server
-	// serves (INV-start-before-serve) so the first image scan's B1 queue finds a
+	// capability declaration as tv-parser. Started BEFORE the server serves
+	// (INV-start-before-serve) so the first image scan's B1 queue finds a
 	// live enricher.
-	fatalOn(mgr.Load("image-enricher", cfg.imageEnricherPath, []sdk.Capability{
+	loadPlugin("image-enricher", cfg.imageEnricherPath, []sdk.Capability{
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
-	}), "load image-enricher")
-	fatalOn(mgr.Start(ctx, "image-enricher"), "start image-enricher")
+	})
 
 	// serial-parser + frame-grabber are the serials-module metadata_source
 	// chain (serials-library D3/D5): the local directory-facts parser
 	// (priority 1) and the ffmpeg frame-grab default images (priority 2). Same
-	// dev-mode pattern + cookie pair + capability declaration as tv-parser;
-	// loaded/started BEFORE the server serves (INV-start-before-serve) so the
-	// first serial scan's queue finds live enrichers.
-	fatalOn(mgr.Load("serial-parser", cfg.serialParserPath, []sdk.Capability{
+	// dev-mode pattern + cookie pair + capability declaration as tv-parser.
+	loadPlugin("serial-parser", cfg.serialParserPath, []sdk.Capability{
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
-	}), "load serial-parser")
-	fatalOn(mgr.Start(ctx, "serial-parser"), "start serial-parser")
-	fatalOn(mgr.Load("frame-grabber", cfg.frameGrabberPath, []sdk.Capability{
+	})
+	loadPlugin("frame-grabber", cfg.frameGrabberPath, []sdk.Capability{
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
-	}), "load frame-grabber")
-	fatalOn(mgr.Start(ctx, "frame-grabber"), "start frame-grabber")
+	})
 
 	scanDeps := scan.Deps{
 		Store:   st,
@@ -274,6 +286,45 @@ func main() {
 				return false, err
 			}
 			return true, nil // 202 accepted
+		},
+		// Module presentation (element-pages 3.4/3.1): the GET /libraries/{id}
+		// block — identity_fields plus the ordered parser bindings (scanner
+		// slot, then the metadata_source chain in config order) with their
+		// capability ids and display_fields declarations. Built over the module
+		// registry (INV2: api imports no module package); slices are copied
+		// defensively so the handler can never alias cached registry state.
+		ModulePresentation: func(_ context.Context, moduleID string) (api.ModulePresentation, error) {
+			m, err := reg.Get(moduleID)
+			if err != nil {
+				return api.ModulePresentation{}, err
+			}
+			parsers := make([]api.ParserBinding, 0, 1+len(m.MetadataSources))
+			parsers = append(parsers, api.ParserBinding{
+				ID:            m.Scanner.PluginID,
+				Capability:    m.Scanner.CapabilityID,
+				DisplayFields: copyStrings(m.Scanner.DisplayFields),
+			})
+			for _, src := range m.MetadataSources {
+				parsers = append(parsers, api.ParserBinding{
+					ID:            src.PluginID,
+					Capability:    src.CapabilityID,
+					DisplayFields: copyStrings(src.DisplayFields),
+				})
+			}
+			return api.ModulePresentation{
+				IdentityFields: copyStrings(m.IdentityFields),
+				Parsers:        parsers,
+			}, nil
+		},
+		// Parser-attachment validation (element-pages 3.3/3.1): is pluginID
+		// loaded, and which capability types does it serve? Answered from
+		// loadedCaps — the capability declarations captured at each Load site —
+		// so the validation set IS the loaded set (an unloaded id is unknown;
+		// the closure is the anti-corruption seam that keeps api free of a
+		// plugin import).
+		PluginCapabilities: func(_ context.Context, pluginID string) ([]string, bool) {
+			caps, ok := loadedCaps[pluginID]
+			return caps, ok
 		},
 	})
 
@@ -459,6 +510,15 @@ func mediaSecret() []byte {
 		fatal("generate media secret", err)
 	}
 	return b
+}
+
+// copyStrings clones a string slice so a closure return can never alias its
+// source — the module registry's cached config state is copied defensively at
+// the api seam (the same rule internal/module's own accessors follow).
+func copyStrings(src []string) []string {
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
 }
 
 // originalResolver builds the stream Service's direct-floor resolver over the

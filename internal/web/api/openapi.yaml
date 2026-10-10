@@ -11,6 +11,28 @@ definitions:
       pending:
         type: integer
     type: object
+  api.ModulePresentation:
+    properties:
+      identity_fields:
+        items:
+          type: string
+        type: array
+      parsers:
+        items:
+          $ref: '#/definitions/api.ParserBinding'
+        type: array
+    type: object
+  api.ParserBinding:
+    properties:
+      capability:
+        type: string
+      display_fields:
+        items:
+          type: string
+        type: array
+      id:
+        type: string
+    type: object
   api.PluginHealth:
     properties:
       checked_at:
@@ -60,6 +82,10 @@ definitions:
         items:
           type: integer
         type: array
+      extra_parsers:
+        items:
+          type: string
+        type: array
       file_id:
         type: string
       id:
@@ -76,6 +102,20 @@ definitions:
         type: integer
       status:
         type: string
+    type: object
+  api.itemParsersRequest:
+    properties:
+      parsers:
+        items:
+          type: string
+        type: array
+    type: object
+  api.itemParsersResponse:
+    properties:
+      parsers:
+        items:
+          type: string
+        type: array
     type: object
   api.itemResponse:
     properties:
@@ -104,6 +144,8 @@ definitions:
         type: string
       id:
         type: integer
+      module:
+        $ref: '#/definitions/api.ModulePresentation'
       module_id:
         type: string
       root_path:
@@ -235,6 +277,10 @@ definitions:
         type: string
       module_id:
         type: string
+      parsers:
+        items:
+          type: string
+        type: array
       root_path:
         type: string
       streams_enabled:
@@ -364,6 +410,65 @@ paths:
       summary: Serve an item's media bytes
       tags:
       - items
+  /items/{id}/parsers:
+    delete:
+      operationId: delete-item-parsers
+      parameters:
+      - description: item id (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.itemParsersResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Clear an item's element-only parser attachments
+      tags:
+      - items
+    put:
+      operationId: put-item-parsers
+      parameters:
+      - description: item id (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: ordered parser ids (full replacement; empty clears)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.itemParsersRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.itemParsersResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Replace an item's element-only parser attachments
+      tags:
+      - items
   /items/{id}/play:
     post:
       operationId: item-play
@@ -469,6 +574,34 @@ paths:
       tags:
       - libraries
   /libraries/{id}:
+    get:
+      operationId: get-library
+      parameters:
+      - description: library id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.libraryDTO'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Get a single library with its module presentation block
+      tags:
+      - libraries
     patch:
       operationId: update-library
       parameters:
@@ -500,7 +633,7 @@ paths:
           description: Internal Server Error
           schema:
             $ref: '#/definitions/api.errorBody'
-      summary: Update a library's display name and/or description
+      summary: Update a library's display name, description, and/or parser chain
       tags:
       - libraries
   /libraries/{id}/folders:

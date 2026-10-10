@@ -259,7 +259,7 @@ func TestEnrich(t *testing.T) {
 				f.order = &order
 			}
 			doc := map[string]any{}
-			out, status, res, err := enrichDoc(ctx, tc.fakes.resolve, module.Module{ID: "tv", MediaType: "tv", MetadataSources: tc.sources}, doc, &scannerv1.IdentifyResult{})
+			out, status, res, err := enrichDoc(ctx, tc.fakes.resolve, module.Module{ID: "tv", MediaType: "tv", MetadataSources: tc.sources}, doc, &scannerv1.IdentifyResult{}, nil)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
 			}

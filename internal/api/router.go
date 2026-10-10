@@ -39,6 +39,22 @@ type Deps struct {
 	// Nil-safe (503 when nil). sql.ErrNoRows from either closure surfaces as
 	// 404 in the handlers.
 	Play func(ctx context.Context, itemID string, retry bool, fromSeconds *float64) (queued bool, err error)
+	// ModulePresentation is the module presentation closure (element-pages
+	// 3.4): built in cmd/mellifera over module.Registry (IdentityFields +
+	// the ordered parser bindings with their display_fields). Nil-safe — the
+	// `module` block on GET /libraries/{id} is ADDITIVE: a nil closure omits
+	// it and the handler still serves the library row (the SPA degrades to a
+	// footer without the presentation block). A non-nil closure erroring is a
+	// real failure → 500.
+	ModulePresentation func(ctx context.Context, moduleID string) (ModulePresentation, error)
+	// PluginCapabilities answers the parser-validation question for the
+	// mutating parser endpoints (element-pages 3.3): is pluginID a loaded
+	// plugin, and which capability types does it serve (e.g. "scanner",
+	// "metadata_source")? An unloaded plugin yields known=false. Nil-safe —
+	// a nil closure skips the plugin validation step (the endpoints keep
+	// working store-side; the 400 unknown/mismatched-plugin path needs the
+	// closure wired).
+	PluginCapabilities func(ctx context.Context, pluginID string) (capabilities []string, known bool)
 }
 
 // Role is the authorization role resolved from the credential. MVP issues
@@ -100,6 +116,11 @@ func mountV1Routes(r chi.Router, h *app) {
 	r.Group(func(r chi.Router) {
 		r.Use(requireRole(RoleAdmin, RoleClient))
 		r.Get("/libraries", h.listLibraries)
+		// Library detail (element-pages 3.4): the row plus the additive module
+		// presentation block (`module`: identity_fields + the ordered parser
+		// bindings with display_fields) — the element page's chain/identity
+		// source. Read-only, browse group beside the other library views.
+		r.Get("/libraries/{id}", h.getLibrary)
 		r.Get("/libraries/{id}/summary", h.librarySummary)
 		r.Get("/libraries/{id}/folders", h.libraryFolders)
 		r.Get("/items", h.listItems)
@@ -132,8 +153,20 @@ func mountV1Routes(r chi.Router, h *app) {
 	r.Group(func(r chi.Router) {
 		r.Use(requireRole(RoleAdmin))
 		r.Post("/libraries", h.createLibrary)
+		// Library mutation: present display_name/description/streams_enabled
+		// fields update the row, and an optional ordered parsers array
+		// (element-pages 3.1) replaces the collection's parser chain — the
+		// footer group order and the enrichment queue priority. Identity fields
+		// (root_path/module_id) are rejected here, unchanged.
 		r.Patch("/libraries/{id}", h.patchLibrary)
 		r.Post("/libraries/{id}/scan", h.scanLibrary)
+		// Element-only parser attachment (element-pages 3.3): full-replacement
+		// PUT and clearing DELETE over one item's parser attachments — operator
+		// mutations, so the admin group. Attachments survive re-scans (they are
+		// keyed by the item id, which re-scans preserve) and never leak to
+		// sibling items (keyed by item).
+		r.Put("/items/{id}/parsers", h.putItemParsers)
+		r.Delete("/items/{id}/parsers", h.deleteItemParsers)
 		r.Get("/admin/status", h.adminStatus)
 	})
 }

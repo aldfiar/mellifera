@@ -552,7 +552,7 @@ func runViewPrecedence(t *testing.T) {
 		},
 	}
 	got, status, res, err := enrichDoc(ctx, mapResolver{"frame-grabber": frame, "poster-source": poster}.resolver(),
-		mod, doc, reconstructBase(doc))
+		mod, doc, reconstructBase(doc), nil)
 	if err != nil {
 		t.Fatalf("enrichDoc: %v", err)
 	}

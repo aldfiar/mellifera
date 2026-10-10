@@ -5,6 +5,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -167,6 +169,130 @@ func TestLibraryStreamsEnabledRoundtrip(t *testing.T) {
 		}
 		if !byRoot["/data/streams-default"] || !byRoot["/data/streams-flip"] {
 			t.Fatalf("ListLibraries gates = %v, want both enabled", byRoot)
+		}
+	})
+}
+
+// TestLibraryChain covers the library_parsers chain control table
+// (parser-display): the table-driven set/get round-trip (ordered positions),
+// full replacement (stale rows removed, empty clears), the unknown-library
+// guard (wrapped sql.ErrNoRows — the api 404, nothing written), sibling
+// isolation, the absent-chain-as-empty default (the module seed's chain is
+// the api layer's concern), and the orphan-tolerant read (rows whose library
+// is gone read as absent, never an error).
+func TestLibraryChain(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("set_get_roundtrip_ordered", func(t *testing.T) {
+		s := openStore(t)
+		id, err := s.CreateLibrary(ctx, "photo", "/data/chain-a", "Chain A")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		want := []string{"exif", "tmdb"}
+		if err := s.SetLibraryChain(ctx, id, want); err != nil {
+			t.Fatalf("SetLibraryChain: %v", err)
+		}
+		got, err := s.GetLibraryChain(ctx, id)
+		if err != nil {
+			t.Fatalf("GetLibraryChain: %v", err)
+		}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("GetLibraryChain = %v, want %v (chain order preserved)", got, want)
+		}
+	})
+
+	t.Run("replace_is_full_replacement", func(t *testing.T) {
+		s := openStore(t)
+		id, err := s.CreateLibrary(ctx, "photo", "/data/chain-b", "Chain B")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		if err := s.SetLibraryChain(ctx, id, []string{"exif", "tmdb"}); err != nil {
+			t.Fatalf("SetLibraryChain #1: %v", err)
+		}
+		// Reordering through a subset must not resurrect dropped ids.
+		if err := s.SetLibraryChain(ctx, id, []string{"tmdb", "exif"}); err != nil {
+			t.Fatalf("SetLibraryChain #2: %v", err)
+		}
+		got, err := s.GetLibraryChain(ctx, id)
+		if err != nil {
+			t.Fatalf("GetLibraryChain: %v", err)
+		}
+		if len(got) != 2 || got[0] != "tmdb" || got[1] != "exif" {
+			t.Fatalf("GetLibraryChain = %v, want [tmdb exif] (reordered)", got)
+		}
+		if err := s.SetLibraryChain(ctx, id, nil); err != nil {
+			t.Fatalf("SetLibraryChain clear: %v", err)
+		}
+		if got, err := s.GetLibraryChain(ctx, id); err != nil || len(got) != 0 {
+			t.Fatalf("after clear: GetLibraryChain = %v, err = %v, want empty", got, err)
+		}
+	})
+
+	t.Run("unknown_library_writes_nothing", func(t *testing.T) {
+		s := openStore(t)
+		err := s.SetLibraryChain(ctx, 4242, []string{"exif"})
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("SetLibraryChain on missing library = %v, want wrapped sql.ErrNoRows (api 404)", err)
+		}
+	})
+
+	t.Run("absent_chain_reads_empty", func(t *testing.T) {
+		s := openStore(t)
+		id, err := s.CreateLibrary(ctx, "photo", "/data/chain-c", "Chain C")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		got, err := s.GetLibraryChain(ctx, id)
+		if err != nil {
+			t.Fatalf("GetLibraryChain: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("GetLibraryChain = %v, want empty (seed default is the api layer's concern)", got)
+		}
+	})
+
+	t.Run("sibling_isolation", func(t *testing.T) {
+		s := openStore(t)
+		idA, err := s.CreateLibrary(ctx, "photo", "/data/chain-d", "Chain D")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		idB, err := s.CreateLibrary(ctx, "photo", "/data/chain-e", "Chain E")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		if err := s.SetLibraryChain(ctx, idA, []string{"exif"}); err != nil {
+			t.Fatalf("SetLibraryChain: %v", err)
+		}
+		got, err := s.GetLibraryChain(ctx, idB)
+		if err != nil {
+			t.Fatalf("GetLibraryChain sibling: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("sibling GetLibraryChain = %v, want empty (nothing propagates)", got)
+		}
+	})
+
+	t.Run("removed_library_reads_orphan_tolerant", func(t *testing.T) {
+		s := openStore(t)
+		id, err := s.CreateLibrary(ctx, "photo", "/data/chain-f", "Chain F")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		if err := s.SetLibraryChain(ctx, id, []string{"exif"}); err != nil {
+			t.Fatalf("SetLibraryChain: %v", err)
+		}
+		if _, err := s.db.ExecContext(ctx, "DELETE FROM libraries WHERE id = ?", id); err != nil {
+			t.Fatalf("remove library row: %v", err)
+		}
+		got, err := s.GetLibraryChain(ctx, id)
+		if err != nil {
+			t.Fatalf("GetLibraryChain removed library: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("removed library = %v, want empty (orphan-tolerant read)", got)
 		}
 	})
 }

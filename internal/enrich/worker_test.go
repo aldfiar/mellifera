@@ -122,7 +122,7 @@ func TestAllSourcesTerminal(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := allSourcesTerminal(tc.idx, tc.mod, tc.doc, "i", now); got != tc.want {
+			if got := allSourcesTerminal(tc.idx, tc.mod, nil, tc.doc, "i", now); got != tc.want {
 				t.Fatalf("allSourcesTerminal = %v, want %v", got, tc.want)
 			}
 		})

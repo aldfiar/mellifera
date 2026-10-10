@@ -26,9 +26,29 @@ export interface UpdateLibraryRequest {
   streams_enabled?: boolean;
 }
 
+// handlers.go parserBinding — one entry of module.parsers (element-pages 3.4):
+// the binding's plugin id plus its ordered display_fields (module seed config
+// — config IS the footer render order). capability mirrors the binding's
+// capability when the handler includes it; display_fields are additive.
+export interface ParserBinding {
+  id: string;
+  capability?: string;
+  display_fields: string[];
+}
+
+// handlers.go modulePresentation — the additive module block on libraryDTO
+// (element-pages 3.4): the module's mandatory identity fields (the element
+// page's identity badges) and the collection's ordered parser chain.
+export interface ModulePresentation {
+  identity_fields: string[];
+  parsers: ParserBinding[];
+}
+
 // handlers.go libraryDTO — description is always present in responses (""
 // when never set; web-ui-phase-3 group 1). streams_enabled is the
 // packaged-playback packaging gate (always present; column default true).
+// module is the additive presentation block (element-pages 3.4) — absent when
+// the endpoint does not carry it.
 export interface LibraryDTO {
   id: number; // int64
   module_id: string;
@@ -36,6 +56,7 @@ export interface LibraryDTO {
   display_name: string;
   description: string;
   streams_enabled: boolean;
+  module?: ModulePresentation;
 }
 
 // handlers.go librarySummaryResponse — the constant-time count + last-update
@@ -123,6 +144,10 @@ export interface ItemDTO {
   document: ItemDocument; // full §3.1 document — precision-preserved
   schema_version: number;
   status: string; // "new"|"pending"|"parsed"|"enriched"|"failed"|"ready"|"stale"
+  // extra_parsers — the element-attached parser ids (element-pages 3.3,
+  // additive; absent until a first attachment). The element page renders their
+  // footer groups after the collection chain, pill-marked element-only.
+  extra_parsers?: string[];
 }
 
 // handlers.go itemsResponse — empty array, never null
@@ -276,6 +301,15 @@ export async function updateLibrary(
     // as useCreateLibrary).
     body: req as unknown as BodyInit,
   });
+}
+
+// getLibrary — GET /api/v1/libraries/{id} (handlers.go getLibrary,
+// element-pages 3.4). The library row plus the additive module presentation
+// block (`module`: identity_fields + the ordered parser bindings with
+// display_fields) — the element page's chain/identity source. 404 with the
+// canonical not_found body for an unknown library.
+export async function getLibrary(id: number): Promise<LibraryDTO> {
+  return apiRequest<LibraryDTO>(ENDPOINTS.library(id));
 }
 
 // getLibrarySummary — GET /api/v1/libraries/{id}/summary (handlers.go
