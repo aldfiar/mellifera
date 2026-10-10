@@ -232,3 +232,36 @@ set -e
 grep -q "CLIENT" internal/enrich/queue.go
 ```
 <!-- /wf:probe -->
+
+#### Scenario: The hermetic attachment E2E joins the itest harness
+
+- **WHEN** the element-attachment E2E runs against the existing itest harness
+  (real store, real queue: attach → drain → namespace + provenance written;
+  sibling untouched; re-scan keeps the attachment)
+- **THEN** it passes node-free as part of the element-parser itest suite
+
+<!-- wf:probe id=9a958b55c9e001fb -->
+```bash
+set -e
+out=$(go test ./internal/itest -run 'TestElement_Parsers_HermeticE2E' -count=1 -v 2>&1)
+echo "$out" | grep -q "^=== RUN   TestElement_Parsers_HermeticE2E$"
+echo "$out" | grep -q "^--- PASS: TestElement_Parsers_HermeticE2E"
+```
+<!-- /wf:probe -->
+
+#### Scenario: The collection chain persists per library
+
+- **WHEN** a library's parser chain is stored and read back through a fresh
+  store handle (replacement write, then read)
+- **THEN** the read returns the written order exactly — the chain is durable
+  per-library state, and the footer and queue priority derive from it
+
+<!-- wf:probe id=49fa25a53ecde01e -->
+```bash
+set -e
+grep -q "SetLibraryChain" internal/store/libraries.go
+grep -q "GetLibraryChain" internal/store/libraries.go
+go test ./internal/store -run 'TestLibraryChain' -count=1 -v 2>&1 | grep -q "^--- PASS: TestLibraryChain"
+go build ./...
+```
+<!-- /wf:probe -->

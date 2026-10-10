@@ -1,0 +1,10 @@
+{
+  "status": "done",
+  "summary": "F1 fix: stored library parser chain now consumed by production. (a) GET /libraries/{id} overlays store.GetLibraryChain onto ModulePresentation.Parsers (chain ids first in chain order, unchained config parsers after; absent/empty chain = config order; nil closure still omits the block) - internal/api/handlers.go orderParserBindings. (b) enrich deriveLibrary reads GetLibraryChain per library and iterates collection-common sources chain-first (chainOrderedSources; pendingSources takes bindings; D-Q1 and pendingExtras untouched) - internal/enrich/queue.go. (c) assertions: TestLibraryChainOrderServed (PATCH reorder -> GET serves tmdb,tv-parser,kinopoisk; absent chain serves config order) and TestDerivationChainPriority (absent chain -> tv-parser,tmdb; SetLibraryChain [tmdb tv-parser] -> tasks emit tmdb,tv-parser). go build/test/make check green; probes 3.1+3.4 exit 0. Cycle: un-ticked 20, marker removed, index build fp=6b05f8ae..., all 20 re-ticked, change check OK.",
+  "next": "gate re-check",
+  "updated_at": "2026-10-09T21:51:57.022402Z",
+  "findings": [
+    "TICK DEADLOCK (all 4 boxes): tasks.md source_fingerprint (12f3341a) != map fp (bbfb70cf) after wf index build; resolution = untick boxes 1.1+1.2 (hand edit is the reopen per the refusal text), then re-tick 285e0cf7ae7d58d6 + c91674ddc94d4640 + the four group-5 probes 0fbfc7bc48168bfb/afad16ae58c19414/a01c342b67758ff2/8fc084d8ee58d4aa (all verified exit 0)",
+    "Hero tests needed two mechanical mock updates because the page now fetches more: getLibrary mocked at the api seam in hero/happy-path describes (preserves their only-fetch-is-the-hero contract), and the shared-Response fetch mock became mockImplementation(async () => mediaResponse()) — a Response body consumes once and the progress-row fetch drained it"
+  ]
+}
