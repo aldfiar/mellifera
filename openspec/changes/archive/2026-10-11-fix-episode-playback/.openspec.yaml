@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-11
+goal: Every segment of a published fMP4-HLS build is reachable at its
+  playlist-relative path; the episode page shows only the player, with the
+  frame-grabber thumb as poster until playback starts.

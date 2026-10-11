@@ -1,0 +1,6 @@
+{
+  "status": "done",
+  "summary": "Box 4.1 landed: newSweep third pass sweepIntegrity (validate seam = stream.Service.ValidateBuild, enqueue via EnqueuePack, slog.Warn never fatal) wired in main.go; TestBrokenBuildRepackSweep proves the joint (corrupt published build -> descriptor direct -> integrity repack -> fresh whole build -> descriptor hls -> no re-job). Probe bcc5c7c2ba0aedea passes; full itest suite 108/108 green.",
+  "next": "Session: wf change tick fix-episode-playback 4.1, then gate",
+  "updated_at": "2026-10-11T14:58:14.692722Z"
+}
