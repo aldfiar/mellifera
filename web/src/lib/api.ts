@@ -140,7 +140,8 @@ export interface ItemDTO {
   library_id: number; // int64
   file_id: string;
   relative_path: string;
-  media_type: string; // "video" | "image"
+  media_type: string; // "tv" | "image" | "serial" — the scanner stamps
+  // req.GetModuleType(), so the literal "video" never occurs in stored data
   document: ItemDocument; // full §3.1 document — precision-preserved
   schema_version: number;
   status: string; // "new"|"pending"|"parsed"|"enriched"|"failed"|"ready"|"stale"
@@ -576,6 +577,18 @@ export function hasOriginalFile(doc: ItemDocument): boolean {
   }
   const absolute = (parsed as Record<string, unknown>).absolute_path;
   return typeof absolute === "string" && absolute !== "";
+}
+
+// isPhotoItem / isVideoItem — the image/non-image split, defined ONCE here:
+// the stored media_type is the module type "tv" | "image" | "serial" (the
+// scanner stamps req.GetModuleType(), never "video"), so non-image IS the
+// playable side. Exported pure for tests.
+export function isPhotoItem(item: ItemDTO): boolean {
+  return item.media_type === "image";
+}
+
+export function isVideoItem(item: ItemDTO): boolean {
+  return !isPhotoItem(item);
 }
 
 // fetchItemMediaObjectUrl — the authenticated media byte channel (media-preview

@@ -15,10 +15,14 @@ import ItemDetail, { type BrowseHandoff } from "@/pages/browse/ItemDetail";
 // edges (404 → not-found state, not a crash; other errors → code + message
 // inline) are asserted independently of the network. End-to-end is QA1.
 //
-// Group-3 slice: the audit tiers (sources, provenance, stages) collapsed into
-// a native <details> "Technical details" disclosure — collapsed by default,
-// full content once expanded. jsdom implements no layout, so "hidden" is
-// asserted on the <details> open flag rather than on layout visibility.
+// Group-2 slice: the "Item" core fields, identifiers, and view folded into
+// the same "Technical details" disclosure, ahead of the audit tiers — the
+// always-visible tier is the media-first ladder, the identity block, and the
+// ParserFooter.
+//
+// The disclosure is a native <details>, collapsed by default, full content
+// once expanded. jsdom implements no layout, so "hidden" is asserted on the
+// <details> open flag rather than on layout visibility.
 
 /** Expands the Technical details disclosure (native, uncontrolled <details>). */
 function expandTechnicalDetails(): HTMLDetailsElement {
@@ -34,11 +38,11 @@ function expandTechnicalDetails(): HTMLDetailsElement {
 const ITEM_RESPONSE: ItemResponse = {
   item: {
     id: "itm_1_9",
-    module_id: "tv",
+    module_id: "serial",
     library_id: 1,
     file_id: "9",
     relative_path: "shows/Оська/s01e01.mkv",
-    media_type: "video",
+    media_type: "serial",
     schema_version: 1,
     status: "parsed",
     document: {
@@ -103,16 +107,22 @@ describe("ItemDetail — happy path (GET /api/v1/items/{id})", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
-  it("renders identifiers, one card per source namespace, view, provenance, and stages after expanding the disclosure", async () => {
+  it("renders core fields, identifiers, one card per source namespace, view, provenance, and stages after expanding the disclosure", async () => {
     vi.spyOn(apiModule, "getItem").mockResolvedValue(ITEM_RESPONSE);
     vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
 
     renderAtId("itm_1_9", freshClient());
 
-    // Core-managed fields.
-    expect(await screen.findByText("itm_1_9")).toBeDefined();
-    // The raw path renders twice on the media-first page: the identity
-    // column's raw path line and the core relative_path field.
+    // The always-visible tier mounts (the identity column's heading) before
+    // the disclosure is touched.
+    expect((await screen.findAllByText("Оська")).length).toBeGreaterThan(0);
+
+    expandTechnicalDetails();
+
+    // Core-managed fields (folded under the disclosure).
+    expect(screen.getAllByText("itm_1_9").length).toBeGreaterThan(0);
+    // The raw path renders twice on the page: the identity column's raw path
+    // line and the folded core relative_path field.
     expect(screen.getAllByText("shows/Оська/s01e01.mkv").length).toBeGreaterThan(0);
     expect(screen.getByText("parsed")).toBeDefined();
 
@@ -120,8 +130,6 @@ describe("ItemDetail — happy path (GET /api/v1/items/{id})", () => {
     expect(screen.getByText("tmdb_id")).toBeDefined();
     expect(screen.getByText("42")).toBeDefined();
     expect(screen.getByText("tt0000042")).toBeDefined();
-
-    expandTechnicalDetails();
 
     // One SourceCard per namespace, same-named fields NOT merged, numbers
     // render at full precision. ("tv-parser" recurs across card title,
@@ -143,27 +151,31 @@ describe("ItemDetail — Technical details disclosure", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
-  it("collapses sources, provenance, and stages until Technical details is expanded", async () => {
+  it("collapses core fields, identifiers, view, sources, provenance, and stages until Technical details is expanded", async () => {
     vi.spyOn(apiModule, "getItem").mockResolvedValue(ITEM_RESPONSE);
     vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
 
     renderAtId("itm_1_9", freshClient());
 
-    // The Details surface renders immediately: core fields, identifiers, view.
-    expect(await screen.findByText("itm_1_9")).toBeDefined();
-    expect(screen.getByText("tmdb_id")).toBeDefined();
-    expect(screen.getByText("tt0000042")).toBeDefined();
-    expect(screen.getByText("tv-parser (ru) — first")).toBeDefined();
+    // The always-visible tier (media-first ladder, identity block, footer)
+    // renders immediately; the folded tiers wait behind the disclosure.
+    expect((await screen.findAllByText("Оська")).length).toBeGreaterThan(0);
 
-    // The disclosure exists, is collapsed by default, and carries the audit
-    // tiers (sources, provenance, stages) inside it.
+    // The disclosure exists, is collapsed by default (the open flag), and
+    // carries the folded core fields, identifiers, view, and the audit tiers
+    // (sources, provenance, stages) inside it.
     const details = expandTechnicalDetails();
     expect(details.textContent).toContain("Sources");
     expect(details.textContent).toContain("Provenance");
     expect(details.textContent).toContain("Pipeline stages");
 
-    // Expanded: the audit tiers render (one card per namespace, badge,
-    // per-stage error) — same content as before the restructure.
+    // Expanded: the folded tiers render — core fields, identifiers, view,
+    // one card per namespace, badge, per-stage error — same content as
+    // before the restructure.
+    expect(screen.getAllByText("itm_1_9").length).toBeGreaterThan(0);
+    expect(screen.getByText("tmdb_id")).toBeDefined();
+    expect(screen.getByText("tt0000042")).toBeDefined();
+    expect(screen.getByText("tv-parser (ru) — first")).toBeDefined();
     expect(screen.getAllByText("tv-parser").length).toBeGreaterThan(0);
     expect(screen.getByText("second-plugin")).toBeDefined();
     expect(screen.getByText("0.98")).toBeDefined();
@@ -237,7 +249,8 @@ describe("ItemDetail — hero media (media-preview walkthrough feedback)", () =>
     const img = await screen.findByRole("img", { name: "photos/vacation.jpg" });
     expect(img.getAttribute("src")).toMatch(/^blob:/);
     // The ORIGINAL variant (no ?variant=) through the authenticated channel —
-    // exactly one media request; the core fields still render beneath it.
+    // exactly one media request; the id text (inside the disclosure) still
+    // mounts.
     expect(mediaCalls(fetchSpy)).toEqual(["/api/v1/items/itm_1_img/media"]);
     expect(screen.getByText("itm_1_img")).toBeDefined();
   });
@@ -998,6 +1011,46 @@ function theVideo(): HTMLVideoElement {
     .getByRole("region", { name: "Player" })
     .querySelector("video") as HTMLVideoElement;
 }
+
+// Structural video-ness (video-item-pages 1.1): a ready serial episode —
+// media_type "serial", the production vocabulary (no scanner ever writes the
+// literal "video") — takes the media-first VIDEO lane and mounts the Player
+// once the mocked descriptor resolves. The old media_type equality gates
+// muted every real item; this pins the predicate flip.
+describe("ItemDetail — structural video-ness (ready serial episode plays)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("renders the video lane and mounts the Player when the descriptor resolves", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue({
+      item: {
+        ...ITEM_RESPONSE.item,
+        id: "itm_ready_ep",
+        status: "ready",
+        document: {},
+      },
+    });
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+    vi.spyOn(apiModule, "getPlayback").mockResolvedValue(HLS_PLAYBACK);
+    // The progress PUT is Player-internal and irrelevant here.
+    vi.spyOn(apiModule, "putProgress").mockResolvedValue({
+      item_id: "itm_ready_ep",
+      position_seconds: 0,
+      updated_at: "",
+    });
+
+    renderAtId("itm_ready_ep", freshClient());
+
+    // The Player mounts a real <video> on the resolved descriptor, the
+    // media-first video lane's Media stage section leads, and the identity
+    // block's resume row reads the same video-ness (no stored progress →
+    // "Play from the start.").
+    expect(await screen.findByRole("region", { name: "Player" })).toBeDefined();
+    expect(screen.getByRole("region", { name: "Media stage" })).toBeDefined();
+    expect(screen.getByText("Play from the start.")).toBeDefined();
+    expect(theVideo()).not.toBeNull();
+  });
+});
 
 describe("ItemDetail — subtitle control (serial-watch-flow 5.1/5.2)", () => {
   beforeEach(() => {

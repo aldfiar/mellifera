@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "1ee11c3",
-  "source_fingerprint": "ecd0af9264dee47485f0fc926f9eeaba8b5cfdba6e1ee6479f79ba3f9f2ca483",
+  "generated_from_commit": "25c1156",
+  "source_fingerprint": "f6f8a19436f597c924622c932ff2cacafdaeffd5971a6d5427917bbfba2a549f",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -17,27 +17,28 @@
     "ast_backends": "python3-ast (.py); regex-floor fallback for other langs"
   },
   "counts": {
-    "files_total": 228,
+    "files_total": 236,
     "by_extension": {
-      ".go": 181,
-      ".sh": 1,
-      ".js": 2,
+      ".go": 185,
+      ".sh": 2,
+      ".js": 3,
       ".tsx": 34,
-      ".ts": 10
+      ".ts": 12
     },
     "by_role": {
-      "source": 133,
-      "test": 95
+      "source": 136,
+      "test": 99,
+      "script": 1
     },
-    "tests": 95
+    "tests": 99
   },
   "stack": {
     "primary": "go",
     "languages": {
-      "go": 181,
-      "bash": 1,
-      "javascript": 2,
-      "typescript": 44
+      "go": 185,
+      "bash": 2,
+      "javascript": 3,
+      "typescript": 46
     },
     "frameworks": []
   },
@@ -169,6 +170,16 @@
     },
     "internal/api/series_test.go": {
       "lines": 293,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/titles.go": {
+      "lines": 146,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/api/titles_test.go": {
+      "lines": 238,
       "lang": "go",
       "role": "test"
     },
@@ -379,6 +390,11 @@
     },
     "internal/itest/qa_serial_e2e_test.go": {
       "lines": 881,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_serial_watch_flow_test.go": {
+      "lines": 361,
       "lang": "go",
       "role": "test"
     },
@@ -602,6 +618,11 @@
       "lang": "go",
       "role": "test"
     },
+    "internal/stream/rendition_test.go": {
+      "lines": 328,
+      "lang": "go",
+      "role": "test"
+    },
     "internal/stream/serve.go": {
       "lines": 173,
       "lang": "go",
@@ -615,6 +636,11 @@
     "internal/stream/token.go": {
       "lines": 67,
       "lang": "go",
+      "role": "source"
+    },
+    "internal/web/dist/assets/index-B0OhHhyg.js": {
+      "lines": 205,
+      "lang": "javascript",
       "role": "source"
     },
     "internal/web/doc.go": {
@@ -952,6 +978,18 @@
       "lang": "go",
       "role": "source"
     },
+    "scripts/dev.sh": {
+      "lines": 160,
+      "lang": "bash",
+      "role": "script",
+      "exports": [
+        "log",
+        "die",
+        "cleanup",
+        "api",
+        "seed_libs"
+      ]
+    },
     "web/eslint.config.js": {
       "lines": 15,
       "lang": "javascript",
@@ -1176,7 +1214,7 @@
       "role": "test"
     },
     "web/src/lib/api.ts": {
-      "lines": 729,
+      "lines": 742,
       "lang": "typescript",
       "role": "source",
       "exports": [
@@ -1257,6 +1295,22 @@
         "useItemMedia"
       ]
     },
+    "web/src/lib/subtitles.test.ts": {
+      "lines": 168,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/lib/subtitles.ts": {
+      "lines": 217,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "isRenderableSubtitle",
+        "sidecarLabel",
+        "subtitleSidecars",
+        "convertToVtt"
+      ]
+    },
     "web/src/lib/utils.ts": {
       "lines": 9,
       "lang": "typescript",
@@ -1292,12 +1346,12 @@
       ]
     },
     "web/src/pages/browse/ItemDetail.test.tsx": {
-      "lines": 1191,
+      "lines": 1244,
       "lang": "typescript",
       "role": "test"
     },
     "web/src/pages/browse/ItemDetail.tsx": {
-      "lines": 869,
+      "lines": 874,
       "lang": "typescript",
       "role": "source",
       "exports": [

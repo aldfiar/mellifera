@@ -71,7 +71,7 @@ function item(
     library_id: 1,
     file_id: `file-${id}`,
     relative_path: relativePath,
-    media_type: moduleId === "image" ? "image" : "video",
+    media_type: moduleId, // image → "image", tv → "tv", serial → "serial"
     document,
     schema_version: 1,
     status: "ready",

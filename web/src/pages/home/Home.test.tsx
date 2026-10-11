@@ -72,7 +72,7 @@ function item(id: string, libraryId: number, document: ItemDocument): ItemDTO {
     library_id: libraryId,
     file_id: `file-${id}`,
     relative_path: `Show/${id}.mkv`,
-    media_type: "video",
+    media_type: "serial",
     document,
     schema_version: 1,
     status: "ready",

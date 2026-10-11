@@ -16,6 +16,8 @@ import {
   getPlayback,
   hasFrameGrabberThumb,
   hasOriginalFile,
+  isPhotoItem,
+  isVideoItem,
   playItem,
 } from "@/lib/api";
 import { useItem, useItemMedia, useLibrary, useProgressList } from "@/lib/queries";
@@ -59,8 +61,9 @@ import { Card, CardContent } from "@/components/ui/card";
 //                identity badges per `identity_fields` (missing → slot state)
 //   footer       <ParserFooter> — the parser-ordered metadata footer between
 //                the identity block and the Technical details disclosure
-//   Details      core fields, Tier-1 identifiers, Tier-3 _view (<ViewFields>)
-//   Technical details (collapsed until expanded — audit plumbing):
+//   Technical details (collapsed until expanded — everything technical):
+//     core    the "Item" core-field dl, Tier-1 identifiers, Tier-3 _view
+//             (<ViewFields>) — the former always-visible sections, folded
 //     Tier 2  sources.<plugin>   — one <SourceCard> per sourcesOf(doc) entry,
 //                                  never merged across plugins
 //     audit   _provenance        — one <ProvenanceBadge> per provenance entry
@@ -195,7 +198,7 @@ export default function ItemDetail(): ReactElement {
   // Keyboard — ←/→ browse; S toggles the slideshow (photos); Esc stops a
   // RUNNING slideshow first and only navigates back when it is not running
   // (6.4). No handoff state → no listeners at all.
-  const isPhoto = item?.media_type === "image";
+  const isPhoto = item !== undefined && isPhotoItem(item);
   useEffect(() => {
     if (!view) {
       return;
@@ -286,7 +289,7 @@ function ItemLoadedView(props: {
 }): ReactElement {
   const { item, view, step, slideshowRunning, onToggleSlideshow } = props;
   const doc = item.document;
-  const isPhoto = item.media_type === "image";
+  const isPhoto = isPhotoItem(item);
   const identifiers = Object.entries(doc.identifiers ?? {});
   const sources = sourcesOf(doc);
   const provenance = provenanceEntries(doc);
@@ -309,7 +312,7 @@ function ItemLoadedView(props: {
   // page just falls back to the identity column — never a broken-image.
   const heroUrl = hasFrameGrabberThumb(doc)
     ? ENDPOINTS.itemMedia(item.id, "thumb")
-    : item.media_type === "image" && hasOriginalFile(doc)
+    : isPhotoItem(item) && hasOriginalFile(doc)
       ? ENDPOINTS.itemMedia(item.id)
       : null;
   const hero = useItemMedia(heroUrl);
@@ -321,7 +324,7 @@ function ItemLoadedView(props: {
   const playback = useQuery({
     queryKey: ["playback", item.id],
     queryFn: () => getPlayback(item.id),
-    enabled: item.media_type === "video",
+    enabled: isVideoItem(item),
   });
   // Retry affordance (D-7): POST /play {retry:true} re-enqueues a failed
   // packaging run, then the descriptor refetches so the player state flips.
@@ -376,7 +379,7 @@ function ItemLoadedView(props: {
   const mediaStage = hero !== null ? (
     <HeroImage src={hero} alt={item.relative_path} />
   ) : null;
-  const player = item.media_type === "video" && playback.data ? (
+  const player = isVideoItem(item) && playback.data ? (
     <Player
       itemId={item.id}
       descriptor={playback.data}
@@ -387,7 +390,7 @@ function ItemLoadedView(props: {
     />
   ) : null;
   const watchControls =
-    item.media_type === "video" && playback.data ? (
+    isVideoItem(item) && playback.data ? (
       <TrackControls
         sidecars={sidecars}
         selectedSubtitle={selectedSubtitle}
@@ -446,7 +449,7 @@ function ItemLoadedView(props: {
           </span>
         </nav>
       ) : null}
-      {item.media_type === "video" ? (
+      {isVideoItem(item) ? (
         // Media-first, video lane: the media stage (hero + play affordance)
         // is the dominant LEFT surface; the identity column sits RIGHT.
         <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
@@ -476,78 +479,80 @@ function ItemLoadedView(props: {
         </section>
       )}
 
-      <section>
-        <h2 className="mb-3 text-base font-semibold">Item</h2>
-        <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <div className="flex gap-2">
-            <dt className="text-xs text-muted-foreground">id</dt>
-            <dd className="font-mono text-sm">{item.id}</dd>
-          </div>
-          <div className="flex gap-2">
-            <dt className="text-xs text-muted-foreground">module_id</dt>
-            <dd className="font-mono text-sm">{item.module_id}</dd>
-          </div>
-          <div className="flex gap-2">
-            <dt className="text-xs text-muted-foreground">library_id</dt>
-            <dd className="font-mono text-sm">{item.library_id}</dd>
-          </div>
-          <div className="flex gap-2">
-            <dt className="text-xs text-muted-foreground">file_id</dt>
-            <dd className="font-mono text-sm">{item.file_id}</dd>
-          </div>
-          <div className="flex gap-2">
-            <dt className="text-xs text-muted-foreground">relative_path</dt>
-            <dd className="break-all font-mono text-sm">{item.relative_path}</dd>
-          </div>
-          <div className="flex gap-2">
-            <dt className="text-xs text-muted-foreground">media_type</dt>
-            <dd className="text-sm">{item.media_type}</dd>
-          </div>
-          <div className="flex gap-2">
-            <dt className="text-xs text-muted-foreground">status</dt>
-            <dd className="text-sm">{item.status}</dd>
-          </div>
-          <div className="flex gap-2">
-            <dt className="text-xs text-muted-foreground">schema_version</dt>
-            <dd className="font-mono text-sm">{item.schema_version}</dd>
-          </div>
-        </dl>
-      </section>
-
-      <section>
-        <h3 className="mb-2 text-sm font-semibold">Identifiers</h3>
-        {identifiers.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No identifiers</p>
-        ) : (
-          <dl className="flex flex-wrap gap-x-6 gap-y-1">
-            {identifiers.map(([key, value]) => (
-              <div key={key} className="flex gap-2">
-                <dt className="font-mono text-xs text-muted-foreground">{key}</dt>
-                <dd className="font-mono text-sm">{value}</dd>
-              </div>
-            ))}
-          </dl>
-        )}
-      </section>
-
-      <section>
-        <h3 className="mb-2 text-sm font-semibold">View</h3>
-        <Card>
-          <CardContent className="pt-6">
-            <ViewFields entries={viewRecord} />
-          </CardContent>
-        </Card>
-      </section>
-
-      {/* Technical details — audit plumbing collapsed until expanded (D7).
-          Native <details>/<summary>: the simplest accessible disclosure. The
-          wrapped renders are byte-identical to the former always-visible
-          sections; only their visibility changed. */}
+      {/* Technical details — everything technical collapsed until expanded
+          (D7): the former always-visible "Item"/Identifiers/View sections
+          folded in ahead of the audit plumbing. Native <details>/<summary>:
+          the simplest accessible disclosure. The wrapped renders are
+          byte-identical to their former always-visible selves; only their
+          visibility changed. */}
       <details className="rounded-lg border bg-card text-card-foreground shadow-sm">
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold">
           Technical details
         </summary>
         <div className="flex flex-col gap-6 px-4 pb-4">
+          <section>
+            <h2 className="mb-3 text-base font-semibold">Item</h2>
+            <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="flex gap-2">
+                <dt className="text-xs text-muted-foreground">id</dt>
+                <dd className="font-mono text-sm">{item.id}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-xs text-muted-foreground">module_id</dt>
+                <dd className="font-mono text-sm">{item.module_id}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-xs text-muted-foreground">library_id</dt>
+                <dd className="font-mono text-sm">{item.library_id}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-xs text-muted-foreground">file_id</dt>
+                <dd className="font-mono text-sm">{item.file_id}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-xs text-muted-foreground">relative_path</dt>
+                <dd className="break-all font-mono text-sm">{item.relative_path}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-xs text-muted-foreground">media_type</dt>
+                <dd className="text-sm">{item.media_type}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-xs text-muted-foreground">status</dt>
+                <dd className="text-sm">{item.status}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-xs text-muted-foreground">schema_version</dt>
+                <dd className="font-mono text-sm">{item.schema_version}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section>
+            <h3 className="mb-2 text-sm font-semibold">Identifiers</h3>
+            {identifiers.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No identifiers</p>
+            ) : (
+              <dl className="flex flex-wrap gap-x-6 gap-y-1">
+                {identifiers.map(([key, value]) => (
+                  <div key={key} className="flex gap-2">
+                    <dt className="font-mono text-xs text-muted-foreground">{key}</dt>
+                    <dd className="font-mono text-sm">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </section>
+
+          <section>
+            <h3 className="mb-2 text-sm font-semibold">View</h3>
+            <Card>
+              <CardContent className="pt-6">
+                <ViewFields entries={viewRecord} />
+              </CardContent>
+            </Card>
+          </section>
+
           <section className="flex flex-col gap-3">
             <h3 className="text-sm font-semibold">Sources</h3>
             {sources.length === 0 ? (
@@ -835,7 +840,7 @@ function IdentityBlock(props: {
         />
       ) : null}
 
-      {item.media_type === "video" ? (
+      {isVideoItem(item) ? (
         <p className="text-sm text-muted-foreground">
           {typeof position !== "number"
             ? "Play from the start."
