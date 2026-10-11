@@ -4,6 +4,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -281,4 +282,121 @@ func rels(items []Item) []string {
 		out[i] = it.RelativePath
 	}
 	return out
+}
+
+// TestTitleOverrides covers the title-override control table (serial-watch-flow
+// D-1, box 1.1): the per-entity override persists (upsert, one row per entity,
+// latest title wins), clears, clearing an absent override is a no-op, an
+// unknown entity's set is refused with nothing written, and the underlying
+// series and item documents stay byte-identical throughout — control state
+// beside the document. Table-driven over the two id spaces sharing the one
+// table (the ser_ prefix keeps them disjoint).
+func TestTitleOverrides(t *testing.T) {
+	ctx := context.Background()
+	s := openSeriesStore(t)
+
+	const seriesDoc = `{"parsed":{"serial_record":true,"dir_name_raw":"Show.2022.S01","backing":"directory"},"ffprobe":{}}`
+	const itemDoc = `{"parsed":{"title":"Show.2022.S01E01"},"ffprobe":{}}`
+
+	libID, err := s.CreateLibrary(ctx, "serial", "/media/titles", "Titles")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	if err := s.PutSeries(ctx, Series{
+		ModuleID: "serial", LibraryID: libID, RelativePath: "Show.2022.S01",
+		Document: json.RawMessage(seriesDoc), SchemaVersion: 1, Status: "ready",
+	}); err != nil {
+		t.Fatalf("PutSeries: %v", err)
+	}
+	sID := wantSeriesID(libID, "Show.2022.S01")
+	iID := "itm_title_e01"
+	if err := s.PutItem(ctx, Item{
+		ID: iID, ModuleID: "serial", LibraryID: libID, FileID: "title-e01",
+		RelativePath: "Show.2022.S01/E01.mkv", MediaType: "serial",
+		Document: json.RawMessage(itemDoc), SchemaVersion: 1,
+	}); err != nil {
+		t.Fatalf("PutItem: %v", err)
+	}
+
+	// documentsUnchanged asserts both documents are byte-identical to their
+	// seeds — the override write/clear never rewrites a document namespace.
+	documentsUnchanged := func(t *testing.T) {
+		t.Helper()
+		sr, err := s.GetSeries(ctx, sID)
+		if err != nil {
+			t.Fatalf("GetSeries: %v", err)
+		}
+		if !bytes.Equal(sr.Document, []byte(seriesDoc)) {
+			t.Fatalf("series document mutated:\n got:  %s\n want: %s", sr.Document, seriesDoc)
+		}
+		it, err := s.GetItem(ctx, iID)
+		if err != nil {
+			t.Fatalf("GetItem: %v", err)
+		}
+		if !bytes.Equal(it.Document, []byte(itemDoc)) {
+			t.Fatalf("item document mutated:\n got:  %s\n want: %s", it.Document, itemDoc)
+		}
+	}
+
+	cases := []struct {
+		name     string
+		entityID string
+		titles   []string // set in order; the last write wins
+	}{
+		{"series_id", sID, []string{"Настоящий детектив", `Show "Authorized" — S01`}},
+		{"item_id", iID, []string{"Эпизод 1 — Пилот"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, title := range tc.titles {
+				stored, err := s.SetTitleOverride(ctx, tc.entityID, title)
+				if err != nil {
+					t.Fatalf("SetTitleOverride %q: %v", title, err)
+				}
+				if stored.EntityID != tc.entityID || stored.Title != title || stored.UpdatedAt == "" {
+					t.Fatalf("stored record = %+v, want entity %s / title %q / nonzero stamp", stored, tc.entityID, title)
+				}
+				got, err := s.GetTitleOverride(ctx, tc.entityID)
+				if err != nil {
+					t.Fatalf("GetTitleOverride: %v", err)
+				}
+				if got.Title != title || got.UpdatedAt != stored.UpdatedAt {
+					t.Fatalf("lookup = %+v, want title %q byte-identical with stamp %q", got, title, stored.UpdatedAt)
+				}
+				documentsUnchanged(t)
+			}
+
+			// Exactly one control row per entity — the upsert, not append.
+			var rows int
+			if err := s.db.QueryRowContext(ctx,
+				"SELECT COUNT(*) FROM title_overrides WHERE entity_id = ?", tc.entityID).Scan(&rows); err != nil {
+				t.Fatalf("count rows: %v", err)
+			}
+			if rows != 1 {
+				t.Fatalf("rows for %s = %d, want 1 (upsert, not append)", tc.entityID, rows)
+			}
+
+			// Clear, read absent, clear again — the second clear is a no-op.
+			if err := s.ClearTitleOverride(ctx, tc.entityID); err != nil {
+				t.Fatalf("ClearTitleOverride: %v", err)
+			}
+			if _, err := s.GetTitleOverride(ctx, tc.entityID); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("GetTitleOverride after clear err = %v, want wrapped sql.ErrNoRows", err)
+			}
+			if err := s.ClearTitleOverride(ctx, tc.entityID); err != nil {
+				t.Fatalf("ClearTitleOverride absent (must be a no-op): %v", err)
+			}
+			documentsUnchanged(t)
+		})
+	}
+
+	t.Run("unknown_entity_refused", func(t *testing.T) {
+		if _, err := s.SetTitleOverride(ctx, "itm_ghost", "Ghost"); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("SetTitleOverride(unknown) err = %v, want wrapped sql.ErrNoRows", err)
+		}
+		// Nothing written: the unknown id still reads as absent.
+		if _, err := s.GetTitleOverride(ctx, "itm_ghost"); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("GetTitleOverride(unknown) err = %v, want wrapped sql.ErrNoRows", err)
+		}
+	})
 }

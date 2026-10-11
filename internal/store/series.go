@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -256,6 +257,80 @@ func (s *Store) queryItemsBySeriesFile(ctx context.Context, sr Series) ([]Item, 
 		return nil, fmt.Errorf("store: query items by series: %w", err)
 	}
 	return out, nil
+}
+
+// TitleOverride is one stored manual display-title override (serial-watch-flow
+// D-1): the control state beside the document. EntityID is a series row id or
+// an item id — the ser_ prefix keeps the two id spaces disjoint, so they share
+// the one table. Title is an opaque human string (the store stays
+// value-agnostic; the api layer owns the non-empty validation) and UpdatedAt
+// is the raw RFC3339Nano TEXT as persisted (string, not time.Time — the
+// PlaybackProgress convention, so the api layer can put it straight on the
+// wire).
+type TitleOverride struct {
+	EntityID  string
+	Title     string
+	UpdatedAt string
+}
+
+// SetTitleOverride upserts entityID's manual display-title override: the
+// INSERT ... ON CONFLICT overwrites title and refreshes updated_at, so the
+// table holds exactly ONE row per entity whose title always reflects the
+// latest write. The entity must exist — a series or item row, the two id
+// spaces of the one table — a missing one yields a wrapped sql.ErrNoRows (the
+// api layer maps it to 404) and NOTHING is written. It is control state beside
+// the document (D-1): no document namespace is read or written, and the
+// override is identity-keyed — it dies with the identity exactly like parser
+// attachments.
+func (s *Store) SetTitleOverride(ctx context.Context, entityID string, title string) (TitleOverride, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, `
+SELECT 1 FROM items WHERE id = ?
+UNION
+SELECT 1 FROM series WHERE id = ?`, entityID, entityID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TitleOverride{}, fmt.Errorf("store: set title override %s: %w", entityID, err)
+	}
+	if err != nil {
+		return TitleOverride{}, fmt.Errorf("store: set title override %s (entity check): %w", entityID, err)
+	}
+	updatedAt := formatTime(time.Now().UTC())
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO title_overrides (entity_id, title, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(entity_id) DO UPDATE SET
+  title      = excluded.title,
+  updated_at = excluded.updated_at`,
+		entityID, title, updatedAt,
+	); err != nil {
+		return TitleOverride{}, fmt.Errorf("store: set title override %s: %w", entityID, err)
+	}
+	return TitleOverride{EntityID: entityID, Title: title, UpdatedAt: updatedAt}, nil
+}
+
+// ClearTitleOverride deletes entityID's override. It is idempotent: clearing
+// an entity with no override is a no-op, never an error (the api DELETE's 204).
+// Like the write it touches only the control table — no document namespace.
+func (s *Store) ClearTitleOverride(ctx context.Context, entityID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		"DELETE FROM title_overrides WHERE entity_id = ?", entityID); err != nil {
+		return fmt.Errorf("store: clear title override %s: %w", entityID, err)
+	}
+	return nil
+}
+
+// GetTitleOverride loads entityID's stored override. A missing row yields a
+// wrapped sql.ErrNoRows — the absent-override read the api layer renders as an
+// empty title_override wire field (the tolerant-lookup contract: tolerated by
+// every caller, never an error beyond the sentinel).
+func (s *Store) GetTitleOverride(ctx context.Context, entityID string) (TitleOverride, error) {
+	var o TitleOverride
+	row := s.db.QueryRowContext(ctx,
+		"SELECT entity_id, title, updated_at FROM title_overrides WHERE entity_id = ?", entityID)
+	if err := row.Scan(&o.EntityID, &o.Title, &o.UpdatedAt); err != nil {
+		return TitleOverride{}, fmt.Errorf("store: get title override %s: %w", entityID, err)
+	}
+	return o, nil
 }
 
 // seriesColumns is the canonical series column list for selects. The document

@@ -129,7 +129,7 @@ func TestStreamsJoint(t *testing.T) {
 		t.Cleanup(release) // never let a cleanup hang on a still-blocked worker
 		var calls atomic.Int32
 		entered := make(chan struct{}, 8)
-		pack := func(ctx context.Context, itemID, absPath string, ffprobe map[string]any) (enrich.PackOutcome, error) {
+		pack := func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
 			calls.Add(1)
 			entered <- struct{}{}
 			select {
@@ -137,7 +137,7 @@ func TestStreamsJoint(t *testing.T) {
 			case <-ctx.Done():
 				return enrich.PackOutcome{}, ctx.Err()
 			}
-			build, err := w.media.Pack(ctx, itemID, absPath, ffprobe)
+			build, err := w.media.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
 			return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce}, err
 		}
 		qq := w.pbNewQueue(t, pack, leaseTTL)

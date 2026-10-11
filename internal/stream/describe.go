@@ -4,6 +4,7 @@
 package stream
 
 import (
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,16 +55,70 @@ const (
 //   - sections: the stored ffprobe chapters projected to
 //     {kind:"chapter", start, end?, title?}, ordered by start. The marker kind
 //     is never produced in v1.
-func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections []map[string]any) {
+//   - voiceovers: the episode document's episode-linked audio sidecars
+//     projected to {index, label} in document order (serial-watch-flow D-2) —
+//     stored facts only, never a re-probe, never a packaging-state write.
+func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any) {
 	s.normalize()
 	state = streamState(doc["streams"])
+	voiceovers = projectVoiceovers(doc["parsed"])
 	token, _ := s.Issue(itemID, timeNow())
 	if state == StatePartial || state == StateComplete {
 		if playlist := streamPlaylist(doc["streams"]); playlist != "" {
-			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, projectChapters(doc["ffprobe"])
+			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, projectChapters(doc["ffprobe"]), voiceovers
 		}
 	}
-	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, projectChapters(doc["ffprobe"])
+	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, projectChapters(doc["ffprobe"]), voiceovers
+}
+
+// projectVoiceovers projects the episode document's parsed.sidecars into the
+// descriptor's read-only voiceovers shape (serial-watch-flow D-2): document
+// order, each entry {index, label} — index is the sidecar's document index
+// (the same index the sidecar media variant resolves against), the label
+// resolved as the language fact when present, else the containing folder
+// name, else the file name. Only AUDIO sidecars are voiceovers; subtitle
+// sidecars and serial-level sidecars (parsed.series_sidecars) never project.
+// An episode with no audio sidecars carries an empty list. Stored facts only —
+// never a re-probe, never a write.
+func projectVoiceovers(parsed any) []map[string]any {
+	out := []map[string]any{}
+	p, ok := parsed.(map[string]any)
+	if !ok {
+		return out
+	}
+	raw, ok := p["sidecars"].([]any)
+	if !ok {
+		return out
+	}
+	for i, c := range raw {
+		sc, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if kind, _ := sc["kind"].(string); kind != "audio" {
+			continue
+		}
+		out = append(out, map[string]any{
+			"index": i,
+			"label": voiceoverLabel(sc),
+		})
+	}
+	return out
+}
+
+// voiceoverLabel resolves one voiceover's display label: the language fact
+// when present, else the containing folder name, else the file name (D-2).
+// Sidecar relative paths are scanner-stamped slash paths; an unreadable
+// relative_path degrades to "".
+func voiceoverLabel(sc map[string]any) string {
+	if lang, _ := sc["language"].(string); strings.TrimSpace(lang) != "" {
+		return lang
+	}
+	rel, _ := sc["relative_path"].(string)
+	if dir := path.Dir(rel); dir != "." && dir != "/" && dir != "" {
+		return path.Base(dir)
+	}
+	return path.Base(rel)
 }
 
 // streamState reads the packaging state from the stored streams namespace

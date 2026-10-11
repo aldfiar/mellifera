@@ -167,6 +167,15 @@ func mountV1Routes(r chi.Router, h *app) {
 		// sibling items (keyed by item).
 		r.Put("/items/{id}/parsers", h.putItemParsers)
 		r.Delete("/items/{id}/parsers", h.deleteItemParsers)
+		// Title overrides (serial-watch-flow 2.1): manual display titles over
+		// the series and item id spaces — operator mutations, so the admin
+		// group. PUT stores the record (200 with it), DELETE clears it (204,
+		// idempotent). The override is control state beside the document: no
+		// document namespace is read or written (D-1).
+		r.Put("/series/{id}/title", h.putSeriesTitle)
+		r.Delete("/series/{id}/title", h.deleteSeriesTitle)
+		r.Put("/items/{id}/title", h.putItemTitle)
+		r.Delete("/items/{id}/title", h.deleteItemTitle)
 		r.Get("/admin/status", h.adminStatus)
 	})
 }

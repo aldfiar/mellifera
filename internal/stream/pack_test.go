@@ -25,7 +25,7 @@ func TestPackLane(t *testing.T) {
 		fixture := makeFixture(t, dir, 12*time.Second) // head 5s + tail 7s: both phases run
 		s := newTestService(t, filepath.Join(dir, "streams"), 5*time.Second)
 
-		build, err := s.Pack(ctx, "it1", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}})
+		build, err := s.Pack(ctx, "it1", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}}, nil)
 		if err != nil {
 			t.Fatalf("Pack: %v", err)
 		}
@@ -75,7 +75,7 @@ func TestPackLane(t *testing.T) {
 		fixture := makeFixture(t, dir, 12*time.Second)
 		s := newTestService(t, filepath.Join(dir, "streams"), 600*time.Second) // default head
 
-		build, err := s.Pack(ctx, "it_short", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}})
+		build, err := s.Pack(ctx, "it_short", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}}, nil)
 		if err != nil {
 			t.Fatalf("Pack: %v", err)
 		}
@@ -97,12 +97,12 @@ func TestPackLane(t *testing.T) {
 		fixture := makeFixture(t, dir, 12*time.Second)
 		s := newTestService(t, filepath.Join(dir, "streams"), 600*time.Second)
 
-		b1, err := s.Pack(ctx, "it2", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}})
+		b1, err := s.Pack(ctx, "it2", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}}, nil)
 		if err != nil {
 			t.Fatalf("Pack 1: %v", err)
 		}
 		oldBytes := readFile(t, filepath.Join(s.Root, "it2", b1.Nonce, "index.m3u8"))
-		b2, err := s.Pack(ctx, "it2", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}})
+		b2, err := s.Pack(ctx, "it2", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}}, nil)
 		if err != nil {
 			t.Fatalf("Pack 2: %v", err)
 		}
@@ -121,7 +121,7 @@ func TestPackLane(t *testing.T) {
 		s := newTestService(t, root, 600*time.Second)
 		s.FFmpeg = filepath.Join(dir, "no-such-ffmpeg") // LookPath fails
 
-		if _, err := s.Pack(ctx, "it3", fixture, nil); err == nil {
+		if _, err := s.Pack(ctx, "it3", fixture, nil, nil); err == nil {
 			t.Fatal("Pack succeeded without ffmpeg; want an error")
 		}
 		// Nothing published: no playlist anywhere under the artifact root
@@ -142,8 +142,8 @@ func TestPackLane(t *testing.T) {
 			seekTo  bool // tail: -ss before -i
 			limitTo bool // head: -t duration cap
 		}{
-			{"head", packHeadArgs("/in/f.mkv", 600*time.Second, 4*time.Second, dir), false, true},
-			{"tail", packTailArgs("/in/f.mkv", 600*time.Second, 4*time.Second, dir), true, false},
+			{"head", packHeadArgs("/in/f.mkv", nil, 600*time.Second, 4*time.Second, dir), false, true},
+			{"tail", packTailArgs("/in/f.mkv", nil, 600*time.Second, 4*time.Second, dir), true, false},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -230,7 +230,7 @@ func TestHeadFirst(t *testing.T) {
 		}
 	}
 
-	build, err := s.Pack(ctx, "it_hf", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}})
+	build, err := s.Pack(ctx, "it_hf", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}}, nil)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}

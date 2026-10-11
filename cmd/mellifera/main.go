@@ -170,8 +170,8 @@ func main() {
 		Secret:   cfg.mediaSecret,
 		Original: originalResolver(st),
 	}
-	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any) (enrich.PackOutcome, error) {
-		build, err := mediaSvc.Pack(ctx, itemID, absPath, ffprobe)
+	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
+		build, err := mediaSvc.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
 		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce}, err
 	}
 	// Async enrich queue (arch §4.4): a bounded worker pool that derives pending
@@ -247,14 +247,15 @@ func main() {
 			if err := json.Unmarshal(row.Document, &doc); err != nil {
 				return api.Playback{}, err
 			}
-			mode, state, playURL, sections := mediaSvc.Describe(itemID, doc)
+			mode, state, playURL, sections, voiceovers := mediaSvc.Describe(itemID, doc)
 			token, _ := mediaSvc.Issue(itemID, time.Now()) // cookie-primary delivery
 			return api.Playback{
-				Mode:     mode,
-				State:    state,
-				PlayURL:  playURL,
-				Sections: sections,
-				Token:    token,
+				Mode:       mode,
+				State:      state,
+				PlayURL:    playURL,
+				Sections:   sections,
+				Voiceovers: voiceovers,
+				Token:      token,
 			}, nil
 		},
 		// Play verb (D-7 — the ONLY playback mutation): retry re-enqueues a

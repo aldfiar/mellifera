@@ -140,9 +140,9 @@ func pbNewWorld(t *testing.T) *pbWorld {
 			if err := json.Unmarshal(row.Document, &doc); err != nil {
 				return api.Playback{}, err
 			}
-			mode, state, playURL, sections := media.Describe(itemID, doc)
+			mode, state, playURL, sections, voiceovers := media.Describe(itemID, doc)
 			tok, _ := media.Issue(itemID, time.Now())
-			return api.Playback{Mode: mode, State: state, PlayURL: playURL, Sections: sections, Token: tok}, nil
+			return api.Playback{Mode: mode, State: state, PlayURL: playURL, Sections: sections, Voiceovers: voiceovers, Token: tok}, nil
 		},
 	})
 	handler := web.Handler(apiH, web.Options{Media: media})
@@ -156,13 +156,13 @@ func pbNewWorld(t *testing.T) *pbWorld {
 // pbNewQueue constructs and starts the production enrich queue over the world
 // with the given PackItem closure (nil = the plain real pack, mirroring
 // main.go's wiring). leaseTTL <= 0 keeps the production default.
-func (w *pbWorld) pbNewQueue(t *testing.T, pack func(ctx context.Context, itemID, absPath string, ffprobe map[string]any) (enrich.PackOutcome, error), leaseTTL time.Duration) *enrich.Queue {
+func (w *pbWorld) pbNewQueue(t *testing.T, pack func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error), leaseTTL time.Duration) *enrich.Queue {
 	t.Helper()
 	deps := enrich.Deps{Store: w.st, Modules: w.reg, Plugins: w.mgr}
 	deps.PackItem = pack
 	if pack == nil {
-		deps.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any) (enrich.PackOutcome, error) {
-			build, err := w.media.Pack(ctx, itemID, absPath, ffprobe)
+		deps.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
+			build, err := w.media.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
 			return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce}, err
 		}
 	}

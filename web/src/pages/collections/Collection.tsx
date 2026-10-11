@@ -1,17 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
+import {
+  useMutation,
+  useQueryClient,
+  type UseMutationResult,
+} from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import {
   ENDPOINTS,
+  deleteItemTitle,
+  deleteSeriesTitle,
   hasFrameGrabberThumb,
   hasOriginalFile,
+  setItemTitle,
+  setSeriesTitle,
   type ApiError,
   type ItemDTO,
   type LibraryDTO,
   type ListItemsParams,
   type SeriesDTO,
+  type TitleOverrideDTO,
 } from "@/lib/api";
 import {
   useItemMedia,
@@ -101,6 +111,19 @@ function stringField(value: unknown): string | null {
 // episode facts (tv-parser's filename parse).
 function episodeLabel(season: number, episode: number): string {
   return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+}
+
+// episodeTitle — the episode row's display title, the SAME fallback chain as
+// the series card (serial-watch-flow 4.2): the stored manual override first
+// (title_override), then the document's parsed/plugin title (`_view.title`
+// verbatim — a document with no title fact reports "—", which is NOT a name,
+// so the chain continues), then the raw file name.
+function episodeTitle(item: ItemDTO): string {
+  if (item.title_override) {
+    return item.title_override;
+  }
+  const parsed = viewTitle(item.document);
+  return parsed === "—" ? fileName(item.relative_path) : parsed;
 }
 
 // parsedChips — the parsed-fact chips for a movie file card, read generically
@@ -423,41 +446,54 @@ function MoviesBody(props: { libraryId: number }): ReactElement {
 // duration, raw filename, deep-link into the item detail. A document without
 // the fact renders exactly the text card — never a broken-image state (D6:
 // the thumb variant is requested only when the fact exists).
-function MovieCard(props: { item: ItemDTO; handoff: BrowseHandoff }): ReactElement {
+// `displayTitle` lets a caller resolve the title through its own fallback
+// chain (the episode flow passes episodeTitle); the default is the
+// document's `_view` title. `rename` renders an affordance row INSIDE the
+// card but OUTSIDE the Link — a form control is never nested in an anchor.
+function MovieCard(props: {
+  item: ItemDTO;
+  handoff: BrowseHandoff;
+  displayTitle?: string;
+  rename?: ReactElement;
+}): ReactElement {
   const { item, handoff } = props;
+  const title = props.displayTitle ?? viewTitle(item.document);
   const duration = durationSeconds(item.document);
   const hasThumb = hasFrameGrabberThumb(item.document);
   const thumb = useItemMedia(hasThumb ? ENDPOINTS.itemMedia(item.id, "thumb") : null);
 
   return (
-    <Link
-      to={`/items/${item.id}`}
-      state={handoff}
-      className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
-    >
-      {hasThumb ? (
-        <span
-          className="block aspect-video w-full overflow-hidden rounded-md bg-muted"
-          aria-hidden="true"
-        >
-          <MediaImg src={thumb} />
-        </span>
-      ) : null}
-      <span className="text-sm font-medium">{viewTitle(item.document)}</span>
-      <span className="flex flex-wrap gap-1">
-        {parsedChips(item.document).map((chip) => (
-          <span key={chip} className="chip">
-            {chip}
+    <div className="flex h-full flex-col gap-2">
+      <Link
+        to={`/items/${item.id}`}
+        state={handoff}
+        className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
+      >
+        {hasThumb ? (
+          <span
+            className="block aspect-video w-full overflow-hidden rounded-md bg-muted"
+            aria-hidden="true"
+          >
+            <MediaImg src={thumb} />
           </span>
-        ))}
-        {duration !== null ? (
-          <span className="chip">{formatPosition(duration)}</span>
         ) : null}
-      </span>
-      <span className="break-all font-mono text-xs text-muted-foreground">
-        {fileName(item.relative_path)}
-      </span>
-    </Link>
+        <span className="text-sm font-medium">{title}</span>
+        <span className="flex flex-wrap gap-1">
+          {parsedChips(item.document).map((chip) => (
+            <span key={chip} className="chip">
+              {chip}
+            </span>
+          ))}
+          {duration !== null ? (
+            <span className="chip">{formatPosition(duration)}</span>
+          ) : null}
+        </span>
+        <span className="break-all font-mono text-xs text-muted-foreground">
+          {fileName(item.relative_path)}
+        </span>
+      </Link>
+      {props.rename ?? null}
+    </div>
   );
 }
 
@@ -650,13 +686,17 @@ function SerialsBody(props: { libraryId: number }): ReactElement {
   return <SeriesGrid libraryId={props.libraryId} />;
 }
 
-// serialTitle — the series' display title, precedence-ordered: the cleaned
-// display title serial-parser writes into its source namespace once
-// enrichment has run, else the raw directory name (parsed.dir_name_raw)
-// verbatim — Cyrillic names are first-class and are never reformatted — else
-// the relative path's last segment (a row whose scan produced neither fact
-// still names itself honestly).
+// serialTitle — the series' display title, precedence-ordered (serial-watch-flow
+// 4.1): the stored manual override first (title_override — the operator's name
+// beats every document fact), then the cleaned display title serial-parser
+// writes into its source namespace once enrichment has run, then the raw
+// directory name (parsed.dir_name_raw) verbatim — Cyrillic names are
+// first-class and are never reformatted — else the relative path's last
+// segment (a row whose scan produced neither fact still names itself honestly).
 function serialTitle(sr: SeriesDTO): string {
+  if (sr.title_override) {
+    return sr.title_override;
+  }
   const parser = sr.document.sources?.["serial-parser"];
   if (parser) {
     const title = stringField(parser.title);
@@ -719,42 +759,187 @@ function SeriesGrid(props: { libraryId: number }): ReactElement {
     <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
       {rows.map((sr) => (
         <li key={sr.id}>
-          <SeriesCard sr={sr} />
+          <SeriesCard sr={sr} libraryId={props.libraryId} />
         </li>
       ))}
     </ul>
   );
 }
 
+// useTitleOverride — the rename mutations for ONE entity (serial-watch-flow
+// 4.3): kind picks the id space ("series" → setSeriesTitle/deleteSeriesTitle,
+// "item" → setItemTitle/deleteItemTitle). Both run retry:0
+// (INV-no-mutation-retry — a 400/404 surfaces inline, never auto-retried) and
+// invalidate the entity's read on success so the display follows the stored
+// row. Declared file-local rather than in lib/queries because only the serial
+// surface consumes the title routes and the invalidation keys are this page's.
+function useTitleOverride(
+  kind: "series" | "item",
+  entityId: string,
+  invalidate: readonly unknown[],
+): {
+  set: UseMutationResult<TitleOverrideDTO, ApiError, string>;
+  clear: UseMutationResult<void, ApiError, void>;
+} {
+  const qc = useQueryClient();
+  const invalidateRead = (): void => {
+    void qc.invalidateQueries({ queryKey: [...invalidate] });
+  };
+  const set = useMutation<TitleOverrideDTO, ApiError, string>({
+    mutationFn: (title: string) =>
+      kind === "series"
+        ? setSeriesTitle(entityId, title)
+        : setItemTitle(entityId, title),
+    retry: 0,
+    onSuccess: invalidateRead,
+  });
+  const clear = useMutation<void, ApiError, void>({
+    mutationFn: () =>
+      kind === "series"
+        ? deleteSeriesTitle(entityId)
+        : deleteItemTitle(entityId),
+    retry: 0,
+    onSuccess: invalidateRead,
+  });
+  return { set, clear };
+}
+
+// RenameTitle — the inline rename affordance (serial-watch-flow 4.3): a
+// "Rename" toggle revealing a prefilled input with Save (PUT the override)
+// and Clear (DELETE it) actions. Canonical errors surface INLINE from the
+// mutation state — no auto-retry, no navigation; the form stays open so the
+// operator can correct the value. A landed set or clear collapses the form —
+// awaited on the exact mutation the operator just ran (NOT an isSuccess
+// effect: a stale success from the other mutation would flip when the next
+// mutate starts and slam the form shut mid-submission); the display behind it
+// follows the invalidated read (the override on set, the chain value on
+// clear).
+function RenameTitle(props: {
+  entityLabel: string;
+  initial: string;
+  set: UseMutationResult<TitleOverrideDTO, ApiError, string>;
+  clear: UseMutationResult<void, ApiError, void>;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const error = props.set.error ?? props.clear.error;
+  const busy = props.set.isPending || props.clear.isPending;
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="w-fit rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent"
+        aria-label={`Rename ${props.entityLabel}`}
+        onClick={() => {
+          setDraft(props.initial);
+          setOpen(true);
+        }}
+      >
+        Rename
+      </button>
+    );
+  }
+  return (
+    <form
+      className="flex flex-col gap-1"
+      onSubmit={(e) => {
+        e.preventDefault();
+        props.set
+          .mutateAsync(draft)
+          .then(() => setOpen(false))
+          .catch(() => {}); // the canonical error renders inline below
+      }}
+    >
+      <input
+        aria-label={`New title for ${props.entityLabel}`}
+        className="w-full rounded-md border bg-transparent px-2 py-1 text-xs"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <div className="flex gap-1">
+        <button
+          type="submit"
+          disabled={busy}
+          className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:opacity-50"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:opacity-50"
+          onClick={() => {
+            props.clear
+              .mutateAsync()
+              .then(() => setOpen(false))
+              .catch(() => {}); // the canonical error renders inline below
+          }}
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent"
+          onClick={() => setOpen(false)}
+        >
+          Close
+        </button>
+      </div>
+      {error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {error.code}: {error.message}
+        </p>
+      ) : null}
+    </form>
+  );
+}
+
 // SeriesCard — one series card: poster-ratio placeholder (media serving is a
-// deferred capability), display title (serialTitle precedence), and the fact
-// chips — the lifecycle status (ready/stale/pending), the season when the
-// document carries one, and the "file" backing marker (directory-backed
-// series are the default and stay unmarked). No episode count — that fact
-// would cost one round-trip per series. Links into the episode flow.
-function SeriesCard(props: { sr: SeriesDTO }): ReactElement {
+// deferred capability), display title (serialTitle precedence, override tier
+// first — 4.1), and the fact chips — the lifecycle status (ready/stale/
+// pending), the season when the document carries one, and the "file" backing
+// marker (directory-backed series are the default and stay unmarked). The
+// rename affordance (4.3) lives inside the card but OUTSIDE the Link — a
+// form control is never nested in an anchor. Links into the episode flow.
+function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
   const { sr } = props;
   const season = seriesSeason(sr.document);
   const backing = seriesBacking(sr.document);
+  const { set, clear } = useTitleOverride("series", sr.id, [
+    "series",
+    props.libraryId,
+  ]);
+  const titleOverride = sr.title_override ?? "";
 
   return (
-    <Link
-      to={`?series=${encodeURIComponent(sr.id)}`}
-      className="scard"
-      aria-label={`Open ${serialTitle(sr)}`}
-    >
-      <span className="scard-poster" aria-hidden="true" />
-      <span className="scard-body">
-        <span className="scard-title">{serialTitle(sr)}</span>
-        <span className="flex flex-wrap gap-1">
-          <span className="chip">{sr.status}</span>
-          {season !== null ? (
-            <span className="chip">Season {String(season)}</span>
-          ) : null}
-          {backing === "file" ? <span className="chip">file</span> : null}
+    <div className="scard">
+      <Link
+        to={`?series=${encodeURIComponent(sr.id)}`}
+        className="block"
+        aria-label={`Open ${serialTitle(sr)}`}
+      >
+        <span className="scard-poster" aria-hidden="true" />
+        <span className="scard-body">
+          <span className="scard-title">{serialTitle(sr)}</span>
+          <span className="flex flex-wrap gap-1">
+            <span className="chip">{sr.status}</span>
+            {season !== null ? (
+              <span className="chip">Season {String(season)}</span>
+            ) : null}
+            {backing === "file" ? <span className="chip">file</span> : null}
+          </span>
         </span>
-      </span>
-    </Link>
+      </Link>
+      <div className="px-2 pb-2">
+        <RenameTitle
+          entityLabel={serialTitle(sr)}
+          initial={titleOverride}
+          set={set}
+          clear={clear}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -796,8 +981,9 @@ function EpisodesView(props: {
         <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {items.map((item, index) => (
             <li key={item.id}>
-              <MovieCard
+              <EpisodeCard
                 item={item}
+                seriesId={props.seriesId}
                 handoff={browseState(
                   items.map((i) => i.id),
                   index,
@@ -809,6 +995,39 @@ function EpisodesView(props: {
         </ul>
       )}
     </section>
+  );
+}
+
+// EpisodeCard — one episode flow row: the movie card idiom with the title
+// resolved through the override-aware chain (serial-watch-flow 4.2) and the
+// row's rename affordance (box 4.3) wired to the item title routes; a set or
+// clear invalidates the episode list so the display follows the stored row.
+function EpisodeCard(props: {
+  item: ItemDTO;
+  seriesId: string;
+  handoff: BrowseHandoff;
+}): ReactElement {
+  const { set, clear } = useTitleOverride(
+    "item",
+    props.item.id,
+    ["series-episodes", props.seriesId],
+  );
+  const titleOverride = props.item.title_override ?? "";
+
+  return (
+    <MovieCard
+      item={props.item}
+      handoff={props.handoff}
+      displayTitle={episodeTitle(props.item)}
+      rename={
+        <RenameTitle
+          entityLabel={episodeTitle(props.item)}
+          initial={titleOverride}
+          set={set}
+          clear={clear}
+        />
+      }
+    />
   );
 }
 

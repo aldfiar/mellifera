@@ -18,16 +18,20 @@ import (
 // the anti-corruption seam that keeps api free of a stream import, mirroring
 // Deps.Status). Mode is "direct" or "hls"; State is the packaging state
 // ("none" | "partial" | "complete" | "failed"); Sections carries the
-// chapter-kind projection; PlayURL is the token-carrying /media URL the
-// player opens. Token is the fresh media token for the cookie-primary
-// delivery — deliberately excluded from the JSON body (INV4: the token rides
-// the Set-Cookie header, never a copyable body field).
+// chapter-kind projection; Voiceovers carries the episode document's
+// episode-linked audio sidecars as {index, label} in document order
+// (serial-watch-flow D-2 — read-only stored facts; the build maps document
+// order to audio rendition k+1, 0 is the embedded audio); PlayURL is the
+// token-carrying /media URL the player opens. Token is the fresh media token
+// for the cookie-primary delivery — deliberately excluded from the JSON body
+// (INV4: the token rides the Set-Cookie header, never a copyable body field).
 type Playback struct {
-	Mode     string           `json:"mode"`
-	State    string           `json:"state"`
-	PlayURL  string           `json:"play_url"`
-	Sections []map[string]any `json:"sections"`
-	Token    string           `json:"-"`
+	Mode       string           `json:"mode"`
+	State      string           `json:"state"`
+	PlayURL    string           `json:"play_url"`
+	Sections   []map[string]any `json:"sections"`
+	Voiceovers []map[string]any `json:"voiceovers"`
+	Token      string           `json:"-"`
 }
 
 // mediaCookieName / mediaCookieMaxAge are the cookie-primary token delivery
@@ -42,10 +46,11 @@ const (
 // playbackResponse is the wire shape for GET /items/{id}/playback: the
 // descriptor without the token (INV4 — the token goes only into Set-Cookie).
 type playbackResponse struct {
-	Mode     string           `json:"mode"`
-	State    string           `json:"state"`
-	PlayURL  string           `json:"play_url"`
-	Sections []map[string]any `json:"sections"`
+	Mode       string           `json:"mode"`
+	State      string           `json:"state"`
+	PlayURL    string           `json:"play_url"`
+	Sections   []map[string]any `json:"sections"`
+	Voiceovers []map[string]any `json:"voiceovers"`
 }
 
 // playRequest is the body of POST /items/{id}/play. Pointers carry presence:
@@ -101,10 +106,11 @@ func (a *app) itemPlayback(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, playbackResponse{
-		Mode:     pb.Mode,
-		State:    pb.State,
-		PlayURL:  pb.PlayURL,
-		Sections: pb.Sections,
+		Mode:       pb.Mode,
+		State:      pb.State,
+		PlayURL:    pb.PlayURL,
+		Sections:   pb.Sections,
+		Voiceovers: pb.Voiceovers,
 	})
 }
 

@@ -16,16 +16,21 @@ import Player from "@/components/playback/Player";
 // at the module seam (jsdom has no MSE); putProgress at the api seam.
 
 // The fake hls loader: records instances so each attach assertion can read
-// exactly what the component handed it (source URL + attached element).
+// exactly what the component handed it (source URL + attached element). The
+// audio-track surface (serial-watch-flow 5.3) mirrors the real loader's:
+// audioTracks is the manifest's rendition list, audioTrack the selected index.
 const hls = vi.hoisted(() => {
   const instances: FakeHls[] = [];
   class FakeHls {
     static isSupported = vi.fn(() => true);
-    static Events = { ERROR: "error" };
+    static Events = { ERROR: "error", AUDIO_TRACKS_UPDATED: "hlsAudioTracksUpdated" };
     loadSource = vi.fn();
     attachMedia = vi.fn();
     destroy = vi.fn();
     on = vi.fn();
+    off = vi.fn();
+    audioTracks: string[] = ["embedded", "dub", "rus"];
+    audioTrack = 0;
     constructor() {
       instances.push(this);
     }
@@ -53,7 +58,15 @@ function hlsDescriptor(overrides: Partial<PlaybackDescriptor>): PlaybackDescript
   return { ...HLS_DESCRIPTOR, ...overrides };
 }
 
-function renderPlayer(descriptor: PlaybackDescriptor, props?: { onRetry?: () => void; retrying?: boolean }): void {
+function renderPlayer(
+  descriptor: PlaybackDescriptor,
+  props?: {
+    onRetry?: () => void;
+    retrying?: boolean;
+    subtitleTrackUrl?: string | null;
+    voiceoverTrack?: number | null;
+  },
+): void {
   render(<Player itemId="itm_1_9" descriptor={descriptor} {...props} />);
 }
 
@@ -205,8 +218,7 @@ describe("Player — progress reporting (PUT /progress)", () => {
   });
 });
 
-describe("Player — retry affordance (pack_failed → POST /play retry)", () => {
-  it("renders the affordance only for a failed run with a wired callback", () => {
+describe("Player — retry affordance (pack_failed → POST /play retry)", () => {  it("renders the affordance only for a failed run with a wired callback", () => {
     const onRetry = vi.fn();
     const { rerender } = render(
       <Player itemId="itm_1_9" descriptor={hlsDescriptor({ state: "failed" })} onRetry={onRetry} />,
@@ -235,5 +247,81 @@ describe("Player — retry affordance (pack_failed → POST /play retry)", () =>
     );
     const button = screen.getByRole("button", { name: /Retrying/ }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
+  });
+});
+
+// serial-watch-flow 5.1/5.3 — the watch-surface additions: the client-
+// converted subtitle track rides the <video> as a standard <track> (remounted
+// per URL so the browser loads the new bytes), and the voiceover selection is
+// the hls audioTrack switch — segments swap, the loader and the video element
+// are untouched (no restart).
+
+describe("Player — subtitle track (serial-watch-flow 5.1)", () => {
+  it("renders the converted WebVTT as a default subtitles <track> over the video", () => {
+    renderPlayer(HLS_DESCRIPTOR, { subtitleTrackUrl: "blob:vtt-1" });
+
+    const track = theVideo().querySelector("track");
+    expect(track).not.toBeNull();
+    expect(track!.getAttribute("kind")).toBe("subtitles");
+    expect(track!.getAttribute("src")).toBe("blob:vtt-1");
+    expect(track!.hasAttribute("default")).toBe(true);
+  });
+
+  it("swaps the track per URL change and drops it when subtitles turn off", () => {
+    const { rerender } = render(
+      <Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} subtitleTrackUrl="blob:a" />,
+    );
+    rerender(
+      <Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} subtitleTrackUrl="blob:b" />,
+    );
+    expect(theVideo().querySelector("track")!.getAttribute("src")).toBe("blob:b");
+
+    rerender(
+      <Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} subtitleTrackUrl={null} />,
+    );
+    expect(theVideo().querySelector("track")).toBeNull();
+  });
+
+  it("renders no <track> when no subtitle URL is set", () => {
+    renderPlayer(HLS_DESCRIPTOR);
+    expect(theVideo().querySelector("track")).toBeNull();
+  });
+});
+
+describe("Player — voiceover selection (serial-watch-flow 5.3)", () => {
+  it("applies the selected voiceover as the hls audioTrack (0 embedded, k+1 voiceovers[k])", () => {
+    renderPlayer(HLS_DESCRIPTOR, { voiceoverTrack: 2 });
+
+    expect(hls.instances).toHaveLength(1);
+    expect(hls.instances[0].audioTrack).toBe(2);
+  });
+
+  it("switches the audioTrack in place when the selection changes — no re-attach", () => {
+    const { rerender } = render(
+      <Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} voiceoverTrack={0} />,
+    );
+    rerender(
+      <Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} voiceoverTrack={1} />,
+    );
+
+    // Exactly one loader for the same play URL: the switch is the native
+    // audioTrack operation, never a re-attach (a restart).
+    expect(hls.instances).toHaveLength(1);
+    expect(hls.instances[0].audioTrack).toBe(1);
+  });
+
+  it("registers the audioTracks-updated listener so an early selection survives the manifest parse", () => {
+    renderPlayer(HLS_DESCRIPTOR, { voiceoverTrack: 1 });
+
+    expect(hls.instances[0].on).toHaveBeenCalledWith(
+      "hlsAudioTracksUpdated",
+      expect.any(Function),
+    );
+  });
+
+  it("leaves the direct lane untouched — no hls loader, no audioTrack", () => {
+    renderPlayer(DIRECT_DESCRIPTOR, { voiceoverTrack: 1 });
+
+    expect(hls.instances).toHaveLength(0);
   });
 });

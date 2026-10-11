@@ -40,11 +40,20 @@ export interface PlayerProps {
   onRetry?: () => void;
   /** True while the retry POST is in flight (disables the affordance). */
   retrying?: boolean;
+  /** Object URL of the converted WebVTT subtitle track (serial-watch-flow 5.1);
+   *  null/absent = subtitles off. Remounted per URL so the browser reloads it. */
+  subtitleTrackUrl?: string | null;
+  /** Selected voiceover as the hls audioTrack index (serial-watch-flow 5.3):
+   *  0 = embedded audio, k+1 = the descriptor's k-th voiceover (the pack
+   *  lane's pinned build order). hls lane only — switching never restarts
+   *  the video; null/absent leaves the loader's default rendition. */
+  voiceoverTrack?: number | null;
 }
 
 export default function Player(props: PlayerProps): ReactElement {
   const { itemId, descriptor } = props;
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const hlsRef = useRef<InstanceType<typeof Hls> | null>(null);
   const reportedRef = useRef(0);
   const [fatal, setFatal] = useState(false);
 
@@ -61,6 +70,7 @@ export default function Player(props: PlayerProps): ReactElement {
     setFatal(false);
     if (isHls && Hls.isSupported()) {
       const hls = new Hls();
+      hlsRef.current = hls;
       hls.loadSource(descriptor.play_url);
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -70,6 +80,7 @@ export default function Player(props: PlayerProps): ReactElement {
       });
       return () => {
         hls.destroy();
+        hlsRef.current = null;
       };
     }
     // Direct floor (and HLS on native-HLS browsers): standard src playback.
@@ -79,6 +90,37 @@ export default function Player(props: PlayerProps): ReactElement {
       video.load();
     };
   }, [descriptor.play_url, isHls]);
+
+  // Voiceover rendition (serial-watch-flow 5.3): the page's selection maps
+  // document order → hls.audioTrack (0 = embedded, k+1 = the descriptor's
+  // k-th voiceover — the pack lane's pinned rendition order). Setting
+  // audioTrack is hls.js's native switch: segments swap, the video element
+  // and its playhead are untouched — no restart. Re-applied on every
+  // (re)attach (play_url change) AND on selection change; the
+  // AUDIO_TRACKS_UPDATED listener covers a selection made before the
+  // manifest's audio groups are known. Direct builds have no hls loader —
+  // the page disables the control there.
+  const voiceoverTrack = props.voiceoverTrack ?? null;
+  useEffect(() => {
+    const hls = hlsRef.current;
+    if (!hls || voiceoverTrack === null) {
+      return;
+    }
+    const apply = (): void => {
+      if (
+        Array.isArray(hls.audioTracks) &&
+        voiceoverTrack < hls.audioTracks.length &&
+        hls.audioTrack !== voiceoverTrack
+      ) {
+        hls.audioTrack = voiceoverTrack;
+      }
+    };
+    apply();
+    hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, apply);
+    return () => {
+      hls.off(Hls.Events.AUDIO_TRACKS_UPDATED, apply);
+    };
+  }, [voiceoverTrack, descriptor.play_url, isHls]);
 
   // Progress reporting — best-effort; the playhead edges (pause/ended) and
   // unmount flush the tail position.
@@ -139,7 +181,20 @@ export default function Player(props: PlayerProps): ReactElement {
         playsInline
         className="w-full rounded-lg border bg-black"
         aria-label={descriptor.mode === "hls" ? "Streamed playback" : "Original playback"}
-      />
+      >
+        {/* Subtitles (serial-watch-flow 5.1): the client-converted WebVTT as
+            a standard timed track — keyed per URL so a selection change
+            remounts the track and the browser loads the new bytes. */}
+        {props.subtitleTrackUrl ? (
+          <track
+            key={props.subtitleTrackUrl}
+            kind="subtitles"
+            src={props.subtitleTrackUrl}
+            label="Subtitles"
+            default
+          />
+        ) : null}
+      </video>
 
       {descriptor.state === "partial" ? (
         <p className="text-sm text-muted-foreground">

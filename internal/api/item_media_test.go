@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -205,6 +206,185 @@ func TestItemMediaThumb(t *testing.T) {
 			t.Fatalf("HEAD %s = %q, want the GET value %q", h, head.Header.Get(h), resp.Header.Get(h))
 		}
 	}
+}
+
+// sidecarHarness bundles the sidecar test's state: the authed router, the
+// store, and the episode item id whose document carries two sidecar facts —
+// a subtitle at subs/ep01.srt and a voiceover at "Rus sound/ep01.mka" under
+// the episode's directory root on disk.
+type sidecarHarness struct {
+	h      http.Handler
+	st     *store.Store
+	itemID string
+}
+
+// newSidecarHarness seeds one episode whose document resolves exactly like a
+// scanned serial episode: library root derived from absolute_path minus
+// relative_path, sidecars joined beneath it (serial-watch-flow D-4). An
+// absentFiles item and a facts-less item ride along for the 404 edges.
+func newSidecarHarness(t *testing.T) sidecarHarness {
+	t.Helper()
+	st := openAPIStore(t)
+	ctx := context.Background()
+	libID, err := st.CreateLibrary(ctx, "serial", "/media/sidecars", "Sidecars")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	root := t.TempDir()
+	files := []struct {
+		dir, name, content string
+	}{
+		{filepath.Join(root, "Show", "subs"), "ep01.srt", "1\n00:00:01,000 --> 00:00:02,000\nHello\n"},
+		{filepath.Join(root, "Show", "Rus sound"), "ep01.mka", "mka-audio-bytes"},
+	}
+	for _, f := range files {
+		if err := os.MkdirAll(f.dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", f.dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(f.dir, f.name), []byte(f.content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", f.name, err)
+		}
+	}
+	doc := func(sidecars string) string {
+		return `{"parsed":{"absolute_path":"` + filepath.Join(root, "Show", "S01E01.mkv") + `","sidecars":` + sidecars + `}}`
+	}
+	seed := func(itemID, relPath, docJSON string) {
+		t.Helper()
+		if err := st.PutItem(ctx, store.Item{
+			ID: itemID, ModuleID: "serial", LibraryID: libID, FileID: "fid-" + itemID,
+			RelativePath: relPath, MediaType: "tv",
+			Document:      json.RawMessage(docJSON),
+			SchemaVersion: 1,
+		}); err != nil {
+			t.Fatalf("PutItem %s: %v", itemID, err)
+		}
+	}
+	seed("itm_sidecar", "Show/S01E01.mkv", doc(
+		`[{"relative_path":"Show/subs/ep01.srt","kind":"subtitle","language":"ru"},{"relative_path":"Show/Rus sound/ep01.mka","kind":"audio","language":"ru"}]`))
+	seed("itm_sidecar_gone", "Gone/S01E01.mkv", `{"parsed":{"absolute_path":"`+filepath.Join(root, "Gone", "S01E01.mkv")+`","sidecars":[{"relative_path":"Gone/subs/absent.srt","kind":"subtitle"}]}}`)
+	seed("itm_no_sidecars", "Bare/S01E01.mkv", `{"parsed":{"absolute_path":"`+filepath.Join(root, "Bare", "S01E01.mkv")+`"}}`)
+	h := New(Deps{AdminToken: adminToken, Store: st})
+	return sidecarHarness{h: h, st: st, itemID: "itm_sidecar"}
+}
+
+// authedGet fires one GET with the admin bearer token and returns the response.
+func (sh sidecarHarness) authedGet(t *testing.T, path string) *http.Response {
+	t.Helper()
+	return doRequest(t, sh.h, http.MethodGet, path, "", adminToken)
+}
+
+// TestItemMediaSidecar covers the sidecar media variant (serial-watch-flow 2.3,
+// specs D-3/D-4): ?variant=sidecar&n= serves the episode document's indexed
+// sidecar bytes verbatim — extension-derived Content-Type, strong ETag,
+// Cache-Control: private, immutable, conditional 304, headers-only HEAD — and
+// every error edge answers canonically with resolution never steered by a
+// client path.
+func TestItemMediaSidecar(t *testing.T) {
+	sh := newSidecarHarness(t)
+	base := "/api/v1/items/" + sh.itemID + "/media"
+
+	t.Run("serves_indexed_bytes", func(t *testing.T) {
+		resp := sh.authedGet(t, base+"?variant=sidecar&n=0")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("n=0 status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if got := bodyBytes(t, resp); got != "1\n00:00:01,000 --> 00:00:02,000\nHello\n" {
+			t.Fatalf("n=0 body = %q, want the indexed subtitle's exact bytes", got)
+		}
+		// Extension-derived: whatever the platform maps .srt to (or the
+		// octet-stream fallback) — never a hardcoded type.
+		if want := mime.TypeByExtension(".srt"); want != "" && resp.Header.Get("Content-Type") != want {
+			t.Fatalf("n=0 Content-Type = %q, want the .srt-derived %q", resp.Header.Get("Content-Type"), want)
+		}
+		etag := resp.Header.Get("ETag")
+		if etag == "" || (len(etag) >= 2 && etag[:2] == "W/") {
+			t.Fatalf("ETag = %q, want strong", etag)
+		}
+		if cc := resp.Header.Get("Cache-Control"); cc != "private, immutable" {
+			t.Fatalf("Cache-Control = %q, want %q", cc, "private, immutable")
+		}
+
+		// n=1 serves the OTHER sidecar's bytes (index-keyed, in document order).
+		resp1 := sh.authedGet(t, base+"?variant=sidecar&n=1")
+		defer resp1.Body.Close()
+		if resp1.StatusCode != http.StatusOK {
+			t.Fatalf("n=1 status = %d, want %d", resp1.StatusCode, http.StatusOK)
+		}
+		if got := bodyBytes(t, resp1); got != "mka-audio-bytes" {
+			t.Fatalf("n=1 body = %q, want the indexed voiceover's exact bytes", got)
+		}
+
+		// A conditional re-request with the returned ETag revalidates to 304.
+		req := httptest.NewRequest(http.MethodGet, base+"?variant=sidecar&n=0", nil)
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		req.Header.Set("If-None-Match", etag)
+		rec := httptest.NewRecorder()
+		sh.h.ServeHTTP(rec, req)
+		cond := rec.Result()
+		defer cond.Body.Close()
+		if cond.StatusCode != http.StatusNotModified {
+			t.Fatalf("If-None-Match status = %d, want %d", cond.StatusCode, http.StatusNotModified)
+		}
+
+		// HEAD answers the same headers, no body (stdlib ServeContent).
+		head := doRequest(t, sh.h, http.MethodHead, base+"?variant=sidecar&n=0", "", adminToken)
+		defer head.Body.Close()
+		if head.StatusCode != http.StatusOK {
+			t.Fatalf("HEAD status = %d, want %d", head.StatusCode, http.StatusOK)
+		}
+		if b, err := io.ReadAll(head.Body); err != nil || len(b) != 0 {
+			t.Fatalf("HEAD body = %q (err %v), want empty", b, err)
+		}
+		for _, h := range []string{"Content-Type", "ETag", "Cache-Control"} {
+			if head.Header.Get(h) != resp.Header.Get(h) {
+				t.Fatalf("HEAD %s = %q, want the GET value %q", h, head.Header.Get(h), resp.Header.Get(h))
+			}
+		}
+	})
+
+	t.Run("error_edges", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			path    string
+			want    int
+			wantErr string
+		}{
+			{"missing_n_400", base + "?variant=sidecar", http.StatusBadRequest, "bad_request"},
+			{"non_integer_n_400", base + "?variant=sidecar&n=abc", http.StatusBadRequest, "bad_request"},
+			{"negative_n_400", base + "?variant=sidecar&n=-1", http.StatusBadRequest, "bad_request"},
+			{"out_of_range_n_404", base + "?variant=sidecar&n=2", http.StatusNotFound, "not_found"},
+			{"no_sidecar_facts_404", "/api/v1/items/itm_no_sidecars/media?variant=sidecar&n=0", http.StatusNotFound, "not_found"},
+			{"missing_file_404", "/api/v1/items/itm_sidecar_gone/media?variant=sidecar&n=0", http.StatusNotFound, "not_found"},
+			{"unknown_item_404", "/api/v1/items/itm_ghost/media?variant=sidecar&n=0", http.StatusNotFound, "not_found"},
+		}
+		for _, tc := range cases {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				resp := sh.authedGet(t, tc.path)
+				defer resp.Body.Close()
+				if resp.StatusCode != tc.want {
+					t.Fatalf("%s status = %d, want %d", tc.path, resp.StatusCode, tc.want)
+				}
+				if eb := decodeError(t, resp); eb.Error.Code != tc.wantErr {
+					t.Fatalf("error code = %q, want %q", eb.Error.Code, tc.wantErr)
+				}
+			})
+		}
+	})
+
+	t.Run("client_path_params_never_steer", func(t *testing.T) {
+		// Path-like parameters are not sidecar resolution inputs: n indexes the
+		// stored list, the bytes served are the indexed document fact.
+		resp := sh.authedGet(t, base+"?variant=sidecar&n=0&path=/etc/passwd&relative_path=/etc/passwd")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if got := bodyBytes(t, resp); got != "1\n00:00:01,000 --> 00:00:02,000\nHello\n" {
+			t.Fatalf("body = %q, want the document-resolved sidecar bytes (client path params ignored)", got)
+		}
+	})
 }
 
 // TestItemMediaErrors proves the error contract (spec: "Canonical errors and no

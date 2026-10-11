@@ -40,11 +40,14 @@ type Deps struct {
 	Modules *module.Registry
 	// PackItem packages one item's original file (absPath) into fMP4-HLS and
 	// returns the published build pointer. ffprobe carries the stored verbatim
-	// facts (the lane reads them only for this call). An error is a terminal
-	// packaging failure: the lane records a pack_failed ledger row under
-	// __streams__ and persists the failed state — metadata completion is never
-	// touched either way.
-	PackItem func(ctx context.Context, itemID, absPath string, ffprobe map[string]any) (PackOutcome, error)
+	// facts (the lane reads them only for this call). voiceovers are the
+	// episode-linked audio sidecar files' absolute paths in document order
+	// (serial-watch-flow D-2), extracted from the document and derived from the
+	// episode's own stored facts by documentVoiceoverPaths — never a client
+	// path. An error is a terminal packaging failure: the lane records a
+	// pack_failed ledger row under __streams__ and persists the failed state —
+	// metadata completion is never touched either way.
+	PackItem func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (PackOutcome, error)
 }
 
 // Result is the outcome of enriching one item: how many sources were attempted,

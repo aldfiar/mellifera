@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "e5cff66",
-  "source_fingerprint": "6b05f8aeccbad5f6e02ab88fdb2ff218304c39a0b41f736459ca78024218a9ef",
+  "generated_from_commit": "1ee11c3",
+  "source_fingerprint": "ecd0af9264dee47485f0fc926f9eeaba8b5cfdba6e1ee6479f79ba3f9f2ca483",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -17,27 +17,27 @@
     "ast_backends": "python3-ast (.py); regex-floor fallback for other langs"
   },
   "counts": {
-    "files_total": 219,
+    "files_total": 228,
     "by_extension": {
-      ".go": 173,
+      ".go": 181,
       ".sh": 1,
       ".js": 2,
-      ".tsx": 33,
+      ".tsx": 34,
       ".ts": 10
     },
     "by_role": {
-      "source": 129,
-      "test": 90
+      "source": 133,
+      "test": 95
     },
-    "tests": 90
+    "tests": 95
   },
   "stack": {
     "primary": "go",
     "languages": {
-      "go": 173,
+      "go": 181,
       "bash": 1,
       "javascript": 2,
-      "typescript": 43
+      "typescript": 44
     },
     "frameworks": []
   },
@@ -68,7 +68,7 @@
       "role": "test"
     },
     "cmd/mellifera/main.go": {
-      "lines": 586,
+      "lines": 587,
       "lang": "go",
       "role": "source"
     },
@@ -88,12 +88,17 @@
       "role": "source"
     },
     "internal/api/handlers.go": {
-      "lines": 1144,
+      "lines": 1252,
       "lang": "go",
       "role": "source"
     },
     "internal/api/item_media_test.go": {
-      "lines": 295,
+      "lines": 475,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/api/item_parsers_test.go": {
+      "lines": 309,
       "lang": "go",
       "role": "test"
     },
@@ -112,13 +117,18 @@
       "lang": "go",
       "role": "test"
     },
+    "internal/api/parsers.go": {
+      "lines": 135,
+      "lang": "go",
+      "role": "source"
+    },
     "internal/api/playback.go": {
-      "lines": 162,
+      "lines": 168,
       "lang": "go",
       "role": "source"
     },
     "internal/api/playback_test.go": {
-      "lines": 203,
+      "lines": 224,
       "lang": "go",
       "role": "test"
     },
@@ -143,7 +153,7 @@
       "role": "test"
     },
     "internal/api/router.go": {
-      "lines": 172,
+      "lines": 181,
       "lang": "go",
       "role": "source"
     },
@@ -173,12 +183,17 @@
       "role": "source"
     },
     "internal/enrich/enrich.go": {
-      "lines": 281,
+      "lines": 284,
       "lang": "go",
       "role": "source"
     },
     "internal/enrich/enrich_test.go": {
       "lines": 390,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/enrich/extras_test.go": {
+      "lines": 260,
       "lang": "go",
       "role": "test"
     },
@@ -233,12 +248,12 @@
       "role": "source"
     },
     "internal/enrich/streams.go": {
-      "lines": 205,
+      "lines": 239,
       "lang": "go",
       "role": "source"
     },
     "internal/enrich/streams_test.go": {
-      "lines": 276,
+      "lines": 321,
       "lang": "go",
       "role": "test"
     },
@@ -249,6 +264,16 @@
     },
     "internal/enrich/worker_test.go": {
       "lines": 130,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/element_hermetic_e2e_test.go": {
+      "lines": 200,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/element_parsers_test.go": {
+      "lines": 103,
       "lang": "go",
       "role": "test"
     },
@@ -362,6 +387,11 @@
       "lang": "go",
       "role": "test"
     },
+    "internal/itest/testdata/element-parser/main.go": {
+      "lines": 135,
+      "lang": "go",
+      "role": "source"
+    },
     "internal/module/doc.go": {
       "lines": 52,
       "lang": "go",
@@ -467,6 +497,16 @@
       "lang": "go",
       "role": "source"
     },
+    "internal/store/item_parsers.go": {
+      "lines": 91,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/store/item_parsers_test.go": {
+      "lines": 153,
+      "lang": "go",
+      "role": "test"
+    },
     "internal/store/items.go": {
       "lines": 163,
       "lang": "go",
@@ -493,7 +533,7 @@
       "role": "test"
     },
     "internal/store/open.go": {
-      "lines": 357,
+      "lines": 370,
       "lang": "go",
       "role": "source"
     },
@@ -508,12 +548,12 @@
       "role": "test"
     },
     "internal/store/series.go": {
-      "lines": 292,
+      "lines": 367,
       "lang": "go",
       "role": "source"
     },
     "internal/store/series_test.go": {
-      "lines": 284,
+      "lines": 402,
       "lang": "go",
       "role": "test"
     },
@@ -533,7 +573,7 @@
       "role": "test"
     },
     "internal/stream/describe.go": {
-      "lines": 190,
+      "lines": 245,
       "lang": "go",
       "role": "source"
     },
@@ -553,7 +593,7 @@
       "role": "test"
     },
     "internal/stream/pack.go": {
-      "lines": 320,
+      "lines": 490,
       "lang": "go",
       "role": "source"
     },
@@ -969,6 +1009,18 @@
         "JsonValue"
       ]
     },
+    "web/src/components/metadata/ParserFooter.tsx": {
+      "lines": 195,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "humanizeField",
+        "resolveDisplayPair",
+        "resolveDisplayFields",
+        "SlotNote",
+        "ParserFooter"
+      ]
+    },
     "web/src/components/metadata/ProvenanceBadge.tsx": {
       "lines": 42,
       "lang": "typescript",
@@ -1007,12 +1059,12 @@
       "role": "test"
     },
     "web/src/components/playback/Player.test.tsx": {
-      "lines": 239,
+      "lines": 327,
       "lang": "typescript",
       "role": "test"
     },
     "web/src/components/playback/Player.tsx": {
-      "lines": 198,
+      "lines": 253,
       "lang": "typescript",
       "role": "source",
       "exports": [
@@ -1124,7 +1176,7 @@
       "role": "test"
     },
     "web/src/lib/api.ts": {
-      "lines": 582,
+      "lines": 729,
       "lang": "typescript",
       "role": "source",
       "exports": [
@@ -1138,14 +1190,16 @@
         "listProgress",
         "getSeries",
         "getSeriesEpisodes",
+        "setSeriesTitle",
+        "setItemTitle",
+        "apiRequestVoid",
+        "deleteSeriesTitle",
+        "deleteItemTitle",
         "getPlayback",
         "playItem",
         "putProgress",
         "getItem",
-        "hasFrameGrabberThumb",
-        "hasOriginalFile",
-        "fetchItemMediaObjectUrl",
-        "apiRequest"
+        "hasFrameGrabberThumb"
       ]
     },
     "web/src/lib/auth.ts": {
@@ -1238,12 +1292,12 @@
       ]
     },
     "web/src/pages/browse/ItemDetail.test.tsx": {
-      "lines": 826,
+      "lines": 1191,
       "lang": "typescript",
       "role": "test"
     },
     "web/src/pages/browse/ItemDetail.tsx": {
-      "lines": 671,
+      "lines": 869,
       "lang": "typescript",
       "role": "source",
       "exports": [
@@ -1251,12 +1305,12 @@
       ]
     },
     "web/src/pages/collections/Collection.test.tsx": {
-      "lines": 666,
+      "lines": 865,
       "lang": "typescript",
       "role": "test"
     },
     "web/src/pages/collections/Collection.tsx": {
-      "lines": 863,
+      "lines": 1082,
       "lang": "typescript",
       "role": "source",
       "exports": [
@@ -1304,6 +1358,7 @@
   "importers": {},
   "entry_points": [
     "cmd/mellifera/main.go",
+    "internal/itest/testdata/element-parser/main.go",
     "internal/plugin/testdata/fakeplugin/main.go",
     "plugins/base-scanner/main.go",
     "plugins/frame-grabber/main.go",

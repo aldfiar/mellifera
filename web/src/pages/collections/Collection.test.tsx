@@ -483,6 +483,205 @@ describe("Collection — serial body (box 5.4)", () => {
   });
 });
 
+describe("Collection — serial title chains (serial-watch-flow group 4)", () => {
+  // srow — a /series wire row fixture for the title-chain cases: parser
+  // namespace, parsed.dir_name_raw, and the stored title_override ("" when
+  // unset) are all independently controllable.
+  function srow(parts: {
+    id: string;
+    title?: string;
+    dirNameRaw?: string;
+    titleOverride?: string;
+  }): SeriesDTO {
+    const d: ItemDocument = {};
+    if (parts.title !== undefined) {
+      d.sources = { "serial-parser": { title: parts.title } };
+    }
+    if (parts.dirNameRaw !== undefined) {
+      d.parsed = { dir_name_raw: parts.dirNameRaw };
+    }
+    return {
+      id: parts.id,
+      module_id: "serial",
+      library_id: 1,
+      relative_path: parts.dirNameRaw ?? parts.id,
+      document: d,
+      schema_version: 1,
+      status: "ready",
+      title_override: parts.titleOverride ?? "",
+    };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("series cards resolve override → parser title → raw directory name", async () => {
+    fetchWith({
+      ...headerSeam("serial", 3),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              srow({
+                id: "ser_1_ovr",
+                title: "Parser Name",
+                dirNameRaw: "dir.raw",
+                titleOverride: "Operator's Name",
+              }),
+              srow({ id: "ser_1_par", title: "Only Parser" }),
+              srow({ id: "ser_1_raw", dirNameRaw: "Сырое Имя" }),
+            ],
+          }),
+        ),
+    });
+    renderCollection("1");
+
+    // The override wins over every document fact.
+    const ovr = await screen.findByRole("link", { name: /Operator's Name/ });
+    expect(within(ovr).queryByText("Parser Name")).toBeNull();
+    expect(within(ovr).queryByText("dir.raw")).toBeNull();
+    // No override → the parser title…
+    expect(screen.getByRole("link", { name: /Only Parser/ })).toBeDefined();
+    // …and no parser title → the raw directory name, verbatim.
+    expect(screen.getByRole("link", { name: /Сырое Имя/ })).toBeDefined();
+  });
+
+  it("episode rows resolve override → parsed title → file name", async () => {
+    const overridden = item(
+      "itm_1_e0",
+      "serial",
+      "Show 2019/S01E00.mkv",
+      doc({ title: "Parsed E0" }),
+    );
+    overridden.title_override = "Renamed Episode";
+    const parsedOnly = item(
+      "itm_1_e1",
+      "serial",
+      "Show 2019/S01E01.mkv",
+      doc({ title: "Show 2019 S01E01" }),
+    );
+    const nameless = item("itm_1_e2", "serial", "Show 2019/S01E02.mkv", doc({}));
+
+    fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [srow({ id: "ser_1_show", dirNameRaw: "Show 2019" })],
+          }),
+        ),
+      "/api/v1/series/ser_1_show/episodes": () =>
+        Promise.resolve(
+          jsonResponse(200, { items: [overridden, parsedOnly, nameless] }),
+        ),
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("link", { name: /Show 2019/ }));
+
+    // The override beats the parsed title.
+    const e0 = await screen.findByRole("link", { name: /Renamed Episode/ });
+    expect(within(e0).queryByText("Parsed E0")).toBeNull();
+    // Parsed title with no override.
+    expect(screen.getByRole("link", { name: /Show 2019 S01E01/ })).toBeDefined();
+    // Neither → the raw file name (title span AND filename span agree).
+    const e2 = screen.getByRole("link", { name: /S01E02\.mkv/ });
+    expect(within(e2).getAllByText("S01E02.mkv").length).toBe(2);
+  });
+
+  it("rename PUTs and the display follows; clear DELETEs back to the chain; a 400 surfaces inline once", async () => {
+    let override = "";
+    const puts: string[] = [];
+    let deletes = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/series/ser_1_show/title")) {
+        if (method === "PUT") {
+          const { title } = JSON.parse(String(init?.body)) as { title: string };
+          puts.push(title);
+          if (title.trim() === "") {
+            return Promise.resolve(
+              jsonResponse(400, {
+                error: {
+                  code: "bad_request",
+                  message: "title is required and must be a non-empty string",
+                  retryable: false,
+                },
+              }),
+            );
+          }
+          override = title;
+          return Promise.resolve(
+            jsonResponse(200, {
+              entity_id: "ser_1_show",
+              title,
+              updated_at: "2026-10-11T00:00:00Z",
+            }),
+          );
+        }
+        deletes += 1;
+        override = "";
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.includes("/api/v1/series?library=1")) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              srow({
+                id: "ser_1_show",
+                dirNameRaw: "Show 2019",
+                titleOverride: override || undefined,
+              }),
+            ],
+          }),
+        );
+      }
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(
+          jsonResponse(200, { library_id: 1, items: 1, updated_at: "" }),
+        );
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "serial", "films")] }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    renderCollection("1");
+
+    // Rename: the PUT fires once and the card's title follows the override.
+    fireEvent.click(await screen.findByRole("button", { name: "Rename Show 2019" }));
+    fireEvent.change(screen.getByLabelText("New title for Show 2019"), {
+      target: { value: "Better Name" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const renamed = await screen.findByRole("link", { name: /Better Name/ });
+    expect(within(renamed).queryByText("Show 2019")).toBeNull();
+    expect(puts).toEqual(["Better Name"]);
+
+    // Clear: the DELETE fires and the chain value returns.
+    fireEvent.click(screen.getByRole("button", { name: "Rename Better Name" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(await screen.findByRole("link", { name: /Show 2019/ })).toBeDefined();
+    expect(deletes).toBe(1);
+
+    // Invalid submission: whitespace-only → the canonical 400 surfaces
+    // inline, exactly once (no auto-retry behind the failure).
+    fireEvent.click(screen.getByRole("button", { name: "Rename Show 2019" }));
+    fireEvent.change(screen.getByLabelText("New title for Show 2019"), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toBeDefined();
+    expect(screen.getByText(/bad_request: title is required/)).toBeDefined();
+    expect(puts).toEqual(["Better Name", "   "]);
+  });
+});
+
 describe("Collection — media tiles (media-preview group 2)", () => {
   // stubObjectUrls — jsdom has no createObjectURL/revokeObjectURL; the hook's
   // whole contract is those two calls, so they are observable stubs here.

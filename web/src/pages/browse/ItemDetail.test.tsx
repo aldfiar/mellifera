@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import * as apiModule from "@/lib/api";
-import type { ItemResponse, LibraryDTO } from "@/lib/api";
+import type { ItemResponse, LibraryDTO, PlaybackDescriptor } from "@/lib/api";
+import { TOKEN_KEY } from "@/lib/auth";
 import ItemDetail, { type BrowseHandoff } from "@/pages/browse/ItemDetail";
 
 // Group-2 slice: ItemDetail → useItem → getItem (the S5-style consumer joint
@@ -822,5 +823,369 @@ describe("ItemDetail — slideshow interplay: manual reset, Esc stop-then-back",
     // Second Esc (not running): navigates back to the collection.
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.getByText("Collection page")).toBeDefined();
+  });
+});
+
+// ---- Watch controls (serial-watch-flow group 5) ----------------------------
+//
+// The episode page's subtitle + voiceover selection. getItem/getPlayback are
+// mocked at the api seam; the sidecar bytes travel the global fetch (spied),
+// the converted WebVTT rides stubbed blob URLs, and hls.js is mocked at the
+// module seam exactly as in Player.test.tsx (jsdom has no MSE) — so the
+// control's contracts (sidecar list + not-renderable state, document-indexed
+// authenticated fetch, direct-build disabled state, per-visit selections)
+// are asserted independently of the network. The mock is file-wide but only
+// load-bearing here: the earlier describes' playback fetch fails, so their
+// Player never mounts.
+
+const watchHls = vi.hoisted(() => {
+  const instances: WatchFakeHls[] = [];
+  class WatchFakeHls {
+    static isSupported = vi.fn(() => true);
+    static Events = { ERROR: "error", AUDIO_TRACKS_UPDATED: "hlsAudioTracksUpdated" };
+    loadSource = vi.fn();
+    attachMedia = vi.fn();
+    destroy = vi.fn();
+    on = vi.fn();
+    off = vi.fn();
+    audioTracks: string[] = ["embedded", "rus"];
+    audioTrack = 0;
+    constructor() {
+      instances.push(this);
+    }
+  }
+  return { FakeHls: WatchFakeHls, instances };
+});
+
+vi.mock("hls.js/light", () => ({ default: watchHls.FakeHls }));
+
+// An episode with the sidecar facts (serial-scanner posture): one top-level
+// .ass, one AUDIO sidecar interleaved at document index 1 (the n= space the
+// media endpoint resolves is the FULL list), one language-stamped .srt in a
+// folder, and one .sub — the not-renderable case (box 5.2).
+const SIDECAR_EPISODE: ItemResponse = {
+  item: {
+    ...ITEM_RESPONSE.item,
+    id: "itm_5_ep",
+    document: {
+      parsed: {
+        sidecars: [
+          { relative_path: "s01e01.ass", kind: "subtitle", language: "" },
+          {
+            relative_path: "Rus sound/s01e01.mka",
+            kind: "audio",
+            language: "Русская",
+          },
+          {
+            relative_path: "Rus subs/s01e01.srt",
+            kind: "subtitle",
+            language: "Русская",
+          },
+          { relative_path: "s01e01.sub", kind: "subtitle", language: "" },
+        ],
+      },
+    },
+  },
+};
+
+// The stepped-to episode carries the SAME sidecar facts, so the reset
+// assertion reads the controls on a page that still renders them.
+const NEXT_EPISODE: ItemResponse = {
+  item: {
+    ...SIDECAR_EPISODE.item,
+    id: "itm_5_next",
+    relative_path: "shows/Оська/s01e02.mkv",
+  },
+};
+
+// A plain episode — no sidecar facts, no watch-control surface.
+const PLAIN_EPISODE: ItemResponse = {
+  item: {
+    ...SIDECAR_EPISODE.item,
+    id: "itm_5_next",
+    relative_path: "shows/Оська/s01e02.mkv",
+    document: {},
+  },
+};
+
+const HLS_PLAYBACK: PlaybackDescriptor = {
+  mode: "hls",
+  state: "complete",
+  play_url: "/media/itm_5_ep/abc123/index.m3u8?token=tok",
+  sections: [],
+  voiceovers: [{ index: 1, label: "Русская" }],
+};
+
+const DIRECT_PLAYBACK: PlaybackDescriptor = {
+  mode: "direct",
+  state: "none",
+  play_url: "/media/itm_5_ep/original?token=tok",
+  sections: [],
+  voiceovers: [{ index: 1, label: "Русская" }],
+};
+
+const SRT_BYTES = [
+  "1",
+  "00:00:01,000 --> 00:00:04,000",
+  "Привет",
+].join("\n");
+
+function mockPlayback(descriptor: PlaybackDescriptor): void {
+  vi.spyOn(apiModule, "getItem").mockImplementation(async (id: string) => {
+    if (id === SIDECAR_EPISODE.item.id) {
+      return SIDECAR_EPISODE;
+    }
+    if (id === NEXT_EPISODE.item.id) {
+      return NEXT_EPISODE;
+    }
+    throw new apiModule.ApiError(404, {
+      code: "not_found",
+      message: "item not found",
+      retryable: false,
+    });
+  });
+  vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+  vi.spyOn(apiModule, "getPlayback").mockResolvedValue(descriptor);
+  // The progress PUT is Player-internal and irrelevant here.
+  vi.spyOn(apiModule, "putProgress").mockResolvedValue({
+    item_id: SIDECAR_EPISODE.item.id,
+    position_seconds: 0,
+    updated_at: "",
+  });
+}
+
+// stubSidecarChannel — blob URL stubs (jsdom has none) plus a fetch spy that
+// answers sidecar URLs with the given subtitle bytes and everything else
+// (the progress list) with an empty JSON body. The spy stays in the closure;
+// the tests read the sidecar calls' URLs through sidecarCalls().
+function stubSidecarChannel(content: string): {
+  sidecarCalls: () => Array<{ url: string; init?: RequestInit }>;
+  create: ReturnType<typeof vi.fn>;
+} {
+  const create = vi.fn(() => `blob:vtt-${String(create.mock.calls.length)}`);
+  Object.defineProperty(URL, "createObjectURL", {
+    value: create,
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    value: vi.fn(),
+    configurable: true,
+    writable: true,
+  });
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (input) => {
+      if (String(input).includes("variant=sidecar")) {
+        return new Response(content, { status: 200 });
+      }
+      return new Response('{"items":[]}', {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+  return {
+    sidecarCalls: () =>
+      fetchSpy.mock.calls
+        .map((c) => ({ url: String(c[0]), init: c[1] as RequestInit }))
+        .filter((call) => call.url.includes("variant=sidecar")),
+    create,
+  };
+}
+
+function theVideo(): HTMLVideoElement {
+  return screen
+    .getByRole("region", { name: "Player" })
+    .querySelector("video") as HTMLVideoElement;
+}
+
+describe("ItemDetail — subtitle control (serial-watch-flow 5.1/5.2)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    localStorage.setItem(TOKEN_KEY, "tok-5");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.removeItem(TOKEN_KEY);
+  });
+
+  it("lists the sidecars language-then-folder-then-file with the .sub entry not renderable", async () => {
+    mockPlayback(HLS_PLAYBACK);
+    stubSidecarChannel(SRT_BYTES);
+
+    renderAtId("itm_5_ep", freshClient());
+
+    const select = (await screen.findByLabelText(
+      "Subtitles",
+    )) as HTMLSelectElement;
+    expect(
+      Array.from(select.options).map((option) => ({
+        text: option.textContent,
+        disabled: option.disabled,
+      })),
+    ).toEqual([
+      { text: "Off", disabled: false },
+      { text: "s01e01.ass", disabled: false },
+      { text: "Русская", disabled: false },
+      // Box 5.2: an explicit not-renderable state — listed, NOT selectable.
+      { text: "s01e01.sub — not renderable", disabled: true },
+    ]);
+  });
+
+  it("fetches the selected sidecar by DOCUMENT index through the bearer channel and renders the converted track", async () => {
+    mockPlayback(HLS_PLAYBACK);
+    const { sidecarCalls, create } = stubSidecarChannel(SRT_BYTES);
+
+    renderAtId("itm_5_ep", freshClient());
+
+    // The language-stamped .srt sits at DOCUMENT index 2 (the interleaved
+    // audio sidecar occupies index 1) — the fetch's n= is that index.
+    fireEvent.change(await screen.findByLabelText("Subtitles"), {
+      target: { value: "2" },
+    });
+
+    await waitFor(() => {
+      expect(sidecarCalls()).toHaveLength(1);
+    });
+    expect(sidecarCalls()[0].url).toBe(
+      "/api/v1/items/itm_5_ep/media?variant=sidecar&n=2",
+    );
+    // The bearer channel: same Authorization posture as every /api/v1 call.
+    expect(sidecarCalls()[0].init).toMatchObject({
+      headers: { Authorization: "Bearer tok-5" },
+    });
+
+    // The bytes became ONE text/vtt blob object URL riding the <video> as a
+    // default subtitles <track>.
+    await waitFor(() => {
+      expect(theVideo().querySelector("track")).not.toBeNull();
+    });
+    const track = theVideo().querySelector("track")!;
+    expect(track.getAttribute("kind")).toBe("subtitles");
+    expect(track.getAttribute("src")).toMatch(/^blob:/);
+    expect(create.mock.calls[0][0]).toMatchObject({ type: "text/vtt" });
+  });
+
+  it("renders no subtitle control when the document carries no subtitle sidecars", async () => {
+    mockPlayback(HLS_PLAYBACK);
+    vi.spyOn(apiModule, "getItem").mockImplementation(async () => PLAIN_EPISODE);
+    stubSidecarChannel(SRT_BYTES);
+
+    renderAtId("itm_5_next", freshClient());
+
+    expect(await screen.findByText("itm_5_next")).toBeDefined();
+    expect(screen.queryByLabelText("Subtitles")).toBeNull();
+  });
+});
+
+describe("ItemDetail — voiceover control (serial-watch-flow 5.3)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    watchHls.instances.length = 0; // this file's renders accumulate fake loaders
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("lists embedded audio plus the descriptor's voiceovers and switches the hls audioTrack in place", async () => {
+    mockPlayback(HLS_PLAYBACK);
+
+    renderAtId("itm_5_ep", freshClient());
+
+    const select = (await screen.findByLabelText(
+      "Voiceover",
+    )) as HTMLSelectElement;
+    expect(
+      Array.from(select.options).map((option) => option.textContent),
+    ).toEqual(["Embedded audio", "Русская"]);
+
+    // Document order → rendition k+1: the first voiceover is audioTrack 1.
+    fireEvent.change(select, { target: { value: "1" } });
+    await waitFor(() => {
+      expect(watchHls.instances[0]?.audioTrack).toBe(1);
+    });
+    // One loader for the play URL — a switch, never a restart.
+    expect(watchHls.instances).toHaveLength(1);
+  });
+
+  it("renders the control disabled with the packaged-build reason on a direct build", async () => {
+    mockPlayback(DIRECT_PLAYBACK);
+
+    renderAtId("itm_5_ep", freshClient());
+
+    const select = (await screen.findByLabelText(
+      "Voiceover",
+    )) as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+    // The voiceovers still LIST (embedded + the descriptor's), and the named
+    // reason is visible — never a silently dead control.
+    expect(
+      Array.from(select.options).map((option) => option.textContent),
+    ).toEqual(["Embedded audio", "Русская"]);
+    expect(
+      screen.getByText(/Audio selection requires the packaged build/),
+    ).toBeDefined();
+  });
+});
+
+describe("ItemDetail — watch selections do not survive navigation (serial-watch-flow 5.3)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    watchHls.instances.length = 0;
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("drops the subtitle and voiceover selections when stepping to another episode", async () => {
+    mockPlayback(HLS_PLAYBACK);
+    stubSidecarChannel(SRT_BYTES);
+
+    const HANDOFF: BrowseHandoff = {
+      items: ["itm_5_ep", "itm_5_next"],
+      position: 0,
+      backTo: "/collections/1",
+    };
+    render(
+      <QueryClientProvider client={freshClient()}>
+        <MemoryRouter
+          initialEntries={[
+            { pathname: "/items/itm_5_ep", state: HANDOFF },
+            HANDOFF.backTo,
+          ]}
+          initialIndex={0}
+        >
+          <Routes>
+            <Route path="/items/:id" element={<ItemDetail />} />
+            <Route path="/collections/:id" element={<p>Collection page</p>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // A subtitle and a voiceover are selected on the first episode.
+    fireEvent.change(await screen.findByLabelText("Subtitles"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(await screen.findByLabelText("Voiceover"), {
+      target: { value: "1" },
+    });
+    await waitFor(() => {
+      expect(theVideo().querySelector("track")).not.toBeNull();
+    });
+
+    // Step to the next episode: both controls reset — per-visit state, the
+    // selection never carries onto another episode.
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    // The path renders twice on the page (identity heading + core field).
+    expect(
+      (await screen.findAllByText("shows/Оська/s01e02.mkv")).length,
+    ).toBeGreaterThan(0);
+    // The stepped-to page's own controls (the playback query resolves per
+    // item) come back in the RESET state — Off, embedded, no track.
+    expect(
+      ((await screen.findByLabelText("Subtitles")) as HTMLSelectElement)
+        .value,
+    ).toBe("");
+    expect(
+      (await screen.findByLabelText("Voiceover") as HTMLSelectElement).value,
+    ).toBe("0");
+    expect(theVideo().querySelector("track")).toBeNull();
   });
 });

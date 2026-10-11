@@ -148,6 +148,12 @@ export interface ItemDTO {
   // additive; absent until a first attachment). The element page renders their
   // footer groups after the collection chain, pill-marked element-only.
   extra_parsers?: string[];
+  // title_override — the stored manual display-title override
+  // (serial-watch-flow 2.1, additive; "" when unset). The FIRST tier of the
+  // episode flow's title fallback chain (box 4.2). Optional in TS (like
+  // extra_parsers): the server carries the field on every read, but an
+  // absent field must mean unset, not a type hole.
+  title_override?: string;
 }
 
 // handlers.go itemsResponse — empty array, never null
@@ -173,6 +179,24 @@ export interface PlaybackDescriptor {
   state: string; // "none" | "partial" | "complete" | "failed"
   play_url: string;
   sections: PlaybackSection[];
+  // voiceovers — the additive voiceover projection (serial-watch-flow D-2,
+  // playback.go Playback.Voiceovers): the episode document's AUDIO sidecars
+  // as {index, label} in document order. `index` is the sidecar's DOCUMENT
+  // index (the same n= space as itemSidecar); the packaged build maps
+  // document order → audio rendition k+1 (0 = embedded audio), the mapping
+  // the watch control's selection mirrors onto hls.audioTrack. Optional in
+  // TS: an episode without audio sidecars (or a descriptor predating the
+  // projection) omits the field — absence is an empty list, never an error.
+  voiceovers?: VoiceoverDTO[];
+}
+
+// playback.go Playback.Voiceovers — one voiceover entry (serial-watch-flow
+// D-2): the sidecar's document index plus its presentation label (stamped
+// language, else containing folder, else file name). Field names match the
+// JSON shape EXACTLY.
+export interface VoiceoverDTO {
+  index: number;
+  label: string;
 }
 
 // handlers.go playResponse — the wire shape for POST /api/v1/items/{id}/play.
@@ -194,12 +218,27 @@ export interface SeriesDTO {
   document: ItemDocument; // serial-level §3.1 document — precision-preserved
   schema_version: number;
   status: string; // "pending" | "stale" | "ready" | "deleted"
+  // title_override — the stored manual display-title override
+  // (serial-watch-flow 2.1, additive; "" when unset). The FIRST tier of the
+  // SPA's title fallback chain (box 4.1) — it wins over every document fact.
+  // Optional in TS (like extra_parsers): the server carries the field on
+  // every read, but an absent field must mean unset, not a type hole.
+  title_override?: string;
 }
 
 // handlers.go seriesListResponse — empty array, never null. GET /series is NOT
 // paginated (the server takes only `library`); the list comes back whole.
 export interface SeriesListResponse {
   items: SeriesDTO[];
+}
+
+// titles.go titleOverrideDTO — the stored override record, the PUT 200 body
+// (serial-watch-flow 2.1): the entity id, the title exactly as stored, and the
+// raw RFC3339Nano stamp. Field names match the JSON tags EXACTLY.
+export interface TitleOverrideDTO {
+  entity_id: string;
+  title: string;
+  updated_at: string;
 }
 
 // handlers.go itemResponse
@@ -271,8 +310,25 @@ export const ENDPOINTS = {
     variant === undefined
       ? `/api/v1/items/${id}/media`
       : `/api/v1/items/${id}/media?variant=${variant}`,
+  // itemSidecar — GET /api/v1/items/{id}/media?variant=sidecar&n=<int>
+  // (handlers.go mediaVariantSidecar, serial-watch-flow D-3/D-4): the
+  // document-indexed sidecar file, served verbatim (same static-bytes
+  // posture as thumb). `n` indexes parsed.sidecars — the FULL stored list,
+  // audio sidecars included, the same index space the descriptor's
+  // voiceovers resolve against. 400 for a missing/non-integer/negative n;
+  // 404 for an out-of-range index, absent sidecar facts, or a missing file
+  // (canonical, surfaced inline by the caller — never retried blindly).
+  itemSidecar: (id: string, n: number): string =>
+    `/api/v1/items/${id}/media?variant=sidecar&n=${String(n)}`,
   series: "/api/v1/series",
   seriesEpisodes: (id: string): string => `/api/v1/series/${id}/episodes`,
+  // Title override verbs (serial-watch-flow 2.1, the admin rename routes):
+  // PUT sets the override (200 with the stored record), DELETE clears it
+  // (204, idempotent). 400 bad_request for a whitespace-only/non-string
+  // title, 404 not_found for an unknown id — both canonical, surfaced
+  // inline by the caller without auto-retry.
+  seriesTitle: (id: string): string => `/api/v1/series/${id}/title`,
+  itemTitle: (id: string): string => `/api/v1/items/${id}/title`,
   progress: "/api/v1/progress",
   // Playback verbs (packaged-playback): the read-only descriptor and the
   // single playback mutation (POST /play with {retry:true} re-enqueues a
@@ -380,6 +436,71 @@ export async function getSeriesEpisodes(seriesId: string): Promise<ItemsResponse
   return apiRequest<ItemsResponse>(ENDPOINTS.seriesEpisodes(seriesId));
 }
 
+// setSeriesTitle — PUT /api/v1/series/{id}/title (titles.go putSeriesTitle,
+// serial-watch-flow 2.1). 200 with the stored override record; 400 with the
+// canonical bad_request body for a whitespace-only/non-string title, 404
+// not_found for an unknown id. The caller surfaces those errors inline —
+// no auto-retry (mutations are non-idempotent).
+export async function setSeriesTitle(
+  id: string,
+  title: string,
+): Promise<TitleOverrideDTO> {
+  return apiRequest<TitleOverrideDTO>(ENDPOINTS.seriesTitle(id), {
+    method: "PUT",
+    body: { title } as unknown as BodyInit,
+  });
+}
+
+// setItemTitle — PUT /api/v1/items/{id}/title (titles.go putItemTitle): the
+// item id space of setSeriesTitle, same wire contract.
+export async function setItemTitle(
+  id: string,
+  title: string,
+): Promise<TitleOverrideDTO> {
+  return apiRequest<TitleOverrideDTO>(ENDPOINTS.itemTitle(id), {
+    method: "PUT",
+    body: { title } as unknown as BodyInit,
+  });
+}
+
+// apiRequestVoid — the DELETE-side companion to apiRequest: the SAME bearer
+// posture and canonical-error rejection, but no body parse — a 204 carries
+// no body, and apiRequest's JSON.parse("") would throw on it.
+export async function apiRequestVoid(
+  path: string,
+  init?: RequestInit,
+): Promise<void> {
+  const token = getToken();
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...((init?.headers as Record<string, string>) ?? {}),
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const res: Response = await fetch(path, { ...init, headers });
+  if (res.status === 401) {
+    handle401();
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status, await errorBody(res));
+  }
+}
+
+// deleteSeriesTitle — DELETE /api/v1/series/{id}/title (titles.go deleteTitle).
+// 204, idempotent by design: clearing an absent override is a no-op that still
+// answers 204. The display returns to the chain value once the caller
+// invalidates the read.
+export async function deleteSeriesTitle(id: string): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.seriesTitle(id), { method: "DELETE" });
+}
+
+// deleteItemTitle — DELETE /api/v1/items/{id}/title: the item id space of
+// deleteSeriesTitle, same idempotent 204 contract.
+export async function deleteItemTitle(id: string): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.itemTitle(id), { method: "DELETE" });
+}
+
 // getPlayback — GET /api/v1/items/{id}/playback (handlers.go itemPlayback,
 // packaged-playback). Read-only descriptor: mode/state/play_url/sections.
 // The handler ALSO sets the cookie-primary media token on the response — the
@@ -484,6 +605,32 @@ export async function fetchItemMediaObjectUrl(
     throw new ApiError(res.status, await errorBody(res));
   }
   return URL.createObjectURL(await res.blob());
+}
+
+// fetchSidecarText — the authenticated sidecar TEXT channel (serial-watch-flow
+// 5.1): a <track src> cannot carry the Authorization header, so the sidecar
+// bytes are fetched through the same bearer posture as every other /api/v1
+// call and returned as text for the client-side conversion (lib/subtitles).
+// `path` is an itemSidecar() URL. A 401 still rotates to /login
+// (INV-401-source-of-truth); any other non-2xx rejects the canonical ApiError
+// so the caller degrades the selection inline — never a crash.
+export async function fetchSidecarText(
+  path: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const res: Response = await fetch(path, { headers, signal });
+  if (res.status === 401) {
+    handle401();
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status, await errorBody(res));
+  }
+  return res.text();
 }
 
 // redirectToLogin — the 401 rotation. Factored so the redirect is a single

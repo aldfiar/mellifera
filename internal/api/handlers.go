@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -179,7 +180,9 @@ type itemsResponse struct {
 // mirroring itemDTO: the row identity fields plus the FULL §3.1 serial-level
 // document carried opaque (INV-full-document). Timestamps are intentionally
 // omitted (the document is the source of truth; carrying time.Time here would
-// force a disallowed time import).
+// force a disallowed time import). TitleOverride is the additive manual
+// display-title override (serial-watch-flow 2.1) — "" when unset (always on
+// the wire; the SPA's fallback chain reads the empty string as absent).
 type seriesDTO struct {
 	ID            string          `json:"id"`
 	ModuleID      string          `json:"module_id"`
@@ -188,6 +191,7 @@ type seriesDTO struct {
 	Document      json.RawMessage `json:"document"`
 	SchemaVersion int             `json:"schema_version"`
 	Status        string          `json:"status"`
+	TitleOverride string          `json:"title_override"`
 }
 
 // seriesListResponse is the wire shape for GET /series.
@@ -262,7 +266,10 @@ type statusResponse struct {
 // carrying time.Time here would force a disallowed time import). ExtraParsers
 // is the additive element-only attachment list (element-pages 3.3) — populated
 // ONLY by the detail handler (getItem); the listings stay N+1-free and the
-// field is absent until a first attachment.
+// field is absent until a first attachment. TitleOverride is the additive
+// manual display-title override (serial-watch-flow 2.1) — "" when unset
+// (always on the wire, unlike ExtraParsers: the SPA's fallback chain reads the
+// empty string as absent).
 type itemDTO struct {
 	ID            string          `json:"id"`
 	ModuleID      string          `json:"module_id"`
@@ -273,6 +280,7 @@ type itemDTO struct {
 	Document      json.RawMessage `json:"document"`
 	SchemaVersion int             `json:"schema_version"`
 	Status        string          `json:"status"`
+	TitleOverride string          `json:"title_override"`
 	ExtraParsers  []string        `json:"extra_parsers,omitempty"`
 }
 
@@ -708,7 +716,12 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusOK, itemsResponse{Items: toItemDTOs(items)})
+	dtos, err := a.itemDTOs(r.Context(), items)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, itemsResponse{Items: dtos})
 }
 
 // listLibraries: store.ListLibraries → write librariesResponse. One domain
@@ -759,7 +772,12 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dto := toItemDTO(it)
+	override, err := a.storedTitle(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dto := toItemDTO(it, override)
 	extras, err := a.deps.Store.ListItemParsers(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -769,38 +787,47 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, itemResponse{Item: dto})
 }
 
-// mediaVariantThumb is the only media variant served today: the frame-grabber
-// JPEG stamped into the item document's sources["frame-grabber"].thumbnail_path
-// (media-preview D2/D6). Any other non-empty ?variant= value is a 400.
-const mediaVariantThumb = "thumb"
+// mediaVariantThumb is the frame-grabber JPEG variant: the thumbnail stamped
+// into the item document's sources["frame-grabber"].thumbnail_path
+// (media-preview D2/D6). mediaVariantSidecar is the episode-linked sidecar
+// variant (serial-watch-flow D-3/D-4): the document-indexed sidecar file,
+// selected by ?n=. Any other non-empty ?variant= value is a 400.
+const (
+	mediaVariantThumb   = "thumb"
+	mediaVariantSidecar = "sidecar"
+)
 
 // itemMedia: parse {id} + ?variant → store.GetItem → serve the document-resolved
 // file's bytes. One domain call (the read); the file IO IS the response write —
 // media-preview D2. The path is resolved ONLY from the stored document
 // (parsed.absolute_path for the original, sources["frame-grabber"].thumbnail_path
-// for the thumb variant); no client-supplied value ever steers resolution, so an
-// unknown id / missing path fact / missing file are all 404 not_found, an unknown
-// variant is 400 bad_request. Serving is http.ServeContent (media-preview D3):
-// Content-Type by extension, a strong ETag (size+mtime — no content hashing of
-// multi-GB files), Cache-Control: private, immutable (bearer-authed content must
-// not sit in shared caches), and stdlib 304/HEAD/Range handling for free. HEAD
-// and If-None-Match are answered by ServeContent from the same headers. Non-image
-// content carries Content-Disposition: attachment — video downloads, it does not
-// stream (media-preview D4; the deferred internal/stream surface owns playback).
+// for the thumb variant, parsed.sidecars[n].relative_path for the sidecar
+// variant — D-4: a number into the stored list, never a path from the client);
+// no client-supplied value ever steers resolution, so an unknown id / missing
+// path fact / missing file are all 404 not_found, an unknown variant and a
+// missing/non-integer/negative sidecar index are 400 bad_request. Serving is
+// http.ServeContent (media-preview D3): Content-Type by extension, a strong
+// ETag (size+mtime — no content hashing of multi-GB files), Cache-Control:
+// private, immutable (bearer-authed content must not sit in shared caches),
+// and stdlib 304/HEAD/Range handling for free. HEAD and If-None-Match are
+// answered by ServeContent from the same headers. Non-image content carries
+// Content-Disposition: attachment — video downloads, it does not stream
+// (media-preview D4; the deferred internal/stream surface owns playback).
 //
 // @Summary      Serve an item's media bytes
 // @Tags         items
 // @ID           get-item-media
 // @Router       /items/{id}/media [get]
 // @Param        id      path   string true  "item id (UUID)"
-// @Param        variant query  string false "media variant (thumb)"
+// @Param        variant query  string false "media variant (thumb, sidecar)"
+// @Param        n       query  int    false "sidecar document index (variant=sidecar)"
 // @Success      200 {file} file
 // @Failure      400 {object} errorBody
 // @Failure      404 {object} errorBody
 // @Failure      500 {object} errorBody
 func (a *app) itemMedia(w http.ResponseWriter, r *http.Request) {
 	variant := r.URL.Query().Get("variant")
-	if variant != "" && variant != mediaVariantThumb {
+	if variant != "" && variant != mediaVariantThumb && variant != mediaVariantSidecar {
 		writeError(w, http.StatusBadRequest, "bad_request", "unknown media variant "+strconv.Quote(variant), false)
 		return
 	}
@@ -814,10 +841,30 @@ func (a *app) itemMedia(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	path := documentMediaPath(it.Document, variant)
-	if path == "" {
-		writeError(w, http.StatusNotFound, "not_found", "item "+id+" carries no media path fact", false)
-		return
+	var path string
+	if variant == mediaVariantSidecar {
+		// Index validation is the parse step, BEFORE any fact read: the index
+		// must be a present non-negative integer (400), then it must resolve
+		// within the stored sidecar list (404 — nothing client-side steers it).
+		n, err := strconv.Atoi(r.URL.Query().Get("n"))
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"sidecar index n must be a non-negative integer", false)
+			return
+		}
+		p, ok := sidecarMediaPath(it, n)
+		if !ok {
+			writeError(w, http.StatusNotFound, "not_found",
+				"sidecar "+strconv.Itoa(n)+" not resolvable for item "+id, false)
+			return
+		}
+		path = p
+	} else {
+		path = documentMediaPath(it.Document, variant)
+		if path == "" {
+			writeError(w, http.StatusNotFound, "not_found", "item "+id+" carries no media path fact", false)
+			return
+		}
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -871,6 +918,35 @@ func documentMediaPath(raw json.RawMessage, variant string) string {
 	return doc.Parsed.AbsolutePath
 }
 
+// sidecarMediaPath resolves the n-th episode-linked sidecar file from the
+// stored document (serial-watch-flow D-4): the ONLY resolution input is the
+// document's parsed.sidecars list indexed by n — a number into the stored
+// list, exactly as variant=thumb resolves against sources["frame-grabber"];
+// never a path from the client. The absolute path derives from the episode's
+// own stored facts (library root = parsed.absolute_path minus the item's
+// relative_path, joined with the sidecar's relative_path) — the same
+// derivation the pack lane uses, so serving and packing agree. This is a
+// targeted one-fact read in the seriesBacking idiom: the document stays
+// opaque on the wire and is never mapped to a typed model. ok is false when
+// the document is unreadable or n is beyond the list (the caller answers 404
+// — an absent sidecar list and an out-of-range index are the same 404, D6's
+// strict contract; no fallback onto any other fact).
+func sidecarMediaPath(it store.Item, n int) (string, bool) {
+	var doc struct {
+		Parsed struct {
+			AbsolutePath string `json:"absolute_path"`
+			Sidecars     []struct {
+				RelativePath string `json:"relative_path"`
+			} `json:"sidecars"`
+		} `json:"parsed"`
+	}
+	if err := json.Unmarshal(it.Document, &doc); err != nil || n >= len(doc.Parsed.Sidecars) {
+		return "", false
+	}
+	root := strings.TrimSuffix(doc.Parsed.AbsolutePath, it.RelativePath)
+	return filepath.Join(root, doc.Parsed.Sidecars[n].RelativePath), true
+}
+
 // strongETag derives a strong entity tag from the file's size and nanosecond
 // mtime (media-preview D3): no content hashing of potentially multi-GB videos.
 // No W/ prefix — this is a strong validator, so If-None-Match revalidates to 304
@@ -906,7 +982,12 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusOK, seriesListResponse{Items: toSeriesDTOs(series)})
+	dtos, err := a.seriesDTOs(r.Context(), series)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, seriesListResponse{Items: dtos})
 }
 
 // getSeries: parse {id} → store.GetSeries → write seriesResponse. One domain
@@ -934,7 +1015,12 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusOK, seriesResponse{Series: toSeriesDTO(sr)})
+	override, err := a.storedTitle(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, seriesResponse{Series: toSeriesDTO(sr, override)})
 }
 
 // seriesEpisodes: parse {id} → store.GetSeries → store.QueryItemsBySeries →
@@ -970,7 +1056,12 @@ func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusOK, itemsResponse{Items: toItemDTOs(items)})
+	dtos, err := a.itemDTOs(r.Context(), items)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, itemsResponse{Items: dtos})
 }
 
 // adminStatus: deps.Status → write statusResponse. One closure call (pure
@@ -1016,19 +1107,27 @@ func parsePagination(r *http.Request) (limit, offset int) {
 	return limit, offset
 }
 
-// toItemDTOs performs the boundary struct conversion (INV4): every store.Item
-// becomes an itemDTO before it leaves the package.
-func toItemDTOs(items []store.Item) []itemDTO {
+// itemDTOs performs the boundary struct conversion (INV4): every store.Item
+// becomes an itemDTO before it leaves the package, each row carrying its
+// stored title override (serial-watch-flow 2.1 — the per-row read is the
+// MVP posture; design defers batching to implementation latitude). A store
+// failure on any override read propagates (500 at the call site).
+func (a *app) itemDTOs(ctx context.Context, items []store.Item) ([]itemDTO, error) {
 	out := make([]itemDTO, len(items))
 	for i, it := range items {
-		out[i] = toItemDTO(it)
+		override, err := a.storedTitle(ctx, it.ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = toItemDTO(it, override)
 	}
-	return out
+	return out, nil
 }
 
-// toItemDTO maps a single store.Item to its wire shape. Factored out so the
-// list and detail handlers share one conversion (DRY).
-func toItemDTO(it store.Item) itemDTO {
+// toItemDTO maps a single store.Item to its wire shape; override is the
+// entity's stored title override ("" when unset). Factored out so the list
+// and detail handlers share one conversion (DRY).
+func toItemDTO(it store.Item, override string) itemDTO {
 	return itemDTO{
 		ID:            it.ID,
 		ModuleID:      it.ModuleID,
@@ -1039,6 +1138,7 @@ func toItemDTO(it store.Item) itemDTO {
 		Document:      it.Document,
 		SchemaVersion: it.SchemaVersion,
 		Status:        it.Status,
+		TitleOverride: override,
 	}
 }
 
@@ -1065,19 +1165,26 @@ func toLibraryDTO(l store.Library) libraryDTO {
 	}
 }
 
-// toSeriesDTOs performs the boundary struct conversion (INV4): every
-// store.Series becomes a seriesDTO before it leaves the package.
-func toSeriesDTOs(srs []store.Series) []seriesDTO {
+// seriesDTOs performs the boundary struct conversion (INV4): every
+// store.Series becomes a seriesDTO before it leaves the package, each row
+// carrying its stored title override (serial-watch-flow 2.1). A store failure
+// on any override read propagates (500 at the call site).
+func (a *app) seriesDTOs(ctx context.Context, srs []store.Series) ([]seriesDTO, error) {
 	out := make([]seriesDTO, len(srs))
 	for i, sr := range srs {
-		out[i] = toSeriesDTO(sr)
+		override, err := a.storedTitle(ctx, sr.ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = toSeriesDTO(sr, override)
 	}
-	return out
+	return out, nil
 }
 
-// toSeriesDTO maps a single store.Series to its wire shape. Factored out so
-// the list and detail responses share one conversion (DRY).
-func toSeriesDTO(sr store.Series) seriesDTO {
+// toSeriesDTO maps a single store.Series to its wire shape; override is the
+// entity's stored title override ("" when unset). Factored out so the list
+// and detail responses share one conversion (DRY).
+func toSeriesDTO(sr store.Series, override string) seriesDTO {
 	return seriesDTO{
 		ID:            sr.ID,
 		ModuleID:      sr.ModuleID,
@@ -1086,6 +1193,7 @@ func toSeriesDTO(sr store.Series) seriesDTO {
 		Document:      sr.Document,
 		SchemaVersion: sr.SchemaVersion,
 		Status:        sr.Status,
+		TitleOverride: override,
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -90,7 +92,8 @@ func (q *Queue) workStreams(ctx context.Context, itemID string) {
 		return // item gone (deleted between enqueue and drain); nothing to do
 	}
 	doc := decodeDoc(row.Document)
-	outcome, packErr := q.deps.PackItem(ctx, itemID, documentAbsolutePath(doc), docFFprobe(doc))
+	outcome, packErr := q.deps.PackItem(ctx, itemID, documentAbsolutePath(doc), docFFprobe(doc),
+		documentVoiceoverPaths(doc, row.RelativePath))
 	if packErr != nil {
 		q.recordPackFailure(ctx, itemID, packErr)
 		q.persistStreams(ctx, itemID, failedStreamsDoc(packErr))
@@ -192,6 +195,37 @@ func documentAbsolutePath(doc map[string]any) string {
 	}
 	p, _ := parsed["absolute_path"].(string)
 	return p
+}
+
+// documentVoiceoverPaths derives the absolute paths of the item's
+// episode-linked AUDIO sidecars, in document order — the pack seam's rendition
+// facts (serial-watch-flow D-2). The library root comes from the episode's own
+// stored facts (parsed.absolute_path minus the row's relative_path, the exact
+// derivation internal/api's sidecarMediaPath uses so serving and packing
+// agree, D-4) joined with the sidecar's stored relative path; a path is never
+// taken from client input. Subtitle sidecars and serial-level sidecars
+// (parsed.series_sidecars) are not episode-linked voiceovers and never pass.
+// Nil when the document carries no audio sidecars.
+func documentVoiceoverPaths(doc map[string]any, relPath string) []string {
+	parsed, ok := doc["parsed"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	abs, _ := parsed["absolute_path"].(string)
+	raw, _ := parsed["sidecars"].([]any)
+	var out []string
+	for _, c := range raw {
+		sc, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if kind, _ := sc["kind"].(string); kind != "audio" {
+			continue
+		}
+		rel, _ := sc["relative_path"].(string)
+		out = append(out, filepath.Join(strings.TrimSuffix(abs, relPath), rel))
+	}
+	return out
 }
 
 // docFFprobe returns the document's stored ffprobe facts as a map (the pack

@@ -166,6 +166,19 @@ var schemaSQL = []string{
   position   INTEGER NOT NULL,
   PRIMARY KEY (library_id, plugin_id)
 )`,
+	// title_overrides is the manual display-title override control table
+	// (serial-watch-flow D-1): ONE row per overridden entity id, the upsert
+	// overwriting so the table holds exactly one title per entity. Series ids
+	// carry the ser_ prefix and item ids theirs, so the two id spaces never
+	// collide and share the table (the playback_progress per-id pattern). It
+	// is control state BESIDE the document — a rename never rewrites any
+	// document namespace — and identity-keyed, so it dies with the identity
+	// exactly like parser attachments.
+	`CREATE TABLE IF NOT EXISTS title_overrides (
+  entity_id  TEXT PRIMARY KEY,
+  title      TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)`,
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
 	// series_library backs the per-library series listing/sweep paths

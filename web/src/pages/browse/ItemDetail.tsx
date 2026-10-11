@@ -9,15 +9,21 @@ import {
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import type { ApiError, ItemDTO, ModulePresentation } from "@/lib/api";
+import type { ApiError, ItemDTO, ModulePresentation, VoiceoverDTO } from "@/lib/api";
 import {
   ENDPOINTS,
+  fetchSidecarText,
   getPlayback,
   hasFrameGrabberThumb,
   hasOriginalFile,
   playItem,
 } from "@/lib/api";
 import { useItem, useItemMedia, useLibrary, useProgressList } from "@/lib/queries";
+import {
+  convertToVtt,
+  subtitleSidecars,
+  type SubtitleSidecar,
+} from "@/lib/subtitles";
 import type { ItemDocument } from "@/lib/document";
 import Player from "@/components/playback/Player";
 import {
@@ -252,6 +258,11 @@ export default function ItemDetail(): ReactElement {
 
   return (
     <ItemLoadedView
+      // Keyed per item (serial-watch-flow 5.3): the subtitle/voiceover
+      // selections are per-visit component state and NEVER survive
+      // navigation — a step (cached hit included) remounts the body and
+      // drops them instead of carrying a selection onto another episode.
+      key={item.id}
       item={item}
       view={view}
       step={step}
@@ -323,6 +334,23 @@ function ItemLoadedView(props: {
     },
   });
 
+  // Watch controls (serial-watch-flow 5.1–5.3). Subtitles: the document's
+  // subtitle sidecars, one selectable entry (off + each sidecar, language-
+  // then-folder-then-file labels, .sub listed not-renderable); a selection
+  // fetches its bytes through the authenticated channel and renders them via
+  // useSubtitleTrack. Voiceovers: the descriptor's audio sidecars plus the
+  // embedded audio, mapped document order → hls audioTrack (0 = embedded,
+  // k+1 = voiceovers[k], the pack lane's pinned build order); a direct build
+  // has no audio renditions to switch, so the control is disabled with the
+  // named reason. Both are per-visit component state — the key on
+  // ItemLoadedView drops them on navigation.
+  const sidecars = useMemo(() => subtitleSidecars(doc), [doc]);
+  const [selectedSubtitle, setSelectedSubtitle] = useState<number | null>(null);
+  const subtitleTrack = useSubtitleTrack(item.id, sidecars, selectedSubtitle);
+
+  const voiceovers: VoiceoverDTO[] = playback.data?.voiceovers ?? [];
+  const [voiceover, setVoiceover] = useState(0); // 0 = embedded audio
+
   // Footer groups — the parser-ordered metadata footer (element-pages 5.3):
   // the collection chain in its configured order (module presentation), then
   // the element-attached parsers (extra_parsers) marked element-only. A chain
@@ -354,8 +382,23 @@ function ItemLoadedView(props: {
       descriptor={playback.data}
       onRetry={() => playRetry.mutate()}
       retrying={playRetry.isPending}
+      subtitleTrackUrl={subtitleTrack.url}
+      voiceoverTrack={voiceover}
     />
   ) : null;
+  const watchControls =
+    item.media_type === "video" && playback.data ? (
+      <TrackControls
+        sidecars={sidecars}
+        selectedSubtitle={selectedSubtitle}
+        onSubtitleSelect={setSelectedSubtitle}
+        subtitleFailed={subtitleTrack.failed}
+        voiceovers={voiceovers}
+        hlsMode={playback.data.mode === "hls"}
+        voiceover={voiceover}
+        onVoiceoverSelect={setVoiceover}
+      />
+    ) : null;
 
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6">
@@ -410,6 +453,7 @@ function ItemLoadedView(props: {
           <section aria-label="Media stage" className="flex min-w-0 flex-col gap-3">
             {mediaStage}
             {player}
+            {watchControls}
           </section>
           <IdentityBlock item={item} doc={doc} presentation={presentation} />
         </div>
@@ -545,6 +589,160 @@ function ItemLoadedView(props: {
         </div>
       </details>
     </main>
+  );
+}
+
+// useSubtitleTrack — the subtitle selection's fetch-and-convert lifecycle
+// (serial-watch-flow 5.1, the file-local twin of queries.ts useItemMedia):
+// fetches the selected sidecar's bytes through the authenticated channel
+// (ENDPOINTS.itemSidecar — the document index IS the n=), converts them with
+// lib/subtitles, and hands back ONE blob object URL for the Player's <track>.
+// Deliberately not cached: the URL is revoked on selection change/unmount, so
+// the lifecycle IS the state here. No selection, an unrenderable entry, or a
+// failed fetch/convert → null URL (subtitles off); a fetch failure — never an
+// abort — also raises `failed` for the inline note.
+function useSubtitleTrack(
+  itemId: string,
+  sidecars: SubtitleSidecar[],
+  selectedIndex: number | null,
+): { url: string | null; failed: boolean } {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setUrl(null);
+    setFailed(false);
+    const sidecar = sidecars.find((entry) => entry.index === selectedIndex);
+    if (selectedIndex === null || !sidecar || !sidecar.renderable) {
+      return;
+    }
+    let disposed = false;
+    let created: string | null = null;
+    const controller = new AbortController();
+    fetchSidecarText(
+      ENDPOINTS.itemSidecar(itemId, selectedIndex),
+      controller.signal,
+    )
+      .then((content) => {
+        const vtt = convertToVtt(sidecar.path, content);
+        if (vtt === null || disposed) {
+          return;
+        }
+        created = URL.createObjectURL(new Blob([vtt], { type: "text/vtt" }));
+        setUrl(created);
+      })
+      .catch(() => {
+        if (!disposed && !controller.signal.aborted) {
+          setFailed(true);
+        }
+      });
+    return () => {
+      disposed = true;
+      controller.abort();
+      if (created !== null) {
+        URL.revokeObjectURL(created);
+      }
+    };
+  }, [itemId, selectedIndex, sidecars]);
+
+  return { url, failed };
+}
+
+// TrackControls — the watch controls row beside the play affordance
+// (serial-watch-flow 5.1–5.3): the subtitle select (off + one entry per
+// subtitle sidecar, language-then-folder-then-file labels; an unrenderable
+// sidecar such as .sub renders as an explicit not-renderable DISABLED entry —
+// listed, never a selectable entry that does nothing) and the voiceover
+// select (embedded audio + the descriptor's voiceovers; on a direct build the
+// control is disabled with the visible packaged-build-required reason, since
+// only the hls lane carries alternate audio renditions to switch).
+// Presentational — the selection state and the fetch lifecycle live in the
+// page above.
+function TrackControls(props: {
+  sidecars: SubtitleSidecar[];
+  selectedSubtitle: number | null;
+  onSubtitleSelect: (index: number | null) => void;
+  subtitleFailed: boolean;
+  voiceovers: VoiceoverDTO[];
+  hlsMode: boolean;
+  voiceover: number;
+  onVoiceoverSelect: (track: number) => void;
+}): ReactElement {
+  return (
+    <div className="flex flex-col gap-2">
+      {props.sidecars.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="subtitle-select" className="text-sm font-medium">
+            Subtitles
+          </label>
+          <select
+            id="subtitle-select"
+            className="rounded-md border bg-card px-2 py-1.5 text-sm"
+            value={
+              props.selectedSubtitle === null
+                ? ""
+                : String(props.selectedSubtitle)
+            }
+            onChange={(event) =>
+              props.onSubtitleSelect(
+                event.target.value === "" ? null : Number(event.target.value),
+              )
+            }
+          >
+            <option value="">Off</option>
+            {props.sidecars.map((sidecar) =>
+              sidecar.renderable ? (
+                <option key={sidecar.index} value={String(sidecar.index)}>
+                  {sidecar.label}
+                </option>
+              ) : (
+                <option
+                  key={sidecar.index}
+                  value={String(sidecar.index)}
+                  disabled
+                >
+                  {sidecar.label} — not renderable
+                </option>
+              ),
+            )}
+          </select>
+          {props.subtitleFailed ? (
+            <span className="text-xs text-destructive" role="alert">
+              Subtitle could not be loaded.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor="voiceover-select" className="text-sm font-medium">
+          Voiceover
+        </label>
+        <select
+          id="voiceover-select"
+          className="rounded-md border bg-card px-2 py-1.5 text-sm disabled:opacity-50"
+          value={String(props.voiceover)}
+          disabled={!props.hlsMode}
+          onChange={(event) =>
+            props.onVoiceoverSelect(Number(event.target.value))
+          }
+        >
+          <option value="0">Embedded audio</option>
+          {props.voiceovers.map((entry, k) => (
+            // Document order → rendition k+1 (0 is the embedded audio) — the
+            // pack lane's pinned build order (D-2).
+            <option key={entry.index} value={String(k + 1)}>
+              {entry.label}
+            </option>
+          ))}
+        </select>
+        {!props.hlsMode ? (
+          <span className="text-xs text-muted-foreground">
+            Audio selection requires the packaged build — this episode plays
+            direct.
+          </span>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

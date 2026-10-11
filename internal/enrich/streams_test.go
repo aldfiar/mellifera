@@ -57,15 +57,16 @@ func streamsState(t *testing.T, s *store.Store, id, want string, timeout time.Du
 type packRecord struct {
 	itemID, absPath string
 	ffprobe         map[string]any
+	voiceovers      []string
 	calls           int32
 }
 
 // packSeam returns a Deps.PackItem func-field over the record: it counts calls,
 // captures its inputs, sleeps delay, and returns outcome/err.
-func packSeam(rec *packRecord, delay time.Duration, outcome PackOutcome, err error) func(context.Context, string, string, map[string]any) (PackOutcome, error) {
-	return func(_ context.Context, itemID, absPath string, ffprobe map[string]any) (PackOutcome, error) {
+func packSeam(rec *packRecord, delay time.Duration, outcome PackOutcome, err error) func(context.Context, string, string, map[string]any, []string) (PackOutcome, error) {
+	return func(_ context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (PackOutcome, error) {
 		atomic.AddInt32(&rec.calls, 1)
-		rec.itemID, rec.absPath, rec.ffprobe = itemID, absPath, ffprobe
+		rec.itemID, rec.absPath, rec.ffprobe, rec.voiceovers = itemID, absPath, ffprobe, voiceovers
 		if delay > 0 {
 			time.Sleep(delay)
 		}
@@ -94,9 +95,10 @@ func TestStreamsLane(t *testing.T) {
 			t.Fatalf("persisted streams = %v, want the PackOutcome pointer", st)
 		}
 		// The seam received the item id, the stamped absolute path, and the
-		// stored ffprobe facts (Interface 2 wiring).
-		if rec.itemID != "i_pack_ok" || rec.absPath != "/library/Movies/Hostile Container.mkv" || rec.ffprobe == nil {
-			t.Fatalf("PackItem inputs = %+v, want id + absolute_path + ffprobe", rec)
+		// stored ffprobe facts (Interface 2 wiring). The fixture carries no
+		// audio sidecars, so the voiceover facts are empty.
+		if rec.itemID != "i_pack_ok" || rec.absPath != "/library/Movies/Hostile Container.mkv" || rec.ffprobe == nil || rec.voiceovers != nil {
+			t.Fatalf("PackItem inputs = %+v, want id + absolute_path + ffprobe + no voiceovers", rec)
 		}
 		// Metadata completion is unaffected: status ready, namespaces as before.
 		it := mustGetItem(t, s, "i_pack_ok")
@@ -109,6 +111,49 @@ func TestStreamsLane(t *testing.T) {
 		for _, r := range rows {
 			if r.ItemID == "i_pack_ok" && r.PluginID == streamsLaneID {
 				t.Fatalf("pack ledger row written on success: %+v", r)
+			}
+		}
+	})
+
+	t.Run("pack_seam_carries_document_order_audio_sidecars", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		doc := baseDoc("Movies/Hostile Container.mkv")
+		doc["parsed"].(map[string]any)["absolute_path"] = "/library/Movies/Hostile Container.mkv"
+		doc["parsed"].(map[string]any)["sidecars"] = []any{
+			map[string]any{"relative_path": "Rus subs/ep01.srt", "kind": "subtitle", "language": "rus"},
+			map[string]any{"relative_path": "Rus sound/ep01.mka", "kind": "audio", "language": "rus"},
+			map[string]any{"relative_path": "Rus sound/ep01.2.mka", "kind": "audio"},
+		}
+		doc["parsed"].(map[string]any)["series_sidecars"] = []any{
+			map[string]any{"relative_path": "OST/theme.flac", "kind": "audio"},
+		}
+		b, _ := json.Marshal(doc)
+		if err := s.PutItem(ctx, store.Item{
+			ID: "i_pack_vo", ModuleID: "tv", LibraryID: libID, FileID: "i_pack_vo",
+			RelativePath: "Movies/Hostile Container.mkv", MediaType: "tv",
+			Document: b, Status: statusReady,
+		}); err != nil {
+			t.Fatalf("PutItem: %v", err)
+		}
+
+		rec := &packRecord{}
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, PackOutcome{Playlist: "/p", Nonce: "n"}, nil)}, QueueConfig{})
+		q.workStreams(ctx, "i_pack_vo")
+
+		// Only the episode-linked AUDIO sidecars pass, in document order, as
+		// absolute paths derived from the episode's stored facts — the
+		// subtitle and the serial-level OST never ride the seam.
+		want := []string{
+			"/library/Rus sound/ep01.mka",
+			"/library/Rus sound/ep01.2.mka",
+		}
+		if len(rec.voiceovers) != len(want) {
+			t.Fatalf("voiceovers = %v, want %v", rec.voiceovers, want)
+		}
+		for i := range want {
+			if rec.voiceovers[i] != want[i] {
+				t.Fatalf("voiceovers = %v, want %v", rec.voiceovers, want)
 			}
 		}
 	})

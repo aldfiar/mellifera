@@ -38,11 +38,12 @@ func (p *playStub) play() func(context.Context, string, bool, *float64) (bool, e
 // failed run is 400; an unknown item is 404 on both verbs.
 func TestPlaybackVerbs(t *testing.T) {
 	descriptor := Playback{
-		Mode:     "hls",
-		State:    "complete",
-		PlayURL:  "/media/it1/nonce01/index.m3u8?token=tok",
-		Sections: []map[string]any{{"kind": "chapter", "start": 0.0, "end": 5.5, "title": "intro"}},
-		Token:    "fresh-media-token",
+		Mode:       "hls",
+		State:      "complete",
+		PlayURL:    "/media/it1/nonce01/index.m3u8?token=tok",
+		Sections:   []map[string]any{{"kind": "chapter", "start": 0.0, "end": 5.5, "title": "intro"}},
+		Voiceovers: []map[string]any{{"index": 0, "label": "Japanese"}},
+		Token:      "fresh-media-token",
 	}
 
 	newHandler := func(pb func(context.Context, string) (Playback, error), ps *playStub) http.Handler {
@@ -103,6 +104,26 @@ func TestPlaybackVerbs(t *testing.T) {
 		}
 		if d.Mode != "hls" || d.State != "complete" || len(d.Sections) != 1 || d.Sections[0]["title"] != "intro" {
 			t.Fatalf("descriptor = %+v, want mode/state/sections carried through", d)
+		}
+		if len(d.Voiceovers) != 1 || d.Voiceovers[0]["label"] != "Japanese" {
+			t.Fatalf("descriptor voiceovers = %+v, want the voiceover projection carried on the wire", d.Voiceovers)
+		}
+	})
+
+	t.Run("descriptor_without_voiceovers_has_empty_wire_field", func(t *testing.T) {
+		pb := func(context.Context, string) (Playback, error) {
+			return Playback{Mode: "direct", State: "none", PlayURL: "/media/it1/file.mp4?token=t"}, nil
+		}
+		resp := doRequest(t, newHandler(pb, nil), http.MethodGet, "/api/v1/items/it1/playback", "", adminToken)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		var d playbackResponse
+		if err := json.Unmarshal([]byte(readAll(t, resp)), &d); err != nil {
+			t.Fatalf("decode descriptor: %v", err)
+		}
+		if len(d.Voiceovers) != 0 {
+			t.Fatalf("voiceovers = %+v, want none when the descriptor carries no sidecars", d.Voiceovers)
 		}
 	})
 
