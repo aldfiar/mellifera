@@ -22,6 +22,9 @@ coverage.html
 # Runtime data (SQLite DBs, plugin extraction, caches)
 /data/
 
+# Dev-mode artifacts (scripts/dev.sh: the dev server binary + logs)
+/.tmp/
+
 # Web/SPA dev (Phase 2+): npm + Vite build output
 node_modules/
 /web/dist/
