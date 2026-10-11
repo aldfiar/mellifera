@@ -249,3 +249,82 @@ func TestHeadFirst(t *testing.T) {
 		t.Fatalf("final playlist missing the tail splice discontinuity:\n%s", final)
 	}
 }
+
+// TestHeadOnlySegmentsPublished pins the whole-file-within-head-chunk publish
+// (probe 3694483270be0ea8): the legacy single-variant head-only build publishes
+// its segments WITH the playlist — the playlist is finalized inside tmp and the
+// whole directory renames into place, so Pack's tmp cleanup cannot strand the
+// segments behind a published playlist. After Pack, every reference in the
+// published playlist must resolve relative to the playlist's own directory
+// (how hls.js resolves playlist URIs) and every published segment must be
+// listed — the same two assertions the tail-window repro pins for the tail lane.
+func TestHeadOnlySegmentsPublished(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	fixture := makeFixture(t, dir, 12*time.Second)
+	s := newTestService(t, filepath.Join(dir, "streams"), 600*time.Second) // default head: the whole file IS the head chunk
+
+	build, err := s.Pack(ctx, "it_head_only", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}}, nil)
+	if err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+	buildDir := filepath.Join(s.Root, "it_head_only", build.Nonce)
+	playlistPath := filepath.Join(buildDir, "index.m3u8")
+	pl := readFile(t, playlistPath)
+	if !strings.Contains(pl, "#EXT-X-ENDLIST") {
+		t.Fatalf("head-only playlist missing ENDLIST:\n%s", pl)
+	}
+	if strings.Contains(pl, "#EXT-X-DISCONTINUITY") {
+		t.Fatalf("head-only playlist ran a tail phase (spurious discontinuity):\n%s", pl)
+	}
+
+	// playlistRefs returns the referenced URIs of a media playlist: every
+	// non-tag line (segment URIs) plus every EXT-X-MAP URI="..." attribute.
+	var refs []string
+	for _, line := range strings.Split(pl, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			if strings.HasPrefix(line, "#EXT-X-MAP") {
+				if i := strings.Index(line, `URI="`); i >= 0 {
+					rest := line[i+len(`URI="`):]
+					if j := strings.Index(rest, `"`); j >= 0 {
+						refs = append(refs, rest[:j])
+					}
+				}
+			}
+			continue
+		}
+		refs = append(refs, line)
+	}
+	if len(refs) == 0 {
+		t.Fatalf("head-only playlist references nothing (nothing playable):\n%s", pl)
+	}
+	// REACHABILITY — every ref must exist relative to the playlist dir.
+	for _, ref := range refs {
+		if _, err := os.Stat(filepath.Join(buildDir, ref)); err != nil {
+			t.Errorf("playlist references %q: not found relative to the playlist dir (player 404)", ref)
+		}
+	}
+	// COVERAGE — the playlist lists every segment published under the build
+	// dir (a whole-file build has no t/ tree; everything is a head segment).
+	onDisk := 0
+	entries, err := os.ReadDir(buildDir)
+	if err != nil {
+		t.Fatalf("build dir: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "seg-") {
+			onDisk++
+		}
+	}
+	listed := 0
+	for _, ref := range refs {
+		if strings.HasPrefix(filepath.Base(ref), "seg-") {
+			listed++
+		}
+	}
+	if listed != onDisk {
+		t.Errorf("playlist lists %d segments but %d were published under %s: the head-only publish stranded segments",
+			listed, onDisk, buildDir)
+	}
+}

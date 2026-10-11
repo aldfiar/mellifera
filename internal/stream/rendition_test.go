@@ -298,6 +298,12 @@ func TestVoiceoverTracks(t *testing.T) {
 	})
 
 	t.Run("read_only_no_packaging_state_mutation", func(t *testing.T) {
+		// The complete doc's build must exist on disk for the integrity guard
+		// (D5) to keep the hls answer — materialize the minimal handwritten
+		// build the namespace points at.
+		root := t.TempDir()
+		s.Root = root
+		handBuild(t, root, "it", "n0", healthyPlaylist, "init.mp4", "seg-00000.m4s", "seg-00001.m4s")
 		d := map[string]any{
 			"streams": map[string]any{"state": "complete", "playlist": "/media/it/n0/index.m3u8", "nonce": "n0"},
 			"parsed": map[string]any{"sidecars": []any{

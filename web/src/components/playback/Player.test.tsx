@@ -65,6 +65,7 @@ function renderPlayer(
     retrying?: boolean;
     subtitleTrackUrl?: string | null;
     voiceoverTrack?: number | null;
+    poster?: string | null;
   },
 ): void {
   render(<Player itemId="itm_1_9" descriptor={descriptor} {...props} />);
@@ -323,5 +324,25 @@ describe("Player — voiceover selection (serial-watch-flow 5.3)", () => {
     renderPlayer(DIRECT_DESCRIPTOR, { voiceoverTrack: 1 });
 
     expect(hls.instances).toHaveLength(0);
+  });
+});
+
+// fix-episode-playback 3.1 — the episode page's poster: the frame-grabber
+// thumb blob rides the <video> itself as its poster attribute; a null or
+// absent prop leaves NO attribute at all — no poster, no broken-image state.
+describe("Player — poster (fix-episode-playback 3.1)", () => {
+  it("sets the poster attribute from the prop", () => {
+    renderPlayer(HLS_DESCRIPTOR, { poster: "blob:thumb-1" });
+
+    expect(theVideo().getAttribute("poster")).toBe("blob:thumb-1");
+  });
+
+  it("renders no poster attribute when the prop is null or absent", () => {
+    renderPlayer(HLS_DESCRIPTOR, { poster: null });
+    expect(theVideo().hasAttribute("poster")).toBe(false);
+
+    cleanup();
+    renderPlayer(DIRECT_DESCRIPTOR);
+    expect(theVideo().hasAttribute("poster")).toBe(false);
   });
 });

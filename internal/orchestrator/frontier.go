@@ -7,8 +7,9 @@ import "time"
 
 // Frontier job reasons (informational — carried on Job for the operator log).
 const (
-	reasonPilot = "pilot"
-	reasonNext  = "next-after-watched"
+	reasonPilot  = "pilot"
+	reasonNext   = "next-after-watched"
+	reasonRepack = "repack"
 )
 
 // Episode is the ONE packaging-relevant projection of an item (the narrow
@@ -98,4 +99,29 @@ func Frontier(in FrontierIn) []Job {
 // eligibility rule as the sweep (single source in this package).
 func OnPlay(e Episode, now time.Time) bool {
 	return eligible(e, now)
+}
+
+// IntegrityItem is ONE integrity-sweep fact (D4's policy half): the item id
+// and whether its published build still validates (stream.ValidateBuild —
+// the caller runs the check and hands down the verdict; this package never
+// touches disk).
+type IntegrityItem struct {
+	ItemID  string
+	Healthy bool
+}
+
+// Repacks is the integrity sweep's pure repack judge (D4): exactly the
+// unhealthy items come back as repack jobs — healthy items never job, input
+// order preserved, empty slice never nil. The caller's gates are the same as
+// the frontier's: in-flight leases and pack_failed cooldowns are applied at
+// the enqueue site, never here — the judge is the policy, the sweep is the
+// composition (D4).
+func Repacks(items []IntegrityItem) []Job {
+	jobs := make([]Job, 0)
+	for _, it := range items {
+		if !it.Healthy {
+			jobs = append(jobs, Job{ItemID: it.ItemID, Reason: reasonRepack})
+		}
+	}
+	return jobs
 }

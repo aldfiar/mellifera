@@ -329,13 +329,15 @@ func main() {
 		},
 	})
 
-	// Packaged-playback orchestrator (D-8/D-9): the watch-driven frontier +
-	// budget eviction sweep. Boot sweep FIRST (a restarted server resumes
-	// its frontier before serving), then the ≥60 s ticker for the process
-	// lifetime; both execute the policy's decisions through the streams
-	// lane's EnqueuePack seam and the filesystem. The budget knob is GiB
-	// (default 32; 0 = off — see loadConfig).
-	sweep := newSweep(st, cfg.streamsRoot, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30)
+	// Packaged-playback orchestrator (D-8/D-9/D4): the watch-driven frontier +
+	// budget eviction + build-integrity sweep. Boot sweep FIRST (a restarted
+	// server resumes its frontier and heals its broken builds before
+	// serving), then the ≥60 s ticker for the process lifetime; both execute
+	// the policies' decisions through the streams lane's EnqueuePack seam and
+	// the filesystem. validate rides in as the stream Service's own
+	// ValidateBuild method value (the enqueue seam's func-injection pattern);
+	// the budget knob is GiB (default 32; 0 = off — see loadConfig).
+	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30)
 	sweep(ctx)
 	go runSweepTicker(ctx, sweep)
 

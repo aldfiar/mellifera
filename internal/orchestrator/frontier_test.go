@@ -214,3 +214,45 @@ func TestOnPlay(t *testing.T) {
 		})
 	}
 }
+
+// TestRepacks is the integrity sweep's acceptance test for the pure repack
+// judge (D4's policy half; probe e3a94ff9390eec25): exactly the unhealthy
+// items come back as repack jobs, healthy items never job, and empty input
+// yields an empty — never nil — slice.
+func TestRepacks(t *testing.T) {
+	t.Run("broken_items_repack_healthy_never", func(t *testing.T) {
+		got := Repacks([]IntegrityItem{
+			{ItemID: "it_ok", Healthy: true},
+			{ItemID: "it_bad", Healthy: false},
+			{ItemID: "it_fine", Healthy: true},
+			{ItemID: "it_worse", Healthy: false},
+		})
+		if len(got) != 2 {
+			t.Fatalf("Repacks() = %+v, want exactly the 2 unhealthy jobs", got)
+		}
+		for i, want := range []string{"it_bad", "it_worse"} {
+			if got[i].ItemID != want {
+				t.Fatalf("job %d item = %q, want %q (input order, unhealthy only)", i, got[i].ItemID, want)
+			}
+			if got[i].Reason != "repack" {
+				t.Fatalf("job %d reason = %q, want %q", i, got[i].Reason, "repack")
+			}
+		}
+	})
+
+	t.Run("healthy_items_never_job", func(t *testing.T) {
+		if got := Repacks([]IntegrityItem{{ItemID: "it_ok", Healthy: true}}); len(got) != 0 {
+			t.Fatalf("Repacks(all healthy) = %+v, want no jobs", got)
+		}
+	})
+
+	t.Run("empty_input_empty_non_nil_slice", func(t *testing.T) {
+		got := Repacks(nil)
+		if got == nil {
+			t.Fatal("Repacks(nil) = nil, want an empty non-nil slice (the sweep iterates it)")
+		}
+		if len(got) != 0 {
+			t.Fatalf("Repacks(nil) = %+v, want empty", got)
+		}
+	})
+}

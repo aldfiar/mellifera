@@ -241,19 +241,28 @@ func TestSections(t *testing.T) {
 	})
 
 	t.Run("mode_and_play_url_follow_the_stored_state", func(t *testing.T) {
+		s.Root = t.TempDir() // the complete-build guard stats the build on disk
 		cases := []struct {
-			name, streamsState, playlist, wantMode string
+			name, streamsState, playlist, nonce, wantMode string
 		}{
-			{"no_packaging", "", "", ModeDirect},
-			{"failed_pack", StateFailed, "/media/it/bad/index.m3u8", ModeDirect},
-			{"partial_build", StatePartial, "/media/it/n1/index.m3u8", ModeHls},
-			{"complete_build", StateComplete, "/media/it/n1/index.m3u8", ModeHls},
+			{"no_packaging", "", "", "", ModeDirect},
+			{"failed_pack", StateFailed, "/media/it/bad/index.m3u8", "", ModeDirect},
+			{"partial_build", StatePartial, "/media/it/n1/index.m3u8", "", ModeHls},
+			{"complete_build", StateComplete, "/media/it/n1/index.m3u8", "n1", ModeHls},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				d := map[string]any{}
 				if tc.streamsState != "" {
-					d["streams"] = map[string]any{"state": tc.streamsState, "playlist": tc.playlist}
+					ns := map[string]any{"state": tc.streamsState, "playlist": tc.playlist}
+					if tc.nonce != "" {
+						// A complete doc must point at a real, healthy build or
+						// the integrity guard (D5) answers the direct floor.
+						ns["nonce"] = tc.nonce
+						handBuild(t, s.Root, "it", tc.nonce, healthyPlaylist,
+							"init.mp4", "seg-00000.m4s", "seg-00001.m4s")
+					}
+					d["streams"] = ns
 				}
 				mode, state, playURL, _, _ := s.Describe("it", d)
 				if mode != tc.wantMode {
@@ -403,6 +412,190 @@ func readBody(t *testing.T, resp *http.Response) []byte {
 		t.Fatalf("read body: %v", err)
 	}
 	return b
+}
+
+// healthyPlaylist is the minimal complete single-variant playlist the
+// handwritten builds publish: an init segment, two listed segments, ENDLIST.
+const healthyPlaylist = "#EXTM3U\n" +
+	"#EXT-X-VERSION:7\n" +
+	"#EXT-X-TARGETDURATION:4\n" +
+	`#EXT-X-MAP:URI="init.mp4"` + "\n" +
+	"#EXTINF:4.0,\nseg-00000.m4s\n" +
+	"#EXTINF:4.0,\nseg-00001.m4s\n" +
+	"#EXT-X-ENDLIST\n"
+
+// handBuild materializes one minimal handwritten single-variant build under
+// root/<itemID>/<nonce>: the playlist bytes at index.m3u8 plus one dummy file
+// per named artifact (segments and the init segment — each caller names
+// exactly what exists, so a playlist can reference a missing file). Returns
+// the build directory. The D5 descriptor guard and ValidateBuild tests judge
+// these builds without ever running ffmpeg.
+func handBuild(t *testing.T, root, itemID, nonce, playlist string, artifacts ...string) string {
+	t.Helper()
+	dir := filepath.Join(root, itemID, nonce)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir build %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.m3u8"), []byte(playlist), 0o644); err != nil {
+		t.Fatalf("write playlist: %v", err)
+	}
+	for _, a := range artifacts {
+		dst := filepath.Join(dir, a)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatalf("mkdir artifact dir %s: %v", a, err)
+		}
+		if err := os.WriteFile(dst, []byte("artifact-bytes-"+a), 0o644); err != nil {
+			t.Fatalf("write artifact %s: %v", a, err)
+		}
+	}
+	return dir
+}
+
+// completeDoc is the descriptor input the broken-build tests vary: a stored
+// complete build with its artifact pointer and nonce.
+func completeDoc(itemID, nonce string) map[string]any {
+	return map[string]any{"streams": map[string]any{
+		"state":    StateComplete,
+		"playlist": mediaPrefix + "/" + itemID + "/" + nonce + "/index.m3u8",
+		"nonce":    nonce,
+	}}
+}
+
+// TestDescribeBrokenBuild is the spec floor for the descriptor's integrity
+// guard (D5; probe 076f2d6eece1e791): a complete doc whose on-disk build is
+// broken — a referenced segment missing, or a complete playlist omitting
+// published segments — answers the direct floor with the original URL, never
+// a playlist the player would die on; a healthy handwritten build answers
+// hls at the stored playlist URL.
+func TestDescribeBrokenBuild(t *testing.T) {
+	s := &Service{Secret: []byte("k"), Root: t.TempDir()}
+
+	t.Run("referenced_segment_missing_answers_direct", func(t *testing.T) {
+		handBuild(t, s.Root, "it", "n1", healthyPlaylist, "init.mp4", "seg-00000.m4s") // seg-00001 referenced but never written
+		mode, state, playURL, _, _ := s.Describe("it", completeDoc("it", "n1"))
+		if mode != ModeDirect || state != StateComplete {
+			t.Fatalf("mode/state = %q/%q, want %q/%q (broken build takes the floor)", mode, state, ModeDirect, StateComplete)
+		}
+		if !strings.HasPrefix(playURL, "/media/it/original?token=") {
+			t.Fatalf("playURL = %q, want the original URL", playURL)
+		}
+	})
+
+	t.Run("complete_playlist_omitting_published_segments_answers_direct", func(t *testing.T) {
+		handBuild(t, s.Root, "it", "n2",
+			"#EXTM3U\n#EXTINF:4.0,\nseg-00000.m4s\n#EXT-X-ENDLIST\n",
+			"seg-00000.m4s", "t/seg-00001.m4s") // published under t/, never listed
+		mode, state, playURL, _, _ := s.Describe("it", completeDoc("it", "n2"))
+		if mode != ModeDirect || state != StateComplete {
+			t.Fatalf("mode/state = %q/%q, want %q/%q (stranded segment takes the floor)", mode, state, ModeDirect, StateComplete)
+		}
+		if !strings.HasPrefix(playURL, "/media/it/original?token=") {
+			t.Fatalf("playURL = %q, want the original URL", playURL)
+		}
+	})
+
+	t.Run("healthy_build_answers_hls", func(t *testing.T) {
+		handBuild(t, s.Root, "it", "n3", healthyPlaylist, "init.mp4", "seg-00000.m4s", "seg-00001.m4s")
+		mode, state, playURL, _, _ := s.Describe("it", completeDoc("it", "n3"))
+		if mode != ModeHls || state != StateComplete {
+			t.Fatalf("mode/state = %q/%q, want %q/%q", mode, state, ModeHls, StateComplete)
+		}
+		if !strings.HasPrefix(playURL, "/media/it/n3/index.m3u8?token=") {
+			t.Fatalf("playURL = %q, want the stored playlist URL", playURL)
+		}
+	})
+}
+
+// TestValidateBuild is the unit floor for the integrity check itself (D4's
+// mechanism half): playlist-relative resolution over the two published
+// layouts, the complete-build coverage half, the partial exemption, and the
+// invalid shapes (missing dir, unreadable playlist, escaping ref).
+func TestValidateBuild(t *testing.T) {
+	s := &Service{Root: t.TempDir()}
+
+	t.Run("missing_build_dir_invalid", func(t *testing.T) {
+		if err := s.ValidateBuild("it", "nope"); err == nil {
+			t.Fatal("ValidateBuild on a missing build dir = nil, want an error")
+		}
+	})
+
+	t.Run("healthy_single_variant_build_valid", func(t *testing.T) {
+		handBuild(t, s.Root, "it", "ok1", healthyPlaylist, "init.mp4", "seg-00000.m4s", "seg-00001.m4s")
+		if err := s.ValidateBuild("it", "ok1"); err != nil {
+			t.Fatalf("ValidateBuild(healthy) = %v, want nil", err)
+		}
+	})
+
+	t.Run("rendition_layout_resolves_through_master_and_variant_dirs", func(t *testing.T) {
+		// A rendition build's variant playlists reference their tail segments
+		// through ../t/rendK/ — the resolution the D2 fix pinned. The master
+		// references the variant playlists.
+		dir := handBuild(t, s.Root, "it", "rend0n", "#EXTM3U\n",
+			"rend0/init.mp4", "rend0/seg-00000.m4s",
+			"t/rend0/init.mp4", "t/rend0/seg-00001.m4s")
+		master := "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nrend0/index.m3u8\n"
+		if err := os.WriteFile(filepath.Join(dir, "index.m3u8"), []byte(master), 0o644); err != nil {
+			t.Fatalf("write master: %v", err)
+		}
+		variant := "#EXTM3U\n" +
+			`#EXT-X-MAP:URI="init.mp4"` + "\n" +
+			"#EXTINF:4.0,\nseg-00000.m4s\n" +
+			"#EXT-X-DISCONTINUITY\n" +
+			`#EXT-X-MAP:URI="../t/rend0/init.mp4"` + "\n" +
+			"#EXTINF:4.0,\n../t/rend0/seg-00001.m4s\n" +
+			"#EXT-X-ENDLIST\n"
+		if err := os.WriteFile(filepath.Join(dir, "rend0", "index.m3u8"), []byte(variant), 0o644); err != nil {
+			t.Fatalf("write variant: %v", err)
+		}
+		if err := s.ValidateBuild("it", "rend0n"); err != nil {
+			t.Fatalf("ValidateBuild(rendition) = %v, want nil", err)
+		}
+	})
+
+	t.Run("partial_build_exempt_from_coverage", func(t *testing.T) {
+		// No ENDLIST: the playlist legitimately lags the disk while growing,
+		// so a published-but-unlisted segment is NOT invalid.
+		handBuild(t, s.Root, "it", "part1",
+			"#EXTM3U\n#EXTINF:4.0,\nseg-00000.m4s\n",
+			"seg-00000.m4s", "t/seg-00001.m4s")
+		if err := s.ValidateBuild("it", "part1"); err != nil {
+			t.Fatalf("ValidateBuild(partial) = %v, want nil (coverage exempt)", err)
+		}
+	})
+
+	t.Run("partial_build_still_needs_referenced_files", func(t *testing.T) {
+		handBuild(t, s.Root, "it", "part2", "#EXTM3U\n#EXTINF:4.0,\nseg-00000.m4s\n") // nothing written
+		if err := s.ValidateBuild("it", "part2"); err == nil {
+			t.Fatal("ValidateBuild(partial, missing segment) = nil, want an error (reachability holds at every state)")
+		}
+	})
+
+	t.Run("unreadable_playlist_invalid", func(t *testing.T) {
+		dir := handBuild(t, s.Root, "it", "ro1", healthyPlaylist, "init.mp4", "seg-00000.m4s", "seg-00001.m4s")
+		if err := os.Chmod(filepath.Join(dir, "index.m3u8"), 0o000); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { os.Chmod(filepath.Join(dir, "index.m3u8"), 0o644) })
+		if err := s.ValidateBuild("it", "ro1"); err == nil {
+			t.Fatal("ValidateBuild(unreadable playlist) = nil, want an error")
+		}
+	})
+
+	t.Run("ref_escaping_the_build_invalid", func(t *testing.T) {
+		// The referenced file EXISTS on disk — just not inside the build. The
+		// strict /media join could never serve it, so the ref is invalid.
+		handBuild(t, s.Root, "it", "esc1",
+			"#EXTM3U\n#EXTINF:4.0,\n../other/seg-00000.m4s\n#EXT-X-ENDLIST\n")
+		if err := os.MkdirAll(filepath.Join(s.Root, "other"), 0o755); err != nil {
+			t.Fatalf("mkdir other: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(s.Root, "other", "seg-00000.m4s"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write outside segment: %v", err)
+		}
+		if err := s.ValidateBuild("it", "esc1"); err == nil {
+			t.Fatal("ValidateBuild(escaping ref) = nil, want an error")
+		}
+	})
 }
 
 // logBuffer is a slog handler that accumulates every record's message, so a

@@ -255,7 +255,7 @@ describe("ItemDetail — hero media (media-preview walkthrough feedback)", () =>
     expect(screen.getByText("itm_1_img")).toBeDefined();
   });
 
-  it("uses the thumb variant for an item carrying the frame-grabber fact", async () => {
+  it("still fetches the thumb variant for an item carrying the frame-grabber fact — but renders no hero img (fix-episode-playback 3.1: the thumb rides the player as its poster)", async () => {
     vi.spyOn(apiModule, "getItem").mockResolvedValue(THUMB_ITEM);
     vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
     stubObjectUrls();
@@ -265,10 +265,14 @@ describe("ItemDetail — hero media (media-preview walkthrough feedback)", () =>
 
     renderAtId("itm_1_ep", freshClient());
 
-    await screen.findByRole("img", { name: "shows/Оська/s01e02.mkv" });
+    // The thumb fetch fires on the fact (pre-selection unchanged), but the
+    // video lane renders no separate hero <img> — the blob is the player's
+    // poster, and with no descriptor mocked here no player mounts.
+    await screen.findByText("itm_1_ep");
     expect(mediaCalls(fetchSpy)).toEqual([
       "/api/v1/items/itm_1_ep/media?variant=thumb",
     ]);
+    expect(screen.queryByRole("img")).toBeNull();
   });
 
   it("renders no hero and fires no media request when no image resolvable (video, no thumb fact)", async () => {
@@ -284,6 +288,86 @@ describe("ItemDetail — hero media (media-preview walkthrough feedback)", () =>
     expect(await screen.findByText("itm_1_9")).toBeDefined();
     expect(screen.queryByRole("img")).toBeNull();
     expect(mediaCalls(fetchSpy)).toEqual([]);
+  });
+});
+
+// fix-episode-playback 3.1 — the episode page shows only the player: the
+// frame-grabber thumb blob rides the <video> as its poster attribute, the
+// video lane renders NO separate hero <img>, and the photo lane keeps its
+// hero photo (asserted by the "leads the Details surface with the original"
+// test above — the photo lane is untouched). getItem/getPlayback mocked at
+// the api seam; the thumb bytes travel the global fetch as in the hero tests.
+describe("ItemDetail — episode poster (fix-episode-playback 3.1)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const EPISODE_WITH_THUMB: ItemResponse = {
+    item: {
+      ...ITEM_RESPONSE.item,
+      id: "itm_poster_ep",
+      status: "ready",
+      relative_path: "shows/Оська/s01e03.mkv",
+      document: {
+        sources: { "frame-grabber": { thumbnail_path: "/data/thumbs/ep3.jpg" } },
+      },
+    },
+  };
+
+  it("renders the player carrying the thumb poster URL and NO separate hero img in the video lane", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(EPISODE_WITH_THUMB);
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+    vi.spyOn(apiModule, "getPlayback").mockResolvedValue(HLS_PLAYBACK);
+    // The progress PUT is Player-internal and irrelevant here.
+    vi.spyOn(apiModule, "putProgress").mockResolvedValue({
+      item_id: "itm_poster_ep",
+      position_seconds: 0,
+      updated_at: "",
+    });
+    // jsdom has no blob URL factory — the stubbed observable, as in the hero
+    // tests. Fetch answers media URLs with thumb bytes, everything else
+    // (the progress list) with an empty JSON body.
+    const create = vi.fn((blob: Blob) => `blob:thumb-${String(blob.size)}-poster`);
+    Object.defineProperty(URL, "createObjectURL", {
+      value: create,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      value: vi.fn(),
+      configurable: true,
+      writable: true,
+    });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        if (String(input).includes("/media")) {
+          return new Response("jpeg-bytes", {
+            status: 200,
+            headers: { "Content-Type": "image/jpeg" },
+          });
+        }
+        return new Response('{"items":[]}', {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+
+    renderAtId("itm_poster_ep", freshClient());
+
+    // The player mounts on the resolved descriptor in the video lane.
+    expect(await screen.findByRole("region", { name: "Player" })).toBeDefined();
+    expect(screen.getByRole("region", { name: "Media stage" })).toBeDefined();
+
+    // The thumb blob (resolved through the authenticated channel) arrives as
+    // the <video>'s poster attribute — not as a separate hero <img>.
+    await waitFor(() => {
+      expect(theVideo().getAttribute("poster")).toMatch(/^blob:thumb-\d+-poster$/);
+    });
+    expect(create.mock.calls[0][0]).toMatchObject({ type: "image/jpeg" });
+    expect(
+      fetchSpy.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/media")),
+    ).toEqual(["/api/v1/items/itm_poster_ep/media?variant=thumb"]);
+    expect(screen.queryByRole("img")).toBeNull();
   });
 });
 

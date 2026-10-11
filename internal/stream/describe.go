@@ -58,17 +58,43 @@ const (
 //   - voiceovers: the episode document's episode-linked audio sidecars
 //     projected to {index, label} in document order (serial-watch-flow D-2) —
 //     stored facts only, never a re-probe, never a packaging-state write.
+//   - integrity guard (D5): a COMPLETE state additionally runs the read-only
+//     ValidateBuild over the nonce the namespace carries; a broken or evicted
+//     build answers the direct floor instead of a playlist the player would
+//     die on. Partial builds and nonce-less namespaces are exempt — their
+//     wire shape is byte-identical to the pre-guard descriptor.
 func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any) {
 	s.normalize()
 	state = streamState(doc["streams"])
 	voiceovers = projectVoiceovers(doc["parsed"])
 	token, _ := s.Issue(itemID, timeNow())
 	if state == StatePartial || state == StateComplete {
-		if playlist := streamPlaylist(doc["streams"]); playlist != "" {
+		if playlist := streamPlaylist(doc["streams"]); playlist != "" && s.buildHealthy(itemID, state, doc["streams"]) {
 			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, projectChapters(doc["ffprobe"]), voiceovers
 		}
 	}
 	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, projectChapters(doc["ffprobe"]), voiceovers
+}
+
+// buildHealthy gates the hls answer on the stored build still existing on
+// disk (D5): true — hls proceeds as before — for every partial build and for
+// any complete namespace without a nonce (byte-identical to the pre-guard
+// behavior); for a complete build WITH a nonce it is exactly ValidateBuild's
+// verdict. Strictly read-only: the check stats and reads the published
+// directory, never a packaging-state write.
+func (s *Service) buildHealthy(itemID string, state string, streams any) bool {
+	if state != StateComplete {
+		return true
+	}
+	m, ok := streams.(map[string]any)
+	if !ok {
+		return true
+	}
+	nonce, _ := m["nonce"].(string)
+	if nonce == "" {
+		return true
+	}
+	return s.ValidateBuild(itemID, nonce) == nil
 }
 
 // projectVoiceovers projects the episode document's parsed.sidecars into the

@@ -33,9 +33,9 @@ const (
 	// enrich; a drift breaks cooldown gating, so the itest pins it).
 	streamsFailureLane = "__streams__"
 
-	// sweepInterval is the frontier/eviction ticker period — the spec floor
-	// is ≥60 s; exactly 60 s keeps watch-driven lag bounded and the sweep
-	// cost negligible (a handful of indexed reads per tick).
+	// sweepInterval is the frontier/eviction/integrity ticker period — the
+	// spec floor is ≥60 s; exactly 60 s keeps watch-driven lag bounded and
+	// the sweep cost negligible (a handful of indexed reads per tick).
 	sweepInterval = 60 * time.Second
 
 	// watchScanLimit is the playback-progress scan depth per sweep: the LRU
@@ -68,13 +68,17 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 
 // newSweep returns the periodic sweep closure: one pass = the watch-driven
 // frontier (enqueue decisions → the streams lane) + budget accounting with
-// LRU eviction (evict decisions → .trash sibling then delete). Errors are
-// logged, never fatal — a sweep is best-effort background work and the next
-// tick retries.
-func newSweep(st *store.Store, root string, enqueue func(string) error, budgetBytes int64) func(context.Context) {
+// LRU eviction (evict decisions → .trash sibling then delete) + the integrity
+// sweep (broken published builds → repack jobs → the streams lane). Errors
+// are logged, never fatal — a sweep is best-effort background work and the
+// next tick retries. validate is the wired stream.Service.ValidateBuild,
+// injected as a func (the enqueue seam's pattern) so the sweep stays
+// testable without package main.
+func newSweep(st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, budgetBytes int64) func(context.Context) {
 	return func(ctx context.Context) {
 		sweepFrontier(ctx, st, enqueue)
 		sweepBudget(ctx, st, root, budgetBytes)
+		sweepIntegrity(ctx, st, root, validate, enqueue)
 	}
 }
 
@@ -192,6 +196,53 @@ func evictDir(path string) {
 		return
 	}
 	slog.Info("orchestrator: evicted artifact directory", "path", path)
+}
+
+// sweepIntegrity walks the artifact root like sweepBudget (item dirs, live
+// rows only) into the integrity snapshot (D4): every live item row whose
+// published-build state is complete gets the build its streams namespace
+// points at validated, the judge returns exactly the broken ones as repack
+// jobs, and each job re-enters the streams lane under a fresh build nonce. A
+// failed repack flips the state to failed + cooldown — out of this pass's
+// complete-state scope, so no re-enqueue storm; every error is logged, never
+// fatal — the next sweep retries.
+func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error) {
+	idDirs, err := os.ReadDir(root)
+	if err != nil {
+		return // no artifact root yet
+	}
+	items := make([]orchestrator.IntegrityItem, 0)
+	for _, idDir := range idDirs {
+		if !idDir.IsDir() {
+			continue
+		}
+		row, err := st.GetItem(ctx, idDir.Name())
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				slog.Warn("orchestrator: integrity item lookup failed", "item", idDir.Name(), "error", err)
+			}
+			continue // orphaned or unreadable: nothing live to heal
+		}
+		if row.Status == "deleted" {
+			continue
+		}
+		streams, _ := decodeItemDoc(row.Document)["streams"].(map[string]any)
+		state, _ := streams["state"].(string)
+		if state != stream.StateComplete {
+			continue // the floor guard owns partial; the cooldown owns failed
+		}
+		nonce, _ := streams["nonce"].(string)
+		items = append(items, orchestrator.IntegrityItem{
+			ItemID: idDir.Name(), Healthy: validate(idDir.Name(), nonce) == nil,
+		})
+	}
+	for _, job := range orchestrator.Repacks(items) {
+		if err := enqueue(job.ItemID); err != nil {
+			slog.Warn("orchestrator: repack enqueue failed", "item", job.ItemID, "error", err)
+			continue
+		}
+		slog.Info("orchestrator: fronted repack", "item", job.ItemID)
+	}
 }
 
 // episodeFromDoc projects one item document into the orchestrator's narrow

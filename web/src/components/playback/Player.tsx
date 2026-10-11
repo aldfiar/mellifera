@@ -48,6 +48,11 @@ export interface PlayerProps {
    *  lane's pinned build order). hls lane only — switching never restarts
    *  the video; null/absent leaves the loader's default rendition. */
   voiceoverTrack?: number | null;
+  /** Poster frame (fix-episode-playback R4): the item's frame-grabber thumb
+   *  blob object URL, handed over by the page. Rendered as the <video>'s
+   *  poster attribute; null/absent = no attribute at all — no poster and no
+   *  broken-image state. */
+  poster?: string | null;
 }
 
 export default function Player(props: PlayerProps): ReactElement {
@@ -179,6 +184,7 @@ export default function Player(props: PlayerProps): ReactElement {
         ref={videoRef}
         controls
         playsInline
+        poster={props.poster ?? undefined}
         className="w-full rounded-lg border bg-black"
         aria-label={descriptor.mode === "hls" ? "Streamed playback" : "Original playback"}
       >

@@ -52,11 +52,12 @@ import { Card, CardContent } from "@/components/ui/card";
 // ItemDetail — the full §3.1 document for one item (/items/:id), rendered
 // VERBATIM (INV-no-rounding, INV-no-merge) following the media-first ladder
 // (element-pages D-5):
-//   media stage  the item's own media (frame-grabber thumb, else the original
-//                for image-typed items) via the authenticated media channel —
-//                video: the dominant LEFT column with the play affordance
-//                (the Player) beside the identity column RIGHT; image: the
-//                photo IS the page, full-width, identity beneath
+//   media stage  the item's own media via the authenticated media channel —
+//                video: the Player IS the stage, the dominant LEFT column
+//                beside the identity column RIGHT, the frame-grabber thumb
+//                riding the <video> as its poster (fix-episode-playback R4 —
+//                no separate hero image above the player); image: the photo
+//                IS the page, full-width, identity beneath
 //   identity     element name (h1), raw path, and the module's mandatory
 //                identity badges per `identity_fields` (missing → slot state)
 //   footer       <ParserFooter> — the parser-ordered metadata footer between
@@ -307,9 +308,11 @@ function ItemLoadedView(props: {
   // Hero media URL — the same client-side pre-selection the collection tiles
   // use (media-preview D6): the frame-grabber thumb when the document names
   // one, else the original only for image-typed items (a video original
-  // downloads rather than renders in an <img>). null → no hero section and no
-  // request at all; a fetch failure nulls the URL inside useItemMedia, so the
-  // page just falls back to the identity column — never a broken-image.
+  // downloads rather than renders in an <img>). null → no request at all; a
+  // fetch failure nulls the URL inside useItemMedia, so the page degrades —
+  // never a broken-image. The video lane hands the thumb blob to the Player
+  // as its poster attribute (fix-episode-playback R4); the photo lane renders
+  // it as the media stage's hero <img>.
   const heroUrl = hasFrameGrabberThumb(doc)
     ? ENDPOINTS.itemMedia(item.id, "thumb")
     : isPhotoItem(item) && hasOriginalFile(doc)
@@ -387,6 +390,7 @@ function ItemLoadedView(props: {
       retrying={playRetry.isPending}
       subtitleTrackUrl={subtitleTrack.url}
       voiceoverTrack={voiceover}
+      poster={hasFrameGrabberThumb(doc) ? hero : null}
     />
   ) : null;
   const watchControls =
@@ -450,11 +454,11 @@ function ItemLoadedView(props: {
         </nav>
       ) : null}
       {isVideoItem(item) ? (
-        // Media-first, video lane: the media stage (hero + play affordance)
-        // is the dominant LEFT surface; the identity column sits RIGHT.
+        // Media-first, video lane: the player IS the media stage (the
+        // thumb rides the <video> as its poster — no separate hero image,
+        // fix-episode-playback R4); the identity column sits RIGHT.
         <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
           <section aria-label="Media stage" className="flex min-w-0 flex-col gap-3">
-            {mediaStage}
             {player}
             {watchControls}
           </section>

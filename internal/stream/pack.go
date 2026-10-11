@@ -84,7 +84,10 @@ func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[
 // root (rel "."), a rendition build has the ffmpeg-written master at the root
 // plus one variant playlist per rendition directory (rel "rendK" — variant 0
 // is the video, 1 the embedded audio, k+1 the voiceovers). prefix is the tail
-// merge prefix that re-points the tail phase's entries into final/t/.
+// merge prefix that re-points the tail phase's entries into final/t/, stated
+// RELATIVE TO the receiving playlist's own directory (the base hls.js
+// resolves against): the root playlist keeps "t/", a rendK playlist needs
+// "../t/rendK/".
 type variantPlaylist struct {
 	rel    string
 	prefix string
@@ -104,7 +107,7 @@ func variantLayout(n int) []variantPlaylist {
 	for k := 0; k <= n+1; k++ {
 		vs = append(vs, variantPlaylist{
 			rel:    "rend" + strconv.Itoa(k),
-			prefix: "t/rend" + strconv.Itoa(k) + "/",
+			prefix: "../t/rend" + strconv.Itoa(k) + "/",
 		})
 	}
 	return vs
@@ -151,8 +154,8 @@ func (s *Service) packInto(ctx context.Context, itemID, nonce, absPath string, f
 	if dur > 0 && dur <= s.HeadChunk.Seconds() {
 		// The whole file is the head chunk: finalize the head playlist(s) and
 		// publish the build. This is the ONLY playlist write that is not a
-		// merge (still atomic, still into final).
-		return publishHeadOnly(tmp, final, vs, heads, len(voiceovers) > 0)
+		// merge (still atomic, still one rename into final).
+		return publishHeadOnly(tmp, final, vs, heads)
 	}
 
 	if err := os.Rename(tmp, final); err != nil { // atomic publish of the partial build
@@ -161,14 +164,14 @@ func (s *Service) packInto(ctx context.Context, itemID, nonce, absPath string, f
 	return s.packTail(ctx, itemID, nonce, absPath, voiceovers, final, vs, heads)
 }
 
-// publishHeadOnly completes a whole-file-within-head-chunk build. A legacy
-// build writes its single finalized playlist into final; a rendition build
-// finalizes every variant playlist in place inside tmp and publishes the whole
-// directory with one rename (the ffmpeg-written master rides along).
-func publishHeadOnly(tmp, final string, vs []variantPlaylist, heads [][]byte, renditions bool) error {
-	if !renditions {
-		return writeAtomic(final, filepath.Join(final, vs[0].rel, "index.m3u8"), finalizeHead(heads[0]))
-	}
+// publishHeadOnly completes a whole-file-within-head-chunk build: every
+// variant playlist is finalized INSIDE tmp, then the whole directory —
+// playlists and segments together (a rendition build's ffmpeg-written master
+// rides along) — publishes with one atomic rename tmp → final. The rename
+// shape is the same for the legacy single-variant branch and the rendition
+// branch: writing the playlist directly into final while Pack removes tmp
+// would publish a playlist whose segments were just deleted.
+func publishHeadOnly(tmp, final string, vs []variantPlaylist, heads [][]byte) error {
 	for i, v := range vs {
 		dir := filepath.Join(tmp, v.rel)
 		if err := writeAtomic(dir, filepath.Join(dir, "index.m3u8"), finalizeHead(heads[i])); err != nil {
@@ -247,7 +250,10 @@ func packHeadArgs(src string, voiceovers []string, head, segmentTime time.Durati
 
 // packTailArgs builds the tail-phase ffmpeg argument slice: the remainder from
 // HeadChunk onward, identical remux flags so the artifact shape matches. With
-// resolvable voiceovers it is the rendition build's tail phase. Pure.
+// resolvable voiceovers it is the rendition build's tail phase. -hls_list_size
+// 0 makes the tail playlist unbounded — the ffmpeg default window of 5 would
+// publish only the last five entries as the complete ENDLIST build, stranding
+// every pre-window tail segment and faking the duration. Pure.
 func packTailArgs(src string, voiceovers []string, head, segmentTime time.Duration, outDir string) []string {
 	if len(voiceovers) > 0 {
 		return renditionArgs(src, voiceovers, head, segmentTime, outDir, true)
@@ -262,6 +268,7 @@ func packTailArgs(src string, voiceovers []string, head, segmentTime time.Durati
 		"-c", "copy",
 		"-f", "hls",
 		"-hls_time", strconv.FormatFloat(segmentTime.Seconds(), 'f', 3, 64),
+		"-hls_list_size", "0",
 		"-hls_segment_type", "fmp4",
 		"-hls_fmp4_init_filename", "init.mp4",
 		"-hls_segment_filename", filepath.Join(outDir, "seg-%05d.m4s"),
@@ -272,11 +279,11 @@ func packTailArgs(src string, voiceovers []string, head, segmentTime time.Durati
 // renditionArgs builds the multi-variant argument slice (serial-watch-flow
 // D-2): input 0 is the original, inputs 1..k the resolvable voiceover sidecar
 // files. The video variant maps the original's video alone; every audio
-// rendition — the embedded audio first, then the voiceovers in document order
-// — is a separate audio-only variant joined into one EXT-X-MEDIA group
-// (renditionMap), which the master playlist declares and hls.js exposes as
-// selectable audio tracks. Stream copy everywhere; no decode and no encode.
-// seek switches to the tail phase (-ss before the inputs, no EVENT flags).
+// rendition (embedded audio first, then the voiceovers in document order) is
+// a separate audio-only variant joined into one EXT-X-MEDIA group
+// (renditionMap) — the master playlist's audio tracks in hls.js. Stream copy
+// everywhere; no decode and no encode. seek switches to the tail phase (-ss
+// before the inputs, no EVENT flags, -hls_list_size 0 — see packTailArgs).
 // Pure.
 func renditionArgs(src string, voiceovers []string, head, segmentTime time.Duration, outDir string, seek bool) []string {
 	t := strconv.FormatFloat(head.Seconds(), 'f', 3, 64)
@@ -313,6 +320,8 @@ func renditionArgs(src string, voiceovers []string, head, segmentTime time.Durat
 	)
 	if !seek { // the head phase is the EVENT playlist with ENDLIST omitted (D-4)
 		args = append(args, "-hls_playlist_type", "event", "-hls_flags", "omit_endlist")
+	} else { // the tail playlist must be unbounded — mergePlaylists consumes it whole
+		args = append(args, "-hls_list_size", "0")
 	}
 	args = append(args,
 		"-hls_segment_filename", filepath.Join(outDir, "rend%v", "seg-%05d.m4s"),
@@ -323,9 +332,8 @@ func renditionArgs(src string, voiceovers []string, head, segmentTime time.Durat
 
 // renditionMap is the var_stream_map string: the video variant references one
 // audio group whose renditions are the embedded audio (a:0) first, then one
-// per voiceover input — the order the master playlist declares its
-// EXT-X-MEDIA entries in, which is the order hls.js exposes as audio tracks
-// (document index k → track k+1; 0 is the embedded audio). Pure.
+// per voiceover input — the master playlist's EXT-X-MEDIA order, which is the
+// hls.js audio-track order (document index k → track k+1; 0 is embedded). Pure.
 func renditionMap(n int) string {
 	entries := make([]string, 0, n+2)
 	entries = append(entries, "v:0,agroup:aud", "a:0,agroup:aud")
