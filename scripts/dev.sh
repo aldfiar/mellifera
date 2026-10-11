@@ -7,6 +7,13 @@
 # the Go server's cache headers for the same reason. Ctrl+C stops both (the Go
 # server shuts down gracefully: HTTP -> enrich pool -> plugins -> store).
 #
+# The Go server is also SEEDED with real media roots (idempotent — already-known
+# root paths are skipped, unmounted volumes soft-skip):
+#   serial|/Volumes/kofe/ongoing|Ongoing
+#   serial|/Volumes/inrat/anime|Anime
+# Override with MELLIFERA_DEV_LIBS (same `module|path|name` format, `;` between
+# entries); MELLIFERA_DEV_LIBS="" disables seeding entirely.
+#
 # Usage:
 #   scripts/dev.sh                                   # token defaults to dev-token
 #   MELLIFERA_ADMIN_TOKEN=secret scripts/dev.sh      # custom admin token
@@ -31,8 +38,10 @@ mkdir -p "$LOG_DIR"
 
 GO_PID=""
 VITE_PID=""
+SEED_PID=""
 cleanup() {
   trap - EXIT INT TERM
+  if [ -n "$SEED_PID" ]; then kill "$SEED_PID" 2>/dev/null || true; fi
   if [ -n "$VITE_PID" ]; then kill "$VITE_PID" 2>/dev/null || true; fi
   if [ -n "$GO_PID" ]; then kill "$GO_PID" 2>/dev/null || true; fi
   wait 2>/dev/null || true
@@ -49,6 +58,9 @@ for tool in ffprobe exiftool; do
     log "WARNING: $tool not on PATH — $tool-backed enrichment soft-fails per source (scans still succeed)"
   fi
 done
+if ! command -v ffmpeg >/dev/null; then
+  log "WARNING: ffmpeg not on PATH — fMP4-HLS packaging (play + voiceover renditions) will fail until it is installed"
+fi
 
 # 3. Web dependencies.
 if [ ! -d web/node_modules ]; then
@@ -79,7 +91,49 @@ for i in $(seq 1 60); do
 done
 log "Go server ready (admin token: $TOKEN)"
 
-# 5. Vite dev server. --strictPort: fail instead of drifting to 5174 when busy.
+# 5. Seed real media roots (idempotent dev data), in the BACKGROUND: a
+#    first-run scan walks the whole tree synchronously and can take minutes on
+#    a big library — Vite must not wait on it. Seed lines stream to the
+#    console as they complete. POST /libraries per unknown root_path, then
+#    POST /libraries/{id}/scan — discovery is synchronous, enrichment
+#    continues in the background. API: Bearer admin token;
+#    createLibraryRequest is {module_id, root_path, display_name,
+#    description}. Entry format: module|path|name, `;`-separated.
+api() { curl -sf -H "Authorization: Bearer $TOKEN" "$@"; }
+
+seed_libs() {
+  local DEV_LIBS="${MELLIFERA_DEV_LIBS-serial|/Volumes/kofe/ongoing|Ongoing;serial|/Volumes/inrat/anime|Anime}"
+  [ -z "$DEV_LIBS" ] && { log "seeding disabled (MELLIFERA_DEV_LIBS=\"\")"; return 0; }
+  local known entries entry module path name created id scan
+  log "seeding media libraries..."
+  known="$(api "http://127.0.0.1:$GO_PORT/api/v1/libraries" || true)"
+  IFS=';' read -r -a entries <<<"$DEV_LIBS"
+  for entry in "${entries[@]}"; do
+    IFS='|' read -r module path name <<<"$entry"
+    if [ ! -d "$path" ]; then
+      log "  $name ($path): not mounted — skipped"
+      continue
+    fi
+    if [[ "$known" == *"\"root_path\":\"$path\""* ]]; then
+      log "  $name ($path): already registered"
+      continue
+    fi
+    created="$(api -X POST -H 'Content-Type: application/json' \
+      -d "{\"module_id\":\"$module\",\"root_path\":\"$path\",\"display_name\":\"$name\",\"description\":\"seeded by scripts/dev.sh\"}" \
+      "http://127.0.0.1:$GO_PORT/api/v1/libraries")" || { log "  $name: create FAILED — see $LOG_DIR/go.log"; continue; }
+    id="${created%%,*}"; id="${id##*:}"  # leading {"id":N,…
+    if scan="$(api -X POST "http://127.0.0.1:$GO_PORT/api/v1/libraries/$id/scan")"; then
+      log "  $name ($path): scan ok ($(printf %s "$scan" | sed -n 's/.*"discovered":\([0-9]*\).*/\1/p') items; enrichment runs in background)"
+    else
+      log "  $name ($path): registered, scan FAILED — trigger it from the UI"
+    fi
+  done
+  log "seeding done"
+}
+seed_libs &
+SEED_PID=$!
+
+# 6. Vite dev server. --strictPort: fail instead of drifting to 5174 when busy.
 log "starting Vite on :5173 (log: $LOG_DIR/vite.log)..."
 (cd web && exec npm run dev -- --strictPort) >"$LOG_DIR/vite.log" 2>&1 &
 VITE_PID=$!
