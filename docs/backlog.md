@@ -67,3 +67,12 @@ From the plugin-pipeline outline (flagged, not built):
 | `RoleClient` minter (client roles, D18) | web-ui | `RoleClient` + the browse group (admin+client read-only) exist; no resolver mints client tokens yet. |
 | Multi-instance lease coordination | async-enrichment B1 | Leases are in-memory; single-instance MVP. |
 | `internal/stream` (range-request file serving), `internal/janitor` (cleanup cron) | architecture | Deferred packages — design lives in the authoritative `docs/architecture.md`. |
+
+## serial-watch-flow follow-ups (GATE 2 flags, 2026-10-11)
+
+| Item | Origin | Note |
+|---|---|---|
+| Legacy head-only pack path deletes published segments | packaged-playback | Whole-file-within-head-chunk branch publishes the final playlist while `Pack` removes tmp with the segments — files with duration ≤ HeadChunk can 404 on seek. Pre-existing (byte-identical at HEAD); the voiceover-rendition path already uses the rename shape. Unify `publishHeadOnly`. |
+| Safari native-HLS voiceover select inert | web-ui / packaged-playback | Native HLS (no hls.js lane) enables the select but cannot switch `audioTrack`; the spec's hls/direct dichotomy names no third state. Disable-with-reason or spec the native lane. |
+| Rendition builds map only the first embedded audio track | packaged-playback | `-map 0:a:0` where the legacy build maps `0:a` — latent for multi-embedded-audio files WITH voiceovers; consistent with the spec's singular "the embedded audio". |
+| Library-root derivation duplicated api/enrich | serial-watch-flow | `TrimSuffix(absolute_path, relative_path)` + Join lives in both `api sidecarMediaPath` and `enrich documentVoiceoverPaths`; needs a cross-package seam to dedup. |
