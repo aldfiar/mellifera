@@ -1,0 +1,6 @@
+{
+  "status": "done",
+  "summary": "G2 box 2.1: flat Item/Identifiers/View sections folded inside the Technical details <details>, ahead of Sources/Provenance/Pipeline stages — renders byte-identical, only visibility moved; header comments updated. Tests: happy-path + disclosure describes now assert core fields/identifiers/view after expanding (collapsed-by-default stays on the open flag); one stale hero-test comment fixed. Probe 947598386519921e exit 0, 23/23 vitest; tsc + eslint clean. No deviations.",
+  "next": "Remaining groups of video-item-pages per tasks.md DAG",
+  "updated_at": "2026-10-11T09:15:30.123001Z"
+}

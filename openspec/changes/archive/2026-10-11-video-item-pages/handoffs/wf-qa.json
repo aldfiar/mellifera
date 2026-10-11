@@ -1,0 +1,6 @@
+{
+  "status": "done",
+  "summary": "box 4.1 done: internal/itest/qa_video_item_pages_test.go (TestVideoItemPagesJointE2E, Tier-1 joint over pbWorld: real serial-scanner subprocess + real ffprobe + real HTTP); probe go test ./internal/itest -run TestVideoItemPagesJointE2E rc=0 (ok ... 3.237s, both subtests PASS, no skip). Pins: episode media_type==serial + no stored row video; descriptor 200 direct/none (unpacked branch of direct|hls); play_url /media floor with non-empty ?token= that alone opens the original (cookieless); sections real JSON array with the 2 stamped chapters (kind/start/title); voiceovers array {index,label} matching the doc sidecar index. No contract mismatches, no impl bugs.",
+  "next": "session: wf change tick video-item-pages 4.1 after verifying",
+  "updated_at": "2026-10-11T09:31:25.835435Z"
+}

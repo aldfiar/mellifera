@@ -1,0 +1,6 @@
+{
+  "status": "done",
+  "summary": "Box 3.1 done: make web-build rebuilt internal/web/dist (bundle index-CuXLoFoS.js -> index-B0OhHhyg.js, index.html hash update); openapi.{json,yaml} byte-identical (internal/web/api clean pre- and post-build); scoped commit 25c1156 staged internal/web/dist only; probe db2523330ec28b10 exit 0. swag was absent, installed pinned v1.16.4 per operational note. No tick written (session's job).",
+  "next": "Session: run wf change tick video-item-pages 3.1, then proceed per DAG.",
+  "updated_at": "2026-10-11T09:23:46.984606Z"
+}
