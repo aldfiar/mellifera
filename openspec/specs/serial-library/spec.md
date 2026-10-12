@@ -641,10 +641,14 @@ episode number SHALL come from the filename stem's first of: an SxxExx
 token (with its optional SxxExxEzz end); a `<N> серия` marker; a
 pure-number `[NN]`/`(NN)` bracket at the stem's start or end; the trailing
 standalone 1–3 digit number after bracketed segments and resolution tokens
-are stripped (last number wins, the sidecar bare-number convention). The
-episode's season SHALL come from the stem's own season marker, else from
-the series directory's inference, else 1. A filename that yields no
-episode number SHALL remain a skipped parser stage.
+are stripped (last number wins, the sidecar bare-number convention). Every
+bare extraction form SHALL treat an episode number below 1 as no number —
+a `<N> серия` marker or a pure-number `[NN]`/`(NN)` bracket whose number is
+below 1 leaves the filename numberless, matching the scanner grammar's gate
+on every bare form — and resolution tokens, bracketed or not, SHALL never
+yield an episode number. The episode's season SHALL come from the stem's
+own season marker, else from the series directory's inference, else 1. A
+filename that yields no episode number SHALL remain a skipped parser stage.
 
 #### Scenario: Roman-numeral suffix and no-season default
 
@@ -679,6 +683,42 @@ go test ./plugins/serial-parser -run TestSeriesNameGrammar
 ```bash
 set -e
 go test ./plugins/serial-parser -run TestEpisodeNameGrammar
+```
+<!-- /wf:probe -->
+
+#### Scenario: Below-1 episode numbers are numberless
+
+- **WHEN** episode files carry a below-1 number in a bare extraction form (`Show/[00] Title.mkv` with a pure-number edge bracket, `Show/Title 0 серия.mkv` with a Cyrillic marker)
+- **THEN** both stay numberless skipped parser stages (applies=false with a reason) — every bare form treats a number below 1 as no number, exactly as the scanner grammar already treats every bare form
+
+<!-- wf:probe id=e5e4a73d6b92dc66 -->
+```bash
+set -e
+go test ./plugins/serial-parser -run TestEpisodeNameGrammar
+```
+<!-- /wf:probe -->
+
+#### Scenario: Below-1 episodes index no sidecar
+
+- **WHEN** a serial directory holds a `[00]`-bracket-named episode video and a `0 серия`-named episode video beside a numbered companion sidecar (`Episode - 01.srt`)
+- **THEN** neither below-1 episode indexes a sidecar — the scanner's episode-number grammar gates every bare form at n ≥ 1 — so the numbered companion falls serial-level, never episode-linked
+
+<!-- wf:probe id=34a9318571c0de5b -->
+```bash
+set -e
+go test ./plugins/serial-scanner -run TestBareNamedEpisodeSidecar
+```
+<!-- /wf:probe -->
+
+#### Scenario: Resolution tokens never yield an episode number
+
+- **WHEN** an episode stem carries an unbracketed resolution token beside its number (`Show/Show - 01 360p.mkv`)
+- **THEN** the resolution token never yields an episode number — the file parses to episode 1 from the dash number, not 360 — and the full existing name-grammar surface (series and episode tables, confidence shapes, episode namespace) passes unchanged
+
+<!-- wf:probe id=027e73182dc02afb -->
+```bash
+set -e
+go test ./plugins/serial-parser
 ```
 <!-- /wf:probe -->
 

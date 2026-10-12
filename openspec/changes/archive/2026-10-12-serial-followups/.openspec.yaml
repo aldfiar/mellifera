@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-10-12
+goal: Parser and scanner agree that episode numbers below 1 mean numberless;
+  releasetags.go encodes the resolution vocabulary exactly once

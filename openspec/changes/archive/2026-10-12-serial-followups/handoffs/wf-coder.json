@@ -1,0 +1,6 @@
+{
+  "status": "done",
+  "summary": "Box 2.1 DONE + ticked (fp=2e973d55, all 3 boxes [x], change check OK): resolutionRe in plugins/serial-parser/releasetags.go now derived at init from releaseTagTokens[\"resolution\"] via buildResolutionRe() (append copy + sort.Slice length-desc + QuoteMeta join), literal 1080[pi]/720[pi] form retired per D-2; drift row 'unbracketed resolution token is not an episode number' (Show/Show - 01 360p.mkv -> ep 1) added to TestEpisodeNameGrammar derived-rows section. Reopen+retick cycle run (source edits moved fp): 1.1 e5e4a73d6b92dc66 -> 1.2 34a9318571c0de5b -> 2.1 027e73182dc02afb, all probe-green. FINDING: old literal also carried 720[pi] — derived table alternation drops 720i matching (table has only 720p); no test/fixture exercises 720i so the box's existing-surface-stays-green floor holds, but a 720i-named file now falls to bareNumberRe (ep 720) where it previously parsed ep 1. Design.md D-2's match-identity claim is wrong for 720i. If 720i support is wanted, add '720i' to the table in a follow-up (that DOES change whole-token stripping behavior — new releaseTagSet entry).",
+  "next": "GATE 2: reviewer re-runs probes + reviews diff vs spec delta; human archive approval; on archive, delta merges into openspec/specs/serial-library/",
+  "updated_at": "2026-10-12T07:29:13.344937Z"
+}

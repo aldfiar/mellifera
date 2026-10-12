@@ -76,3 +76,10 @@ From the plugin-pipeline outline (flagged, not built):
 | Safari native-HLS voiceover select inert | web-ui / packaged-playback | Native HLS (no hls.js lane) enables the select but cannot switch `audioTrack`; the spec's hls/direct dichotomy names no third state. Disable-with-reason or spec the native lane. |
 | Rendition builds map only the first embedded audio track | packaged-playback | `-map 0:a:0` where the legacy build maps `0:a` — latent for multi-embedded-audio files WITH voiceovers; consistent with the spec's singular "the embedded audio". |
 | Library-root derivation duplicated api/enrich | serial-watch-flow | `TrimSuffix(absolute_path, relative_path)` + Join lives in both `api sidecarMediaPath` and `enrich documentVoiceoverPaths`; needs a cross-package seam to dedup. |
+
+## serial follow-ups (GATE 2 flags, 2026-10-12)
+
+| Item | Origin | Note |
+|---|---|---|
+| Cross-binary release-tag vocabulary sync | serial / serial-followups | The parser's `resolutionRe` is now derived from `releaseTagTokens["resolution"]` (serial-followups box 2.1), but `plugins/serial-scanner` keeps its own copy (`sidecar.go:60`) still carrying `720[pi]`. Concrete divergence: `Title 720i.mkv` is numberless to the scanner (copy strips 720i) but episode-720 to the parser (table has only "720p"; `bareNumberRe` last-match takes the 720). Decision space: `720i` enters the table in BOTH binaries (behavior expansion — whole-token title stripping gains 720i), or the bare-number reducer learns suffix discrimination. Adjudicated PASS-with-FLAG at the serial-followups gate (rare interlaced form, no fixture). |
+| `doc.go` for plugins/serial-parser, plugins/frame-grabber | serial GATE 1/GATE 2 | All sibling plugins carry one; these two don't. Convention drift noted at serial's gates, deliberately out of scope there. |
