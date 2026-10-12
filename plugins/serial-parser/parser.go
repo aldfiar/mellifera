@@ -5,10 +5,12 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/mellifera/mellifera/pkg/releasename"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	commonv1 "github.com/mellifera/mellifera/proto/mellifera/common/v1"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
@@ -42,8 +44,10 @@ const (
 
 // Match self-selects per document. A serial-record document parses the raw
 // directory name (dir_name_raw, falling back to the series path); an episode
-// document applies iff its filename carries an SxxExx token. Non-applying
-// documents are skipped stages recorded by the core (not errors).
+// document applies iff its filename carries an SxxExx token; a numberless
+// VIDEO filename follows the film path (title + release fields, never a
+// season or episode key). Non-applying documents are skipped stages recorded
+// by the core (not errors).
 func (*parserImpl) Match(_ context.Context, req *metadatav1.MatchRequest) (*metadatav1.MatchResult, error) {
 	f := req.GetItem().GetParsed().GetFields()
 	if f[factSerialRecord].GetBoolValue() {
@@ -77,7 +81,7 @@ func (*parserImpl) Match(_ context.Context, req *metadatav1.MatchRequest) (*meta
 	rel := parsedString(f, factRelativePath)
 	res, season, ok := parseEpisodeFilename(rel, parsedString(f, factSeriesRelativePath))
 	if !ok {
-		return &metadatav1.MatchResult{Applies: false, Reason: "no episode number in filename"}, nil
+		return matchFilmFilename(rel), nil
 	}
 	q := map[string]any{
 		"season":  int64(season),
@@ -94,6 +98,33 @@ func (*parserImpl) Match(_ context.Context, req *metadatav1.MatchRequest) (*meta
 		Confidence: 1.0,
 		Reason:     "episode filename number",
 	}, nil
+}
+
+// matchFilmFilename is the film-path fallthrough (film-name-parsing 2.1): a
+// numberless VIDEO filename parses through the shared grammar's no-season
+// parse and applies at confidence 0.6 with title plus the structured release
+// fields — NEVER a season or episode key, even when the name carries a season
+// marker (Show.S01.mkv: the marker is dropped on the film path; the
+// always-season rule is series-scoped). A non-video name or an empty-title
+// parse stays a skipped stage with a reason.
+func matchFilmFilename(rel string) *metadatav1.MatchResult {
+	base := filepath.Base(rel)
+	if !releasename.HasVideoExt(base) {
+		return &metadatav1.MatchResult{Applies: false, Reason: "no episode number in a non-video filename"}
+	}
+	res := releasename.ParseName(base)
+	if res.Title == "" {
+		return &metadatav1.MatchResult{Applies: false, Reason: "film filename parsed to an empty title"}
+	}
+	q := map[string]any{"title": res.Title}
+	emitReleaseFields(q, res)
+	query, _ := structpb.NewStruct(q)
+	return &metadatav1.MatchResult{
+		Applies:    true,
+		Query:      query,
+		Confidence: 0.6,
+		Reason:     "film filename parse",
+	}
 }
 
 // BuildRequest returns an empty RequestSpec: a local parser performs no

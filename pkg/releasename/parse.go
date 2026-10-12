@@ -57,6 +57,7 @@ func ParseName(name string) Result {
 			stripped = stripped[:m[0]]
 		}
 	}
+	stripped = cutTrailingDashGroup(raw, stripped)
 	stripped = cutTrailingGroupTag(stripped)
 	res.Title = cleanTitle(stripped)
 	if res.Title == "" {
@@ -154,14 +155,21 @@ var videoExtensions = map[string]bool{
 	".ts": true, ".m2ts": true,
 }
 
+// HasVideoExt reports whether a file name carries a trailing video extension
+// — the file-backed gate distinguishing a video file name from every other
+// name (stripVideoExt cuts exactly the names it accepts).
+func HasVideoExt(name string) bool {
+	ext := filepath.Ext(name)
+	return videoExtensions[strings.ToLower(ext)]
+}
+
 // stripVideoExt drops a trailing video extension from a file-backed serial
 // name; directory names carry no video extension and pass through unchanged.
 func stripVideoExt(name string) string {
-	ext := filepath.Ext(name)
-	if videoExtensions[strings.ToLower(ext)] {
-		return strings.TrimSuffix(name, ext)
+	if !HasVideoExt(name) {
+		return name
 	}
-	return name
+	return strings.TrimSuffix(name, filepath.Ext(name))
 }
 
 // cutSeasonMarker finds the first anchored season marker in a name and returns
@@ -228,6 +236,8 @@ func bareEpisodeNumberOf(stem string) (episode int, ok bool) {
 		return 0, false
 	}
 	reduced := resolutionRe.ReplaceAllString(bracketSegmentRe.ReplaceAllString(stem, " "), " ")
+	reduced = stripReleaseTagTokens(reduced)
+	reduced = blankSeasonTokens(reduced)
 	matches := bareNumberRe.FindAllStringSubmatch(reduced, -1)
 	if len(matches) == 0 {
 		return 0, false
@@ -236,6 +246,27 @@ func bareEpisodeNumberOf(stem string) (episode int, ok bool) {
 		return n, true
 	}
 	return 0, false
+}
+
+// blankSeasonTokens blanks the standalone Sxx season tokens from a reduced
+// episode stem, so a season pack's marker ("Show.S01") is never read as a
+// bare episode number — a numberless season-marker name belongs to the film
+// path. SxxExx tokens never reach here (the seasonEpisodeRe branch runs
+// first); a digit inside a codec/source tag ("H.264") is already gone via
+// stripReleaseTagTokens.
+func blankSeasonTokens(name string) string {
+	spans := seasonTokenRe.FindAllStringSubmatchIndex(name, -1)
+	if len(spans) == 0 {
+		return name
+	}
+	b := []byte(name)
+	for i := len(spans) - 1; i >= 0; i-- {
+		s := spans[i][0]
+		for j := s; j < spans[i][1]; j++ {
+			b[j] = ' '
+		}
+	}
+	return string(b)
 }
 
 // episodeSeasonOf resolves an episode's season when its number did not come
@@ -287,6 +318,7 @@ func episodeTitle(stem string) string {
 		name = spliceCut(name, m[0], m[1])
 	}
 	name = stripReleaseTagTokens(name)
+	name = cutTrailingDashGroup(stem, name)
 	name = cutTrailingGroupTag(name)
 	if m := trailingNumberRe.FindStringSubmatchIndex(name); m != nil &&
 		!(m[0] > 0 && isDigit(name[m[0]-1])) {
@@ -337,24 +369,51 @@ func buildRoleTagPatterns() []tagPattern {
 	return pats
 }
 
-// tagHit is one matched release tag at its byte offset in the raw name.
+// tagHit is one matched release tag at its byte span in the raw name.
 type tagHit struct {
 	start int
+	end   int
 	role  string
 	value string
+}
+
+// collectTagHits returns every release-tag match over a raw name with its
+// byte span, sorted by offset.
+func collectTagHits(name string) []tagHit {
+	var hits []tagHit
+	for _, p := range roleTagPatterns {
+		for _, loc := range p.re.FindAllStringIndex(name, -1) {
+			hits = append(hits, tagHit{start: loc[0], end: loc[1], role: p.role, value: p.value})
+		}
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].start < hits[j].start })
+	return hits
+}
+
+// lastConsumedSpanEnd returns the end offset of the last span the stripping
+// passes consume over a raw name: a release-tag token match or a stripped
+// bracket segment — the consumed-position anchor of the dash-form group rule.
+// 0 when the name carries no consumed span.
+func lastConsumedSpanEnd(name string) int {
+	end := 0
+	for _, h := range collectTagHits(name) {
+		if h.end > end {
+			end = h.end
+		}
+	}
+	for _, s := range consumedBracketSpans(name) {
+		if s[1] > end {
+			end = s[1]
+		}
+	}
+	return end
 }
 
 // scanReleaseTags extracts the release fields a raw name carries: singular
 // roles last-wins, list roles in token order (matches sorted by offset), plus
 // the delimiter-bounded bare year (last one wins).
 func scanReleaseTags(name string) (resolution, source string, codecs, languages []string, year int) {
-	var hits []tagHit
-	for _, p := range roleTagPatterns {
-		for _, loc := range p.re.FindAllStringIndex(name, -1) {
-			hits = append(hits, tagHit{start: loc[0], role: p.role, value: p.value})
-		}
-	}
-	sort.Slice(hits, func(i, j int) bool { return hits[i].start < hits[j].start })
+	hits := collectTagHits(name)
 	for _, h := range hits {
 		switch h.role {
 		case "resolution":

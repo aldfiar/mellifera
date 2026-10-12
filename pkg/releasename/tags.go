@@ -42,7 +42,7 @@ var (
 // case-insensitive and delimiter-bounded; a tag with an embedded dash
 // ("web-dl") also matches the run-together and dotted forms (WEBDL, WEB.DL).
 var releaseTagTokens = map[string][]string{
-	"source": {"web-dl", "webrip", "bluray", "bdrip", "bdremux", "hdtv", "hdrip", "dvdrip", "dvd"},
+	"source": {"web-dl", "webrip", "bluray", "bdrip", "bdremux", "hdtv", "hdrip", "dvdrip", "dvd", "amzn"},
 	"resolution": {
 		"2160p", "1080p", "1080i", "720p", "720i", "480p", "360p", "4k",
 	},
@@ -53,7 +53,7 @@ var releaseTagTokens = map[string][]string{
 		"ukr", "ukrainian", "pol", "polish",
 	},
 	"type":  {"ona", "ova", "oad"},
-	"codec": {"x264", "x265", "h264", "h265", "avc", "hevc", "aac", "flac", "dts", "ac3", "opus"},
+	"codec": {"x264", "x265", "h264", "h265", "h.264", "h.265", "x.264", "x.265", "avc", "hevc", "aac", "flac", "dts", "ac3", "opus"},
 }
 
 // releaseTagSet is the de-dashed lookup form of releaseTagTokens.
@@ -70,26 +70,37 @@ var releaseTagSet = func() map[string]bool {
 	return set
 }()
 
+// consumedBracketSpans returns the raw spans of the bracket segments the
+// two-part bracket rule strips: a leading segment, or one matching a release
+// mask (segmentIsReleaseDecoration). Preserved segments are not consumed.
+func consumedBracketSpans(name string) [][2]int {
+	var spans [][2]int
+	for _, m := range bracketSegmentRe.FindAllStringSubmatchIndex(name, -1) {
+		inner := strings.TrimSpace(name[m[0]+1 : m[1]-1])
+		if strings.TrimSpace(name[:m[0]]) != "" && !segmentIsReleaseDecoration(inner) {
+			continue // non-leading, no mask match — preserve the segment
+		}
+		spans = append(spans, [2]int{m[0], m[1]})
+	}
+	return spans
+}
+
 // stripBracketSegments applies the two-part bracket rule: a bracket/paren
 // segment at the name's start is group-tag position and strips regardless of
 // its inner shape; a segment elsewhere strips only when its content matches a
 // release mask (segmentIsReleaseDecoration); a non-leading segment matching no
 // mask is PRESERVED — its title text keeps, e.g. "Title_(Shiro)".
 func stripBracketSegments(name string) string {
-	segs := bracketSegmentRe.FindAllStringSubmatchIndex(name, -1)
-	if len(segs) == 0 {
+	spans := consumedBracketSpans(name)
+	if len(spans) == 0 {
 		return name
 	}
 	var b strings.Builder
 	last := 0
-	for _, m := range segs {
-		inner := strings.TrimSpace(name[m[0]+1 : m[1]-1])
-		if strings.TrimSpace(name[:m[0]]) != "" && !segmentIsReleaseDecoration(inner) {
-			continue // non-leading, no mask match — preserve the segment
-		}
-		b.WriteString(name[last:m[0]])
+	for _, s := range spans {
+		b.WriteString(name[last:s[0]])
 		b.WriteString(" ")
-		last = m[1]
+		last = s[1]
 	}
 	b.WriteString(name[last:])
 	return b.String()
@@ -196,3 +207,73 @@ func cutTrailingGroupTag(name string) string {
 	}
 	return name[:m[0]]
 }
+
+// cutTrailingDashGroup removes a trailing dash-joined two-part release-group
+// token ("CR-Cassu") from the pipeline string when the narrow dash-form rule
+// fires: the token ends the raw name as exactly two non-empty ASCII
+// letter-word parts, its first part is an all-caps acronym (letters only,
+// <= 5), the dash-removed combined form clears isGroupTagShape, and the raw
+// name after the last consumed release-tag/bracket span is exactly that token
+// — no title text between. Otherwise nothing strips: a capitalized first
+// part ("Spider-Man"), title text before the token, or a single-part tail
+// keeps the title whole.
+func cutTrailingDashGroup(raw, stripped string) string {
+	token, _, ok := trailingDashGroupToken(raw)
+	if !ok {
+		return stripped
+	}
+	dash := strings.IndexByte(token, '-')
+	if !isAllCapsAcronym(token[:dash]) || !isGroupTagShape(token[:dash]+token[dash+1:]) {
+		return stripped
+	}
+	end := lastConsumedSpanEnd(raw)
+	if end == 0 || strings.TrimLeft(raw[end:], " \t._-([") != token {
+		return stripped
+	}
+	s := strings.TrimRight(stripped, " \t._-")
+	if !strings.HasSuffix(s, token) {
+		return stripped
+	}
+	return s[:len(s)-len(token)]
+}
+
+// trailingDashGroupToken returns the name-final dash-joined token of exactly
+// two non-empty ASCII letter-word parts ("CR-Cassu") with its start offset.
+// ok=false when the name does not end in that shape ("Show-E02" — a digit in
+// the second part — is not a dash-joined letter-word token).
+func trailingDashGroupToken(name string) (token string, start int, ok bool) {
+	i := len(name)
+	for i > 0 && isASCIILetter(name[i-1]) {
+		i--
+	}
+	if i == 0 || i == len(name) || name[i-1] != '-' {
+		return "", 0, false
+	}
+	i-- // the joining dash
+	j := i
+	for j > 0 && isASCIILetter(name[j-1]) {
+		j--
+	}
+	if j == i {
+		return "", 0, false // no first part
+	}
+	return name[j:], j, true
+}
+
+// isAllCapsAcronym reports whether s is an all-caps ASCII-letter acronym of
+// two to five letters ("CR") — the first-part gate of the dash-form rule
+// (an acronym is multi-letter, matching allCapsRe's >= 2 floor).
+func isAllCapsAcronym(s string) bool {
+	if len(s) < 2 || len(s) > 5 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 'A' || s[i] > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// isASCIILetter reports whether c is an ASCII letter.
+func isASCIILetter(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }

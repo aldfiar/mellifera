@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-12
+goal: Film names in serial libraries parse through pkg/releasename's no-season
+  path to a clean title plus release fields; technical residue strips from
+  titles; no season/episode is fabricated.

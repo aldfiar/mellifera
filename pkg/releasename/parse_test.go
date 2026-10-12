@@ -156,6 +156,9 @@ func TestFilmNameParse(t *testing.T) {
 	}{
 		{name: "tagged film degenerate case", raw: "Blue Horizon (2019) [WEB-DL 1080p x264] - FanGroup", wantTitle: "Blue Horizon", wantYear: 2019, wantRes: "1080p", wantSource: "web-dl", wantCodecs: []string{"x264"}},
 		{name: "dot-scape film with no season or episode", raw: "Some.Movie.2020.1080p.WEB-DL.x264", wantTitle: "Some Movie 2020", wantYear: 2020, wantRes: "1080p", wantSource: "web-dl", wantCodecs: []string{"x264"}},
+		{name: "hyphenated title text after a consumed tag keeps whole", raw: "Some.Movie.1080p.Spider-Man.mkv", wantTitle: "Some Movie Spider-Man", wantYear: 0, wantRes: "1080p", wantSource: "", wantCodecs: nil},
+		{name: "amzn source and dot-form codec strip from the real film name", raw: "Chainsaw.Man.The.Movie.Reze.Arc.2025.1080p.AMZN.WEB-DL.H.264-EniaHD.mkv", wantTitle: "Chainsaw Man The Movie Reze Arc 2025", wantYear: 2025, wantRes: "1080p", wantSource: "web-dl", wantCodecs: []string{"h.264"}},
+		{name: "dash-form group token strips after a consumed tag", raw: "Demon.Slayer.Kimetsu.No.Yaiba.Infinity.Castle.1080p.CR-Cassu.mkv", wantTitle: "Demon Slayer Kimetsu No Yaiba Infinity Castle", wantYear: 0, wantRes: "1080p", wantSource: "", wantCodecs: nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

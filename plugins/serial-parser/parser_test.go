@@ -197,15 +197,121 @@ func TestEpisodeMatch(t *testing.T) {
 	}
 
 	// Non-match: applies=false with a reason — never an error, never applied.
-	// A bare-number name now APPLIES under the broadened rule (covered by
-	// TestEpisodeNameGrammar); the skip rows are the numberless shapes.
+	// Numberless VIDEO names now APPLY on the film path (covered by
+	// TestFilmMatch); the skip row left here is the non-video shape.
 	res = matchDoc(episodeParsed("Show/Credits.ass")) // not even a video filename
-	if res.GetApplies() {
-		t.Fatalf("numberless filename applied; want skip")
-	}
-	res = matchDoc(episodeParsed("Show/Feature.mkv"))
 	if res.GetApplies() || res.GetReason() == "" {
-		t.Fatalf("non-episode applied without a skip reason: %+v", res)
+		t.Fatalf("non-video filename applied or skipped without a reason: %+v", res)
+	}
+
+	// A numberless video filename follows the film path: it applies with the
+	// parsed title and no season or episode key.
+	res = matchDoc(episodeParsed("Show/Feature.mkv"))
+	if !res.GetApplies() || res.GetConfidence() != 0.6 {
+		t.Fatalf("numberless video filename did not apply on the film path: %+v", res)
+	}
+	q = res.GetQuery().AsMap()
+	if q["title"] != "Feature" || q["season"] != nil || q["episode"] != nil {
+		t.Fatalf("film query = %v, want title Feature with no season/episode key", q)
+	}
+}
+
+// TestFilmMatch is the film-path table (film-name-parsing 2.1): a numberless
+// VIDEO filename applies through the shared grammar's no-season parse at
+// confidence 0.6 — title plus the structured release fields it carries, and
+// NEVER a season or episode key (the S01 marker of a season pack without an
+// episode number is dropped on the film path). A non-video name stays a
+// skipped stage with a reason. The numberless and below-1 zero rows moved
+// here from TestEpisodeNameGrammar apply as films now.
+func TestFilmMatch(t *testing.T) {
+	cases := []struct {
+		name       string
+		rel        string
+		wantApply  bool
+		wantTitle  string
+		wantFields map[string]any // the release fields beside the title; absent fields asserted absent
+	}{
+		// Ground-truth rows: the two real movie names — clean titles, the
+		// release fields each carries, no season/episode key, confidence 0.6.
+		{
+			name:       "real movie, dash-form group after a consumed tag",
+			rel:        "Show/Demon.Slayer.Kimetsu.No.Yaiba.Infinity.Castle.1080p.CR-Cassu.mkv",
+			wantApply:  true,
+			wantTitle:  "Demon Slayer Kimetsu No Yaiba Infinity Castle",
+			wantFields: map[string]any{"resolution": "1080p"},
+		},
+		{
+			name:      "real movie, amzn source and dot-form codec, year stays in title",
+			rel:       "Show/Chainsaw.Man.The.Movie.Reze.Arc.2025.1080p.AMZN.WEB-DL.H.264-EniaHD.mkv",
+			wantApply: true,
+			wantTitle: "Chainsaw Man The Movie Reze Arc 2025",
+			wantFields: map[string]any{
+				"resolution": "1080p",
+				"source":     "web-dl",
+				"codec":      []any{"h.264"},
+				"year":       float64(2025),
+			},
+		},
+		// A season marker without an episode number applies as a film — the
+		// marker itself is never emitted on the film path.
+		{name: "season marker without an episode number drops the marker", rel: "Show/Show.S01.mkv", wantApply: true, wantTitle: "Show"},
+		// Bare video names.
+		{name: "bare video name applies with its title", rel: "Show/Feature.mkv", wantApply: true, wantTitle: "Feature"},
+		// Non-video names stay skipped.
+		{name: "non-video name stays skipped", rel: "Show/Credits.ass"},
+		// Rows moved from TestEpisodeNameGrammar (the numberless + below-1
+		// zero shapes): each applies as a film, never with an episode key.
+		{name: "zero edge bracket is title text on the film path", rel: "Show/[00] Title.mkv", wantApply: true, wantTitle: "Title"},
+		{name: "bare zero rides along in the title", rel: "Show/Title 0.mkv", wantApply: true, wantTitle: "Title 0"},
+		{name: "zero cyrillic marker is title text on the film path", rel: "Show/Title 0 серия.mkv", wantApply: true, wantTitle: "Title 0 серия"},
+		{name: "whole-token 720i is a resolution on the film path", rel: "Show/Title 720i.mkv", wantApply: true, wantTitle: "Title", wantFields: map[string]any{"resolution": "720i"}},
+		{name: "tagged film stem parses through the film path", rel: "Show/Blue Horizon (2019) [WEB-DL 1080p x264].mkv", wantApply: true, wantTitle: "Blue Horizon",
+			wantFields: map[string]any{"resolution": "1080p", "source": "web-dl", "codec": []any{"x264"}, "year": float64(2019)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			applies, ns, reason := runChain(t, episodeParsed(tc.rel))
+			if applies != tc.wantApply {
+				t.Fatalf("applies = %v (reason %q), want %v", applies, reason, tc.wantApply)
+			}
+			if !tc.wantApply {
+				if reason == "" {
+					t.Fatalf("skip without a reason")
+				}
+				return
+			}
+			// The film path applies flat at 0.6 (design.md D-5).
+			impl := &parserImpl{}
+			st, err := structpb.NewStruct(episodeParsed(tc.rel))
+			if err != nil {
+				t.Fatalf("parsed struct: %v", err)
+			}
+			res, err := impl.Match(context.Background(), &metadatav1.MatchRequest{Item: &scannerv1.IdentifyResult{Parsed: st}})
+			if err != nil {
+				t.Fatalf("Match: %v", err)
+			}
+			if res.GetConfidence() != 0.6 {
+				t.Fatalf("confidence = %v, want 0.6", res.GetConfidence())
+			}
+			// Title plus exactly the release fields — no season or episode
+			// key is ever fabricated on the film path.
+			if ns["title"] != tc.wantTitle {
+				t.Fatalf("title = %q, want %q", ns["title"], tc.wantTitle)
+			}
+			for _, never := range []string{"season", "episode"} {
+				if _, ok := ns[never]; ok {
+					t.Fatalf("film namespace carries %q: %v", never, ns)
+				}
+			}
+			for field, want := range tc.wantFields {
+				if !reflect.DeepEqual(ns[field], want) {
+					t.Fatalf("%s = %v, want %v", field, ns[field], want)
+				}
+			}
+			if len(ns) != len(tc.wantFields)+1 {
+				t.Fatalf("namespace = %v, want exactly title + the %d carried fields", ns, len(tc.wantFields))
+			}
+		})
 	}
 }
 
@@ -264,6 +370,12 @@ func TestSeriesNameGrammar(t *testing.T) {
 		// contract: a series document always parses), stripping the full
 		// decoration and defaulting the package's Season 0 to 1.
 		{name: "tagged film degenerate case", dirNameRaw: "Blue Horizon (2019) [WEB-DL 1080p x264] - FanGroup.mkv", backing: "file", wantTitle: "Blue Horizon", wantSeason: 1, wantConf: 0.6},
+		// Canonical rows (film-name-parsing 1.3): the two real movie names as
+		// file-backed series shapes — the dash-form group token strips after
+		// the consumed 1080p, and the amzn source + dot-form codec leave no
+		// title residue while the year stays in the title.
+		{name: "dash-form group token strips", dirNameRaw: "Demon.Slayer.Kimetsu.No.Yaiba.Infinity.Castle.1080p.CR-Cassu.mkv", backing: "file", wantTitle: "Demon Slayer Kimetsu No Yaiba Infinity Castle", wantSeason: 1, wantConf: 0.6},
+		{name: "amzn source and dot-form codec strip, year stays", dirNameRaw: "Chainsaw.Man.The.Movie.Reze.Arc.2025.1080p.AMZN.WEB-DL.H.264-EniaHD.mkv", backing: "file", wantTitle: "Chainsaw Man The Movie Reze Arc 2025", wantSeason: 1, wantConf: 0.6},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -337,53 +449,38 @@ func TestEpisodeParse(t *testing.T) {
 
 // TestEpisodeNameGrammar is the episode-grammar table (change serial box 1.3):
 // bare-number episode names yield a number and the season falls back through
-// the stem marker, the series directory, and the default 1. Derived rows come
-// from the real-collection shape inventory (design.md D-8), neutralized.
+// the stem marker, the series directory, and the default 1. Episode-only
+// since film-name-parsing 2.1: the numberless and below-1 zero rows moved to
+// TestFilmMatch (they apply as films now). Derived rows come from the
+// real-collection shape inventory (design.md D-8), neutralized.
 func TestEpisodeNameGrammar(t *testing.T) {
 	cases := []struct {
 		name        string
 		rel         string
-		wantApply   bool
 		wantSeason  float64
 		wantEpisode float64
 	}{
 		// Ground-truth rows (spec delta "Bare-number episode filenames").
-		{name: "bracket number with filename ordinal marker", rel: "Mairimashita_Iruma-kun_4th_Season/Mairimashita_Iruma-kun_4th_Season_[01].mkv", wantApply: true, wantSeason: 4, wantEpisode: 1},
-		{name: "dash number after rip bracket", rel: "Kimi ga Shinu made Koi wo Shitai/Kimi ga Shinu made Koi wo Shitai - 01 [1080p AVC AAC].mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
-		{name: "cyrillic marker with TV series marker", rel: "Aria TV 1/[01] Aria TV 1 01 серия.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
-		{name: "group bracket and trailing dash number", rel: "Kimetsu no Yaiba - Yuukaku Hen/[Erai-raws] Kimetsu no Yaiba - Yuukaku Hen - 01.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
-		{name: "numberless filename stays skipped", rel: "Show/Feature.mkv"},
-		{name: "bare zero is no episode number", rel: "Show/Title 0.mkv"},
-		{name: "zero edge bracket is no episode number", rel: "Show/[00] Title.mkv"},
-		{name: "zero cyrillic marker is no episode number", rel: "Show/Title 0 серия.mkv"},
+		{name: "bracket number with filename ordinal marker", rel: "Mairimashita_Iruma-kun_4th_Season/Mairimashita_Iruma-kun_4th_Season_[01].mkv", wantSeason: 4, wantEpisode: 1},
+		{name: "dash number after rip bracket", rel: "Kimi ga Shinu made Koi wo Shitai/Kimi ga Shinu made Koi wo Shitai - 01 [1080p AVC AAC].mkv", wantSeason: 1, wantEpisode: 1},
+		{name: "cyrillic marker with TV series marker", rel: "Aria TV 1/[01] Aria TV 1 01 серия.mkv", wantSeason: 1, wantEpisode: 1},
+		{name: "group bracket and trailing dash number", rel: "Kimetsu no Yaiba - Yuukaku Hen/[Erai-raws] Kimetsu no Yaiba - Yuukaku Hen - 01.mkv", wantSeason: 1, wantEpisode: 1},
 		// Derived rows (design.md D-8), neutralized.
-		{name: "leading bracket number with cyrillic marker", rel: "Azure Harbor/[01] Azure Harbor 01 серия.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
-		{name: "roman sequel in the episode stem", rel: "Azure Harbor II/[Bluewave] Azure Harbor II 01 [BDrip 1920x1080 x264 FLAC].mkv", wantApply: true, wantSeason: 2, wantEpisode: 1},
-		{name: "word-form marker in the episode stem", rel: "Crimson Vale Season 2/Crimson Vale Season 2 - 01 [1080p].mkv", wantApply: true, wantSeason: 2, wantEpisode: 1},
-		{name: "no marker anywhere defaults season 1", rel: "Ivory Tower/[Bluewave] Ivory Tower - 01 [BDRip 1080p x265 FLAC].mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
-		{name: "season falls back to the series directory marker", rel: "Azure Harbor TV-2/[Bluewave] Azure Harbor - 05 [BDRip 1080p].mkv", wantApply: true, wantSeason: 2, wantEpisode: 5},
-		{name: "unbracketed resolution token is not an episode number", rel: "Show/Show - 01 360p.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
-		// Canonical rows (unified-parser): the trailing-decoration bracket is
-		// an episode candidate wherever it occurs (rightmost wins), and the
-		// whole-token 720i is a resolution, never an episode number.
-		{name: "trailing-decoration bracket after roman sequel", rel: "Show_Name_II/Show_Name_II_[01]_[HEVC].mkv", wantApply: true, wantSeason: 2, wantEpisode: 1},
-		{name: "whole-token 720i is no episode number", rel: "Show/Title 720i.mkv"},
-		// Canonical row (unified-parser qa 4.1): the tagged film degenerate
-		// case on the episode branch stays a skipped stage — the release
-		// decoration (year, resolution, codec) is never an episode number.
-		{name: "tagged film stem stays skipped", rel: "Show/Blue Horizon (2019) [WEB-DL 1080p x264].mkv"},
+		{name: "leading bracket number with cyrillic marker", rel: "Azure Harbor/[01] Azure Harbor 01 серия.mkv", wantSeason: 1, wantEpisode: 1},
+		{name: "roman sequel in the episode stem", rel: "Azure Harbor II/[Bluewave] Azure Harbor II 01 [BDrip 1920x1080 x264 FLAC].mkv", wantSeason: 2, wantEpisode: 1},
+		{name: "word-form marker in the episode stem", rel: "Crimson Vale Season 2/Crimson Vale Season 2 - 01 [1080p].mkv", wantSeason: 2, wantEpisode: 1},
+		{name: "no marker anywhere defaults season 1", rel: "Ivory Tower/[Bluewave] Ivory Tower - 01 [BDRip 1080p x265 FLAC].mkv", wantSeason: 1, wantEpisode: 1},
+		{name: "season falls back to the series directory marker", rel: "Azure Harbor TV-2/[Bluewave] Azure Harbor - 05 [BDRip 1080p].mkv", wantSeason: 2, wantEpisode: 5},
+		{name: "unbracketed resolution token is not an episode number", rel: "Show/Show - 01 360p.mkv", wantSeason: 1, wantEpisode: 1},
+		// Canonical row (unified-parser): the trailing-decoration bracket is
+		// an episode candidate wherever it occurs (rightmost wins).
+		{name: "trailing-decoration bracket after roman sequel", rel: "Show_Name_II/Show_Name_II_[01]_[HEVC].mkv", wantSeason: 2, wantEpisode: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			applies, ns, reason := runChain(t, episodeParsed(tc.rel))
-			if applies != tc.wantApply {
-				t.Fatalf("applies = %v (reason %q), want %v", applies, reason, tc.wantApply)
-			}
-			if !tc.wantApply {
-				if reason == "" {
-					t.Fatalf("skip without a reason")
-				}
-				return
+			if !applies {
+				t.Fatalf("episode name %q did not apply (reason %q)", tc.rel, reason)
 			}
 			if ns["season"] != tc.wantSeason || ns["episode"] != tc.wantEpisode {
 				t.Fatalf("namespace = %v, want season %v episode %v", ns, tc.wantSeason, tc.wantEpisode)

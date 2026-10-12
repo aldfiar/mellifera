@@ -455,12 +455,17 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 		if got := asyncStr(doc.Parsed, "series_relative_path"); got != qaSerialRibbonRel {
 			t.Errorf("file-backed episode: parsed.series_relative_path = %q, want its own path", got)
 		}
-		// No SxxExx token → serial-parser is a skipped stage, not an error.
-		if ns := doc.Sources["serial-parser"]; len(ns) != 0 {
-			t.Errorf("file-backed episode: sources.serial-parser = %v, want absent (no SxxExx token → skipped stage)", ns)
+		// The film path (film-name-parsing D-1): a numberless VIDEO filename
+		// parses through the shared grammar's no-season parse — the namespace
+		// carries EXACTLY the clean title (never a season or episode key, no
+		// other field: this name carries no release tags) and the stage is ok,
+		// no longer the old numberless skip.
+		ns := doc.Sources["serial-parser"]
+		if len(ns) != 1 || qaSerialStr(ns, "title") != qaSerialRibbonTitle {
+			t.Errorf("file-backed episode: sources.serial-parser = %v, want exactly {title: %q} (film path: no season/episode/other keys)", ns, qaSerialRibbonTitle)
 		}
-		if !asyncStageHas(doc.Stages, "serial-parser", "skipped") {
-			t.Errorf("file-backed episode: _stages = %v, want a {serial-parser skipped} stage", doc.Stages)
+		if !asyncStageHas(doc.Stages, "serial-parser", "ok") {
+			t.Errorf("file-backed episode: _stages = %v, want a {serial-parser ok} stage (the film path applies)", doc.Stages)
 		}
 	})
 
