@@ -341,12 +341,15 @@ func TestEpisodeNameGrammar(t *testing.T) {
 		{name: "group bracket and trailing dash number", rel: "Kimetsu no Yaiba - Yuukaku Hen/[Erai-raws] Kimetsu no Yaiba - Yuukaku Hen - 01.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
 		{name: "numberless filename stays skipped", rel: "Show/Feature.mkv"},
 		{name: "bare zero is no episode number", rel: "Show/Title 0.mkv"},
+		{name: "zero edge bracket is no episode number", rel: "Show/[00] Title.mkv"},
+		{name: "zero cyrillic marker is no episode number", rel: "Show/Title 0 серия.mkv"},
 		// Derived rows (design.md D-8), neutralized.
 		{name: "leading bracket number with cyrillic marker", rel: "Azure Harbor/[01] Azure Harbor 01 серия.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
 		{name: "roman sequel in the episode stem", rel: "Azure Harbor II/[Bluewave] Azure Harbor II 01 [BDrip 1920x1080 x264 FLAC].mkv", wantApply: true, wantSeason: 2, wantEpisode: 1},
 		{name: "word-form marker in the episode stem", rel: "Crimson Vale Season 2/Crimson Vale Season 2 - 01 [1080p].mkv", wantApply: true, wantSeason: 2, wantEpisode: 1},
 		{name: "no marker anywhere defaults season 1", rel: "Ivory Tower/[Bluewave] Ivory Tower - 01 [BDRip 1080p x265 FLAC].mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
 		{name: "season falls back to the series directory marker", rel: "Azure Harbor TV-2/[Bluewave] Azure Harbor - 05 [BDRip 1080p].mkv", wantApply: true, wantSeason: 2, wantEpisode: 5},
+		{name: "unbracketed resolution token is not an episode number", rel: "Show/Show - 01 360p.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

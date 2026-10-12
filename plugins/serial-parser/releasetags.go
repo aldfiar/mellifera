@@ -5,6 +5,7 @@ package main
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -17,9 +18,10 @@ import (
 var (
 	// bracketSegmentRe matches one [...] or (...) segment.
 	bracketSegmentRe = regexp.MustCompile(`\[[^\]]*\]|\([^)]*\)`)
-	// resolutionRe matches common video resolutions anywhere in a name
-	// (the shipped sidecar grammar semantics, sidecar.go:60).
-	resolutionRe = regexp.MustCompile(`(?i)(?:2160p|1080[pi]|720[pi]|480p|360p|4k)`)
+	// resolutionRe matches common video resolutions anywhere in a name —
+	// derived from releaseTagTokens["resolution"], the vocabulary's single
+	// source (design.md D-2).
+	resolutionRe = buildResolutionRe()
 	// crcHexRe matches a CRC-like 8-hex-digit token ([C48E56C8]).
 	crcHexRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}$`)
 	// yearRe matches a bare release year.
@@ -162,6 +164,19 @@ func buildReleaseTagPatterns() []*regexp.Regexp {
 		}
 	}
 	return pats
+}
+
+// buildResolutionRe compiles the resolution alternation over the token
+// table's values, sorted length-descending so a longer token is never
+// shadowed by a shorter prefix inside the alternation.
+func buildResolutionRe() *regexp.Regexp {
+	tokens := append([]string(nil), releaseTagTokens["resolution"]...)
+	sort.Slice(tokens, func(i, j int) bool { return len(tokens[i]) > len(tokens[j]) })
+	parts := make([]string, len(tokens))
+	for i, tok := range tokens {
+		parts[i] = regexp.QuoteMeta(tok)
+	}
+	return regexp.MustCompile(`(?i)(?:` + strings.Join(parts, "|") + `)`)
 }
 
 // stripReleaseTagTokens cuts whole-token release tags of every role from a

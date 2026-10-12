@@ -483,6 +483,10 @@ func TestBareNamedEpisodeSidecar(t *testing.T) {
 		"Bleach/Bleach S01E01.srt",
 		"Bracket Only/[01] Episode.mkv",
 		"Bracket Only/[01] Episode.srt",
+		"Zero Bracket/[00] Episode.mkv",
+		"Zero Bracket/Episode - 00.srt",
+		"Zero Marker/Episode 0 серия.mkv",
+		"Zero Marker/Episode 0 серия.srt",
 	)
 	s := &scannerImpl{}
 	out := drainScan(t, s, root)
@@ -513,6 +517,27 @@ func TestBareNamedEpisodeSidecar(t *testing.T) {
 	level := factList(t, parsed, "series_sidecars")
 	if len(level) != 1 || level[0]["relative_path"] != "Bracket Only/[01] Episode.srt" || level[0]["match_basis"] != nil {
 		t.Fatalf("series_sidecars = %v, want the bracket-numbered srt serial-level", level)
+	}
+
+	// Below-1 parity (change serial-followups box 1.2): a bare-form episode
+	// whose number is below 1 is no number — the video indexes no sidecar and
+	// its numbered companion .srt falls serial-level, never episode-linked.
+	for _, tc := range []struct{ dir, ep, srt string }{
+		{"Zero Bracket", "Zero Bracket/[00] Episode.mkv", "Zero Bracket/Episode - 00.srt"},
+		{"Zero Marker", "Zero Marker/Episode 0 серия.mkv", "Zero Marker/Episode 0 серия.srt"},
+	} {
+		if _, leaked := out.byRel[tc.srt]; leaked {
+			t.Fatalf("sidecar %q was emitted as a file — sidecars are never items", tc.srt)
+		}
+		sidecars := factList(t, identified(t, s, out.byRel[tc.ep]), "sidecars")
+		if len(sidecars) != 0 {
+			t.Fatalf("below-1 episode %q sidecars = %v, want none", tc.ep, sidecars)
+		}
+		parsed := assertSerialRecord(t, s, out, tc.dir, tc.dir)
+		level := factList(t, parsed, "series_sidecars")
+		if len(level) != 1 || level[0]["relative_path"] != tc.srt || level[0]["match_basis"] != nil {
+			t.Fatalf("%s series_sidecars = %v, want {%s … nil} serial-level", tc.dir, level, tc.srt)
+		}
 	}
 }
 

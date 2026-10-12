@@ -182,13 +182,19 @@ func parseEpisodeFilename(relPath, seriesDir string) (season, episode, episodeEn
 // D-8: a file-backed "Title 0" stays a skipped stage).
 func bareEpisodeNumberOf(stem string) (episode int, ok bool) {
 	if m := cyrillicEpisodeRe.FindStringSubmatch(stem); m != nil {
-		return atoi(m[1]), true
+		if n := atoi(m[1]); n > 0 {
+			return n, true
+		}
+		return 0, false
 	}
 	for _, re := range []*regexp.Regexp{edgeBracketNumberReStart, edgeBracketNumberReEnd} {
 		if m := re.FindStringSubmatch(stem); m != nil {
 			for _, cap := range m[1:] {
 				if cap != "" {
-					return atoi(cap), true
+					if n := atoi(cap); n > 0 {
+						return n, true
+					}
+					return 0, false
 				}
 			}
 		}
