@@ -263,6 +263,15 @@ func TestSerialModuleSeed(t *testing.T) {
 		}
 	}
 
+	// The serial-parser binding declares the label-aware season_episode
+	// composite (unified-parser 3.1): footer order display_title →
+	// season_episode → parsed_from. identity_fields keep the raw season and
+	// episode facts.
+	wantDisplay := []string{"display_title", "season_episode", "parsed_from"}
+	if got := m.MetadataSources[0].DisplayFields; !reflect.DeepEqual(got, wantDisplay) {
+		t.Errorf("serial-parser display_fields = %v, want %v", got, wantDisplay)
+	}
+
 	// The tv/image seeds are untouched by the serial addition: their persisted
 	// config blobs are byte-identical to the seed constants (the serial seed
 	// never rewrote them — INSERT OR IGNORE skips the existing rows).
@@ -326,7 +335,7 @@ func TestPresentationFields(t *testing.T) {
 			moduleID:   "serial",
 			wantIdent:  []string{"display_title", "season", "episode"},
 			pluginID:   "serial-parser",
-			wantFields: []string{"display_title", "season", "parsed_from"},
+			wantFields: []string{"display_title", "season_episode", "parsed_from"},
 		},
 		{
 			name:       "serial frame-grabber order",

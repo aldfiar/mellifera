@@ -22,8 +22,11 @@ import type { SourceNamespace } from "@/lib/document";
 //     namespace — namespaces are never merged, values never reshaped
 //     (INV-no-rounding); scalars render through <JsonValue>;
 //   - composite display fields join their component namespace facts:
-//     `camera` = make + model, `dimensions` = width × height — the join is
-//     the declared contract, the component values stay verbatim;
+//     `camera` = make + model, `dimensions` = width × height,
+//     `season_episode` = the season and episode facts rendered label-aware
+//     ("Season N · Episode M"; the season part alone as "Season N", the
+//     episode part alone as "Episode M") — the join is the declared contract,
+//     the component values stay verbatim;
 //   - `thumbnail`/`grabbed_at` resolve from the frame-grabber namespace
 //     (thumbnail via its written field `thumbnail_path`);
 //   - a pair whose facts are absent is skipped silently (soft-fail posture —
@@ -35,15 +38,25 @@ import type { SourceNamespace } from "@/lib/document";
 
 // COMPOSITE_PARTS — display field → its component namespace fields, in join
 // order. COMPOSITE_SEPS — the join separator per composite (`camera` renders
-// "Make Model", `dimensions` renders "1920×1080").
+// "Make Model", `dimensions` renders "1920×1080", `season_episode` renders
+// "Season N · Episode M"). COMPOSITE_LABELS — per-part label templates for
+// composites whose parts carry their own word; composites without an entry
+// render their parts bare. Absent parts drop out of the join; the pair skips
+// silently only when no part is present.
 const COMPOSITE_PARTS: Record<string, string[]> = {
   camera: ["make", "model"],
   dimensions: ["width", "height"],
+  season_episode: ["season", "episode"],
 };
 
 const COMPOSITE_SEPS: Record<string, string> = {
   camera: " ",
   dimensions: "×",
+  season_episode: " · ",
+};
+
+const COMPOSITE_LABELS: Record<string, Record<string, string>> = {
+  season_episode: { season: "Season {v}", episode: "Episode {v}" },
 };
 
 // FIELD_ALIASES — display field → the namespace field(s) that actually carry
@@ -84,15 +97,18 @@ export function resolveDisplayPair(
 ): DisplayPair | null {
   const parts = COMPOSITE_PARTS[field];
   if (parts) {
-    const joined = parts
-      .map((part) => namespace[part])
-      .filter(present)
-      .map(String)
-      .join(COMPOSITE_SEPS[field] ?? " ");
-    if (joined === "") {
+    const labels = COMPOSITE_LABELS[field];
+    const rendered = parts
+      .filter((part) => present(namespace[part]))
+      .map((part) => {
+        const value = String(namespace[part]);
+        const template = labels?.[part];
+        return template ? template.replace("{v}", value) : value;
+      });
+    if (rendered.length === 0) {
       return null;
     }
-    return { field, label: humanizeField(field), value: joined };
+    return { field, label: humanizeField(field), value: rendered.join(COMPOSITE_SEPS[field] ?? " ") };
   }
   for (const key of FIELD_ALIASES[field] ?? [field]) {
     if (present(namespace[key])) {

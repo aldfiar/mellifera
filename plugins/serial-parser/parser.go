@@ -54,16 +54,17 @@ func (*parserImpl) Match(_ context.Context, req *metadatav1.MatchRequest) (*meta
 		if raw == "" {
 			return &metadatav1.MatchResult{Applies: false, Reason: "serial record without directory facts"}, nil
 		}
-		title, season, explicit := parseSeriesDir(raw)
+		res, season, explicit := parseSeriesDir(raw)
 		confidence := 0.6
 		if explicit {
 			confidence = 1.0
 		}
 		q := map[string]any{
-			"title":        title,
+			"title":        res.Title,
 			"dir_name_raw": raw,
 			"season":       int64(season), // always present: marker value, else 1
 		}
+		emitReleaseFields(q, res)
 		query, _ := structpb.NewStruct(q)
 		return &metadatav1.MatchResult{
 			Applies:    true,
@@ -74,17 +75,18 @@ func (*parserImpl) Match(_ context.Context, req *metadatav1.MatchRequest) (*meta
 	}
 
 	rel := parsedString(f, factRelativePath)
-	season, episode, episodeEnd, ok := parseEpisodeFilename(rel, parsedString(f, factSeriesRelativePath))
+	res, season, ok := parseEpisodeFilename(rel, parsedString(f, factSeriesRelativePath))
 	if !ok {
 		return &metadatav1.MatchResult{Applies: false, Reason: "no episode number in filename"}, nil
 	}
 	q := map[string]any{
 		"season":  int64(season),
-		"episode": int64(episode),
+		"episode": int64(res.Episode),
 	}
-	if episodeEnd > 0 {
-		q["episode_end"] = int64(episodeEnd)
+	if res.EpisodeEnd > 0 {
+		q["episode_end"] = int64(res.EpisodeEnd)
 	}
+	emitReleaseFields(q, res)
 	query, _ := structpb.NewStruct(q)
 	return &metadatav1.MatchResult{
 		Applies:    true,

@@ -465,13 +465,16 @@ func TestBareNumberFallback(t *testing.T) {
 	}
 }
 
-// TestBareNamedEpisodeSidecar — probe b5d78250688f037a (box 2.1). Episodes
-// named without SxxExx — a pure-number [NN] bracket ("Show II/[01]
-// Episode.mkv") or a "<N> серия" marker — are indexed by the same number the
-// parser extracts (design.md D-4), so a numbered .srt still associates via the
-// bare_number basis; SxxExx episodes associate exactly as before. The
-// sidecar-FILENAME grammar is untouched: a sidecar whose only number is a [NN]
-// bracket carries no bare number and stays serial-level.
+// TestBareNamedEpisodeSidecar — probe b5d78250688f037a (box 2.1) + probe
+// ebe5aa0c28353849 (unified-parser box 2.4). Episodes named without SxxExx — a
+// pure-number [NN] bracket ("Show II/[01] Episode.mkv") or a "<N> серия"
+// marker — are indexed by the same number the parser extracts (design.md D-4),
+// so a numbered .srt still associates via the bare_number basis; SxxExx
+// episodes associate exactly as before. The sidecar grammar is the SHARED
+// release-name grammar now (unified-parser): a pure-number bracket anywhere in
+// a sidecar stem is a number candidate, so a bracket-numbered sidecar links to
+// its bracket-named episode, and a number bracket before trailing decoration
+// ("Show_II_[01]_[HEVC]") reads through on both sides.
 func TestBareNamedEpisodeSidecar(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root,
@@ -481,12 +484,25 @@ func TestBareNamedEpisodeSidecar(t *testing.T) {
 		"Azure Harbor/[01] Azure Harbor 01 серия.srt",
 		"Bleach/Bleach S01E01.mkv",
 		"Bleach/Bleach S01E01.srt",
+		"Decorated/Show_II_[01]_[HEVC].mkv",
+		"Decorated/Show_II_[01]_[HEVC].ass",
 		"Bracket Only/[01] Episode.mkv",
 		"Bracket Only/[01] Episode.srt",
 		"Zero Bracket/[00] Episode.mkv",
 		"Zero Bracket/Episode - 00.srt",
 		"Zero Marker/Episode 0 серия.mkv",
 		"Zero Marker/Episode 0 серия.srt",
+		// Canonical shapes (unified-parser qa 4.1) mirrored at the scanner's
+		// association grammar — each pinning the scanner's OWN outcome
+		// (association, not namespace): the whole-token 720i is a resolution on
+		// BOTH sides, and the tagged-film decoration is never a number
+		// candidate.
+		"Resolution 720i/Title 720i.mkv",
+		"Resolution 720i/Title 720i.srt",
+		"Resolution Displaced/Show - 01 720i.mkv",
+		"Resolution Displaced/Show - 01.srt",
+		"Film Shape/Blue Horizon (2019) [WEB-DL 1080p x264].mkv",
+		"Film Shape/Blue Horizon (2019) [WEB-DL 1080p x264].srt",
 	)
 	s := &scannerImpl{}
 	out := drainScan(t, s, root)
@@ -495,6 +511,10 @@ func TestBareNamedEpisodeSidecar(t *testing.T) {
 		{"Show II", "Show II/[01] Episode.mkv", "Show II/Episode - 01.srt", matchBareNumber},
 		{"Azure Harbor", "Azure Harbor/[01] Azure Harbor 01 серия.mkv", "Azure Harbor/[01] Azure Harbor 01 серия.srt", matchBareNumber},
 		{"Bleach", "Bleach/Bleach S01E01.mkv", "Bleach/Bleach S01E01.srt", matchSxxExx},
+		{"Decorated", "Decorated/Show_II_[01]_[HEVC].mkv", "Decorated/Show_II_[01]_[HEVC].ass", matchBareNumber},
+		// The whole-token 720i must not displace the dash number it decorates:
+		// the episode indexes at 1, not at the misread resolution.
+		{"Resolution Displaced", "Resolution Displaced/Show - 01 720i.mkv", "Resolution Displaced/Show - 01.srt", matchBareNumber},
 	} {
 		if _, leaked := out.byRel[tc.srt]; leaked {
 			t.Fatalf("sidecar %q was emitted as a file — sidecars are never items", tc.srt)
@@ -510,13 +530,40 @@ func TestBareNamedEpisodeSidecar(t *testing.T) {
 		}
 	}
 
-	// The episode side widened, the sidecar side did not (design.md D-4):
-	// "[01] Episode.srt" has no bare number under the untouched sidecar
-	// grammar, so it attaches to the series record, never episode-linked.
-	parsed := assertSerialRecord(t, s, out, "Bracket Only", "Bracket Only")
-	level := factList(t, parsed, "series_sidecars")
-	if len(level) != 1 || level[0]["relative_path"] != "Bracket Only/[01] Episode.srt" || level[0]["match_basis"] != nil {
-		t.Fatalf("series_sidecars = %v, want the bracket-numbered srt serial-level", level)
+	// The sidecar grammar is the shared grammar too (unified-parser): a
+	// pure-number bracket anywhere in a sidecar stem is a number candidate,
+	// so the bracket-numbered srt links to its bracket-named episode via the
+	// bare-number basis instead of falling serial-level.
+	sidecars := factList(t, identified(t, s, out.byRel["Bracket Only/[01] Episode.mkv"]), "sidecars")
+	if len(sidecars) != 1 {
+		t.Fatalf("Bracket Only sidecars = %v, want 1", sidecars)
+	}
+	if sc := sidecars[0]; sc["relative_path"] != "Bracket Only/[01] Episode.srt" || sc["kind"] != "subtitle" || sc["language"] != "" || sc["match_basis"] != matchBareNumber {
+		t.Fatalf("Bracket Only sidecar = %v, want the bracket-numbered srt episode-linked by bare number", sc)
+	}
+
+	// Canonical shapes (unified-parser qa 4.1), numberless outcomes: a
+	// whole-token 720i and the tagged-film decoration are never number
+	// candidates on EITHER side of the association — the video indexes no
+	// sidecar and its mirrored companion falls serial-level. A grammar that
+	// ever misreads the decoration as a number links the pair falsely (both
+	// sides would read the same phantom number), so this row fails on the
+	// cross-binary divergence the change closed.
+	for _, tc := range []struct{ dir, ep, sc string }{
+		{"Resolution 720i", "Resolution 720i/Title 720i.mkv", "Resolution 720i/Title 720i.srt"},
+		{"Film Shape", "Film Shape/Blue Horizon (2019) [WEB-DL 1080p x264].mkv", "Film Shape/Blue Horizon (2019) [WEB-DL 1080p x264].srt"},
+	} {
+		if _, leaked := out.byRel[tc.sc]; leaked {
+			t.Fatalf("sidecar %q was emitted as a file — sidecars are never items", tc.sc)
+		}
+		if sidecars := factList(t, identified(t, s, out.byRel[tc.ep]), "sidecars"); len(sidecars) != 0 {
+			t.Fatalf("numberless %s episode %q sidecars = %v, want none", tc.dir, tc.ep, sidecars)
+		}
+		parsed := assertSerialRecord(t, s, out, tc.dir, tc.dir)
+		level := factList(t, parsed, "series_sidecars")
+		if len(level) != 1 || level[0]["relative_path"] != tc.sc || level[0]["match_basis"] != nil {
+			t.Fatalf("%s series_sidecars = %v, want {%s … nil} serial-level (decoration is never a number)", tc.dir, level, tc.sc)
+		}
 	}
 
 	// Below-1 parity (change serial-followups box 1.2): a bare-form episode

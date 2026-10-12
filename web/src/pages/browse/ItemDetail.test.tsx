@@ -622,7 +622,7 @@ describe("ItemDetail — identity block (episode-name slot state)", () => {
       parsers: [
         {
           id: "serial-parser",
-          display_fields: ["display_title", "season", "parsed_from"],
+          display_fields: ["display_title", "season_episode", "parsed_from"],
         },
       ],
     },
@@ -635,7 +635,23 @@ describe("ItemDetail — identity block (episode-name slot state)", () => {
       module_id: "serial",
       library_id: 3,
       document: {
-        sources: { "serial-parser": { season: 1, episode: 2 } },
+        sources: {
+          "serial-parser": { season: 1, episode: 2, parsed_from: "Show/S01E02.mkv" },
+        },
+      },
+    },
+  };
+
+  const SERIES_ITEM: ItemResponse = {
+    item: {
+      ...ITEM_RESPONSE.item,
+      id: "itm_3_series",
+      module_id: "serial",
+      library_id: 3,
+      document: {
+        sources: {
+          "serial-parser": { season: 2, parsed_from: "Show (2023)" },
+        },
       },
     },
   };
@@ -654,6 +670,23 @@ describe("ItemDetail — identity block (episode-name slot state)", () => {
     expect(screen.getAllByText(/Episode name — not identified/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/season/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/episode/).length).toBeGreaterThan(0);
+
+    // The footer's season_episode pair renders the label-aware composite from
+    // the namespace facts (unified-parser 3.1).
+    const footer = await screen.findByRole("region", { name: "Metadata footer" });
+    expect(footer.textContent).toContain("Season 1 · Episode 2");
+  });
+
+  it("renders season_episode as the bare season label when the episode fact is absent (series document)", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(SERIES_ITEM);
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(SERIAL_LIBRARY);
+
+    renderAtId("itm_3_series", freshClient());
+
+    // Season alone → "Season 2"; no Episode part is fabricated.
+    const footer = await screen.findByRole("region", { name: "Metadata footer" });
+    expect(footer.textContent).toContain("Season 2");
+    expect(footer.textContent).not.toContain("Episode 2");
   });
 });
 

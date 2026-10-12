@@ -6,33 +6,36 @@ package main
 import (
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"google.golang.org/protobuf/types/known/structpb"
+
+	"github.com/mellifera/mellifera/pkg/releasename"
 )
 
-// tvparse is pure filename heuristics; the compiled regexes never assume ASCII,
-// so Cyrillic titles (e.g. "Игра престолов S01E01.mkv") parse correctly — the
-// season/episode token is ASCII and the title is whatever precedes it
-// (conventions.md §Russian-language; INV5).
-var (
-	// seasonEpisodeRe captures S01E01 and an optional S01E01E02 (episode_end).
-	// Digit classes are ASCII so Cyrillic/Latin in the title is untouched.
-	seasonEpisodeRe = regexp.MustCompile(`(?i)s(\d{1,3})e(\d{1,3})(?:e(\d{1,3}))?`)
-	// resolutionRe matches common video resolutions anywhere in the stem.
-	resolutionRe = regexp.MustCompile(`(?i)(?:2160p|1080[pi]|720[pi]|480p|360p|4k)`)
-	// releaseGroupRe matches the final "-Token" after the SxxExx token.
-	releaseGroupRe = regexp.MustCompile(`(?i)-([a-z0-9]+)\s*$`)
-	// yearRe matches a plausible 4-digit release year in the title region.
-	yearRe = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
-)
+// The SxxExx/resolution/year grammar MOVED to pkg/releasename (unified-parser
+// box 2.3): one shared release-name grammar every binary derives its parsing
+// from; its compiled regexes never assume ASCII, so Cyrillic titles (e.g.
+// "Игра престолов S01E01.mkv") parse correctly — the season/episode token is
+// ASCII and the title is whatever surrounds it (conventions.md §Russian-language;
+// INV5). What stays here are this adapter's OWN rules (design.md D-7): the
+// release-group dash rule — the shared strict CamelCase group shape would not
+// strip "RG" (2 letters < 3), and sharing the loose dash rule wide would eat
+// real title words — and the 4-tier confidence.
+
+// releaseGroupRe matches the final "-Token" of a stem (the adapter-local dash
+// rule: any -word at the stem's end; the group-tag shape rule is NOT applied).
+var releaseGroupRe = regexp.MustCompile(`(?i)-([a-z0-9]+)\s*$`)
 
 // parseTV extracts a structured guess from a library-relative path: show title,
-// season, episode (+episode_end for multi-episode releases), resolution, release
-// group, and year. It is PURE (no I/O). Confidence is 1.0 when a season/episode
-// AND a title are found, 0.6 for season/episode without a title, 0.3 for a title
-// with no season/episode, 0.0 otherwise. The parser name is always "tv-filename".
+// season, episode (+episode_end for multi-episode releases), and the structured
+// release fields (resolution, source, codec, language, year — absent fields
+// omitted, unified-parser D-2). It is PURE (no I/O). The apply rule is
+// adapter-owned: a season/episode guess applies ONLY from an SxxExx token —
+// bare-number forms stay tv-parser skips. Confidence is 1.0 when a
+// season/episode AND a title are found, 0.6 for season/episode without a title,
+// 0.3 for a title with no season/episode, 0.0 otherwise. The parser name is
+// always "tv-filename".
 //
 // The returned Struct uses the well-known keys from scanner.proto IdentifyResult.
 func parseTV(relPath string) (*structpb.Struct, float64, string) {
@@ -40,8 +43,11 @@ func parseTV(relPath string) (*structpb.Struct, float64, string) {
 	stem := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
 	fields := map[string]interface{}{}
 
-	m := seasonEpisodeRe.FindStringSubmatchIndex(stem)
-	if m == nil {
+	res := releasename.ParseEpisodeName(relPath, "")
+	_, _, sxxexx, _ := releasename.EpisodeNumberOf(stem)
+	if !sxxexx {
+		// Title-only parse: Match skips the stage (not an error, B3) — the
+		// core records a skipped stage and moves on (AC-6).
 		if t := cleanTitle(stem); t != "" {
 			fields["title"] = t
 			st, _ := structpb.NewStruct(fields)
@@ -51,13 +57,20 @@ func parseTV(relPath string) (*structpb.Struct, float64, string) {
 		return st, 0.0, parser
 	}
 
-	fields["season"] = int64(atoi(stem[m[2]:m[3]]))
-	fields["episode"] = int64(atoi(stem[m[4]:m[5]]))
-	if m[6] >= 0 { // optional episode_end group participated (S01E01E02)
-		fields["episode_end"] = int64(atoi(stem[m[6]:m[7]]))
+	fields["season"] = int64(res.Season)
+	fields["episode"] = int64(res.Episode)
+	if res.EpisodeEnd > 0 { // optional episode_end group participated (S01E01E02)
+		fields["episode_end"] = int64(res.EpisodeEnd)
 	}
 
-	title := cleanTitle(stem[:m[0]])
+	group := ""
+	if g := releaseGroupRe.FindStringSubmatch(stem); g != nil {
+		group = g[1]
+		fields["release_group"] = group
+	}
+
+	title := res.Title
+	title = cutGroupResidue(title, group)
 	if title == "" {
 		title = cleanTitle(parentDir(relPath)) // best-effort fallback
 	}
@@ -69,22 +82,63 @@ func parseTV(relPath string) (*structpb.Struct, float64, string) {
 		confidence = 1.0
 	}
 
-	if r := resolutionRe.FindString(stem); r != "" {
-		fields["resolution"] = strings.ToLower(r)
-	}
-	if g := releaseGroupRe.FindStringSubmatch(stem[m[1]:]); g != nil {
-		fields["release_group"] = g[1]
-	}
-	if y := yearRe.FindString(stem[:m[0]]); y != "" {
-		fields["year"] = int64(atoi(y))
-	}
+	emitReleaseFields(fields, res)
 
 	st, _ := structpb.NewStruct(fields)
 	return st, confidence, parser
 }
 
+// cutGroupResidue removes the release-group suffix the adapter dash rule
+// matched on the stem: the shared grammar preserves a trailing "-RG" its
+// strict CamelCase shape cannot cut (2 letters < 3), and stripping that group
+// from the title is this plugin's own rule (design.md D-7).
+func cutGroupResidue(title, group string) string {
+	if group == "" {
+		return title
+	}
+	i := strings.LastIndex(strings.ToLower(title), strings.ToLower(group))
+	if i < 0 {
+		return title
+	}
+	return strings.Trim(title[:i], "- ")
+}
+
+// emitReleaseFields maps the shared Result's release fields into the plugin's
+// namespace keys (unified-parser D-2): resolution/source/year as scalars,
+// codec/language as arrays; a field with no matching token is omitted, never
+// zeroed.
+func emitReleaseFields(q map[string]any, r releasename.Result) {
+	if r.Resolution != "" {
+		q["resolution"] = r.Resolution
+	}
+	if r.Source != "" {
+		q["source"] = r.Source
+	}
+	if len(r.Codecs) > 0 {
+		q["codec"] = toAnyList(r.Codecs)
+	}
+	if len(r.Languages) > 0 {
+		q["language"] = toAnyList(r.Languages)
+	}
+	if r.Year != 0 {
+		q["year"] = int64(r.Year)
+	}
+}
+
+// toAnyList lifts a string list into []any — the only slice form structpb
+// accepts.
+func toAnyList(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
+}
+
 // cleanTitle normalizes separators (".", "_", surrounding "-") to spaces,
 // collapses whitespace, and trims. It preserves non-ASCII (Cyrillic, etc.).
+// Used by the title-only branch and the parent-dir fallback — the shared
+// grammar cleans the applied-parse titles itself.
 func cleanTitle(s string) string {
 	s = strings.NewReplacer(".", " ", "_", " ").Replace(s)
 	s = strings.TrimSpace(s)
@@ -101,11 +155,4 @@ func parentDir(relPath string) string {
 		return ""
 	}
 	return filepath.Base(dir)
-}
-
-// atoi parses a decimal integer, returning 0 on any failure (digits come from a
-// regexp \d{1,3} capture, so failure here is unexpected — 0 is a safe fallback).
-func atoi(s string) int {
-	n, _ := strconv.Atoi(s)
-	return n
 }

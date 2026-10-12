@@ -84,6 +84,25 @@ func TestMatch(t *testing.T) {
 			name: "movie-style name does not apply", rel: "Random Movie.mkv",
 			applies: false,
 		},
+		// Canonical shapes (unified-parser qa 4.1): the shared grammar's inputs
+		// mirrored at this adapter, each pinning THIS package's documented
+		// outcome — the apply rule stays SxxExx-only, so the bare-number
+		// canonical shapes skip while the 720i resolution vocabulary flows
+		// through beside the token.
+		{
+			name: "trailing-decoration bracket without SxxExx does not apply", rel: "Show_Name_II_[01]_[HEVC].mkv",
+			applies: false,
+		},
+		{
+			name: "whole-token 720i is a resolution beside the token", rel: "Show.S02E05.720i.mkv",
+			applies: true, title: "Show", season: 2, episode: 5, resolution: "720i",
+		},
+		{
+			// The tagged film degenerate case: the release decoration (year,
+			// resolution, codec, group) must not fabricate a season/episode token.
+			name: "tagged film does not apply", rel: "Blue Horizon (2019) [WEB-DL 1080p x264] - FanGroup.mkv",
+			applies: false,
+		},
 	}
 	p := &parserImpl{}
 	for _, tc := range tests {
@@ -313,4 +332,87 @@ func TestTVParserSubprocess(t *testing.T) {
 	if _, err := pconn.Shutdown(context.Background(), &pluginv1.ShutdownRequest{Reason: "test"}); err != nil {
 		t.Fatalf("Plugin.Shutdown: %v", err)
 	}
+}
+
+// TestMatchAdversarialEdges pins the two adapter-local edges the unified-parser
+// grammar move exposed (qa adversarial check on the G2 coder's deviations #2
+// and #4) at their CURRENT behavior, each verdict recorded where the edge
+// diverges from the pre-change adapter.
+func TestMatchAdversarialEdges(t *testing.T) {
+	p := &parserImpl{}
+	match := func(rel string) *metadatav1.MatchResult {
+		t.Helper()
+		res, err := p.Match(context.Background(), matchReq(rel))
+		if err != nil {
+			t.Fatalf("Match %q: %v", rel, err)
+		}
+		if !res.GetApplies() {
+			t.Fatalf("Match %q did not apply", rel)
+		}
+		return res
+	}
+
+	// Deviation #2 — the release-group dash rule searches end-anchored over
+	// the WHOLE stem (pre-change: only the text after the SxxExx token), and
+	// the shared title derivation cuts a trailing bare number but not its
+	// dash-letter prefix. The dash-form multi-episode tail named group "E02"
+	// under BOTH windows (that edge predates the change), but its title
+	// REGRESSED: "Show" before the change, "Show -E" now — the shared
+	// grammar's trailing-number cut leaves the "-E" residue. The dash-joined
+	// title-token tail is NEW to the group window ("Show-S01E02.mkv" now
+	// names the whole token the group; its title is clean). FLAG (qa report):
+	// the dash-form multi-episode layout degrades on BOTH fields — a
+	// "-E"-suffixed title plus a fabricated release_group "E02" — cosmetic
+	// (no season/episode corruption), but a real naming regression worth a
+	// gate flag; the pin keeps it visible until the adapter cleans the tail.
+	t.Run("release group window", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, rel, wantGroup, wantTitle string
+			wantSeason, wantEpisode         int64
+		}{
+			{"dash-form multi-episode tail", "Show.S01E01-E02.mkv", "E02", "Show -E", 1, 1},
+			{"dash-joined token tail", "Show-S01E02.mkv", "S01E02", "Show", 1, 2},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				q := match(tc.rel).GetQuery()
+				if got := strField(q, "release_group"); got != tc.wantGroup {
+					t.Fatalf("release_group = %q, want %q (pinned current behavior)", got, tc.wantGroup)
+				}
+				if got := strField(q, "title"); got != tc.wantTitle {
+					t.Fatalf("title = %q, want %q (pinned current behavior)", got, tc.wantTitle)
+				}
+				if got := numField(q, "season"); got != tc.wantSeason || numField(q, "episode") != tc.wantEpisode {
+					t.Fatalf("season/episode = %d/%d, want %d/%d", numField(q, "season"), numField(q, "episode"), tc.wantSeason, tc.wantEpisode)
+				}
+			})
+		}
+	})
+
+	// Deviation #4 — a token-only stem ("S01E01.mkv") now titles from the
+	// shared fallback's token echo, which pre-empts the adapter's parent-dir
+	// fallback (pre-change: the text before the token, then the parent dir).
+	// The cours layout derives a garbage title under BOTH rules ("Season 1"
+	// before, the token echo now — neither is "Breaking Bad"; that needs a
+	// grandparent walk). FLAG (qa report): the FLAT layout REGRESSED —
+	// "Show/S01E01.mkv" titled "Show" before the change, now "S01E01". Worth
+	// a gate flag; the pin keeps the regression visible until the adapter
+	// restores the parent-dir fallback for stems carrying no title text.
+	t.Run("token-only stem title", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, rel, wantTitle string
+		}{
+			{name: "cours layout", rel: "Breaking Bad/Season 1/S01E01.mkv", wantTitle: "S01E01"},
+			{name: "flat layout (regressed from the parent-dir title)", rel: "Show/S01E01.mkv", wantTitle: "S01E01"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				res := match(tc.rel)
+				if got := strField(res.GetQuery(), "title"); got != tc.wantTitle {
+					t.Fatalf("title = %q, want %q (pinned current behavior)", got, tc.wantTitle)
+				}
+				if got := res.GetConfidence(); got != 1.0 {
+					t.Fatalf("confidence = %v, want 1.0 (season/episode + a title)", got)
+				}
+			})
+		}
+	})
 }

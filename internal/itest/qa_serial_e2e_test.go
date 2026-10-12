@@ -49,6 +49,14 @@ const (
 	qaSerialRibbonRel = "The_Ribbon_Hero_[ONA]_FulL.mkv"
 	qaSerialJunkRoot  = "smbdeleteAAA22583b1"
 	qaSerialJunkDir   = "smbdeleteBBB9987"
+	// The unified-parser canonical shape (the live defect this change fixes):
+	// a roman-sequel serial whose episode carries a pure-number bracket before
+	// a trailing release-decoration bracket — numberless under the old
+	// grammar, episode 1 season 2 under the shared one. Names stay independent
+	// of the plugin suites' fixtures (no-coincidence discipline).
+	qaSerialDirDecorated = "Amber_Peak_II"
+	qaSerialDecoratedEp  = qaSerialDirDecorated + "/Amber_Peak_II_[01]_[HEVC].mkv"
+	qaSerialDecoratedSc  = qaSerialDirDecorated + "/Amber_Peak_II_[01]_[HEVC].ass"
 )
 
 // Expected serial-parser series titles, re-derived by hand from the shipped
@@ -148,13 +156,14 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 	// --- scan library A (noisy cours) ---
 	libA := qaSerialCreateLibrary(t, client, srv.baseURL, "qa-serial-admin-token", fxA, "QA Serial Cours")
 	resA := scanLibrary(t, client, srv.baseURL, "qa-serial-admin-token", libA)
-	// 3 serial records (2 cours dirs + the stray top-level video) + 4 episode
-	// files; the deep Extras/extra.mkv is NOT discovered and the extensionless
-	// junk is NOT discovered. Persisted counts the 3 series rows + the episode
-	// items (the file-backed record and its same-path episode emission are two
-	// discovered files — see the file-backed subtest for the contract audit).
-	if resA.Discovered != 8 || resA.Persisted != 8 {
-		t.Fatalf("QA library A: scan discovered=%d persisted=%d, want 8/8 (3 serial records + 4 episodes; deep video + junk excluded); warnings=%v",
+	// 4 serial records (2 cours dirs + the bracket-decorated serial + the
+	// stray top-level video) + 6 episode files; the deep Extras/extra.mkv is
+	// NOT discovered and the extensionless junk is NOT discovered. Persisted
+	// counts the 4 series rows + the episode items (the file-backed record and
+	// its same-path episode emission are two discovered files — see the
+	// file-backed subtest for the contract audit).
+	if resA.Discovered != 10 || resA.Persisted != 10 {
+		t.Fatalf("QA library A: scan discovered=%d persisted=%d, want 10/10 (4 serial records + 6 episodes; deep video + junk excluded); warnings=%v",
 			resA.Discovered, resA.Persisted, resA.Warnings)
 	}
 	qaSerialAssertScanWarnings(t, resA.Warnings)
@@ -169,8 +178,8 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 	// exec when present — tens of ms), while this first GET lands within a few
 	// ms of the scan response.
 	seriesA := qaSerialListSeries(t, client, srv.baseURL, "qa-serial-admin-token", libA)
-	if len(seriesA) != 3 {
-		t.Fatalf("QA library A: series count = %d, want 3 (two cours dirs + the stray file); have %v",
+	if len(seriesA) != 4 {
+		t.Fatalf("QA library A: series count = %d, want 4 (two cours dirs + the decorated serial + the stray file); have %v",
 			len(seriesA), qaSerialRels(seriesA))
 	}
 	for _, sr := range seriesA {
@@ -179,9 +188,10 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 		}
 	}
 	qaSerialAssertSeriesSet(t, seriesA, map[string]string{
-		qaSerialDirS04:    "directory",
-		qaSerialDirS05:    "directory",
-		qaSerialRibbonRel: "file",
+		qaSerialDirS04:       "directory",
+		qaSerialDirS05:       "directory",
+		qaSerialDirDecorated: "directory",
+		qaSerialRibbonRel:    "file",
 	})
 
 	// --- scan library B (Cyrillic) ---
@@ -236,6 +246,13 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 		qaSerialAssertSidecars(t, e02, map[string]qaSerialSidecarWant{
 			qaSerialDirS04 + "/Rus/Bleach S04E02.srt": {kind: "subtitle", language: "Rus", basis: "sxxexx"},
 		})
+		// The canonical decorated episode (unified-parser): its mirrored .ass
+		// links by the shared grammar's bare-number basis — the number bracket
+		// read through the trailing decoration on BOTH sides.
+		dec := qaSerialItemByRel(t, client, srv.baseURL, "qa-serial-admin-token", libA, qaSerialDecoratedEp)
+		qaSerialAssertSidecars(t, dec, map[string]qaSerialSidecarWant{
+			qaSerialDecoratedSc: {kind: "subtitle", language: "", basis: "bare_number"},
+		})
 		// S04's series record carries the deep OST track as a SERIAL-level
 		// sidecar: match_basis null, never an item, never episode-linked.
 		s04 := qaSerialSeriesByRel(seriesA)[qaSerialDirS04]
@@ -275,6 +292,11 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 		}{
 			{qaSerialSeriesByRel(seriesA)[qaSerialDirS04], qaSerialBleachTitle, 4, false, "directory", 1},
 			{qaSerialSeriesByRel(seriesA)[qaSerialDirS05], qaSerialBleachTitle, 5, false, "directory", 0},
+			// The canonical trailing-decoration shape (unified-parser): the
+			// roman-sequel marker gives the explicit season 2 and the stripped
+			// title — the always-present-season contract on a name the old
+			// grammar read as decoration-less garbage.
+			{qaSerialSeriesByRel(seriesA)[qaSerialDirDecorated], "Amber Peak", 2, false, "directory", 0},
 			{seriesB[0], qaSerialCyrTitle, 1, false, "directory", 0},
 			// The trailing-CamelCase group-tag strip applies after ANY separator
 			// (specs/serial-library/spec.md, "Name-driven … inference"): this
@@ -349,6 +371,12 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 			{qaSerialDirS04 + "/Bleach S04E02.mkv", libA, qaSerialDirS04, 4, 2, 1},
 			{qaSerialDirS05 + "/Bleach S05E01.mkv", libA, qaSerialDirS05, 5, 1, 1},
 			{qaSerialDirS05 + "/Bleach S05E02.mkv", libA, qaSerialDirS05, 5, 2, 0},
+			// The canonical decorated episode: no SxxExx token — the shared
+			// grammar's bare-number form (number bracket before the trailing
+			// decoration) now APPLIES where the old grammar skipped the whole
+			// series as numberless; season 2 comes from the stem's roman
+			// sequel.
+			{qaSerialDecoratedEp, libA, qaSerialDirDecorated, 2, 1, 1},
 			{qaSerialCyrDir + "/Extraordinary Attorney Woo S01E01.mkv", libB, qaSerialCyrDir, 1, 1, 0},
 			{qaSerialCyrDir + "/Extraordinary Attorney Woo S01E02.mkv", libB, qaSerialCyrDir, 1, 2, 1},
 			{qaSerialCyrDir + "/У Ён У S01E03.mkv", libB, qaSerialCyrDir, 1, 3, 0},
@@ -362,8 +390,10 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 			if got := asyncStr(doc.Parsed, "series_relative_path"); got != w.seriesRel {
 				t.Errorf("%q: parsed.series_relative_path = %q, want %q", w.rel, got, w.seriesRel)
 			}
-			// Every fixture filename here carries an SxxExx token, so the
-			// serial-parser episode Match must apply to all of them.
+			// Every fixture filename here carries an SxxExx token except the
+			// Amber_Peak_II bracket row — a bare-number form the broadened
+			// grammar now applies — so the serial-parser episode Match must
+			// apply to all of them.
 			ns := doc.Sources["serial-parser"]
 			if ns == nil {
 				t.Errorf("%q: sources.serial-parser missing", w.rel)
@@ -501,8 +531,8 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 			t.Errorf("re-scan persisted = %d, want %d (idempotent)", second.Persisted, resA.Persisted)
 		}
 		afterSeries := qaSerialListSeries(t, client, srv.baseURL, "qa-serial-admin-token", libA)
-		if len(afterSeries) != 3 {
-			t.Errorf("re-scan series count = %d, want 3 (stable identities)", len(afterSeries))
+		if len(afterSeries) != 4 {
+			t.Errorf("re-scan series count = %d, want 4 (stable identities)", len(afterSeries))
 		}
 		for _, sr := range afterSeries {
 			if sr.Status != "ready" {
@@ -565,8 +595,9 @@ func qaSerialStartServer(t *testing.T, bins qaSerialServerBins, tmp, token strin
 
 // qaSerialWriteCoursFixtures builds library A (the noisy cours ground truth):
 // two same-show cours directories, Eng/Rus/SUB sidecar folders, a depth-3 OST
-// audio track, a deep extra video (warned + excluded), extensionless junk, and
-// one stray top-level video (the file-backed serial).
+// audio track, a deep extra video (warned + excluded), extensionless junk, one
+// stray top-level video (the file-backed serial), and the bracket-decorated
+// roman-sequel serial carrying the unified-parser canonical naming shape.
 func qaSerialWriteCoursFixtures(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -592,6 +623,12 @@ func qaSerialWriteCoursFixtures(t *testing.T) string {
 
 	qaSerialMedia(t, filepath.Join(root, qaSerialRibbonRel)) // stray top-level video
 	mustWrite(t, filepath.Join(root, qaSerialJunkRoot), []byte("junk"))
+
+	// The bracket-decorated serial (unified-parser canonical shape): one
+	// episode whose number bracket sits before the trailing decoration, plus
+	// the mirrored sidecar the shared grammar must link by bare number.
+	qaSerialMedia(t, filepath.Join(root, qaSerialDecoratedEp))
+	mustWrite(t, filepath.Join(root, qaSerialDecoratedSc), []byte("[Script Info]\n"))
 	return root
 }
 

@@ -5,15 +5,18 @@ package main
 
 import (
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 )
 
-// Sidecar grammar + classification (serials-library design.md D2 rule 4, spec
-// "Sidecar association"). Sidecars are subtitle/audio files at ANY depth under a
-// serial directory; they are classified — NEVER probed, NEVER items — into
+// Sidecar classification (serials-library design.md D2 rule 4, spec "Sidecar
+// association"). Sidecars are subtitle/audio files at ANY depth under a serial
+// directory; they are classified — NEVER probed, NEVER items — into
 // episode-linked (SxxExx first, bare-number fallback) or serial-level buckets.
+// The episode-name grammar itself is pkg/releasename.EpisodeNumberOf
+// (unified-parser): the replicated regex copies that used to live here
+// dissolved into the one shared release-name grammar, so a pure-number bracket
+// anywhere in a sidecar stem is a number candidate and the resolution
+// vocabulary (720i included) matches the parser's exactly.
 
 // sidecarKind maps a lowercased dotted sidecar extension to its fact kind
 // ("subtitle" | "audio"). The extension set is exactly design.md D2 rule 4:
@@ -45,36 +48,6 @@ type sidecarFact struct {
 	MatchBasis   *string
 }
 
-// The regexes below replicate the tv-parser grammar semantics. Plugins are
-// package-main binaries in the root module, so plugins/tv-parser/tvparse.go:22
-// cannot be imported — the grammar is replicated here verbatim (same patterns,
-// ASCII digit classes so Cyrillic/Latin stems stay untouched) with this citation.
-
-var (
-	// seasonEpisodeRe captures S01E01 and an optional S01E01E02 (episode_end).
-	// Digit classes are ASCII so Cyrillic/Latin in the title is untouched.
-	// (Grammar replicated from plugins/tv-parser/tvparse.go:22.)
-	seasonEpisodeRe = regexp.MustCompile(`(?i)s(\d{1,3})e(\d{1,3})(?:e(\d{1,3}))?`)
-	// resolutionRe matches common video resolutions anywhere in the stem
-	// (tvparse.go semantics); used only to keep "1080p" out of bare numbers.
-	resolutionRe = regexp.MustCompile(`(?i)(?:2160p|1080[pi]|720[pi]|480p|360p|4k)`)
-	// bracketRe removes [group] and (tags) segments before bare-number scan so
-	// "Show - 01 (1080p) [C48E56C8]" reduces to "Show - 01" (the observed
-	// ground-truth .ass shape in design.md Context).
-	bracketRe = regexp.MustCompile(`\[[^\]]*\]|\([^)]*\)`)
-	// bareNumberRe captures a standalone 1-3 digit number (non-digit on each
-	// side). 4-digit runs (years, CRC hex digits) are not episode numbers.
-	bareNumberRe = regexp.MustCompile(`(?:^|[^0-9])([0-9]{1,3})(?:[^0-9]|$)`)
-	// cyrillicEpisodeRe matches the "<N> серия" episode marker. (Grammar
-	// replicated from plugins/serial-parser/serialparse.go:41.)
-	cyrillicEpisodeRe = regexp.MustCompile(`(?i)(\d{1,3})[\s._-]*серия`)
-	// edgeBracketNumberRes match a PURE-number [NN]/(NN) bracket at the stem's
-	// start or end (pure digits only, so [1080p] and [C48E56C8] never match).
-	// (Grammar replicated from plugins/serial-parser/serialparse.go:47-48.)
-	edgeBracketNumberReStart = regexp.MustCompile(`^\[([0-9]{1,3})\]|^\(([0-9]{1,3})\)`)
-	edgeBracketNumberReEnd   = regexp.MustCompile(`\[([0-9]{1,3})\]$|\(([0-9]{1,3})\)$`)
-)
-
 // languageFolders is the case-insensitive set of folder names (and filename
 // tags) recognized as languages. "SUB" is deliberately NOT a language — the
 // observed ground truth uses SUB/ for untagged subtitle releases (design.md
@@ -96,73 +69,6 @@ var languageFolders = map[string]bool{
 // fileStem returns the sidecar filename without its extension.
 func fileStem(rel string) string {
 	return strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
-}
-
-// seasonEpisodeOf extracts the first SxxExx token from a stem as (season,
-// episode, true). Grammar semantics replicated from
-// plugins/tv-parser/tvparse.go:22 (see seasonEpisodeRe above).
-func seasonEpisodeOf(stem string) (int, int, bool) {
-	m := seasonEpisodeRe.FindStringSubmatch(stem)
-	if m == nil {
-		return 0, 0, false
-	}
-	season, err1 := strconv.Atoi(m[1])
-	ep, err2 := strconv.Atoi(m[2])
-	if err1 != nil || err2 != nil {
-		return 0, 0, false
-	}
-	return season, ep, true
-}
-
-// bareNumberOf extracts the episode number a sidecar filename carries WITHOUT an
-// SxxExx token (spec "Sidecar association": the bare-number fallback). Bracketed
-// segments and resolution tokens are stripped first — "Show - 01 (1080p)
-// [C48E56C8]" yields 01, never 1080 or the CRC digits. The LAST standalone
-// number wins ("Show 2 - 05" → 05: the episode number trails the season tag).
-// Returns 0 when the stem carries no plausible bare episode number.
-func bareNumberOf(stem string) int {
-	reduced := resolutionRe.ReplaceAllString(bracketRe.ReplaceAllString(stem, " "), " ")
-	matches := bareNumberRe.FindAllStringSubmatch(reduced, -1)
-	if len(matches) == 0 {
-		return 0
-	}
-	n, err := strconv.Atoi(matches[len(matches)-1][1])
-	if err != nil {
-		return 0
-	}
-	return n
-}
-
-// episodeNumberOf extracts the episode number an EPISODE stem carries,
-// mirroring the parser's parseEpisodeFilename grammar (plugins/serial-parser/
-// serialparse.go:162 — replicated per the no-cross-import convention cited
-// above; plugins are package-main binaries). The number is the first of: an
-// SxxExx token (with its season), a "<N> серия" marker, a pure-number [NN]/(NN)
-// bracket at the stem's start or end, or the last standalone 1-3 digit number
-// after bracket segments and resolution tokens are stripped (bareNumberOf).
-// A number below 1 is no number (design.md D-8) — ok reports a usable number;
-// sxxexx reports the SxxExx basis, whose season keys the {season, number}
-// episode index (bare forms index by number alone).
-func episodeNumberOf(stem string) (season, number int, sxxexx, ok bool) {
-	if s, n, found := seasonEpisodeOf(stem); found {
-		return s, n, true, true
-	}
-	if m := cyrillicEpisodeRe.FindStringSubmatch(stem); m != nil {
-		n, _ := strconv.Atoi(m[1])
-		return 0, n, false, n > 0
-	}
-	for _, re := range []*regexp.Regexp{edgeBracketNumberReStart, edgeBracketNumberReEnd} {
-		if m := re.FindStringSubmatch(stem); m != nil {
-			for _, cap := range m[1:] {
-				if cap != "" {
-					n, _ := strconv.Atoi(cap)
-					return 0, n, false, n > 0
-				}
-			}
-		}
-	}
-	n := bareNumberOf(stem)
-	return 0, n, false, n > 0
 }
 
 // sidecarLanguage derives the sidecar language (spec "Sidecar association"):

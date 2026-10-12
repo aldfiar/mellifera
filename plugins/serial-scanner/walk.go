@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
+
+	"github.com/mellifera/mellifera/pkg/releasename"
 )
 
 // walkChanBound caps the Scan channel so a fast walk cannot memory-blow a slow
@@ -197,18 +199,20 @@ func classifySerialDir(root, name string) *serialDirScan {
 // associateSidecars classifies a serial dir's sidecars into series-level facts
 // and per-episode facts (spec "Sidecar association"): SxxExx token in the
 // sidecar filename first (matching an episode with the same season+episode),
-// bare-number fallback when the sidecar has no SxxExx token — matched against
-// an episode index built with episodeNumberOf, which recognizes the same
-// episode-name shapes the parser does (design.md D-4) — serial-level
-// otherwise — never dropped silently. Returned slices are indexed in step with
-// scan.episodes (the per-episode bucket) plus the series-level bucket.
+// bare-number fallback when the sidecar has no SxxExx token — both sides read
+// through pkg/releasename.EpisodeNumberOf, the one shared release-name grammar
+// (unified-parser), so a sidecar number bracket before trailing decoration
+// reads through and the resolution vocabulary matches the parser's exactly —
+// serial-level otherwise — never dropped silently. Returned slices are indexed
+// in step with scan.episodes (the per-episode bucket) plus the series-level
+// bucket.
 func associateSidecars(scan *serialDirScan) (seriesLevel []sidecarFact, perEpisode [][]sidecarFact) {
 	type epKey struct{ season, number int }
 	byToken := map[epKey]int{}  // episode index by its SxxExx token
 	byNumber := map[int][]int{} // episode indices by bare episode number
 	perEpisode = make([][]sidecarFact, len(scan.episodes))
 	for i, ep := range scan.episodes {
-		season, number, sxxexx, ok := episodeNumberOf(fileStem(ep.rel))
+		season, number, sxxexx, ok := releasename.EpisodeNumberOf(fileStem(ep.rel))
 		if !ok {
 			continue // no episode number — unmatchable by any sidecar number
 		}
@@ -227,12 +231,13 @@ func associateSidecars(scan *serialDirScan) (seriesLevel []sidecarFact, perEpiso
 		}
 		language := sidecarLanguage(parentName, stem)
 		idx, basis := -1, ""
-		if season, number, ok := seasonEpisodeOf(stem); ok {
-			if i, hit := byToken[epKey{season, number}]; hit {
+		scSeason, scNumber, scSxxExx, scOk := releasename.EpisodeNumberOf(stem)
+		if scOk && scSxxExx {
+			if i, hit := byToken[epKey{scSeason, scNumber}]; hit {
 				idx, basis = i, matchSxxExx
 			}
-		} else if n := bareNumberOf(stem); n > 0 {
-			if candidates := byNumber[n]; len(candidates) > 0 {
+		} else if scOk {
+			if candidates := byNumber[scNumber]; len(candidates) > 0 {
 				// Multiple seasons with the same episode number: the first
 				// episode in sorted order wins (deterministic).
 				idx, basis = candidates[0], matchBareNumber

@@ -15,8 +15,8 @@
 //   - Match: run parseTV on the item's path; applies iff a season/episode token is
 //     found (else the source is skipped — never an error, AC-6).
 //   - Convert: derive normalized TV metadata {title,season,episode,episode_end?,
-//     resolution?,release_group?,year?} from the query (no external fetch in
-//     Phase A; BuildRequest is a nop, the fetch is a stub).
+//     resolution?,source?,codec?,language?,year?,release_group?} from the query
+//     (no external fetch in Phase A; BuildRequest is a nop, the fetch is a stub).
 //   - Merge: write the metadata into document.sources["tv-parser"] ONLY — never
 //     another namespace, never _provenance/_view/_stages (those are core-stamped).
 //   - Cyrillic titles are first-class — the moved regexes never assume ASCII.
@@ -30,8 +30,10 @@
 //     replays via enrich's per-source document copy).
 //   - NAMESPACE WRITE (arch §3.3). Merge writes ONLY document.sources["tv-parser"];
 //     any other key is a violation the core rejects + reverts (soft-fail, AC-6).
-//   - VERBATIM MOVE. tvparse.go is a byte-for-byte move of base-scanner's parser
-//     (the 4 regexes + parseTV/cleanTitle/parentDir/atoi); do not reimplement it.
+//   - SHARED GRAMMAR. The release-name grammar (SxxExx, resolutions, release
+//     tags, season markers) lives in pkg/releasename (unified-parser); this
+//     plugin is a thin adapter keeping only its own apply rule, the
+//     release-group dash rule, and the 4-tier confidence (design.md D-7).
 //   - COOKIE PAIR matches the core + base-scanner (MELLIFERA_MAGIC_COOKIE /
 //     mellifera-plugin-v1); a mismatch is fatal at substrate handshake.
 //   - SEPARATE PROCESS. This package imports pkg/sdk + proto + stdlib only; it MAY

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"google.golang.org/protobuf/types/known/structpb"
@@ -255,6 +256,14 @@ func TestSeriesNameGrammar(t *testing.T) {
 		{name: "underscore-separated group tag strips", dirNameRaw: "Quiet_Meadow_FulL", wantTitle: "Quiet Meadow", wantSeason: 1, wantConf: 0.6},
 		{name: "space-separated group tag strips", dirNameRaw: "Ivory Tower FulL", wantTitle: "Ivory Tower", wantSeason: 1, wantConf: 0.6},
 		{name: "dot-separated group tag strips", dirNameRaw: "Quiet.Meadow.FulL", wantTitle: "Quiet Meadow", wantSeason: 1, wantConf: 0.6},
+		// Canonical rows (unified-parser): the whole-token 720i joins the
+		// resolution table once and strips from the title everywhere.
+		{name: "whole-token 720i strips from the title", dirNameRaw: "Title 720i.mkv", backing: "file", wantTitle: "Title", wantSeason: 1, wantConf: 0.6},
+		// Canonical row (unified-parser qa 4.1): the tagged film degenerate
+		// case — the adapter still applies to the series document (its own
+		// contract: a series document always parses), stripping the full
+		// decoration and defaulting the package's Season 0 to 1.
+		{name: "tagged film degenerate case", dirNameRaw: "Blue Horizon (2019) [WEB-DL 1080p x264] - FanGroup.mkv", backing: "file", wantTitle: "Blue Horizon", wantSeason: 1, wantConf: 0.6},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -307,18 +316,22 @@ func TestSeriesGrammarConfidence(t *testing.T) {
 }
 
 // TestEpisodeParse is box 3.3's chain half: the EPISODE document's
-// sources.serial-parser carries the parsed season/episode — exactly those
-// fields, so no series-level metadata leaks into the episode namespace.
+// sources.serial-parser carries the parsed season/episode plus the structured
+// release fields the stem carries (unified-parser D-2) — and no series-level
+// metadata (title, dir_name_raw) leaks into the episode namespace.
 func TestEpisodeParse(t *testing.T) {
 	applies, ns, _ := runChain(t, episodeParsed("Show/Show.S01E02.1080p.mkv"))
 	if !applies {
 		t.Fatalf("Match did not apply to the episode document")
 	}
-	if len(ns) != 2 {
-		t.Fatalf("namespace = %v, want exactly season+episode", ns)
+	if len(ns) != 3 {
+		t.Fatalf("namespace = %v, want exactly season+episode+resolution", ns)
 	}
 	if ns["season"] != float64(1) || ns["episode"] != float64(2) {
 		t.Fatalf("namespace = %v, want season 1 episode 2", ns)
+	}
+	if ns["resolution"] != "1080p" {
+		t.Fatalf("namespace = %v, want resolution 1080p beside the identity keys", ns)
 	}
 }
 
@@ -350,6 +363,15 @@ func TestEpisodeNameGrammar(t *testing.T) {
 		{name: "no marker anywhere defaults season 1", rel: "Ivory Tower/[Bluewave] Ivory Tower - 01 [BDRip 1080p x265 FLAC].mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
 		{name: "season falls back to the series directory marker", rel: "Azure Harbor TV-2/[Bluewave] Azure Harbor - 05 [BDRip 1080p].mkv", wantApply: true, wantSeason: 2, wantEpisode: 5},
 		{name: "unbracketed resolution token is not an episode number", rel: "Show/Show - 01 360p.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
+		// Canonical rows (unified-parser): the trailing-decoration bracket is
+		// an episode candidate wherever it occurs (rightmost wins), and the
+		// whole-token 720i is a resolution, never an episode number.
+		{name: "trailing-decoration bracket after roman sequel", rel: "Show_Name_II/Show_Name_II_[01]_[HEVC].mkv", wantApply: true, wantSeason: 2, wantEpisode: 1},
+		{name: "whole-token 720i is no episode number", rel: "Show/Title 720i.mkv"},
+		// Canonical row (unified-parser qa 4.1): the tagged film degenerate
+		// case on the episode branch stays a skipped stage — the release
+		// decoration (year, resolution, codec) is never an episode number.
+		{name: "tagged film stem stays skipped", rel: "Show/Blue Horizon (2019) [WEB-DL 1080p x264].mkv"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -368,4 +390,74 @@ func TestEpisodeNameGrammar(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNamespaceEmission pins the structured release-field emission (unified-parser
+// D-2): Match/Convert carry resolution, source, codec, language, and year beside
+// the existing keys in sources["serial-parser"], for series and episode
+// documents alike; a field with no matching token is omitted, never zeroed; and
+// the existing skip and confidence behavior is unchanged.
+func TestNamespaceEmission(t *testing.T) {
+	t.Run("series namespace gains the release fields", func(t *testing.T) {
+		applies, ns, _ := runChain(t, seriesParsed("From.S02.WEBDL.720p.Rus.Eng", "From.S02.WEBDL.720p.Rus.Eng"))
+		if !applies {
+			t.Fatalf("Match did not apply to the series document")
+		}
+		if ns["title"] != "From" || ns["season"] != float64(2) {
+			t.Fatalf("existing keys changed: %v", ns)
+		}
+		if ns["resolution"] != "720p" || ns["source"] != "web-dl" {
+			t.Fatalf("resolution/source = %v/%v, want 720p/web-dl", ns["resolution"], ns["source"])
+		}
+		if want := []any{"rus", "eng"}; !reflect.DeepEqual(ns["language"], want) {
+			t.Fatalf("language = %v, want %v", ns["language"], want)
+		}
+		for _, absent := range []string{"codec", "year"} {
+			if _, ok := ns[absent]; ok {
+				t.Fatalf("series namespace carries %q with no matching token: %v", absent, ns)
+			}
+		}
+	})
+
+	t.Run("episode namespace gains codec and source", func(t *testing.T) {
+		applies, ns, _ := runChain(t, episodeParsed("Show II/Show II - 01 [WEBRip 1080p HEVC].mkv"))
+		if !applies {
+			t.Fatalf("Match did not apply to the episode document")
+		}
+		if ns["season"] != float64(2) || ns["episode"] != float64(1) {
+			t.Fatalf("existing keys changed: %v", ns)
+		}
+		if ns["resolution"] != "1080p" || ns["source"] != "webrip" {
+			t.Fatalf("resolution/source = %v/%v, want 1080p/webrip", ns["resolution"], ns["source"])
+		}
+		if want := []any{"hevc"}; !reflect.DeepEqual(ns["codec"], want) {
+			t.Fatalf("codec = %v, want %v", ns["codec"], want)
+		}
+		for _, absent := range []string{"language", "year"} {
+			if _, ok := ns[absent]; ok {
+				t.Fatalf("episode namespace carries %q with no matching token: %v", absent, ns)
+			}
+		}
+	})
+
+	t.Run("year joins when the name carries one", func(t *testing.T) {
+		applies, ns, _ := runChain(t, seriesParsed("Bleach S04 (2008)", "Bleach S04 (2008)"))
+		if !applies {
+			t.Fatalf("Match did not apply to the series document")
+		}
+		if ns["year"] != float64(2008) {
+			t.Fatalf("year = %v, want 2008", ns["year"])
+		}
+	})
+
+	t.Run("no release tags emit no new keys", func(t *testing.T) {
+		_, ns, _ := runChain(t, seriesParsed("Seishun Buta Yarou", "Seishun Buta Yarou"))
+		if len(ns) != 3 { // title, dir_name_raw, season
+			t.Fatalf("series namespace = %v, want exactly the three existing keys", ns)
+		}
+		_, ns, _ = runChain(t, episodeParsed("Show/[01] Episode.mkv"))
+		if len(ns) != 2 { // season, episode
+			t.Fatalf("episode namespace = %v, want exactly season+episode", ns)
+		}
+	})
 }

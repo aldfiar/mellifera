@@ -139,7 +139,8 @@ const imageConfigJSON = `{
 // sources are B3 territory; serial documents land ready for it.
 // display_name carries Russian first-class (arch §1.2). Presentation
 // declarations are CONFIG, not code (element-pages D-1, AC-4): display_fields
-// per binding (serial-parser's footer order; frame-grabber's thumbnail/
+// per binding (serial-parser's footer order — season_episode is the declared
+// composite, resolved label-aware in the renderer; frame-grabber's thumbnail/
 // grabbed_at resolve from the frame-grabber namespace in the renderer),
 // identity_fields per module (episode names the episode-name slot case until
 // B3/NFO lands).
@@ -161,7 +162,7 @@ const serialConfigJSON = `{
     {
       "plugin_id": "serial-parser", "capability_id": "default",
       "priority": 1, "enabled": true,
-      "display_fields": ["display_title", "season", "parsed_from"],
+      "display_fields": ["display_title", "season_episode", "parsed_from"],
       "options": {}
     },
     {

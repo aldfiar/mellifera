@@ -5,264 +5,88 @@ package main
 
 import (
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
+
+	"github.com/mellifera/mellifera/pkg/releasename"
 )
 
-// serialparse is pure directory/filename heuristics, mirroring the shipped
-// tv-parser grammar (plugins/tv-parser/tvparse.go) where the semantics are the
-// same. The compiled regexes never assume ASCII: a Cyrillic directory name
-// (e.g. "Необычный адвокат У Ён У Extraordinary Attorney Woo.2022.S01") parses
-// correctly — the season tokens are ASCII and the title is whatever surrounds
-// them (serials-library: Unicode-first-class serial names).
-var (
-	// seasonEpisodeRe captures S01E01 plus an optional S01E01E02 (episode_end).
-	// Shared grammar with tv-parser; ASCII digit classes leave non-ASCII titles
-	// untouched.
-	seasonEpisodeRe = regexp.MustCompile(`(?i)s(\d{1,3})e(\d{1,3})(?:e(\d{1,3}))?`)
-	// seasonTokenRe finds a standalone Sxx season marker in a DIRECTORY name,
-	// preceded by start-of-string or a separator. A following episode digit or
-	// 'e' disqualifies the match (that is an SxxExx token) — checked in code,
-	// since Go's regexp has no lookahead.
-	seasonTokenRe = regexp.MustCompile(`(?i)(?:^|[\s._\-\[(])s(\d{1,3})`)
-	// nthSeasonRe matches the "4th Season" directory-marker form.
-	nthSeasonRe = regexp.MustCompile(`(?i)(\d{1,2})(?:st|nd|rd|th)[\s._-]*season`)
-	// seasonWordRe matches the "Season 2" word-form marker (design.md D-8),
-	// beside the "4th Season" ordinal form.
-	seasonWordRe = regexp.MustCompile(`(?i)(?:^|[\s._\-\[(])season[\s._-]*(\d{1,2})(?:$|[\s._\-\])])`)
-	// tvSeasonRe matches a whole-token "TV <N>" season marker; the separator
-	// between TV and the number is a space, hyphen, or dot (design.md D-8).
-	tvSeasonRe = regexp.MustCompile(`(?i)(?:^|[\s._\-\[(])tv[\s._-]*(\d{1,2})(?:$|[\s._\-\])])`)
-	// romanSequelRe matches a trailing whole-token roman sequel suffix, II-IX
-	// only — single-letter romans (I, V, X) are excluded (design.md D-5).
-	romanSequelRe = regexp.MustCompile(`(?i)(?:^|[\s._\-\[(])(II|III|IV|VI|VII|VIII|IX)[\s._\-\])]*$`)
-	// cyrillicEpisodeRe matches the "<N> серия" episode marker (design.md D-3).
-	cyrillicEpisodeRe = regexp.MustCompile(`(?i)(\d{1,3})[\s._-]*серия`)
-	// bareNumberRe captures a standalone 1-3 digit number (non-digit on each
-	// side); 4-digit runs (years, CRC hex digits) are not episode numbers.
-	bareNumberRe = regexp.MustCompile(`(?:^|[^0-9])([0-9]{1,3})(?:[^0-9]|$)`)
-	// edgeBracketNumberRes match a PURE-number [NN]/(NN) bracket at the stem's
-	// start or end (pure digits only, so [1080p] and [C48E56C8] never match).
-	edgeBracketNumberReStart = regexp.MustCompile(`^\[([0-9]{1,3})\]|^\(([0-9]{1,3})\)`)
-	edgeBracketNumberReEnd   = regexp.MustCompile(`\[([0-9]{1,3})\]$|\(([0-9]{1,3})\)$`)
-	// trailingNumberRe matches a trailing bare episode number plus its
-	// surrounding separators, for the season-marker probe (design.md D-8).
-	trailingNumberRe = regexp.MustCompile(`[\s._\-]*[0-9]{1,3}[\s._\-]*$`)
-)
-
-// romanSeasons maps the accepted sequel suffixes (lowercased) to their season
-// values. Range II-IX per design.md D-5.
-var romanSeasons = map[string]int{
-	"ii": 2, "iii": 3, "iv": 4, "vi": 6, "vii": 7, "viii": 8, "ix": 9,
-}
-
-// videoExtensions is the trailing-extension set a file-backed serial name may
-// carry. Replicated from plugins/serial-scanner/walk.go:29 (videoMime) —
-// plugins are package-main binaries, no cross-import (sidecar.go:48-52).
-var videoExtensions = map[string]bool{
-	".mkv": true, ".mp4": true, ".m4v": true, ".mov": true, ".avi": true,
-	".webm": true, ".wmv": true, ".flv": true, ".mpg": true, ".mpeg": true,
-	".ts": true, ".m2ts": true,
-}
+// The series + episode grammars MOVED to pkg/releasename (unified-parser box
+// 1.1): one shared grammar every binary derives its parsing from. What stays
+// here are the plugin's thin adapters — its namespace keys, Match/apply rule,
+// skip reasons, and confidence semantics are adapter-owned. Two adapter
+// defaults live here by design: the always-season rule (a shared Season 0 → 1,
+// confidence steering via the explicit flag) and episode n ≥ 1 acceptance for
+// SxxExx tokens. The namespace emission mapping (unified-parser D-2) is also
+// adapter-owned: resolution/source/year as scalars, codec/language as arrays,
+// absent fields omitted.
 
 // parseSeriesDir parses a raw serial directory name (or a file-backed serial's
-// raw file name) into its cleaned display title and its season. Pure. The
-// season is ALWAYS >= 1: the explicit marker's value when a marker is present
-// (Nth Season, Season N, standalone Sxx, TV <N>, trailing II-IX), 1 otherwise;
-// the bool reports marker explicitness (Match confidence steering only).
-// Stripping order (design.md D-1): trailing video extension, bracketed
-// segments, the season marker (first anchored form wins), whole-token release
-// tags, the trailing roman sequel suffix, the trailing group tag — each cut
-// token leaves the title; every other decoration is preserved through
-// cleanTitle's separator normalization only.
-func parseSeriesDir(dirName string) (title string, season int, hasSeason bool) {
-	name := stripVideoExt(dirName)
-	name = stripBracketSegments(name)
-	season = 1
-	if cut, n, ok := cutSeasonMarker(name); ok {
-		name, season, hasSeason = cut, n, true
+// raw file name) into the shared Result — the cleaned display title plus the
+// structured release fields — and its adapter-defaulted season. Pure. The
+// season is ALWAYS >= 1: the explicit marker's value when a marker is present,
+// 1 otherwise; the bool reports marker explicitness (Match confidence
+// steering only).
+func parseSeriesDir(dirName string) (res releasename.Result, season int, hasSeason bool) {
+	res = releasename.ParseName(dirName)
+	season = 1 // the adapter owns the default; the package stays honest at 0
+	if res.SeasonExplicit {
+		season = res.Season
 	}
-	name = stripReleaseTagTokens(name)
-	if !hasSeason {
-		if m := romanSequelRe.FindStringSubmatchIndex(name); m != nil {
-			season, hasSeason = romanSeasons[strings.ToLower(name[m[2]:m[3]])], true
-			name = name[:m[0]]
-		}
-	}
-	name = cutTrailingGroupTag(name)
-	title = cleanTitle(name)
-	if title == "" {
-		title = cleanTitle(dirName) // a name that was ONLY a token still yields its cleaned form
-	}
-	return title, season, hasSeason
+	return res, season, res.SeasonExplicit
 }
 
-// stripVideoExt drops a trailing video extension from a file-backed serial
-// name; directory names carry no video extension and pass through unchanged.
-func stripVideoExt(name string) string {
-	ext := filepath.Ext(name)
-	if videoExtensions[strings.ToLower(ext)] {
-		return strings.TrimSuffix(name, ext)
+// parseEpisodeFilename parses a library-relative episode path into the shared
+// Result and its adapter-defaulted season. ok=false when the filename yields
+// no episode number — Match skips the stage (not an error). An SxxExx token
+// always applies (its n >= 1 gate is preserved from the serial-followups
+// parity: a whole-token episode number of 0 still applies), a bare-number
+// name applies only above the gate.
+func parseEpisodeFilename(relPath, seriesDir string) (res releasename.Result, season int, ok bool) {
+	_, _, sxxexx, _ := releasename.EpisodeNumberOf(stemOf(relPath))
+	res = releasename.ParseEpisodeName(relPath, seriesDir)
+	if res.Episode == 0 && !sxxexx {
+		return res, 0, false
 	}
-	return name
+	season = 1 // the adapter owns the default; the package stays honest at 0
+	if res.Season > 0 {
+		season = res.Season
+	}
+	return res, season, true
 }
 
-// cutSeasonMarker finds the first anchored season marker in a name and returns
-// the name with that marker's span replaced by a space, its number, and true.
-// Priority: Nth Season, Season N, standalone Sxx, TV <N>. Anchored forms only
-// — an internal digit ("Title_3_The_End") or a trailing bare digit ("Title 0")
-// is never a marker (design.md D-8).
-func cutSeasonMarker(name string) (rest string, n int, ok bool) {
-	for _, re := range []*regexp.Regexp{nthSeasonRe, seasonWordRe} {
-		if m := re.FindStringSubmatchIndex(name); m != nil {
-			return spliceCut(name, m[0], m[1]), atoi(name[m[2]:m[3]]), true
-		}
+// emitReleaseFields maps the shared Result's release fields into the plugin's
+// namespace keys (unified-parser D-2): resolution/source/year as scalars,
+// codec/language as arrays; a field with no matching token is omitted, never
+// zeroed (the footer skip-silent posture).
+func emitReleaseFields(q map[string]any, r releasename.Result) {
+	if r.Resolution != "" {
+		q["resolution"] = r.Resolution
 	}
-	if m := seasonTokenIndex(name); m != nil {
-		return spliceCut(name, m[0], m[1]), atoi(name[m[2]:m[3]]), true
+	if r.Source != "" {
+		q["source"] = r.Source
 	}
-	if m := tvSeasonRe.FindStringSubmatchIndex(name); m != nil {
-		return spliceCut(name, m[0], m[1]), atoi(name[m[2]:m[3]]), true
+	if len(r.Codecs) > 0 {
+		q["codec"] = toAnyList(r.Codecs)
 	}
-	return name, 0, false
+	if len(r.Languages) > 0 {
+		q["language"] = toAnyList(r.Languages)
+	}
+	if r.Year != 0 {
+		q["year"] = int64(r.Year)
+	}
 }
 
-// spliceCut replaces name[start:end] with a single space.
-func spliceCut(name string, start, end int) string {
-	return name[:start] + " " + name[end:]
+// toAnyList lifts a string list into []any — the only slice form structpb
+// accepts.
+func toAnyList(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
 }
 
-// seasonTokenIndex returns the match indices of the first standalone Sxx
-// marker, or nil. An Sxx immediately followed by an episode digit or 'e' (an
-// SxxExx episode token) or by a further digit (a longer number) is skipped.
-func seasonTokenIndex(s string) []int {
-	for _, loc := range seasonTokenRe.FindAllStringSubmatchIndex(s, -1) {
-		if loc[3] < len(s) {
-			switch c := s[loc[3]]; {
-			case c == 'e' || c == 'E' || (c >= '0' && c <= '9'):
-				continue // an episode token or a longer number — not a season marker
-			}
-		}
-		return loc
-	}
-	return nil
-}
-
-// parseEpisodeFilename parses a library-relative episode path into its season
-// and episode numbers. The episode number comes from the stem's first of: an
-// SxxExx token (with its optional SxxExxEzz end), a "<N> серия" marker, a
-// pure-number [NN]/(NN) bracket at the stem's start or end, or the trailing
-// standalone 1-3 digit number after bracket segments and resolution tokens
-// are stripped (last number wins — the sidecar bare-number convention). The
-// season comes from the SxxExx token when the number did, else the stem's own
-// season marker, else the series directory's inference, else 1 (design.md
-// D-3). ok=false when the filename yields no episode number — Match skips the
-// stage (not an error).
-func parseEpisodeFilename(relPath, seriesDir string) (season, episode, episodeEnd int, ok bool) {
-	stem := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
-	if m := seasonEpisodeRe.FindStringSubmatch(stem); m != nil {
-		episodeEnd = 0
-		if m[3] != "" {
-			episodeEnd = atoi(m[3])
-		}
-		return atoi(m[1]), atoi(m[2]), episodeEnd, true
-	}
-	ep, found := bareEpisodeNumberOf(stem)
-	if !found {
-		return 0, 0, 0, false
-	}
-	return episodeSeasonOf(stem, seriesDir), ep, 0, true
-}
-
-// bareEpisodeNumberOf extracts the episode number a stem carries WITHOUT an
-// SxxExx token: the first of a "<N> серия" marker, a pure-number edge bracket,
-// or the last standalone 1-3 digit number after bracket segments and
-// resolution tokens are stripped. A number below 1 is no number (design.md
-// D-8: a file-backed "Title 0" stays a skipped stage).
-func bareEpisodeNumberOf(stem string) (episode int, ok bool) {
-	if m := cyrillicEpisodeRe.FindStringSubmatch(stem); m != nil {
-		if n := atoi(m[1]); n > 0 {
-			return n, true
-		}
-		return 0, false
-	}
-	for _, re := range []*regexp.Regexp{edgeBracketNumberReStart, edgeBracketNumberReEnd} {
-		if m := re.FindStringSubmatch(stem); m != nil {
-			for _, cap := range m[1:] {
-				if cap != "" {
-					if n := atoi(cap); n > 0 {
-						return n, true
-					}
-					return 0, false
-				}
-			}
-		}
-	}
-	reduced := resolutionRe.ReplaceAllString(bracketSegmentRe.ReplaceAllString(stem, " "), " ")
-	matches := bareNumberRe.FindAllStringSubmatch(reduced, -1)
-	if len(matches) == 0 {
-		return 0, false
-	}
-	if n := atoi(matches[len(matches)-1][1]); n > 0 {
-		return n, true
-	}
-	return 0, false
-}
-
-// episodeSeasonOf resolves an episode's season when its number did not come
-// from an SxxExx token: the stem's own season marker, else the series
-// directory's inference, else 1 (design.md D-3).
-func episodeSeasonOf(stem, seriesDir string) int {
-	if n, ok := stemSeasonMarker(stem); ok {
-		return n
-	}
-	if seriesDir != "" {
-		if _, n, _ := parseSeriesDir(seriesDir); n > 0 {
-			return n
-		}
-	}
-	return 1
-}
-
-// stemSeasonMarker applies the D-1 season-marker rules to an episode stem:
-// bracket segments and release tags stripped, then the anchored markers;
-// the trailing roman sequel is checked after the episode's own trailing
-// number is removed, so "[Group] Title II 01 [BDrip …]" infers season 2
-// (design.md D-8).
-func stemSeasonMarker(stem string) (season int, ok bool) {
-	name := stripBracketSegments(stem)
-	name = stripReleaseTagTokens(name)
-	if _, n, found := cutSeasonMarker(name); found {
-		return n, true
-	}
-	trimmed := cutTrailingBareNumber(name)
-	if m := romanSequelRe.FindStringSubmatchIndex(trimmed); m != nil {
-		return romanSeasons[strings.ToLower(trimmed[m[2]:m[3]])], true
-	}
-	return 0, false
-}
-
-// cutTrailingBareNumber removes a trailing bare episode number and its
-// surrounding separators, so the roman-sequel check sees the title tokens.
-func cutTrailingBareNumber(name string) string {
-	return trailingNumberRe.ReplaceAllString(name, "")
-}
-
-// cleanTitle normalizes separators (".", "_", surrounding "-") to spaces,
-// collapses whitespace, and trims. It preserves non-ASCII (Cyrillic, etc.).
-// Shared semantics with tv-parser's cleanTitle (moved grammar, same behavior).
-func cleanTitle(s string) string {
-	s = strings.NewReplacer(".", " ", "_", " ").Replace(s)
-	s = strings.TrimSpace(s)
-	s = strings.Trim(s, "- ")
-	fields := strings.Fields(s)
-	return strings.Join(fields, " ")
-}
-
-// atoi parses a decimal integer, returning 0 on any failure (digits come from
-// regexp captures, so failure here is unexpected — 0 is a safe fallback).
-func atoi(s string) int {
-	n, _ := strconv.Atoi(s)
-	return n
+// stemOf returns the episode filename without its extension.
+func stemOf(relPath string) string {
+	return strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
 }
