@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "edd3b9f",
-  "source_fingerprint": "9f2f77a908a52f7b86c86bf45d922d0de59cf6c32006b13f3d19e77938009c51",
+  "generated_from_commit": "f60ab12",
+  "source_fingerprint": "28bf4ec244052212b353801dcea12db6e8187ce1f5f36e3fb119080ea24ae4fa",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -17,25 +17,25 @@
     "ast_backends": "python3-ast (.py); regex-floor fallback for other langs"
   },
   "counts": {
-    "files_total": 237,
+    "files_total": 245,
     "by_extension": {
-      ".go": 186,
+      ".go": 194,
       ".sh": 2,
       ".js": 3,
       ".tsx": 34,
       ".ts": 12
     },
     "by_role": {
-      "source": 136,
-      "test": 100,
+      "source": 140,
+      "test": 104,
       "script": 1
     },
-    "tests": 100
+    "tests": 104
   },
   "stack": {
     "primary": "go",
     "languages": {
-      "go": 186,
+      "go": 194,
       "bash": 2,
       "javascript": 3,
       "typescript": 46
@@ -338,6 +338,11 @@
       "lang": "go",
       "role": "test"
     },
+    "internal/itest/qa_broken_build_sweep_test.go": {
+      "lines": 358,
+      "lang": "go",
+      "role": "test"
+    },
     "internal/itest/qa_embed_buildgate_test.go": {
       "lines": 92,
       "lang": "go",
@@ -345,6 +350,11 @@
     },
     "internal/itest/qa_endpoints_test.go": {
       "lines": 160,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_film_joint_test.go": {
+      "lines": 175,
       "lang": "go",
       "role": "test"
     },
@@ -389,7 +399,7 @@
       "role": "test"
     },
     "internal/itest/qa_serial_e2e_test.go": {
-      "lines": 881,
+      "lines": 922,
       "lang": "go",
       "role": "test"
     },
@@ -424,12 +434,12 @@
       "role": "test"
     },
     "internal/module/registry.go": {
-      "lines": 398,
+      "lines": 399,
       "lang": "go",
       "role": "source"
     },
     "internal/module/registry_test.go": {
-      "lines": 408,
+      "lines": 417,
       "lang": "go",
       "role": "test"
     },
@@ -618,6 +628,11 @@
       "lang": "go",
       "role": "source"
     },
+    "internal/stream/pack_repro_tail_window_test.go": {
+      "lines": 148,
+      "lang": "go",
+      "role": "test"
+    },
     "internal/stream/pack_test.go": {
       "lines": 330,
       "lang": "go",
@@ -643,7 +658,12 @@
       "lang": "go",
       "role": "source"
     },
-    "internal/web/dist/assets/index-_0e4F2f3.js": {
+    "internal/stream/validate.go": {
+      "lines": 165,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/web/dist/assets/index-KUf24VLL.js": {
       "lines": 205,
       "lang": "javascript",
       "role": "source"
@@ -672,6 +692,21 @@
       "lines": 257,
       "lang": "go",
       "role": "test"
+    },
+    "pkg/releasename/parse.go": {
+      "lines": 450,
+      "lang": "go",
+      "role": "source"
+    },
+    "pkg/releasename/parse_test.go": {
+      "lines": 265,
+      "lang": "go",
+      "role": "test"
+    },
+    "pkg/releasename/tags.go": {
+      "lines": 279,
+      "lang": "go",
+      "role": "source"
     },
     "pkg/sdk/doc.go": {
       "lines": 44,
@@ -844,12 +879,12 @@
       "role": "source"
     },
     "plugins/serial-parser/parser.go": {
-      "lines": 169,
+      "lines": 203,
       "lang": "go",
       "role": "source"
     },
     "plugins/serial-parser/parser_test.go": {
-      "lines": 228,
+      "lines": 560,
       "lang": "go",
       "role": "test"
     },
@@ -858,8 +893,13 @@
       "lang": "go",
       "role": "source"
     },
+    "plugins/serial-parser/releasetags.go": {
+      "lines": 12,
+      "lang": "go",
+      "role": "source"
+    },
     "plugins/serial-parser/serialparse.go": {
-      "lines": 103,
+      "lines": 92,
       "lang": "go",
       "role": "source"
     },
@@ -899,22 +939,22 @@
       "role": "source"
     },
     "plugins/serial-scanner/serial_test.go": {
-      "lines": 631,
+      "lines": 754,
       "lang": "go",
       "role": "test"
     },
     "plugins/serial-scanner/sidecar.go": {
-      "lines": 147,
+      "lines": 93,
       "lang": "go",
       "role": "source"
     },
     "plugins/serial-scanner/walk.go": {
-      "lines": 386,
+      "lines": 394,
       "lang": "go",
       "role": "source"
     },
     "plugins/tv-parser/doc.go": {
-      "lines": 39,
+      "lines": 41,
       "lang": "go",
       "role": "source"
     },
@@ -929,7 +969,7 @@
       "role": "source"
     },
     "plugins/tv-parser/parser_test.go": {
-      "lines": 316,
+      "lines": 418,
       "lang": "go",
       "role": "test"
     },
@@ -939,7 +979,7 @@
       "role": "source"
     },
     "plugins/tv-parser/tvparse.go": {
-      "lines": 111,
+      "lines": 158,
       "lang": "go",
       "role": "source"
     },
@@ -1053,7 +1093,7 @@
       ]
     },
     "web/src/components/metadata/ParserFooter.tsx": {
-      "lines": 195,
+      "lines": 211,
       "lang": "typescript",
       "role": "source",
       "exports": [
@@ -1351,7 +1391,7 @@
       ]
     },
     "web/src/pages/browse/ItemDetail.test.tsx": {
-      "lines": 1328,
+      "lines": 1361,
       "lang": "typescript",
       "role": "test"
     },
@@ -1408,7 +1448,7 @@
       "role": "source"
     },
     "web/vite.config.ts": {
-      "lines": 41,
+      "lines": 42,
       "lang": "typescript",
       "role": "source"
     }
