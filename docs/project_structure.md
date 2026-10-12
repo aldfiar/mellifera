@@ -113,6 +113,52 @@
 > element-only groups last) with prev/next browsing and the photo slideshow.
 > NEW capability spec: `openspec/specs/parser-display/spec.md`; web deltas in
 > `openspec/specs/web-ui/spec.md`.
+>
+> **serial-watch-flow layered on top (archived 2026-10-11).** Titled serials +
+> the watch flow: a `title_overrides` control table (`internal/store/series.go`
+> — `Series`/`TitleOverride`; store 7→9 top-level, WARN band), four admin
+> title routes (`internal/api/titles.go` — `PUT/DELETE /series/{id}/title` +
+> `PUT/DELETE /items/{id}/title`; openapi 17→19 paths; api holds 10 — the
+> handlers are methods), `?variant=sidecar&n=<index>` on the item media
+> endpoint (index-keyed, resolved only from the stored document), voiceover
+> renditions in the pack lane (`internal/enrich/streams.go` +
+> `internal/stream`), and the SPA's title fallback chain (override → best
+> plugin title → floor) + watch-page voiceover/subtitle selection
+> (`web/src/lib/subtitles.ts`). Deltas merge into the living `serial-library`,
+> `media-serving`, `packaged-playback`, and `web-ui` specs.
+>
+> **video-item-pages layered on top (archived 2026-10-11; web-only).** The SPA
+> gated every playback surface on `media_type === "video"` — a literal no
+> scanner ever writes. Video-ness is now STRUCTURAL: shared predicates
+> (`isVideoItem`/`isPhotoItem` in `web/src/lib/api.ts`) replace the literal,
+> so the Player mounts for tv/serial items; the item page folds core fields,
+> identifiers, and `_view` under the collapsed "Technical details" disclosure
+> on EVERY item page. Zero Go production changes.
+>
+> **fix-episode-playback layered on top (archived 2026-10-11).** Whole-build
+> playback reachability: the pack lane's window-truncated tail playlists and
+> rendition tail-URI 404s are healed (whole-build republish; the legacy
+> head-only branch no longer deletes published segments), `internal/stream`
+> gains `validate.go` (whole-build validation — every published segment
+> reachable), `internal/orchestrator` gains the integrity-sweep policy half
+> (`IntegrityItem`/`Repacks`; 8→10, WARN band) executed by
+> `cmd/mellifera/playback.go`, and the episode page becomes poster-only
+> (player-first). Deltas merge into the living `packaged-playback` and
+> `media-serving` specs.
+>
+> **serial layered on top (archived 2026-10-12).** Parsing hardening for REAL
+> serial layouts — plugins-only: `plugins/serial-parser` gains `releasetags.go`
+> (a neutral, role-keyed release-tag mask vocabulary — two-part bracket rule,
+> CamelCase group-tag shape; no resource brand in any identifier) and reworks
+> the `serialparse.go` grammar (always-season parse; anchored markers incl. the
+> "Season N" word form and "TV N" space/hyphen-dot; romans II–IX; the episode
+> number from SxxExx / "N серия" / `[NN]` edge bracket / trailing standalone,
+> with a season fallback stem → series dir → 1); `parser.Match` ALWAYS writes
+> season. `plugins/serial-scanner` indexes episodes by the same shapes:
+> `sidecar.go` episode-number helpers + `walk.go associateSidecars` (SxxExx by
+> `{season, number}`, bare forms by number). Deltas merge into the living
+> `openspec/specs/serial-library/spec.md`; zero new protos, endpoints, or
+> exported symbols.
 
 ## Overview
 
@@ -142,7 +188,7 @@ The differentiator versus the Jellyfin/Emby lineage is **subprocess plugin isola
 
 CGO is avoided (pure-Go SQLite chosen to fit single-binary + cross-compile). No DI framework. No `reflect` (depguard-denied).
 
-## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a + `serials-library` + `web-ui-phase-3` + `media-preview` + `packaged-playback` + `element-pages`)
+## Module layout (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a + `serials-library` + `web-ui-phase-3` + `media-preview` + `packaged-playback` + `element-pages` + `serial-watch-flow` + `video-item-pages` + `fix-episode-playback` + `serial`)
 
 Directory tree as realized by the foundational slice PLUS the additive Phase A,
 Phase B1, Phase B2, web-ui Phase 1, web-ui Phase 2a, serials-library,
@@ -166,27 +212,27 @@ mellifera/
 │   └── plugin/v1/                  # Plugin service: Handshake, Health, Shutdown (arch §2.2.2)
 ├── pkg/sdk/                        # plugin SDK (7): + MetadataSource + MetadataSourcePlugin in Phase A
 ├── internal/
-│   ├── store/                      # SQLite: docs + control + reserved tables (5 top-level; +ledger.go FailureRow + busy_timeout in B1; methods excluded by check.sh; [packaged-playback] streams facts ride the item document; [element-pages] +item_parsers.go — SetItemParsers/ListItemParsers over the new item_parsers table + SetLibraryChain/GetLibraryChain/TestLibraryChain over library_parsers, all FULL-replacement ordered control tables in open.go schemaSQL)
+│   ├── store/                      # SQLite: docs + control + reserved tables (9 top-level — WARN band; +ledger.go FailureRow + busy_timeout in B1; methods excluded by check.sh; [packaged-playback] streams facts ride the item document; [element-pages] +item_parsers.go — SetItemParsers/ListItemParsers over the new item_parsers table + SetLibraryChain/GetLibraryChain/TestLibraryChain over library_parsers, all FULL-replacement ordered control tables in open.go schemaSQL; [serial-watch-flow] +series.go — Series/TitleOverride over the new title_overrides table: manual display titles keyed by series row id or item id, control state beside the documents, never a namespace write)
 │   ├── plugin/                     # subprocess lifecycle + gRPC clients + capability routing (10 WARN; +MetadataSource accessor)
 │   ├── module/                     # config-driven module registry (7; +MetadataSourceBinding; tv-parser seed [A] + image-enricher image-module seed [B2] + serial seed [serials-library]; [element-pages] +identity_fields per module + display_fields per binding in ALL seeds + the IdentityFields/DisplayFields presentation accessors — methods, outside the symbol budget)
 │   ├── scan/                       # scan-side orchestrator: Run/Deps/Result (3; B1: persists pending + Notify(libraryID), drops inline enrich, re-scan→stale; B2: stamps absolute_path into parsed for all items)
-│   ├── api/                        # chi router — PURE DELEGATION, zero logic (10 exported symbols — WARN band: +Role +AdminStatus/PluginHealth/EnrichStats [web-ui] + Playback [packaged-playback] + ParserBinding/ModulePresentation [element-pages]; role-aware auth Principal{Role}+requireRole into TWO route groups — browse admin+client read-only + viewer actions, admin admin-only mutating; [phase-3] +PATCH /libraries/{id} +summary +folders +progress GET/PUT + [serials] +/series* + [media-preview] +GET/HEAD /items/{id}/media + [packaged-playback] +playback.go GET /items/{id}/playback + POST /items/{id}/play (Deps.Playback/Play closures) + [element-pages] +parsers.go PUT/DELETE /items/{id}/parsers + parsers field on PATCH /libraries/{id} + module block on GET /libraries/{id} (Deps.ModulePresentation/PluginCapabilities closures) — 17 paths; every handler swag-annotated; committed openapi.{json,yaml} regenerate via make web-build)
+│   ├── api/                        # chi router — PURE DELEGATION, zero logic (10 exported symbols — WARN band: +Role +AdminStatus/PluginHealth/EnrichStats [web-ui] + Playback [packaged-playback] + ParserBinding/ModulePresentation [element-pages]; role-aware auth Principal{Role}+requireRole into TWO route groups — browse admin+client read-only + viewer actions, admin admin-only mutating; [phase-3] +PATCH /libraries/{id} +summary +folders +progress GET/PUT + [serials] +/series* + [media-preview] +GET/HEAD /items/{id}/media + [packaged-playback] +playback.go GET /items/{id}/playback + POST /items/{id}/play (Deps.Playback/Play closures) + [element-pages] +parsers.go PUT/DELETE /items/{id}/parsers + parsers field on PATCH /libraries/{id} + module block on GET /libraries/{id} (Deps.ModulePresentation/PluginCapabilities closures) — 19 paths; every handler swag-annotated; committed openapi.{json,yaml} regenerate via make web-build; [serial-watch-flow] +titles.go — PUT/DELETE /series/{id}/title + PUT/DELETE /items/{id}/title (admin; over the store title_overrides table; handler methods, so the 10-symbol count holds) + ?variant=sidecar&n=<index> on the item media endpoint, index-keyed and resolved only from the stored document)
 │   ├── web/                        # [web-ui] embedding + composition layer (2: Handler+Options) — //go:embed all:dist (SPA) + embedded openapi.{yaml,json} + /docs (Swagger UI via swaggo/http-swagger); SPA fallback + immutable /assets cache; public surface (/, /assets, /openapi, /docs) unauthenticated; [2a] dist/* = the REAL hashed Vite build; [packaged-playback] mounts the token-gated /media + /media/* stream surface BEFORE the SPA fallback (Options.Media)
 │   ├── enrich/                     # metadata-side orchestrator + async derived-queue: Enrich/Deps/Result + Queue/QueueConfig/Stats/NewQueue (7; B1: queue.go/worker.go/lease.go/retry.go; [packaged-playback] +streams.go — the __streams__ pack lane riding the same queue via the Deps.PackItem seam; [element-pages] Enrich gains backward-compatible variadic extras (element-attached sources run after the chain) + queue derivation reads ListItemParsers + the library chain (chain order = queue priority))
-│   ├── orchestrator/               # [packaged-playback] PURE watch-driven policy core (no I/O: snapshots in, decisions out): Budget (32GB LRU artifact budget + .trash eviction), Frontier (serial watch frontier + movies pack-on-play), Job/Episode/ArtifactDir — executed by cmd/mellifera/playback.go (never execs ffmpeg, never writes documents)
-│   ├── itest/                      # [all features] black-box integration + QA suite (23 files + testdata/, package `itest`) — external test package at internal/itest, NOT beside code: integration_* = per-feature AC-1 goldens (scan/pipeline/async/image/web/web-items/media) ; qa_* = independent acceptance + regression + pinned-baseline guards (git-diff additivity vs merge-bases, node-free build-gate dry-run) + packaged-playback joint harness/roundtrip/streams tests + [element-pages] element_hermetic_e2e_test.go + element_parsers_test.go over the testdata/element-parser fixture plugin (hermetic attach→drain→namespace E2E). The server+plugin subprocess harness (startServer/qaStartServer/…, moduleRoot/buildBinary) is HERMETIC: every plugin is built into t.TempDir and pinned via MELLIFERA_* absolute paths, and make/git calls run with Dir=moduleRoot — the suite passes from any cwd (incl. a fresh checkout with no bin/ artifacts)
-│   ├── stream/                     # [packaged-playback] REALIZED (was DEFERRED): packaged-playback mechanism — Classify (pure over stored ffprobe), the remux-only fMP4-HLS pack lane (one ffmpeg exec site, `-c copy`, head-first 600s chunk, build-nonce atomic publish), HMAC media tokens (cookie-first + query fallback, 4h), the token-gated /media ServeHTTP surface, Describe (mode direct|hls); counted exports 4 (Build/Class/Classify/Service; grouped consts + methods excluded)
+│   ├── orchestrator/               # [packaged-playback] PURE watch-driven policy core (no I/O: snapshots in, decisions out): Budget (32GB LRU artifact budget + .trash eviction), Frontier (serial watch frontier + movies pack-on-play), Job/Episode/ArtifactDir — executed by cmd/mellifera/playback.go (never execs ffmpeg, never writes documents); [fix-episode-playback] +IntegrityItem/Repacks — the broken-build integrity-sweep policy half (integrity facts in, repack jobs out; 10 symbols, WARN band)
+│   ├── itest/                      # [all features] black-box integration + QA suite (27 files + testdata/, package `itest`) — external test package at internal/itest, NOT beside code: integration_* = per-feature AC-1 goldens (scan/pipeline/async/image/web/web-items/media) ; qa_* = independent acceptance + regression + pinned-baseline guards (git-diff additivity vs merge-bases, node-free build-gate dry-run) + packaged-playback joint harness/roundtrip/streams tests + [element-pages] element_hermetic_e2e_test.go + element_parsers_test.go over the testdata/element-parser fixture plugin (hermetic attach→drain→namespace E2E) + [serial-watch-flow] qa_serial_watch_flow_test.go + [video-item-pages] qa_video_item_pages_test.go + [fix-episode-playback] qa_broken_build_sweep_test.go (the healing sweep E2E). The server+plugin subprocess harness (startServer/qaStartServer/…, moduleRoot/buildBinary) is HERMETIC: every plugin is built into t.TempDir and pinned via MELLIFERA_* absolute paths, and make/git calls run with Dir=moduleRoot — the suite passes from any cwd (incl. a fresh checkout with no bin/ artifacts)
+│   ├── stream/                     # [packaged-playback] REALIZED (was DEFERRED): packaged-playback mechanism — Classify (pure over stored ffprobe), the remux-only fMP4-HLS pack lane (one ffmpeg exec site, `-c copy`, head-first 600s chunk, build-nonce atomic publish), HMAC media tokens (cookie-first + query fallback, 4h), the token-gated /media ServeHTTP surface, Describe (mode direct|hls); counted exports 4 (Build/Class/Classify/Service; grouped consts + methods excluded); [serial-watch-flow] the pack lane packages voiceover renditions; [fix-episode-playback] +validate.go (whole-build validation — every published segment reachable) + the lane heals window-truncated tail playlists / rendition tail-URI defects (whole-build republish; the legacy head-only branch no longer deletes published segments)
 │   └── janitor/                    # DEFERRED
 ├── plugins/
 │   ├── base-scanner/               # scanner subprocess: walk + ffprobe + withinRoot (media-type-agnostic; parseTV extracted); B2: image.go — module-type-gated image discovery + stdlib base info (jpeg/png dims; webp/heic soft-fail)
 │   ├── tv-parser/                  # metadata_source subprocess: parseTV moved here verbatim; serves metadata.v1.MetadataSource
 │   ├── image-enricher/             # metadata_source subprocess [B2]: EXIF via the system exiftool (os/exec arg-slice); structural mirror of tv-parser; serves metadata.v1.MetadataSource
-│   ├── serial-scanner/             # scanner subprocess [serials-library]: walks the serial root into series candidates (S/E-structured dirs)
-│   ├── serial-parser/              # metadata_source subprocess [serials-library]: serial-level + episode-level facts from directory structure (no network)
+│   ├── serial-scanner/             # scanner subprocess [serials-library]: walks the serial root into series candidates (S/E-structured dirs); [serial] associateSidecars classifies sidecars into series-level + per-episode facts indexed by the same episode-number shapes (SxxExx by {season,number}, bare forms by number)
+│   ├── serial-parser/              # metadata_source subprocess [serials-library]: serial-level + episode-level facts from directory structure (no network); [serial] +releasetags.go (neutral role-keyed release-tag mask vocabulary — bracket-segment rules, release-tag tables, CamelCase group-tag shape) + serialparse.go grammar rework (always-season parse, anchored markers, romans II–IX, multi-form episode numbers) — Match always writes season
 │   └── frame-grabber/              # metadata_source subprocess [serials-library]: ffmpeg JPEG grabs under <dataDir>/thumbs/, stamped sources["frame-grabber"].thumbnail_path into episode documents (the fact the media endpoint serves as ?variant=thumb)
 ├── cmd/
-│   └── mellifera/                  # flat main.go — constructor wiring (loads all SIX plugin subprocesses — base-scanner, serial-scanner, tv-parser, image-enricher, serial-parser, frame-grabber — paths overridable via MELLIFERA_<PLUGIN> env, default bin/; builds enrich.Deps; enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs; composes web.Handler(api.New(deps),opts) as sole handler + builds Deps.Status closure + MELLIFERA_WEB_DEV; [packaged-playback] playback.go — the orchestrator shell: builds stream.Service + the Deps.Playback/Play closures + EnqueuePack dispatch + budget eviction; MELLIFERA_ORCH_BUDGET_GB + MELLIFERA_MEDIA_SECRET knobs; [element-pages] loadPlugin factors the per-plugin Load+Start pair so loadedCaps (declared capability types) is captured at the declaration site — feeds the Deps.PluginCapabilities parser-validation closure + builds Deps.ModulePresentation over module.Registry)
-└── web/                            # React SPA (npm project root; node/npm DEV-ONLY): Vite 5 + React 18 + TS strict + react-router-dom + TanStack Query + Tailwind/shadcn (8 copy-in primitives); src/lib api.ts (typed DTOs mirroring the Go json tags verbatim + Bearer fetch wrapper + authenticated media objectURL channel + endpoint allowlist + MediaVariant union + [packaged-playback] PlaybackDescriptor + play/playback calls + [element-pages] ParserBinding/ModulePresentation DTOs + getLibrary), auth.ts (localStorage token), document.ts (§3.1 accessors), queries.ts (TanStack hooks + useItemMedia + useLibrary); pages Login + Home (collections + Continue/Next-up rails) + Browse + ItemDetail (Details surface + collapsed Technical details + hero media; [packaged-playback] hls.js player + click-to-seek; [element-pages] identity-field badges + chain-ordered ParserFooter + prev/next browsing + photo slideshow w/ S toggle) + collections/{Collection,serial episode flow; [element-pages] browse handoff to the element page} + admin/{Admin,Libraries,Status}; components/{Sidebar shell, metadata/* (incl. [element-pages] ParserFooter.tsx), states, ui/*}; Vitest 119 cases
+│   └── mellifera/                  # flat main.go — constructor wiring (loads all SIX plugin subprocesses — base-scanner, serial-scanner, tv-parser, image-enricher, serial-parser, frame-grabber — paths overridable via MELLIFERA_<PLUGIN> env, default bin/; builds enrich.Deps; enrich.NewQueue + Start/Stop + Notify + MELLIFERA_ENRICH_* knobs; composes web.Handler(api.New(deps),opts) as sole handler + builds Deps.Status closure + MELLIFERA_WEB_DEV; [packaged-playback] playback.go — the orchestrator shell: builds stream.Service + the Deps.Playback/Play closures + EnqueuePack dispatch + budget eviction; MELLIFERA_ORCH_BUDGET_GB + MELLIFERA_MEDIA_SECRET knobs; [fix-episode-playback] playback.go also executes the broken-build integrity sweep (orchestrator Repacks over integrity facts); [element-pages] loadPlugin factors the per-plugin Load+Start pair so loadedCaps (declared capability types) is captured at the declaration site — feeds the Deps.PluginCapabilities parser-validation closure + builds Deps.ModulePresentation over module.Registry)
+└── web/                            # React SPA (npm project root; node/npm DEV-ONLY): Vite 5 + React 18 + TS strict + react-router-dom + TanStack Query + Tailwind/shadcn (8 copy-in primitives); src/lib api.ts (typed DTOs mirroring the Go json tags verbatim + Bearer fetch wrapper + authenticated media objectURL channel + endpoint allowlist + MediaVariant union + [packaged-playback] PlaybackDescriptor + play/playback calls + [element-pages] ParserBinding/ModulePresentation DTOs + getLibrary), auth.ts (localStorage token), document.ts (§3.1 accessors), queries.ts (TanStack hooks + useItemMedia + useLibrary); pages Login + Home (collections + Continue/Next-up rails) + Browse + ItemDetail (Details surface + collapsed Technical details + hero media; [packaged-playback] hls.js player + click-to-seek; [element-pages] identity-field badges + chain-ordered ParserFooter + prev/next browsing + photo slideshow w/ S toggle) + collections/{Collection,serial episode flow; [element-pages] browse handoff to the element page} + admin/{Admin,Libraries,Status}; components/{Sidebar shell, metadata/* (incl. [element-pages] ParserFooter.tsx), states, ui/*}; [serial-watch-flow] title fallback chains (override → best plugin title → floor) with rename affordances + watch-page voiceover/subtitle selection (lib/subtitles.ts); [video-item-pages] structural video-ness — isVideoItem/isPhotoItem predicates in lib/api.ts replace the media_type=="video" literal no scanner writes, + core fields/identifiers/view folded under the collapsed Technical-details disclosure on every item page; [fix-episode-playback] poster-only episode page; Vitest 153 cases in 11 files
 ```
 
 Dependency direction points **down only**: `web → api → scan → enrich → {module, plugin} → store` (web-ui Phase 1: `internal/web` composes `internal/api`; api does not import web). Phase B1: scan no longer calls enrich inline — after persisting items `pending` it hands the library to the `enrich.Queue` via `Deps.Notify` (wired in `cmd/mellifera`); enrich still never imports scan. The worker pool is a process-lifetime component (started before serving, stopped on shutdown). `proto/` and `pkg/sdk` are shared leaves. No cycles (ai-arch §4). web-ui Phase 2a adds ZERO Go import edges — the SPA in `web/` is a same-origin HTTP client of `/api/v1/*` (Bearer header; no CORS), not an importer. packaged-playback keeps the shape: `internal/orchestrator` imports only stdlib (`time`) — snapshots in, decisions out, executed by `cmd/mellifera/playback.go`; `internal/stream` is mounted by `internal/web` (`Options.Media`) and reached from enrich ONLY through the `Deps.PackItem` func seam — enrich never imports stream (D-10). element-pages adds no import edges at all: api reads module config through the `Deps.ModulePresentation`/`PluginCapabilities` closures (INV2/INV4), and the SPA consumes existing endpoints.
@@ -248,17 +294,18 @@ All DECIDED or DEFAULTED in `docs/open-questions.md`; none OPEN. Load-bearing fo
 
 Q1–Q28 carry reversible defaults with named revisit triggers (see `docs/open-questions.md`). Risk register R1–R14 lives there too.
 
-## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a + `serials-library` + `web-ui-phase-3` + `media-preview` + `packaged-playback` + `element-pages`)
+## What exists now (`scan-library` + `plugin-pipeline` Phase A + `async-enrichment` Phase B1 + `image-enrichment` Phase B2 + `web-ui` Phase 1 + `web-ui` Phase 2a + `serials-library` + `web-ui-phase-3` + `media-preview` + `packaged-playback` + `element-pages` + `serial-watch-flow` + `video-item-pages` + `fix-episode-playback` + `serial`)
 
 The foundational slice plus the additive Phase A, B1, B2, web-ui Phase 1/2a/2b+2c,
-serials-library, web-ui-phase-3, media-preview, packaged-playback (committed on
-`main` 2026-10-09), and element-pages layers are implemented — element-pages
-landed as the uncommitted working tree on `main` (base `e5cff66`), ten
+serials-library, web-ui-phase-3, media-preview, packaged-playback, and
+element-pages layers are implemented (all committed on `main`), plus the
+2026-10-11/12 hardening layers serial-watch-flow, video-item-pages,
+fix-episode-playback, and serial — ten
 living specs under `openspec/specs/`, and the per-change gate records in
-`openspec/changes/archive/` (latest: `2026-10-10-element-pages`). All
+`openspec/changes/archive/` (latest: `2026-10-12-serial`). All
 verification gates are green at the merge
 point: `make build && make check && make test` node-free PASS,
-`cd web && npm test` Vitest (119 cases / 10 files) + `tsc --noEmit` + eslint clean, and every
+`cd web && npm test` Vitest (153 cases / 11 files) + `tsc --noEmit` + eslint clean, and every
 archived change's probe set re-runs exit 0 (the `swag init` step of
 `make web-build` was fixed in media-preview: `-d internal/api -g doc.go`
 reproduces the committed `openapi.{json,yaml}` byte-identically).
@@ -266,7 +313,7 @@ reproduces the committed `openapi.{json,yaml}` byte-identically).
 - `go.mod` (`github.com/mellifera/mellifera`, Go 1.25.0). **Unchanged** across Phase A/B1/B2/2a (additive). web-ui Phase 1 adds the first new Go runtime dep — `github.com/swaggo/http-swagger v1.3.4` (+ transitives) for the Swagger UI at `/docs/`; NOTICE-documented. `swag`/`swagfmt` stay dev/CI CLIs (not in `go.mod` as runtime). Phase 2a and every layer since add ZERO Go deps (the React toolchain lives in `web/package.json`, dev-only).
 - Source under `mellifera/`: `cmd/`, `internal/{store,module,plugin,scan,api,enrich,web,orchestrator,stream}/`, `pkg/sdk/`, `plugins/{base-scanner,tv-parser,image-enricher,serial-scanner,serial-parser,frame-grabber}/`, compiled `proto/mellifera/*/v1/*.pb.go` (**proto tree unchanged** — serials-library added ZERO new protos), and the `web/` React SPA.
 - `mellifera` binary (server) + 6 plugin binaries via `make build` / `make build-plugin` (`base-scanner`, `serial-scanner`, `tv-parser`, `image-enricher`, `serial-parser`, `frame-grabber`). The server serves the embedded React SPA plus the token-gated `/media` playback surface.
-- `internal/itest/` — the black-box integration + QA suite, 23 files + `testdata/` in package `itest` (moved off the repo root into Go-idiomatic layout; unit tests stay beside the code they test): `integration_test.go` (scan-library) + `integration_pipeline_test.go` (Phase A) + `integration_async_test.go` (Phase B1 AC-1 async golden) + `integration_image_test.go` (Phase B2 AC-1 async image golden) + `integration_web_test.go` (web-ui keystone) + `integration_web_items_test.go` (2a items contract) + `integration_media_test.go` (media-preview media E2E) + serial E2E (`qa_serial_e2e_test.go`) + packaged-playback joint tests (`qa_playback_harness_test.go`, `qa_playback_roundtrip_test.go`, `qa_streams_joint_test.go`) + [element-pages] `element_hermetic_e2e_test.go` + `element_parsers_test.go` (hermetic attach→drain→namespace E2E over the `testdata/element-parser` fixture plugin) + `qa_*_test.go` (independent acceptance + regression for all slices) + `web/src/**/*.test.{ts,tsx}` (Vitest — Phase 2a+).
+- `internal/itest/` — the black-box integration + QA suite, 27 files + `testdata/` in package `itest` (moved off the repo root into Go-idiomatic layout; unit tests stay beside the code they test): `integration_test.go` (scan-library) + `integration_pipeline_test.go` (Phase A) + `integration_async_test.go` (Phase B1 AC-1 async golden) + `integration_image_test.go` (Phase B2 AC-1 async image golden) + `integration_web_test.go` (web-ui keystone) + `integration_web_items_test.go` (2a items contract) + `integration_media_test.go` (media-preview media E2E) + serial E2E (`qa_serial_e2e_test.go`) + packaged-playback joint tests (`qa_playback_harness_test.go`, `qa_playback_roundtrip_test.go`, `qa_streams_joint_test.go`) + [element-pages] `element_hermetic_e2e_test.go` + `element_parsers_test.go` (hermetic attach→drain→namespace E2E over the `testdata/element-parser` fixture plugin) + [serial-watch-flow] `qa_serial_watch_flow_test.go` + [video-item-pages] `qa_video_item_pages_test.go` + [fix-episode-playback] `qa_broken_build_sweep_test.go` (the healing-sweep E2E) + `qa_*_test.go` (independent acceptance + regression for all slices) + `web/src/**/*.test.{ts,tsx}` (Vitest — Phase 2a+).
 - Inputs, still read-only: `docs/{architecture,ai-architecture,prior-art,open-questions}.md`, `.claude/skills/mellifera-build/`, `.golangci.yml`.
 
 ### Phase A additions (additive — `plugin-pipeline`)
@@ -557,6 +604,28 @@ and never branches on them (AC-4; INV5 in `internal/module`):
 - **`internal/itest` (+2 + fixture).** `element_hermetic_e2e_test.go` +
   `element_parsers_test.go` over `testdata/element-parser/main.go` — the
   hermetic attach→drain→namespace E2E.
+
+### serial additions (additive — archived 2026-10-12)
+
+Parsing hardening for real serial layouts — plugins-only, zero new
+protos/endpoints/exported symbols; deltas merged into the living
+`openspec/specs/serial-library/spec.md`:
+
+- **`plugins/serial-parser`**: NEW `releasetags.go` — the release-decoration
+  vocabulary (bracket-segment rules, whole-token release-tag tables, CamelCase
+  group-tag shape) as a NEUTRAL role-keyed mask (no resource brand in any
+  identifier — extractable verbatim when the per-resource plugin projects
+  land); `serialparse.go` grammar rework — always-season parse, anchored
+  markers (incl. the "Season N" word form and "TV N" space/hyphen-dot), romans
+  II–IX, and the episode number read from SxxExx / "N серия" / `[NN]` edge
+  bracket / trailing standalone, with the season fallback stem → series dir →
+  1; `parser.go` `Match` now ALWAYS writes season.
+- **`plugins/serial-scanner`**: `sidecar.go` gains the replicated
+  episode-number helpers; `walk.go` `associateSidecars` classifies a serial
+  dir's sidecars into series-level facts and per-episode facts indexed by the
+  same shapes (SxxExx by `{season, number}`, bare forms by number).
+- **`internal/itest/qa_serial_e2e_test.go`**: expectations re-derived for the
+  reworked grammar.
 
 ### Capability model
 
