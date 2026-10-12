@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-11
+goal: Correct season and episode parsing across S02, roman-numeral II, '4th
+  Season', 'TV N', arc-named and season-less serial layouts; no season in name
+  defaults to season 1
