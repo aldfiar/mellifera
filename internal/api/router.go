@@ -55,6 +55,14 @@ type Deps struct {
 	// working store-side; the 400 unknown/mismatched-plugin path needs the
 	// closure wired).
 	PluginCapabilities func(ctx context.Context, pluginID string) (capabilities []string, known bool)
+	// OnProgress is the watch-event seam (continue-nextup-media D-2):
+	// invoked by putProgress after a successful PutProgress, with the
+	// request context — the cmd-side implementation detaches it
+	// (context.WithoutCancel) because the stop-frame re-grab outlives the
+	// response. Nil-safe (a nil closure is a no-op; progress persistence is
+	// never load-bearing on it), mirroring Deps.Scan/Status. Keeps api free
+	// of plugin imports (INV2).
+	OnProgress func(ctx context.Context, itemID string, position int64)
 }
 
 // Role is the authorization role resolved from the credential. MVP issues

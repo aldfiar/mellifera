@@ -9,6 +9,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mellifera/mellifera/internal/store"
@@ -33,7 +34,8 @@ func openRegistry(t *testing.T) (*Registry, *store.Store) {
 }
 
 // TestOpen_TVSeeded covers B1 (Open loads enabled modules) + B2/B4 (Get("tv")
-// returns the §2.4.1 scanner binding with verbatim options).
+// returns the §2.4.1 scanner binding with verbatim options) + the v2 chain
+// (continue-nextup-media D-7: frame-grabber bound after the unloaded slots).
 func TestOpen_TVSeeded(t *testing.T) {
 	r, _ := openRegistry(t)
 
@@ -41,11 +43,28 @@ func TestOpen_TVSeeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(tv): %v", err)
 	}
-	if m.ID != "tv" || m.MediaType != "tv" || m.SchemaVersion != 1 {
-		t.Fatalf("Get(tv) = %+v, want id=tv media_type=tv schema_version=1", m)
+	if m.ID != "tv" || m.MediaType != "tv" || m.SchemaVersion != 2 {
+		t.Fatalf("Get(tv) = %+v, want id=tv media_type=tv schema_version=2", m)
 	}
 	if m.Scanner.PluginID != "base-scanner" || m.Scanner.CapabilityID != "default" {
 		t.Fatalf("scanner binding = %+v, want base-scanner/default", m.Scanner)
+	}
+	want := []struct {
+		plugin   string
+		priority int
+	}{
+		{"tv-parser", 1},
+		{"kinopoisk", 2},
+		{"tmdb", 3},
+		{"frame-grabber", 4},
+	}
+	if len(m.MetadataSources) != len(want) {
+		t.Fatalf("MetadataSources len = %d, want %d: %+v", len(m.MetadataSources), len(want), m.MetadataSources)
+	}
+	for i, w := range want {
+		if m.MetadataSources[i].PluginID != w.plugin || m.MetadataSources[i].Priority != w.priority {
+			t.Fatalf("MetadataSources[%d] = %+v, want %s@%d", i, m.MetadataSources[i], w.plugin, w.priority)
+		}
 	}
 	var opts struct {
 		FilenameFormat string `json:"filename_format"`
@@ -55,6 +74,49 @@ func TestOpen_TVSeeded(t *testing.T) {
 	}
 	if opts.FilenameFormat != "SxxExx" {
 		t.Fatalf("options.filename_format = %q, want SxxExx", opts.FilenameFormat)
+	}
+}
+
+// TestOpen_TVSeedUpgradesV1Row covers the D-7 migration path: a store seeded
+// with the v1 tv config (no frame-grabber) is promoted to v2 on Open — the
+// guarded UPDATE runs because INSERT OR IGNORE never rewrites an existing
+// row — and a second Open is a no-op (idempotent, same JSON, still v2).
+func TestOpen_TVSeedUpgradesV1Row(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// The v1 shape: schema_version 1, the chain WITHOUT frame-grabber.
+	v1 := strings.Replace(strings.Replace(tvConfigJSON,
+		`"schema_version": 2,`, `"schema_version": 1,`, 1),
+		`,\n    {\n      "plugin_id": "frame-grabber", "capability_id": "default",\n      "priority": 4, "enabled": true,\n      "display_fields": ["thumbnail", "grabbed_at"],\n      "options": {}\n    }`, "", 1)
+	if _, err := s.DB().ExecContext(ctx, seedModulesSQL,
+		"tv", "tv", v1, 1, 1, seedCreatedAt, seedCreatedAt); err != nil {
+		t.Fatalf("seed v1: %v", err)
+	}
+
+	r, err := Open(ctx, s)
+	if err != nil {
+		t.Fatalf("module.Open: %v", err)
+	}
+	m, err := r.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv): %v", err)
+	}
+	if m.SchemaVersion != 2 || len(m.MetadataSources) != 4 ||
+		m.MetadataSources[3].PluginID != "frame-grabber" {
+		t.Fatalf("after upgrade: schema=%d chain=%+v, want v2 with frame-grabber last", m.SchemaVersion, m.MetadataSources)
+	}
+	// The row itself must be v2 on disk (a re-Open reads it back unchanged).
+	var ver int
+	if err := s.DB().QueryRowContext(ctx, `SELECT schema_version FROM modules WHERE id = 'tv'`).Scan(&ver); err != nil || ver != 2 {
+		t.Fatalf("stored schema_version = %d (err=%v), want 2", ver, err)
+	}
+	if _, err := Open(ctx, s); err != nil {
+		t.Fatalf("second Open: %v", err)
 	}
 }
 

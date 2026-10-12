@@ -28,6 +28,14 @@ const seedModulesSQL = `INSERT OR IGNORE INTO modules
   (id, media_type, config_json, schema_version, enabled, created_at, updated_at)
   VALUES (?, ?, ?, ?, ?, ?, ?)`
 
+// upgradeTVConfigSQL promotes an existing tv row from config v1 to v2
+// (continue-nextup-media D-7): INSERT OR IGNORE never rewrites an existing
+// row, so the frame-grabber binding ships as a schema-guarded UPDATE —
+// idempotent, a no-op on re-runs and on fresh v2 inserts.
+const upgradeTVConfigSQL = `UPDATE modules
+  SET config_json = ?, schema_version = 2, updated_at = ?
+  WHERE id = 'tv' AND schema_version < 2`
+
 // listModulesSQL reads the enabled modules in id order so List is deterministic
 // without a Go-side sort (which would need an unallowed import).
 const listModulesSQL = `SELECT id, media_type, config_json, schema_version
@@ -37,10 +45,14 @@ const listModulesSQL = `SELECT id, media_type, config_json, schema_version
 // metadata_sources chain is now modeled into Module.MetadataSources: tv-parser
 // (priority 1) is the local parser that runs in Phase A; kinopoisk (2) and
 // tmdb (3) are the designed external enrichers, soft-failed in Phase A because
-// their plugins are not loaded (AC-6). document_schema is omitted because
-// document validation is a deferred feature and module does not read it. The
-// scanner binding is what scan resolves via Get("tv"). display_name carries
-// Russian first-class (arch §1.2). tv-parser is a local parser: no auth_mode.
+// their plugins are not loaded (AC-6). Schema v2 (continue-nextup-media D-7)
+// binds frame-grabber (4) after the unloaded slots — a local plugin, so film
+// documents gain a thumbnail namespace like serial episodes already have
+// (priority 4 keeps the seeded kinopoisk/tmdb numbering stable).
+// document_schema is omitted because document validation is a deferred
+// feature and module does not read it. The scanner binding is what scan
+// resolves via Get("tv"). display_name carries Russian first-class
+// (arch §1.2). tv-parser and frame-grabber are local: no auth_mode.
 // Presentation declarations are CONFIG, not code (element-pages D-1, AC-4):
 // display_fields per binding is the footer render order, identity_fields per
 // module is the mandatory identity block — both media-type literals live only
@@ -48,7 +60,7 @@ const listModulesSQL = `SELECT id, media_type, config_json, schema_version
 // their pill only.
 const tvConfigJSON = `{
   "id": "tv",
-  "schema_version": 1,
+  "schema_version": 2,
   "display_name": {"ru": "Сериалы", "en": "TV Series"},
   "media_type": "tv",
   "identity_fields": ["title", "year"],
@@ -78,6 +90,12 @@ const tvConfigJSON = `{
       "plugin_id": "tmdb", "capability_id": "default",
       "priority": 3, "enabled": true, "auth_mode": "SERVER",
       "options": {"language": "en-US", "include_image_types": ["poster", "backdrop", "logo"]}
+    },
+    {
+      "plugin_id": "frame-grabber", "capability_id": "default",
+      "priority": 4, "enabled": true,
+      "display_fields": ["thumbnail", "grabbed_at"],
+      "options": {}
     }
   ],
   "display": {
@@ -227,9 +245,15 @@ type MetadataSourceBinding struct {
 func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	db := s.DB()
 	if _, err := db.ExecContext(ctx, seedModulesSQL,
-		"tv", "tv", tvConfigJSON, 1, 1, seedCreatedAt, seedCreatedAt,
+		"tv", "tv", tvConfigJSON, 2, 1, seedCreatedAt, seedCreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("module: seed: %w", err)
+	}
+	// v1→v2 promotion for stores seeded before the frame-grabber binding
+	// existed (D-7): the INSERT OR IGNORE above is a no-op on them, this
+	// UPDATE is the actual migration. Same params, deterministic timestamp.
+	if _, err := db.ExecContext(ctx, upgradeTVConfigSQL, tvConfigJSON, seedCreatedAt); err != nil {
+		return nil, fmt.Errorf("module: upgrade tv v2: %w", err)
 	}
 	// Second idempotent seed: the image module (base-scanner + image-enricher).
 	// modules.media_type UNIQUE accepts "image" (distinct from "tv"); INSERT OR

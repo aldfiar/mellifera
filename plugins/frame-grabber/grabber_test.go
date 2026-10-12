@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -250,5 +251,142 @@ func TestThumbPathScheme(t *testing.T) {
 	// Distinct identities never collide; non-ASCII hashes over raw UTF-8.
 	if thumbPath("/data", "Шоу", "Шоу/e1.mkv") == thumbPath("/data", "Show", "Show/e1.mkv") {
 		t.Fatalf("distinct non-ASCII identities collided")
+	}
+}
+
+// TestResolveSeek pins the seek policy (continue-nextup-media D-4/D-5): the
+// enrich-time default is min(300s, 50% of a positive probe duration), an
+// explicit seek_seconds (the stop-position re-grab) replaces the default,
+// and the duration clamp still applies to the override so a position past
+// EOF lands on a real frame. Non-positive overrides never widen the seek.
+func TestResolveSeek(t *testing.T) {
+	cases := []struct {
+		name     string
+		def      time.Duration
+		query    map[string]any
+		want     time.Duration
+		wantClamp bool
+	}{
+		{
+			name: "default below the half-duration clamp",
+			def:  defaultSeek,
+			query: map[string]any{
+				"probe_duration_seconds": 1450.0, // 24-min episode: clamp = 725s
+			},
+			want: 300 * time.Second,
+		},
+		{
+			name: "short file clamps to half its duration",
+			def:  defaultSeek,
+			query: map[string]any{
+				"probe_duration_seconds": 180.0, // 3-min short: clamp = 90s
+			},
+			want: 90 * time.Second,
+		},
+		{
+			name: "stop-position override replaces the default",
+			def:  defaultSeek,
+			query: map[string]any{
+				"probe_duration_seconds": 1800.0, // clamp = 900s > 742s: no pull-back
+				"seek_seconds":           742.0,
+			},
+			want: 742 * time.Second,
+		},
+		{
+			name: "override past the clamp is pulled back (95% stop on a short file)",
+			def:  defaultSeek,
+			query: map[string]any{
+				"probe_duration_seconds": 180.0,
+				"seek_seconds":           175.0, // clamp = 90s
+			},
+			want: 90 * time.Second,
+		},
+		{
+			name: "non-positive override ignored",
+			def:  120 * time.Second,
+			query: map[string]any{
+				"seek_seconds": -5.0,
+			},
+			want: 120 * time.Second,
+		},
+		{
+			name: "no probe duration leaves the seek unclamped",
+			def:  defaultSeek,
+			query: map[string]any{
+				"seek_seconds": 742.0,
+			},
+			want: 742 * time.Second,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := structpb.NewStruct(tc.query)
+			if err != nil {
+				t.Fatalf("query struct: %v", err)
+			}
+			if got := resolveSeek(tc.def, st.GetFields()); got != tc.want {
+				t.Fatalf("resolveSeek = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRegrabOverwritesStopFrame is the stop-frame contract end to end
+// (continue-nextup-media D-1): two grabs of the same fixture at different
+// seek_seconds write the SAME deterministic path, and the bytes change —
+// the file the thumb fact points at now shows the later position. Skips
+// without a working ffmpeg (fixture coverage already skipped above).
+func TestRegrabOverwritesStopFrame(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH; frame-grab degrades to the no_data soft-fail")
+	}
+	dir := t.TempDir()
+	video := filepath.Join(dir, "Show.S01E02.mkv")
+	gen := exec.Command("ffmpeg",
+		"-f", "lavfi", "-i", "testsrc=duration=6:size=64x64:rate=10",
+		"-pix_fmt", "yuv420p", "-y", video)
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Skipf("ffmpeg fixture generation failed: %v: %s", err, out)
+	}
+
+	g := newGrabber(t.TempDir())
+	// Enrich-time grab (default seek clamps to half of 6s = 3s).
+	res, err := g.Convert(context.Background(), &metadatav1.ConvertRequest{
+		Query: episodeQuery(t, video, "Show", "Show/Show.S01E02.mkv", 6),
+	})
+	if err != nil || len(res.GetWarnings()) > 0 {
+		t.Fatalf("initial Convert: err=%v warnings=%v", err, res.GetWarnings())
+	}
+	first := res.GetMetadata().AsMap()["thumbnail_path"].(string)
+	before, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatalf("read first thumb: %v", err)
+	}
+
+	// Stop-position re-grab: seek_seconds well inside the file.
+	st := queryStruct(t, map[string]any{
+		"absolute_path":        video,
+		"relative_path":        "Show/Show.S01E02.mkv",
+		"series_relative_path": "Show",
+		"probe_duration_seconds": 6.0,
+		"seek_seconds":          1.0,
+	})
+	res, err = g.Convert(context.Background(), &metadatav1.ConvertRequest{Query: st})
+	if err != nil || len(res.GetWarnings()) > 0 {
+		t.Fatalf("re-grab Convert: err=%v warnings=%v", err, res.GetWarnings())
+	}
+	second := res.GetMetadata().AsMap()["thumbnail_path"].(string)
+	if second != first {
+		t.Fatalf("re-grab path = %q, want the same deterministic path %q", second, first)
+	}
+	after, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatalf("read re-grab thumb: %v", err)
+	}
+	if len(after) < 2 || after[0] != 0xFF || after[1] != 0xD8 {
+		t.Fatalf("re-grab thumb is not a JPEG (magic bytes): %d bytes", len(after))
+	}
+	if bytes.Equal(before, after) {
+		t.Fatalf("re-grab at seek_seconds=1 produced byte-identical output to the 3s grab; want a different frame")
 	}
 }

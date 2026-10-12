@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-12
+goal: Home Continue/Next-up cards show real names and frame-accurate
+  thumbnails (stop frame for in-progress items, ~5-minute frame for unstarted)
+skip_specs: true

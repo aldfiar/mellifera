@@ -13,13 +13,17 @@ import (
 	"time"
 )
 
-// The grab knobs (serials-library D3): seek min(60s, 10% of the probe-reported
-// duration) so short files still yield a frame; a bounded per-grab deadline
-// (mirrors the ffprobe/exiftool probeTimeout pattern).
+// The grab knobs (serials-library D3; continue-nextup-media D-5): seek
+// min(300s, 50% of the probe-reported duration) — the "about 5 first
+// minutes" preview still for anything ≥10 min, while short files still
+// yield a frame (half their duration, never the tail); a bounded per-grab
+// deadline (mirrors the ffprobe/exiftool probeTimeout pattern). A Convert
+// query may carry an explicit seek_seconds (the stop-position re-grab),
+// which replaces the default and keeps the same duration clamp.
 const (
-	defaultSeek          = 60 * time.Second
+	defaultSeek          = 300 * time.Second
 	grabTimeout          = 30 * time.Second
-	seekDurationFraction = 0.1
+	seekDurationFraction = 0.5
 )
 
 // grabFrame runs `ffmpeg -nostdin -ss <seek> -i <abs> -frames:v 1 -q:v 2 -y

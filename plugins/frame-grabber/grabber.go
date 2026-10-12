@@ -28,17 +28,18 @@ const defaultDataDir = "./data"
 
 // grabberImpl is the server-side MetadataSource capability for frame-grabber
 // (serials-library D3). STATELESS between RPCs per document. Match self-selects
-// EPISODE documents carrying a video absolute path (a serial-record document —
+// video documents carrying an absolute path (a serial-record document —
 // the series level — never applies); Convert invokes the system ffmpeg
 // subprocess (os/exec arg-slice ONLY, never a shell) under a bounded timeout,
-// seeking min(default seek, a fraction of the probe-reported duration), and
-// writes a single JPEG frame under <dataDir>/thumbs; Merge writes ONLY
-// sources["frame-grabber"] — the thumbnail PATH, never a BLOB. The core stamps
-// _provenance/_view authoritatively (INV-namespace-write).
+// seeking an explicit query seek_seconds when present (the stop-position
+// re-grab), else min(default seek, a fraction of the probe-reported
+// duration), and writes a single JPEG frame under <dataDir>/thumbs; Merge
+// writes ONLY sources["frame-grabber"] — the thumbnail PATH, never a BLOB.
+// The core stamps _provenance/_view authoritatively (INV-namespace-write).
 type grabberImpl struct {
 	ffmpegPath  string        // ffmpeg binary to invoke (default "ffmpeg")
 	dataDir     string        // thumbs root (MELLIFERA_DATA_DIR semantics)
-	seek        time.Duration // default seek into the file (default 60s)
+	seek        time.Duration // default seek into the file (default 300s)
 	grabTimeout time.Duration // per-grab ffmpeg deadline (default 30s)
 }
 
@@ -113,12 +114,7 @@ func (g *grabberImpl) Convert(ctx context.Context, req *metadatav1.ConvertReques
 	if seriesRel == "" {
 		seriesRel = rel // file-backed episodes carry their own path as the series identity
 	}
-	seek := g.seek
-	if d := q["probe_duration_seconds"].GetNumberValue(); d > 0 {
-		if clamped := time.Duration(d * float64(time.Second) * seekDurationFraction); clamped < seek {
-			seek = clamped
-		}
-	}
+	seek := resolveSeek(g.seek, q)
 	out := thumbPath(g.dataDir, seriesRel, rel)
 	warning := grabFrame(ctx, g.ffmpegPath, abs, out, seek, g.grabTimeout)
 	// The parent context cancelling mid-grab is the ONLY hard failure; every
@@ -161,6 +157,25 @@ func (*grabberImpl) Merge(_ context.Context, req *metadatav1.MergeRequest) (*met
 		Document: &commonv1.MediaDocument{Data: data},
 		View:     view,
 	}, nil
+}
+
+// resolveSeek derives the grab offset from the query (continue-nextup-media
+// D-4/D-5): an explicit seek_seconds (the stop-position re-grab) replaces the
+// configured default; a positive probe duration then clamps the result to
+// seekDurationFraction of it — an override past EOF still lands on a real
+// frame, and a short file still yields one at all. A non-positive or absent
+// override never widens the seek.
+func resolveSeek(def time.Duration, q map[string]*structpb.Value) time.Duration {
+	seek := def
+	if v := q["seek_seconds"].GetNumberValue(); v > 0 {
+		seek = time.Duration(v * float64(time.Second))
+	}
+	if d := q["probe_duration_seconds"].GetNumberValue(); d > 0 {
+		if clamped := time.Duration(d * float64(time.Second) * seekDurationFraction); clamped < seek {
+			seek = clamped
+		}
+	}
+	return seek
 }
 
 // thumbPath mints the deterministic thumbnail location per the design's path
