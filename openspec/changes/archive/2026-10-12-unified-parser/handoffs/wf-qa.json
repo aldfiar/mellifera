@@ -1,0 +1,11 @@
+{
+  "status": "done",
+  "summary": "G4 done: mirror corpus + joint e2e; ticks ea1eb2c2f359f9a5+16778b8ef0faece4; check OK 9/0 gaps=0",
+  "next": "GATE 2 review",
+  "findings": [
+    "qa adversarial #4 REGRESSION: token-only-stem title — tv-parser SxxE01.mkv now titles the shared fallback token echo (S01E01) instead of the parent dir; flat layout Show/S01E01.mkv regressed from title Show to S01E01; pinned in TestMatchAdversarialEdges (plugins/tv-parser/parser_test.go)",
+    "qa adversarial #2 WIDER THAN DISCLOSED: dash-form multi-episode Show.S01E01-E02.mkv title regressed Show -> Show -E (shared episodeTitle cuts trailing 02, leaves -E) AND keeps the pre-existing bogus release_group E02; plus the NEW dash-joined edge Show-S01E02.mkv fabricates release_group S01E02 (old window searched only after the token); pinned in TestMatchAdversarialEdges",
+    "qa adversarial #1+#3 ACCEPTED: episode namespace exact-count 3 keys and bracket-only sidecar episode-link are both spec-mandated (D-2 emission honesty; sidecar grammar widening)"
+  ],
+  "updated_at": "2026-10-12T11:00:39.733873Z"
+}

@@ -1,0 +1,11 @@
+{
+  "status": "done",
+  "summary": "GATE 2 PASS-with-FLAGs: 8/8 requirements PASS (probes 9/9 re-run green, wf check rc=0, 22/22 probe sha16 integrity verified, both owned behavior changes delivered: 720i vocabulary + bracket-anywhere S2E1; e2e carries the live-defect shape); FLAG-1 tv dash-form title edges + FLAG-2 token-only-stem parentDir preemption adjudicated cosmetic/adapter-local -> backlog; standards clean (sizes, brand-neutral, gofmt/vet, INV posture)",
+  "next": "human archive approval",
+  "findings": [
+    "FLAG-1 (tv-parser, TestMatchAdversarialEdges): Show.S01E01-E02.mkv title regressed Show -> Show -E (shared episodeTitle cuts trailing 02, leaves -E residue, pkg/releasename/parse.go:291-294) and Show-S01E02.mkv fabricates release_group S01E02 (group window now end-anchored whole-stem, tvparse.go:67, was post-token); cosmetic, no season/episode corruption; backlog row with FLAG-2",
+    "FLAG-2 (tv-parser): Show/S01E01.mkv title regressed Show -> S01E01 (shared token-echo fallback parse.go:298-301 pre-empts tvparse.go parentDir fallback); flat-layout title garbage at confidence 1.0; adapter-local fix known; backlog row with FLAG-1",
+    "P3 nits: plugins/serial-parser/releasetags.go is a 12-line pointer comment (acceptable seam marker, delete on next plugin touch); pkg parse_test.go tc.backing field unused (_ = at :77); pre-existing stale Match doc comment parser.go:45 says SxxExx-only apply (widened in serial-followups, untouched by this diff)"
+  ],
+  "updated_at": "2026-10-12T11:16:20.042486Z"
+}

@@ -1,0 +1,6 @@
+{
+  "status": "done",
+  "summary": "unified-parser authored: pkg/releasename + adapters + season_episode labels; 2 owned behavior changes (720i, pure-number bracket anywhere); validate --strict green, change check OK",
+  "next": "session validates + GATE 1",
+  "updated_at": "2026-10-12T09:03:21.133269Z"
+}

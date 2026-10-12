@@ -1,0 +1,6 @@
+{
+  "status": "done",
+  "summary": "G2 done (adapters serial/tv/scanner): ticks a5362e81143f9a52+7646c4fa3a9bee99+ce462e11edef346d+ebe5aa0c28353849 after one reopen+retick cycle (stale fp; 1.1/1.2 re-ticked). serial-parser emission rewired (TestNamespaceEmission; TestEpisodeParse count row updated to season+episode+resolution per D-2); tv-parser delegates to releasename, dash-rule group residue cut from title adapter-locally; scanner sidecar grammar dissolved into EpisodeNumberOf both sides, bracket-numbered sidecar now episode-linked (spec-owned sidecar grammar widening)",
+  "next": "G4 qa",
+  "updated_at": "2026-10-12T10:31:50.625272Z"
+}

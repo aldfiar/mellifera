@@ -115,7 +115,10 @@ first, falling back to a bare episode number when the sidecar filename has no
 SxxExx token; the episode index the fallback matches against SHALL recognize the
 same episode-name shapes the parser recognizes (SxxExx and the bare-number
 forms), so an episode named without SxxExx (e.g. `Show II/[01] Episode.mkv`)
-stays sidecar-matchable by its number; the association SHALL be stamped into that episode's scanned facts
+stays sidecar-matchable by its number; the sidecar grammar SHALL be the
+shared release-name grammar — a pure-number bracket anywhere in a sidecar
+stem is a number candidate, and the resolution vocabulary (720i included)
+matches the parser's exactly; the association SHALL be stamped into that episode's scanned facts
 (relative sidecar path, kind, language, and match basis). The sidecar language
 SHALL come from the containing folder name (case-insensitive, e.g. `Eng`, `Rus`)
 or a filename language tag, and SHALL be empty when neither is present. A sidecar
@@ -166,6 +169,18 @@ go test ./plugins/serial-scanner -run TestSerialLevelOST
 - **THEN** the sidecar associates to that episode via the bare-number fallback basis, exactly as it would for an SxxExx-named episode
 
 <!-- wf:probe id=b5d78250688f037a -->
+```bash
+set -e
+go test ./plugins/serial-scanner -run TestBareNamedEpisodeSidecar
+```
+<!-- /wf:probe -->
+
+#### Scenario: A sidecar number bracket before decoration still associates
+
+- **WHEN** a serial directory holds the episode `Show_II_[01]_[HEVC].mkv` beside the mirrored sidecar `Show_II_[01]_[HEVC].ass`
+- **THEN** the sidecar associates to the episode via the bare-number basis — the shared grammar reads the number bracket through the trailing decoration in both binaries
+
+<!-- wf:probe id=ebe5aa0c28353849 -->
 ```bash
 set -e
 go test ./plugins/serial-scanner -run TestBareNamedEpisodeSidecar
@@ -622,15 +637,22 @@ echo "$out" | grep -q "^--- PASS: TestSerialWatchFlowJointE2E"
 
 ### Requirement: Name-driven season, episode, and title inference
 
-The serial parser grammar SHALL infer season, episode number, and display
-title from raw serial directory and file names. For a SERIES (a serial
+The serial parser grammar SHALL be the shared release-name grammar (the
+release-name-parsing capability): one role-keyed vocabulary and one
+start-to-end pass shared with tv-parser and the serial scanner, inferring
+season, episode number, and display title from raw serial directory and file
+names. For a SERIES (a serial
 record's raw directory name, or a file-backed serial's raw file name) the
 display title SHALL have stripped from it, in order: bracketed `[...]` and
 `(...)` segments; a season marker — `Nth Season`, a standalone `S<N>` that
 is not an `S<N>E<N>` token, a trailing `TV <N>`, or a trailing
 roman-numeral sequel suffix (II–IX, whole final token after a separator);
 whole-token release-tag tokens (resolution, source, and language tags,
-case-insensitive); a trailing single CamelCase word after a separator (a
+case-insensitive — the resolution vocabulary including `720i`, whose
+whole-token title stripping is a behavior change owned here: a file-backed
+`Title 720i.mkv` parses to title "Title", and an episode
+`Show/Title 720i.mkv` stays a numberless skipped stage where it previously
+parsed as episode 720); a trailing single CamelCase word after a separator (a
 release-group tag, e.g. `- AniLiberty`); and, for a file-backed name, the
 trailing video extension — followed by the shipped separator
 normalization (non-ASCII preserved). The series season SHALL be the
@@ -639,7 +661,11 @@ explicit marker's number when one is present and SHALL be 1 otherwise
 name is not a release tag and SHALL stay in the title. For an EPISODE the
 episode number SHALL come from the filename stem's first of: an SxxExx
 token (with its optional SxxExxEzz end); a `<N> серия` marker; a
-pure-number `[NN]`/`(NN)` bracket at the stem's start or end; the trailing
+pure-number `[NN]`/`(NN)` bracket anywhere in the stem, the rightmost one
+winning so a trailing release-decoration bracket never displaces the episode
+bracket (`Show_Name_II_[01]_[HEVC].mkv` parses to episode 1 — a behavior
+change owned here, the live defect where the bracket had to sit at the
+stem's edge); the trailing
 standalone 1–3 digit number after bracketed segments and resolution tokens
 are stripped (last number wins, the sidecar bare-number convention). Every
 bare extraction form SHALL treat an episode number below 1 as no number —
@@ -722,6 +748,30 @@ go test ./plugins/serial-parser
 ```
 <!-- /wf:probe -->
 
+#### Scenario: A pure-number bracket before trailing decoration stays the episode number
+
+- **WHEN** an episode stem carries a pure-number bracket followed by a further bracketed release tag (`Show_Name_II_[01]_[HEVC].mkv` — the live defect shape whose whole series previously skipped as "no episode number")
+- **THEN** the file parses to episode 1 from the `[01]` bracket with season 2 from the trailing roman sequel — the decoration bracket never displaces the episode bracket, and the start-bracket and below-1 gate rows keep their values beside it
+
+<!-- wf:probe id=a5362e81143f9a52 -->
+```bash
+set -e
+go test ./plugins/serial-parser -run TestEpisodeNameGrammar
+```
+<!-- /wf:probe -->
+
+#### Scenario: 720i is release decoration, not an episode number
+
+- **WHEN** names carry a whole-token `720i` (the episode `Show/Title 720i.mkv`, the file-backed serial `Title 720i.mkv`)
+- **THEN** the episode stays a numberless skipped parser stage (previously episode-720) and the file-backed serial parses to title "Title" with the 720i token stripped — the same reading the scanner already applied, closing the cross-binary divergence
+
+<!-- wf:probe id=ac55132080b9c765 -->
+```bash
+set -e
+go test ./plugins/serial-parser -run 'TestSeriesNameGrammar|TestEpisodeNameGrammar'
+```
+<!-- /wf:probe -->
+
 #### Scenario: The new naming shapes pass the joint e2e
 
 - **WHEN** the serial joint e2e runs over the real subprocess graph with its naming-shape expectations re-derived (stripped titles, season present on every row including the defaulted file-backed row)
@@ -733,5 +783,27 @@ set -e
 out=$(go test ./internal/itest -run 'TestQASerial_JointLibraryE2E' -count=1 -v 2>&1)
 echo "$out" | grep -q "^=== RUN   TestQASerial_JointLibraryE2E$"
 echo "$out" | grep -q "^--- PASS: TestQASerial_JointLibraryE2E"
+```
+<!-- /wf:probe -->
+
+### Requirement: Structured release-field emission
+
+The serial parser SHALL emit the release fields it extracts — resolution,
+source, codec, languages, and year, when a name carries them — into
+`sources.serial-parser` beside the existing fields, for series documents and
+episode documents alike. Fields with no matching token SHALL be omitted,
+never zeroed; the existing keys, the skip semantics, and the confidence
+semantics SHALL be unchanged; and no namespace other than
+`sources.serial-parser` SHALL be touched.
+
+#### Scenario: Episode and series namespaces gain the release fields
+
+- **WHEN** a series directory carrying release tags (`From.S02.WEBDL.720p.Rus.Eng`) and an episode file carrying codec and source tags (`Show II - 01 [WEBRip 1080p HEVC].mkv`) enrich through the parser
+- **THEN** both documents' `sources.serial-parser` carry the structured release fields beside the existing title/season/episode keys — the resolution and languages on the series, the resolution and codec on the episode — while a name with no release tags emits no new keys and the skip and confidence behavior is unchanged
+
+<!-- wf:probe id=7646c4fa3a9bee99 -->
+```bash
+set -e
+go test ./plugins/serial-parser -run TestNamespaceEmission
 ```
 <!-- /wf:probe -->

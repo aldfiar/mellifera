@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-12
+goal: One base-level parser extracts common release-name elements for films and
+  serials; serial-parser and tv-parser become thin adapters over it; the shared
+  vocabulary closes the cross-binary divergence
