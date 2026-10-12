@@ -81,10 +81,17 @@ From the plugin-pipeline outline (flagged, not built):
 
 | Item | Origin | Note |
 |---|---|---|
-| Cross-binary release-tag vocabulary sync | serial / serial-followups | The parser's `resolutionRe` is now derived from `releaseTagTokens["resolution"]` (serial-followups box 2.1), but `plugins/serial-scanner` keeps its own copy (`sidecar.go:60`) still carrying `720[pi]`. Concrete divergence: `Title 720i.mkv` is numberless to the scanner (copy strips 720i) but episode-720 to the parser (table has only "720p"; `bareNumberRe` last-match takes the 720). Decision space: `720i` enters the table in BOTH binaries (behavior expansion — whole-token title stripping gains 720i), or the bare-number reducer learns suffix discrimination. Adjudicated PASS-with-FLAG at the serial-followups gate (rare interlaced form, no fixture). The unified-parser brief below is the natural long-term resolution (one shared vocabulary + reducer). |
+| Cross-binary release-tag vocabulary sync | serial / serial-followups | **CLOSED 2026-10-12 by unified-parser**: the serial-scanner's replicated grammar dissolved into `pkg/releasename` (one role-keyed vocabulary + reducer); `720i` is decoration in the shared table, pinned both ways (episode-less + film-as-resolution) in film-name-parsing. |
 | `doc.go` for plugins/serial-parser, plugins/frame-grabber | serial GATE 1/GATE 2 | All sibling plugins carry one; these two don't. Convention drift noted at serial's gates, deliberately out of scope there. |
 | tv-parser title edges around the shared Result | unified-parser GATE 2 (2 FLAGs) | Both adapter-local (~10 lines), title/group-field cosmetic only (season/episode/apply/confidence correct; pinned as characterization tests in `TestMatchAdversarialEdges`). (a) Dash forms: `Show.S01E01-E02.mkv` → title "Show -E" (shared episodeTitle cuts trailing "02" but not the dash-letter prefix); `Show-S01E02.mkv` fabricates release_group "S01E02" (group window now end-anchored over the whole stem) — restore the post-token window + cut "-E" residue. (b) Token-only stems: `Show/S01E01.mkv` → title "S01E01" instead of "Show" (the shared token-echo fallback pre-empts the parentDir fallback at tvparse.go; flat layouts are common) — treat the token echo as titleless and restore parent-dir. |
 | serial-parser/releasetags.go pointer comment + stale parser.go:45 doc comment | unified-parser GATE 2 (P3) | releasetags.go is now a 12-line seam-marker comment (delete on the plugin's next touch); parser.go:45 says "applies iff SxxExx token" — stale since serial-followups widened the rule. Unused `tc.backing` field in pkg/releasename/parse_test.go. All non-blocking. |
+
+## film-name-parsing follow-ups (GATE 2 notes, 2026-10-12)
+
+| Item | Origin | Note |
+|---|---|---|
+| Split pkg/releasename title pipeline into its own file | film-name-parsing GATE 2 (N2) | parse.go hit 450 lines (500 hard limit, 400 target) after the dash-form rule + grammar gate; the next grammar addition should move the title pipeline out. Related N1 (no action): lastConsumedSpanEnd re-scans all tag patterns per parse — micro-inefficiency only. |
+| Pin the ≥2-letter all-caps-acronym floor | film-name-parsing GATE 2 (N3) | `isAllCapsAcronym`'s ≥2 floor is load-bearing (keeps `X-Files`-shaped titles whole on the dash-form rule) but pinned by no explicit row — a `Some.Movie.1080p.X-Files.mkv` keeps-whole row in `TestFilmNameParse` would pin it. Code comment documents the rationale; purely a test suggestion. |
 
 ## Enrichment restart sweep is vacuous on fresh boot (found in the wild, 2026-10-12)
 
