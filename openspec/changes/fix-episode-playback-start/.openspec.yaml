@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-11
+goal: Restore same-origin media playback in the documented dev topology (Vite
+  :5173 + Go :8080)
+skip_specs: true

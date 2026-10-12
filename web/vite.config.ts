@@ -10,8 +10,8 @@ import path from "node:path";
 // Embed paths cannot escape the internal/web package, so the Vite build is
 // emitted there directly; /web/dist/ is gitignored and unused.
 //
-// server.proxy forwards the API + OpenAPI/Swagger paths to the Go server at
-// :8080 in dev (same-origin SPA<->API; no CORS). Run with
+// server.proxy forwards the API, media playback, and OpenAPI/Swagger paths to
+// the Go server at :8080 in dev (same-origin SPA<->API; no CORS). Run with
 // `MELLIFERA_WEB_DEV=true` on the Go side so its no-cache headers don't mask
 // Vite hot-reload.
 export default defineConfig({
@@ -29,6 +29,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": "http://127.0.0.1:8080",
+      "/media": "http://127.0.0.1:8080",
       "/openapi.yaml": "http://127.0.0.1:8080",
       "/openapi.json": "http://127.0.0.1:8080",
       "/docs": "http://127.0.0.1:8080",

@@ -1,0 +1,6 @@
+{
+  "status": "done",
+  "summary": "Group 1 applied: added \"/media\": \"http://127.0.0.1:8080\" to web/vite.config.ts server.proxy (beside /api, matching style); refreshed the proxy comment line to include media playback. devproxy.test.ts untouched (byte-identical). Probe 1.1: failed pre-edit on the /media assertion, 2/2 passed post-edit. Probe 1.2: full vitest suite 12 files / 155 tests passed; npx tsc --noEmit clean. No ticks run, no tasks.md edits, no servers touched.",
+  "next": "Session: tick boxes 1.1 and 1.1's group at close (task-anchored probes hand-ticked per known wf 0.1.0 gap); user must restart the running Vite dev server for the config change to take effect.",
+  "updated_at": "2026-10-11T17:29:06.304598Z"
+}
