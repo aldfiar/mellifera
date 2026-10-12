@@ -81,5 +81,46 @@ From the plugin-pipeline outline (flagged, not built):
 
 | Item | Origin | Note |
 |---|---|---|
-| Cross-binary release-tag vocabulary sync | serial / serial-followups | The parser's `resolutionRe` is now derived from `releaseTagTokens["resolution"]` (serial-followups box 2.1), but `plugins/serial-scanner` keeps its own copy (`sidecar.go:60`) still carrying `720[pi]`. Concrete divergence: `Title 720i.mkv` is numberless to the scanner (copy strips 720i) but episode-720 to the parser (table has only "720p"; `bareNumberRe` last-match takes the 720). Decision space: `720i` enters the table in BOTH binaries (behavior expansion — whole-token title stripping gains 720i), or the bare-number reducer learns suffix discrimination. Adjudicated PASS-with-FLAG at the serial-followups gate (rare interlaced form, no fixture). |
+| Cross-binary release-tag vocabulary sync | serial / serial-followups | The parser's `resolutionRe` is now derived from `releaseTagTokens["resolution"]` (serial-followups box 2.1), but `plugins/serial-scanner` keeps its own copy (`sidecar.go:60`) still carrying `720[pi]`. Concrete divergence: `Title 720i.mkv` is numberless to the scanner (copy strips 720i) but episode-720 to the parser (table has only "720p"; `bareNumberRe` last-match takes the 720). Decision space: `720i` enters the table in BOTH binaries (behavior expansion — whole-token title stripping gains 720i), or the bare-number reducer learns suffix discrimination. Adjudicated PASS-with-FLAG at the serial-followups gate (rare interlaced form, no fixture). The unified-parser brief below is the natural long-term resolution (one shared vocabulary + reducer). |
 | `doc.go` for plugins/serial-parser, plugins/frame-grabber | serial GATE 1/GATE 2 | All sibling plugins carry one; these two don't. Convention drift noted at serial's gates, deliberately out of scope there. |
+
+## Enrichment restart sweep is vacuous on fresh boot (found in the wild, 2026-10-12)
+
+User report: after the serial-parser upgrade + `make dev` restart, ZERO of 149
+library-2 items re-enriched — every page still showed the previous day's
+old-grammar data (`Black_Clover_II_[01].mkv` carried a `serial-parser` stage
+`skipped` from before the grammar existed; no `sources["serial-parser"]`).
+
+- **Root cause**: `internal/enrich/queue.go` — `Queue.Start` derives only
+  `knownLibs()`, the in-memory registry populated exclusively by scan-time
+  `Notify`. A fresh process boots with an empty registry, so the boot sweep is
+  a no-op, and idempotent dev seeding (libraries already exist → no re-scan)
+  never fires Notify. Spec violation: async-enrichment
+  `spec.md` req "On every `Start`, the pool SHALL re-derive pending work" +
+  scenario "Restart re-derives pending, skips cooling pairs" — the shipped
+  probes never caught it because every probe environment scans around boot.
+- **Fix direction**: at `Start`, populate known libs from the store
+  (`ListLibraries`) — or derive all libraries when the in-memory registry is
+  empty. Small /fix change, spec-scenario-backed.
+- **Interim operator remedy**: `POST /api/v1/libraries/{id}/scan` (any re-scan
+  fires Notify; derivation is predicate-driven — namespace-absent pairs
+  re-enrich regardless of file churn).
+
+## Unified release-name parser (user direction, 2026-10-12)
+
+One shared parser — base/core level, NOT inside any resource plugin (D-7:
+resource plugins stay separate git projects) — that walks a filename (and the
+series dir) start-to-end extracting the common elements: **title, season,
+episode, quality/resolution, source, codec, language**.
+
+- The role-keyed vocabulary (`plugins/serial-parser/releasetags.go`, serial
+  D-7) is the seed: today it only STRIPS tags to clean titles; the unified
+  parser also EMITS them as structured fields.
+- `serial-parser` and `tv-parser` become thin adapters over it (a film name is
+  the degenerate no-season case); the serial-scanner's own `resolutionRe` copy
+  dissolves into it (closes the cross-binary sync row above).
+- SPA labels ride on the parsed structure: season/episode presented as
+  "Season N · Episode M" (item subtitle / human-labeled parser footer) instead
+  of raw parser keys.
+- /build-ready — enters via a proposal (the arbitration rule for _view when a
+  film source and the parser both write title needs a design decision).
