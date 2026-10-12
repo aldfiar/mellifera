@@ -52,11 +52,13 @@ const (
 )
 
 // Expected serial-parser series titles, re-derived by hand from the shipped
-// grammar semantics (season token cut + separator normalization, non-ASCII
-// preserved). The Cyrillic one is the load-bearing verbatim assertion.
+// grammar semantics (season-marker cut, release-decoration stripping —
+// bracketed segments, whole-token release tags, the trailing group tag, a
+// file-backed extension — plus separator normalization, non-ASCII preserved).
+// The Cyrillic one is the load-bearing verbatim assertion.
 const (
-	qaSerialS04Title    = "Bleach (1080p) [C48E56C8]"
-	qaSerialRibbonTitle = "The Ribbon Hero [ONA] FulL mkv"
+	qaSerialBleachTitle = "Bleach"
+	qaSerialRibbonTitle = "The Ribbon Hero"
 	qaSerialCyrDir      = "Необычный адвокат У Ён У Extraordinary Attorney Woo.2022.S01"
 	qaSerialCyrTitle    = "Необычный адвокат У Ён У Extraordinary Attorney Woo 2022"
 )
@@ -266,15 +268,20 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 		for _, tc := range []struct {
 			series   qaSerialSeriesDTO
 			title    string
-			season   int // -1 = no season key expected
+			season   int // always expected: marker value, else 1 (the -1 = absent sentinel retired)
 			probes   bool
 			backing  string
 			sidecars int
 		}{
-			{qaSerialSeriesByRel(seriesA)[qaSerialDirS04], qaSerialS04Title, 4, false, "directory", 1},
-			{qaSerialSeriesByRel(seriesA)[qaSerialDirS05], qaSerialS04Title, 5, false, "directory", 0},
+			{qaSerialSeriesByRel(seriesA)[qaSerialDirS04], qaSerialBleachTitle, 4, false, "directory", 1},
+			{qaSerialSeriesByRel(seriesA)[qaSerialDirS05], qaSerialBleachTitle, 5, false, "directory", 0},
 			{seriesB[0], qaSerialCyrTitle, 1, false, "directory", 0},
-			{qaSerialSeriesByRel(seriesA)[qaSerialRibbonRel], qaSerialRibbonTitle, -1, true, "file", 0},
+			// The trailing-CamelCase group-tag strip applies after ANY separator
+			// (specs/serial-library/spec.md, "Name-driven … inference"): this
+			// file-backed row pins the underscore-separated shape end-to-end,
+			// alongside the plugin-space/dot/underscore rows in the parser's
+			// TestSeriesNameGrammar.
+			{qaSerialSeriesByRel(seriesA)[qaSerialRibbonRel], qaSerialRibbonTitle, 1, true, "file", 0},
 		} {
 			doc := parseAsyncDoc(t, qaSerialSeriesDocument(t, client, srv.baseURL, "qa-serial-admin-token", tc.series.ID))
 			// Namespace write invariant: ONLY serial-parser wrote to the series.
@@ -290,12 +297,9 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 			if got := asyncStr(ns, "title"); got != tc.title {
 				t.Errorf("series %q: parser title = %q, want %q (cleaned, non-ASCII preserved)", tc.series.RelativePath, got, tc.title)
 			}
-			season := asyncInt(ns, "season") // -1 = absent
-			if tc.season < 0 {
-				if season >= 0 {
-					t.Errorf("series %q: season = %d, want absent (no season token in the raw name)", tc.series.RelativePath, season)
-				}
-			} else if season != tc.season {
+			// D-2: the season is ALWAYS written (marker value, else 1) — the
+			// absent-season branch retired with the new grammar.
+			if season := asyncInt(ns, "season"); season != tc.season {
 				t.Errorf("series %q: season = %d, want %d", tc.series.RelativePath, season, tc.season)
 			}
 			// Core-stamped machinery reached the series level (D5: same rules
@@ -402,23 +406,18 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 		})
 	})
 
-	// CONTRACT MISMATCH (serials-library spec "Loose top-level videos become
-	// file-backed serials" / tasks 2.8 / design D2 rule 6): the spec requires
-	// the stray top-level video to ALSO persist as its file-backed serial's
-	// single probeable episode item. The shipped serial-scanner registers only
-	// the RECORD-view facts for the file's relative path
-	// (plugins/serial-scanner/walk.go emitFileBackedSerial), so the episode
-	// emission — which shares the path — re-identifies as a serial record and
-	// the core drains it as a second PutSeries instead of an episode item. This
-	// test asserts the SPEC and the failure below is the finding (evidence:
-	// plugins/serial-scanner/walk.go:267-289, scanner.go fileFactsFor,
-	// internal/scan/run.go isSerialRecord routing). Never bless the bug.
+	// Spec contract (serials-library "Loose top-level videos become file-backed
+	// serials"): the stray top-level video ALSO persists as its file-backed
+	// serial's single probeable episode item — the episode emission shares the
+	// record's path and drains as an episode ITEM, never a second series row.
+	// The CONTRACT MISMATCH once recorded here is closed (the subtest passes
+	// against the shipped scanner); it stays as the spec's pin.
 	t.Run("file_backed_serial_episode_item", func(t *testing.T) {
 		byRel := qaSerialSeriesByRel(seriesA)
 		ribbon := byRel[qaSerialRibbonRel]
 		episodes := qaSerialSeriesEpisodeRels(t, client, srv.baseURL, "qa-serial-admin-token", ribbon.ID)
 		if len(episodes) != 1 || episodes[qaSerialRibbonRel] == "" {
-			t.Errorf("file-backed serial %q episodes = %v, want exactly the file itself as its single probeable episode item (CONTRACT MISMATCH — finding reported)", qaSerialRibbonRel, qaSerialMapKeys(episodes))
+			t.Errorf("file-backed serial %q episodes = %v, want exactly the file itself as its single probeable episode item", qaSerialRibbonRel, qaSerialMapKeys(episodes))
 			return
 		}
 		it := qaSerialItemByRel(t, client, srv.baseURL, "qa-serial-admin-token", libA, qaSerialRibbonRel)

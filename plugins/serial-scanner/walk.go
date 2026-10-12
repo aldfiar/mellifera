@@ -197,7 +197,9 @@ func classifySerialDir(root, name string) *serialDirScan {
 // associateSidecars classifies a serial dir's sidecars into series-level facts
 // and per-episode facts (spec "Sidecar association"): SxxExx token in the
 // sidecar filename first (matching an episode with the same season+episode),
-// bare-number fallback when the sidecar has no SxxExx token, serial-level
+// bare-number fallback when the sidecar has no SxxExx token — matched against
+// an episode index built with episodeNumberOf, which recognizes the same
+// episode-name shapes the parser does (design.md D-4) — serial-level
 // otherwise — never dropped silently. Returned slices are indexed in step with
 // scan.episodes (the per-episode bucket) plus the series-level bucket.
 func associateSidecars(scan *serialDirScan) (seriesLevel []sidecarFact, perEpisode [][]sidecarFact) {
@@ -206,15 +208,16 @@ func associateSidecars(scan *serialDirScan) (seriesLevel []sidecarFact, perEpiso
 	byNumber := map[int][]int{} // episode indices by bare episode number
 	perEpisode = make([][]sidecarFact, len(scan.episodes))
 	for i, ep := range scan.episodes {
-		stem := fileStem(ep.rel)
-		if season, number, ok := seasonEpisodeOf(stem); ok {
-			byToken[epKey{season, number}] = i
-			byNumber[number] = append(byNumber[number], i)
-		} else if n := bareNumberOf(stem); n > 0 {
-			// An episode named without SxxExx (e.g. "ep1.mkv") is still
-			// matchable by its bare number.
-			byNumber[n] = append(byNumber[n], i)
+		season, number, sxxexx, ok := episodeNumberOf(fileStem(ep.rel))
+		if !ok {
+			continue // no episode number — unmatchable by any sidecar number
 		}
+		if sxxexx {
+			byToken[epKey{season, number}] = i
+		}
+		// Bare-named episodes (e.g. "[01] Episode.mkv", "ep1.mkv") are still
+		// matchable by their bare number.
+		byNumber[number] = append(byNumber[number], i)
 	}
 	for _, sc := range scan.sidecars {
 		stem := fileStem(sc.rel)

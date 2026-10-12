@@ -465,6 +465,57 @@ func TestBareNumberFallback(t *testing.T) {
 	}
 }
 
+// TestBareNamedEpisodeSidecar — probe b5d78250688f037a (box 2.1). Episodes
+// named without SxxExx — a pure-number [NN] bracket ("Show II/[01]
+// Episode.mkv") or a "<N> серия" marker — are indexed by the same number the
+// parser extracts (design.md D-4), so a numbered .srt still associates via the
+// bare_number basis; SxxExx episodes associate exactly as before. The
+// sidecar-FILENAME grammar is untouched: a sidecar whose only number is a [NN]
+// bracket carries no bare number and stays serial-level.
+func TestBareNamedEpisodeSidecar(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root,
+		"Show II/[01] Episode.mkv",
+		"Show II/Episode - 01.srt",
+		"Azure Harbor/[01] Azure Harbor 01 серия.mkv",
+		"Azure Harbor/[01] Azure Harbor 01 серия.srt",
+		"Bleach/Bleach S01E01.mkv",
+		"Bleach/Bleach S01E01.srt",
+		"Bracket Only/[01] Episode.mkv",
+		"Bracket Only/[01] Episode.srt",
+	)
+	s := &scannerImpl{}
+	out := drainScan(t, s, root)
+
+	for _, tc := range []struct{ dir, ep, srt, basis string }{
+		{"Show II", "Show II/[01] Episode.mkv", "Show II/Episode - 01.srt", matchBareNumber},
+		{"Azure Harbor", "Azure Harbor/[01] Azure Harbor 01 серия.mkv", "Azure Harbor/[01] Azure Harbor 01 серия.srt", matchBareNumber},
+		{"Bleach", "Bleach/Bleach S01E01.mkv", "Bleach/Bleach S01E01.srt", matchSxxExx},
+	} {
+		if _, leaked := out.byRel[tc.srt]; leaked {
+			t.Fatalf("sidecar %q was emitted as a file — sidecars are never items", tc.srt)
+		}
+		sidecars := factList(t, identified(t, s, out.byRel[tc.ep]), "sidecars")
+		if len(sidecars) != 1 {
+			t.Fatalf("episode %q sidecars = %v, want 1", tc.ep, sidecars)
+		}
+		sc := sidecars[0]
+		// No language folders or filename tags anywhere in these fixtures.
+		if sc["relative_path"] != tc.srt || sc["kind"] != "subtitle" || sc["language"] != "" || sc["match_basis"] != tc.basis {
+			t.Fatalf("episode %q sidecar = %v, want {%s subtitle `` %s}", tc.ep, sc, tc.srt, tc.basis)
+		}
+	}
+
+	// The episode side widened, the sidecar side did not (design.md D-4):
+	// "[01] Episode.srt" has no bare number under the untouched sidecar
+	// grammar, so it attaches to the series record, never episode-linked.
+	parsed := assertSerialRecord(t, s, out, "Bracket Only", "Bracket Only")
+	level := factList(t, parsed, "series_sidecars")
+	if len(level) != 1 || level[0]["relative_path"] != "Bracket Only/[01] Episode.srt" || level[0]["match_basis"] != nil {
+		t.Fatalf("series_sidecars = %v, want the bracket-numbered srt serial-level", level)
+	}
+}
+
 // TestSerialLevelOST — probe e805b89e8eea4ac1 (box 2.7). Audio nested several
 // levels deep that matches no episode attaches to the series record's
 // series_sidecars — never dropped silently, never an item, never episode-linked.

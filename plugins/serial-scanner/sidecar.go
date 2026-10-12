@@ -65,6 +65,14 @@ var (
 	// bareNumberRe captures a standalone 1-3 digit number (non-digit on each
 	// side). 4-digit runs (years, CRC hex digits) are not episode numbers.
 	bareNumberRe = regexp.MustCompile(`(?:^|[^0-9])([0-9]{1,3})(?:[^0-9]|$)`)
+	// cyrillicEpisodeRe matches the "<N> серия" episode marker. (Grammar
+	// replicated from plugins/serial-parser/serialparse.go:41.)
+	cyrillicEpisodeRe = regexp.MustCompile(`(?i)(\d{1,3})[\s._-]*серия`)
+	// edgeBracketNumberRes match a PURE-number [NN]/(NN) bracket at the stem's
+	// start or end (pure digits only, so [1080p] and [C48E56C8] never match).
+	// (Grammar replicated from plugins/serial-parser/serialparse.go:47-48.)
+	edgeBracketNumberReStart = regexp.MustCompile(`^\[([0-9]{1,3})\]|^\(([0-9]{1,3})\)`)
+	edgeBracketNumberReEnd   = regexp.MustCompile(`\[([0-9]{1,3})\]$|\(([0-9]{1,3})\)$`)
 )
 
 // languageFolders is the case-insensitive set of folder names (and filename
@@ -123,6 +131,38 @@ func bareNumberOf(stem string) int {
 		return 0
 	}
 	return n
+}
+
+// episodeNumberOf extracts the episode number an EPISODE stem carries,
+// mirroring the parser's parseEpisodeFilename grammar (plugins/serial-parser/
+// serialparse.go:162 — replicated per the no-cross-import convention cited
+// above; plugins are package-main binaries). The number is the first of: an
+// SxxExx token (with its season), a "<N> серия" marker, a pure-number [NN]/(NN)
+// bracket at the stem's start or end, or the last standalone 1-3 digit number
+// after bracket segments and resolution tokens are stripped (bareNumberOf).
+// A number below 1 is no number (design.md D-8) — ok reports a usable number;
+// sxxexx reports the SxxExx basis, whose season keys the {season, number}
+// episode index (bare forms index by number alone).
+func episodeNumberOf(stem string) (season, number int, sxxexx, ok bool) {
+	if s, n, found := seasonEpisodeOf(stem); found {
+		return s, n, true, true
+	}
+	if m := cyrillicEpisodeRe.FindStringSubmatch(stem); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		return 0, n, false, n > 0
+	}
+	for _, re := range []*regexp.Regexp{edgeBracketNumberReStart, edgeBracketNumberReEnd} {
+		if m := re.FindStringSubmatch(stem); m != nil {
+			for _, cap := range m[1:] {
+				if cap != "" {
+					n, _ := strconv.Atoi(cap)
+					return 0, n, false, n > 0
+				}
+			}
+		}
+	}
+	n := bareNumberOf(stem)
+	return 0, n, false, n > 0
 }
 
 // sidecarLanguage derives the sidecar language (spec "Sidecar association"):

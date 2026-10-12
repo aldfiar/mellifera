@@ -24,7 +24,8 @@ var _ sdk.MetadataSource = (*parserImpl)(nil)
 // The plugin self-selects PER DOCUMENT at Match (serials-library D5): a SERIES
 // document (parsed carries the serial-record marker) parses the raw directory
 // facts into a cleaned display title + season; an EPISODE document applies iff
-// its filename carries an SxxExx token and parses the episode numbers. Anything
+// its filename yields an episode number (SxxExx or a bare-number form) and
+// parses the episode numbers. Anything
 // else is applies=false — a skipped stage, not an error. Merge writes ONLY
 // sources["serial-parser"]; the core stamps _provenance/_view authoritatively
 // (INV-namespace-write). A local parser: BuildRequest is a nop (no fetch).
@@ -53,15 +54,15 @@ func (*parserImpl) Match(_ context.Context, req *metadatav1.MatchRequest) (*meta
 		if raw == "" {
 			return &metadatav1.MatchResult{Applies: false, Reason: "serial record without directory facts"}, nil
 		}
-		title, season, hasSeason := parseSeriesDir(raw)
+		title, season, explicit := parseSeriesDir(raw)
+		confidence := 0.6
+		if explicit {
+			confidence = 1.0
+		}
 		q := map[string]any{
 			"title":        title,
 			"dir_name_raw": raw,
-		}
-		confidence := 0.6
-		if hasSeason {
-			q["season"] = int64(season)
-			confidence = 1.0
+			"season":       int64(season), // always present: marker value, else 1
 		}
 		query, _ := structpb.NewStruct(q)
 		return &metadatav1.MatchResult{
@@ -73,9 +74,9 @@ func (*parserImpl) Match(_ context.Context, req *metadatav1.MatchRequest) (*meta
 	}
 
 	rel := parsedString(f, factRelativePath)
-	season, episode, episodeEnd, ok := parseEpisodeFilename(rel)
+	season, episode, episodeEnd, ok := parseEpisodeFilename(rel, parsedString(f, factSeriesRelativePath))
 	if !ok {
-		return &metadatav1.MatchResult{Applies: false, Reason: "no SxxExx token in filename"}, nil
+		return &metadatav1.MatchResult{Applies: false, Reason: "no episode number in filename"}, nil
 	}
 	q := map[string]any{
 		"season":  int64(season),
@@ -89,7 +90,7 @@ func (*parserImpl) Match(_ context.Context, req *metadatav1.MatchRequest) (*meta
 		Applies:    true,
 		Query:      query,
 		Confidence: 1.0,
-		Reason:     "episode filename SxxExx token",
+		Reason:     "episode filename number",
 	}, nil
 }
 

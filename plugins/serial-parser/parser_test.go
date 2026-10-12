@@ -79,45 +79,44 @@ func runChain(t *testing.T, parsed map[string]any) (bool, map[string]any, string
 
 // TestSeriesTitleParse is box 3.2: a series document self-selects at Match and
 // parses the raw directory facts into a cleaned display title plus the season
-// when a season token is present. The namespace carries ONLY those fields.
+// (always present: the marker's value, else 1). The namespace carries ONLY
+// those fields.
 func TestSeriesTitleParse(t *testing.T) {
 	cases := []struct {
-		name        string
-		dirNameRaw  string
-		wantTitle   string
-		wantSeason  float64
-		wantSeason_ bool // a season token is present
+		name       string
+		dirNameRaw string
+		wantTitle  string
+		wantSeason float64
 	}{
 		{
-			name:        "cyrillic mixed name with season token",
-			dirNameRaw:  "Необычный адвокат У Ён У Extraordinary Attorney Woo.2022.S01",
-			wantTitle:   "Необычный адвокат У Ён У Extraordinary Attorney Woo 2022",
-			wantSeason:  1,
-			wantSeason_: true,
+			name:       "cyrillic mixed name with season token",
+			dirNameRaw: "Необычный адвокат У Ён У Extraordinary Attorney Woo.2022.S01",
+			wantTitle:  "Необычный адвокат У Ён У Extraordinary Attorney Woo 2022",
+			wantSeason: 1,
 		},
 		{
-			name:        "cours directory season marker",
-			dirNameRaw:  "Bleach S04 (2008)",
-			wantTitle:   "Bleach (2008)",
-			wantSeason:  4,
-			wantSeason_: true,
+			name:       "cours directory season marker",
+			dirNameRaw: "Bleach S04 (2008)",
+			wantTitle:  "Bleach",
+			wantSeason: 4,
 		},
 		{
-			name:        "nth season form",
-			dirNameRaw:  "Show_Name_4th_Season",
-			wantTitle:   "Show Name",
-			wantSeason:  4,
-			wantSeason_: true,
+			name:       "nth season form",
+			dirNameRaw: "Show_Name_4th_Season",
+			wantTitle:  "Show Name",
+			wantSeason: 4,
 		},
 		{
-			name:       "no season token preserves the whole cleaned name",
+			name:       "no season token defaults the season to 1",
 			dirNameRaw: "Seishun Buta Yarou",
 			wantTitle:  "Seishun Buta Yarou",
+			wantSeason: 1,
 		},
 		{
 			name:       "an episode token is not a season token",
 			dirNameRaw: "Specials.S01E01.SPECIAL",
 			wantTitle:  "Specials S01E01 SPECIAL",
+			wantSeason: 1,
 		},
 	}
 	for _, tc := range cases {
@@ -129,12 +128,8 @@ func TestSeriesTitleParse(t *testing.T) {
 			if ns["title"] != tc.wantTitle {
 				t.Fatalf("title = %q, want %q", ns["title"], tc.wantTitle)
 			}
-			if tc.wantSeason_ {
-				if ns["season"] != tc.wantSeason {
-					t.Fatalf("season = %v, want %v", ns["season"], tc.wantSeason)
-				}
-			} else if _, ok := ns["season"]; ok {
-				t.Fatalf("season = %v, want absent", ns["season"])
+			if ns["season"] != tc.wantSeason {
+				t.Fatalf("season = %v, want %v", ns["season"], tc.wantSeason)
 			}
 			if ns["dir_name_raw"] != tc.dirNameRaw {
 				t.Fatalf("raw facts lost: %v", ns)
@@ -201,13 +196,113 @@ func TestEpisodeMatch(t *testing.T) {
 	}
 
 	// Non-match: applies=false with a reason — never an error, never applied.
-	res = matchDoc(episodeParsed("Show/Seishun - 01 (1080p) [C48E56C8].ass")) // not even a video filename
+	// A bare-number name now APPLIES under the broadened rule (covered by
+	// TestEpisodeNameGrammar); the skip rows are the numberless shapes.
+	res = matchDoc(episodeParsed("Show/Credits.ass")) // not even a video filename
 	if res.GetApplies() {
-		t.Fatalf("bare-number filename applied; want skip (SxxExx-only grammar)")
+		t.Fatalf("numberless filename applied; want skip")
 	}
 	res = matchDoc(episodeParsed("Show/Feature.mkv"))
 	if res.GetApplies() || res.GetReason() == "" {
 		t.Fatalf("non-episode applied without a skip reason: %+v", res)
+	}
+}
+
+// TestSeriesNameGrammar is the name-grammar table (change serial boxes 1.1 +
+// 1.2): series directory and file-backed names parse to a stripped title, an
+// always-present season, and a confidence steered by marker explicitness.
+// Derived rows come from the real-collection shape inventory (design.md D-8),
+// titles and group names neutralized.
+func TestSeriesNameGrammar(t *testing.T) {
+	cases := []struct {
+		name       string
+		dirNameRaw string
+		backing    string // "file" for a file-backed serial name, else "directory"
+		wantTitle  string
+		wantSeason float64
+		wantConf   float64
+	}{
+		// Box 1.1 ground-truth rows.
+		{name: "file-backed roman sequel suffix", dirNameRaw: "Black_Clover_II_[01].mkv", backing: "file", wantTitle: "Black Clover", wantSeason: 2, wantConf: 1.0},
+		{name: "TV N marker", dirNameRaw: "Aria TV 1", wantTitle: "Aria", wantSeason: 1, wantConf: 1.0},
+		{name: "standalone Sxx marker", dirNameRaw: "Black Clover S2", wantTitle: "Black Clover", wantSeason: 2, wantConf: 1.0},
+		{name: "explicit S01 confidence shape", dirNameRaw: "Show Name S01", wantTitle: "Show Name", wantSeason: 1, wantConf: 1.0},
+		// Box 1.1 derived rows (design.md D-8), neutralized.
+		{name: "TV hyphen form", dirNameRaw: "Azure Harbor TV-2", wantTitle: "Azure Harbor", wantSeason: 2, wantConf: 1.0},
+		{name: "Season N word form", dirNameRaw: "Crimson Vale Season 2", wantTitle: "Crimson Vale", wantSeason: 2, wantConf: 1.0},
+		{name: "roman sequel folder", dirNameRaw: "Ivory Tower II", wantTitle: "Ivory Tower", wantSeason: 2, wantConf: 1.0},
+		{name: "roman sequel folder VIII", dirNameRaw: "Quiet Meadow_VIII", wantTitle: "Quiet Meadow", wantSeason: 8, wantConf: 1.0},
+		{name: "bracket-train-only folder falls back to the raw cleaned name", dirNameRaw: "[TV-1] [2023] [WEBRip] [1080p] [RUS + ENG] [Multi5-Subs]", wantTitle: "[TV-1] [2023] [WEBRip] [1080p] [RUS + ENG] [Multi5-Subs]", wantSeason: 1, wantConf: 0.6},
+		{name: "trailing bare digit is not a season marker", dirNameRaw: "Title 0", wantTitle: "Title 0", wantSeason: 1, wantConf: 0.6},
+		{name: "internal _3_ is not a season marker", dirNameRaw: "Title_3_The_End…", wantTitle: "Title 3 The End…", wantSeason: 1, wantConf: 0.6},
+		// Box 1.2 ground-truth rows.
+		{name: "dot-scape with release tags", dirNameRaw: "From.S02.WEBDL.720p.Rus.Eng", wantTitle: "From", wantSeason: 2, wantConf: 1.0},
+		{name: "ordinal marker, dash group tag, bracket tags", dirNameRaw: "Mairimashita! Iruma-kun 4th Season - AniLiberty [WEB-DL 1080p]", wantTitle: "Mairimashita! Iruma-kun", wantSeason: 4, wantConf: 1.0},
+		{name: "bracket tags strip, title kept", dirNameRaw: "Kimi ga Shinu made Koi wo Shitai [WEB-DL 1080p]", wantTitle: "Kimi ga Shinu made Koi wo Shitai", wantSeason: 1, wantConf: 0.6},
+		{name: "paren year strips", dirNameRaw: "Bleach S04 (2008)", wantTitle: "Bleach", wantSeason: 4, wantConf: 1.0},
+		{name: "bare year stays in the title", dirNameRaw: "Quiet Meadow 2022", wantTitle: "Quiet Meadow 2022", wantSeason: 1, wantConf: 0.6},
+		{name: "multi-word dash segment preserved whole", dirNameRaw: "Demon Slayer - Kimetsu no Yaiba Entertainment District Arc", wantTitle: "Demon Slayer - Kimetsu no Yaiba Entertainment District Arc", wantSeason: 1, wantConf: 0.6},
+		// Box 1.2 derived rows (design.md D-8), neutralized.
+		{name: "leading group bracket + rip combinator", dirNameRaw: "[Bluewave] Azure Harbor [BDRip 1080p x265 FLAC]", wantTitle: "Azure Harbor", wantSeason: 1, wantConf: 0.6},
+		{name: "multi-bracket with source tag and acronym", dirNameRaw: "Crimson Vale [WEB-DL 1080p] [KTX]", wantTitle: "Crimson Vale", wantSeason: 1, wantConf: 0.6},
+		{name: "cyrillic title + bracket", dirNameRaw: "Необычная гавань [WEB-DL 1080p]", wantTitle: "Необычная гавань", wantSeason: 1, wantConf: 0.6},
+		{name: "trailing space normalizes", dirNameRaw: "Azure Harbor - Heaven's Feel ", wantTitle: "Azure Harbor - Heaven's Feel", wantSeason: 1, wantConf: 0.6},
+		{name: "double space normalizes", dirNameRaw: "Azure Harbor  Unlimited Blade Works", wantTitle: "Azure Harbor Unlimited Blade Works", wantSeason: 1, wantConf: 0.6},
+		{name: "non-leading paren matching no mask is preserved", dirNameRaw: "Title_(Shiro)", wantTitle: "Title (Shiro)", wantSeason: 1, wantConf: 0.6},
+		// Group-tag shape pins: the trailing CamelCase tag strips after ANY
+		// separator (space, dot, underscore — spec "Name-driven inference"),
+		// not only after a dash.
+		{name: "underscore-separated group tag strips", dirNameRaw: "Quiet_Meadow_FulL", wantTitle: "Quiet Meadow", wantSeason: 1, wantConf: 0.6},
+		{name: "space-separated group tag strips", dirNameRaw: "Ivory Tower FulL", wantTitle: "Ivory Tower", wantSeason: 1, wantConf: 0.6},
+		{name: "dot-separated group tag strips", dirNameRaw: "Quiet.Meadow.FulL", wantTitle: "Quiet Meadow", wantSeason: 1, wantConf: 0.6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			backing := "directory"
+			if tc.backing != "" {
+				backing = tc.backing
+			}
+			parsed := seriesParsed(tc.dirNameRaw, tc.dirNameRaw)
+			parsed["backing"] = backing
+			applies, ns, _ := runChain(t, parsed)
+			if !applies {
+				t.Fatalf("Match did not apply to the series document")
+			}
+			if ns["title"] != tc.wantTitle {
+				t.Fatalf("title = %q, want %q", ns["title"], tc.wantTitle)
+			}
+			if ns["season"] != tc.wantSeason {
+				t.Fatalf("season = %v, want %v", ns["season"], tc.wantSeason)
+			}
+			if ns["dir_name_raw"] != tc.dirNameRaw {
+				t.Fatalf("raw facts lost: %v", ns)
+			}
+		})
+	}
+}
+
+// TestSeriesGrammarConfidence pins the explicit-vs-defaulted confidence shape:
+// an explicit marker parses at 1.0, a defaulted season at 0.6.
+func TestSeriesGrammarConfidence(t *testing.T) {
+	impl := &parserImpl{}
+	ctx := context.Background()
+	match := func(raw string) float64 {
+		t.Helper()
+		st, err := structpb.NewStruct(seriesParsed(raw, raw))
+		if err != nil {
+			t.Fatalf("parsed struct: %v", err)
+		}
+		res, err := impl.Match(ctx, &metadatav1.MatchRequest{Item: &scannerv1.IdentifyResult{Parsed: st}})
+		if err != nil || !res.GetApplies() {
+			t.Fatalf("Match: err=%v applies=%v", err, res.GetApplies())
+		}
+		return res.GetConfidence()
+	}
+	if got := match("Black Clover S2"); got != 1.0 {
+		t.Fatalf("explicit marker confidence = %v, want 1.0", got)
+	}
+	if got := match("Seishun Buta Yarou"); got != 0.6 {
+		t.Fatalf("defaulted season confidence = %v, want 0.6", got)
 	}
 }
 
@@ -224,5 +319,50 @@ func TestEpisodeParse(t *testing.T) {
 	}
 	if ns["season"] != float64(1) || ns["episode"] != float64(2) {
 		t.Fatalf("namespace = %v, want season 1 episode 2", ns)
+	}
+}
+
+// TestEpisodeNameGrammar is the episode-grammar table (change serial box 1.3):
+// bare-number episode names yield a number and the season falls back through
+// the stem marker, the series directory, and the default 1. Derived rows come
+// from the real-collection shape inventory (design.md D-8), neutralized.
+func TestEpisodeNameGrammar(t *testing.T) {
+	cases := []struct {
+		name        string
+		rel         string
+		wantApply   bool
+		wantSeason  float64
+		wantEpisode float64
+	}{
+		// Ground-truth rows (spec delta "Bare-number episode filenames").
+		{name: "bracket number with filename ordinal marker", rel: "Mairimashita_Iruma-kun_4th_Season/Mairimashita_Iruma-kun_4th_Season_[01].mkv", wantApply: true, wantSeason: 4, wantEpisode: 1},
+		{name: "dash number after rip bracket", rel: "Kimi ga Shinu made Koi wo Shitai/Kimi ga Shinu made Koi wo Shitai - 01 [1080p AVC AAC].mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
+		{name: "cyrillic marker with TV series marker", rel: "Aria TV 1/[01] Aria TV 1 01 серия.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
+		{name: "group bracket and trailing dash number", rel: "Kimetsu no Yaiba - Yuukaku Hen/[Erai-raws] Kimetsu no Yaiba - Yuukaku Hen - 01.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
+		{name: "numberless filename stays skipped", rel: "Show/Feature.mkv"},
+		{name: "bare zero is no episode number", rel: "Show/Title 0.mkv"},
+		// Derived rows (design.md D-8), neutralized.
+		{name: "leading bracket number with cyrillic marker", rel: "Azure Harbor/[01] Azure Harbor 01 серия.mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
+		{name: "roman sequel in the episode stem", rel: "Azure Harbor II/[Bluewave] Azure Harbor II 01 [BDrip 1920x1080 x264 FLAC].mkv", wantApply: true, wantSeason: 2, wantEpisode: 1},
+		{name: "word-form marker in the episode stem", rel: "Crimson Vale Season 2/Crimson Vale Season 2 - 01 [1080p].mkv", wantApply: true, wantSeason: 2, wantEpisode: 1},
+		{name: "no marker anywhere defaults season 1", rel: "Ivory Tower/[Bluewave] Ivory Tower - 01 [BDRip 1080p x265 FLAC].mkv", wantApply: true, wantSeason: 1, wantEpisode: 1},
+		{name: "season falls back to the series directory marker", rel: "Azure Harbor TV-2/[Bluewave] Azure Harbor - 05 [BDRip 1080p].mkv", wantApply: true, wantSeason: 2, wantEpisode: 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			applies, ns, reason := runChain(t, episodeParsed(tc.rel))
+			if applies != tc.wantApply {
+				t.Fatalf("applies = %v (reason %q), want %v", applies, reason, tc.wantApply)
+			}
+			if !tc.wantApply {
+				if reason == "" {
+					t.Fatalf("skip without a reason")
+				}
+				return
+			}
+			if ns["season"] != tc.wantSeason || ns["episode"] != tc.wantEpisode {
+				t.Fatalf("namespace = %v, want season %v episode %v", ns, tc.wantSeason, tc.wantEpisode)
+			}
+		})
 	}
 }
