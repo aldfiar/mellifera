@@ -5,19 +5,20 @@
 // list that wires the whole app graph in one file. It reads configuration from
 // the environment, opens the store, loads and starts the base-scanner +
 // serial-scanner (scanner) and tv-parser + image-enricher + serial-parser +
-// frame-grabber (metadata_source) plugin subprocesses, constructs enrich.Deps
-// and wires it into the scan orchestrator, assembles the HTTP edge, and serves
-// until SIGINT/SIGTERM. There is no DI container and no reflection wiring —
-// every dependency is an explicit constructor call (ai-architecture §2 principle
-// 5; mellifera-build skill; depguard denies reflect + DI frameworks).
+// frame-grabber + shikimori (metadata_source) plugin subprocesses, constructs
+// enrich.Deps and wires it into the scan orchestrator, assembles the HTTP
+// edge, and serves until SIGINT/SIGTERM. There is no DI container and no
+// reflection wiring — every dependency is an explicit constructor call
+// (ai-architecture §2 principle 5; mellifera-build skill; depguard denies
+// reflect + DI frameworks).
 //
 // Dev-mode plugin loading: each plugin binary is loaded from a configurable
 // filesystem path (env MELLIFERA_BASE_SCANNER / MELLIFERA_SERIAL_SCANNER /
 // MELLIFERA_TV_PARSER / MELLIFERA_IMAGE_ENRICHER / MELLIFERA_SERIAL_PARSER /
-// MELLIFERA_FRAME_GRABBER, defaults bin/base-scanner / bin/serial-scanner /
-// bin/tv-parser / bin/image-enricher / bin/serial-parser / bin/frame-grabber
-// from `make build-plugin`). go:embed first-run extraction is deferred to
-// release packaging (D11/Q20).
+// MELLIFERA_FRAME_GRABBER / MELLIFERA_SHIKIMORI, defaults bin/base-scanner /
+// bin/serial-scanner / bin/tv-parser / bin/image-enricher / bin/serial-parser /
+// bin/frame-grabber / bin/shikimori from `make build-plugin`). go:embed
+// first-run extraction is deferred to release packaging (D11/Q20).
 package main
 
 import (
@@ -27,12 +28,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -91,7 +94,7 @@ func main() {
 	// iterated by the Deps.Status closure. Defined ONCE here (DRY) so the load
 	// sites and the status closure cannot diverge. A Phase-2+ Manager.List()
 	// would replace this literal (INV-known-plugin-set).
-	pluginIDs := []string{"base-scanner", "serial-scanner", "tv-parser", "image-enricher", "serial-parser", "frame-grabber"}
+	pluginIDs := []string{"base-scanner", "serial-scanner", "tv-parser", "image-enricher", "serial-parser", "frame-grabber", "shikimori"}
 	// loadedCaps is each loaded plugin's declared capability TYPES, captured at
 	// its Load site — the Deps.PluginCapabilities closure's validation set
 	// (element-pages 3.1/3.3). Derived from the same []sdk.Capability literals
@@ -154,11 +157,25 @@ func main() {
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
 	})
 
+	// shikimori is the first EXTERNAL metadata_source (enrichment: the
+	// serials-module chain's priority-3 slot, priority set by the module seed).
+	// Its outbound fetches are paced by the enrich FetchGate constructed below
+	// (the request spec's min_interval_ms is enforced core-side, enrichment
+	// D-5). Same dev-mode pattern + cookie pair + capability declaration as
+	// the other metadata plugins.
+	loadPlugin("shikimori", cfg.shikimoriPath, []sdk.Capability{
+		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
+	})
+
 	scanDeps := scan.Deps{
 		Store:   st,
 		Modules: reg,
 		Plugins: mgr,
-		Enrich:  enrich.Deps{Store: st, Modules: reg, Plugins: mgr},
+		// FetchGate (enrichment D-5 — box 2.2's injection point): the
+		// per-plugin outbound pacing gate, constructed on the real clock here
+		// in the composition root and injected into the enrich chain; nil
+		// would mean unpaced.
+		Enrich: enrich.Deps{Store: st, Modules: reg, Plugins: mgr, FetchGate: enrich.NewFetchGate()},
 	}
 
 	// Packaged-playback pack lane (D-3/D-4/D-5): the enrich queue's PackItem
@@ -227,6 +244,13 @@ func main() {
 			},
 		}, nil
 	}
+
+	// sweeps is the per-library whole-sweep in-flight guard the Reenrich
+	// closure owns (enrichment design Interfaces): one slot per library, held
+	// for the whole-library sweep's duration. Process-lifetime state by design
+	// — the guarded span (strip pass + Notify) is synchronous inside
+	// Queue.ReenrichSource.
+	sweeps := &sweepGuard{inFlight: map[int64]bool{}}
 
 	apiHandler := api.New(api.Deps{
 		AdminToken: cfg.adminToken,
@@ -327,6 +351,19 @@ func main() {
 			caps, ok := loadedCaps[pluginID]
 			return caps, ok
 		},
+		// Re-enrichment admin surface (enrichment D-6/D-7): the closures are
+		// built HERE in cmd/mellifera so api imports neither enrich nor
+		// plugin (INV2) — the same anti-corruption seam as Status above.
+		Reenrich:      newReenrichClosure(st, reg, enrichQueue, loadedCaps, sweeps),
+		EnrichPreview: newEnrichPreviewClosure(st, reg),
+		// Parser wake (enrichment D-6): a successful parser attach/clear fires
+		// the queue's Notify so the changed parsers re-derive at once. The
+		// request-scoped ctx is substituted with the PROCESS ctx — the same
+		// detachment scanDeps.Notify applies (the feeder must outlive the
+		// HTTP request; SIGINT/SIGTERM cancels pool + server together).
+		OnParsersChanged: func(_ context.Context, libraryID int64) {
+			enrichQueue.Notify(ctx, libraryID)
+		},
 	})
 
 	// Packaged-playback orchestrator (D-8/D-9/D4): the watch-driven frontier +
@@ -395,6 +432,7 @@ type config struct {
 	imageEnricherPath string
 	serialParserPath  string
 	frameGrabberPath  string
+	shikimoriPath     string
 	listenAddr        string
 	webDev            bool
 	enrich            enrich.QueueConfig
@@ -435,6 +473,7 @@ func loadConfig() config {
 		imageEnricherPath: envOr("MELLIFERA_IMAGE_ENRICHER", "bin/image-enricher"),
 		serialParserPath:  envOr("MELLIFERA_SERIAL_PARSER", "bin/serial-parser"),
 		frameGrabberPath:  envOr("MELLIFERA_FRAME_GRABBER", "bin/frame-grabber"),
+		shikimoriPath:     envOr("MELLIFERA_SHIKIMORI", "bin/shikimori"),
 		listenAddr:        envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
 		// webDev=true loosens the SPA cache headers (no-cache everywhere) so the
 		// Vite dev proxy :5173 can hot-reload alongside this server. Default
@@ -548,6 +587,228 @@ func originalResolver(st *store.Store) func(ctx context.Context, itemID string) 
 		}
 		return doc.Parsed.AbsolutePath, doc.Parsed.AbsolutePath != ""
 	}
+}
+
+// sweepGuard is the per-library whole-sweep in-flight flag the Reenrich
+// closure owns (enrichment design Interfaces): a second concurrent
+// whole-library sweep for one library is refused with api.ErrRefreshInFlight
+// (→ 409 at the handler). Per-row refreshes never touch the guard.
+type sweepGuard struct {
+	mu       sync.Mutex
+	inFlight map[int64]bool
+}
+
+// begin claims the library's whole-sweep slot, reporting whether the claim
+// succeeded (false = a sweep is already in flight).
+func (g *sweepGuard) begin(libraryID int64) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.inFlight[libraryID] {
+		return false
+	}
+	g.inFlight[libraryID] = true
+	return true
+}
+
+// finish releases the library's whole-sweep slot.
+func (g *sweepGuard) finish(libraryID int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.inFlight, libraryID)
+}
+
+// newReenrichClosure builds the api Deps.Reenrich seam (enrichment design
+// Interfaces): it translates the operator's refresh request into
+// Queue.ReenrichSource and owns every outcome-translation input —
+// unknown-plugin (the id is not a loaded plugin, or no module config binds it
+// as a metadata_source) and unknown-rows (a row id naming no item/series row
+// of the library) are rejected with their api sentinels BEFORE any strip; a
+// whole-library sweep (row_ids omitted) claims the per-library in-flight slot
+// for the sweep's duration, while a per-row refresh bypasses the guard
+// entirely. Queued = the rows the sweep scoped = stripped + deferred
+// (Queue.ReenrichSource's counting invariant).
+func newReenrichClosure(
+	st *store.Store, reg *module.Registry, q *enrich.Queue,
+	loadedPlugins map[string][]string, sweeps *sweepGuard,
+) func(context.Context, int64, string, []string) (api.ReenrichResult, error) {
+	return func(ctx context.Context, libraryID int64, pluginID string, rowIDs []string) (api.ReenrichResult, error) {
+		if _, loaded := loadedPlugins[pluginID]; !loaded || !hasMetadataBinding(reg, pluginID) {
+			return api.ReenrichResult{}, fmt.Errorf("refresh %q: %w", pluginID, api.ErrUnknownPlugin)
+		}
+		if len(rowIDs) == 0 { // whole-library sweep: one per library at a time
+			if !sweeps.begin(libraryID) {
+				return api.ReenrichResult{}, fmt.Errorf("library %d refresh %q: %w", libraryID, pluginID, api.ErrRefreshInFlight)
+			}
+			defer sweeps.finish(libraryID)
+		} else {
+			// Pre-check row identity so a 404 never strips anything (the
+			// admin-API spec: unknown rows are rejected with neither
+			// triggering a strip).
+			for _, id := range rowIDs {
+				ok, err := rowInLibrary(ctx, st, libraryID, id)
+				if err != nil {
+					return api.ReenrichResult{}, err
+				}
+				if !ok {
+					return api.ReenrichResult{}, fmt.Errorf("refresh %q row %q: %w", pluginID, id, api.ErrUnknownRows)
+				}
+			}
+		}
+		stripped, deferred, err := q.ReenrichSource(ctx, libraryID, pluginID, rowIDs...)
+		if err != nil {
+			return api.ReenrichResult{}, err
+		}
+		return api.ReenrichResult{Queued: stripped + deferred, Stripped: stripped, Deferred: deferred}, nil
+	}
+}
+
+// rowInLibrary reports whether rowID names an item or series row of the given
+// library. A row of a DIFFERENT library reports false — row ids are opaque
+// strings, so the library binding is the identity check. Mirrors the api
+// package's resolveFailureRow lookup order (items, then series).
+func rowInLibrary(ctx context.Context, st *store.Store, libraryID int64, rowID string) (bool, error) {
+	it, err := st.GetItem(ctx, rowID)
+	switch {
+	case err == nil:
+		return it.LibraryID == libraryID, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return false, err
+	}
+	sr, err := st.GetSeries(ctx, rowID)
+	switch {
+	case err == nil:
+		return sr.LibraryID == libraryID, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return false, err
+	}
+	return false, nil
+}
+
+// hasMetadataBinding reports whether any module config binds pluginID as a
+// metadata_source. The Registry half of unknown-plugin detection: a scanner
+// plugin, or an id no module binds, is not refreshable (its sweep would
+// always be vacuous).
+func hasMetadataBinding(reg *module.Registry, pluginID string) bool {
+	mods, err := reg.List()
+	if err != nil {
+		return false
+	}
+	for _, m := range mods {
+		for _, src := range m.MetadataSources {
+			if src.PluginID == pluginID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// previewBatch is the pagination width for the preview closure's QueryItems
+// scan (the queue's deriveBatch width).
+const previewBatch = 1000
+
+// newEnrichPreviewClosure builds the api Deps.EnrichPreview seam (enrichment
+// D-7): the per-plugin drift picture for one library, computed on demand over
+// the stored documents and the ledger — matches (rows carrying the plugin's
+// sources.<pluginID> namespace), pending (rows whose (row, plugin) pair the
+// derivation predicate still owes work: a queueable module binding, namespace
+// absent, not in ledger cooldown), cooling (rows with a within-cooldown ledger
+// row for the plugin), versions (a histogram over the _provenance entries the
+// plugin authored, keyed by plugin_version). Drift is computed, never stored;
+// the predicates are restated cmd-side to mirror the queue's pendingSources +
+// inCooldown semantics, so the numbers an operator consents to are the ones a
+// sweep would act on.
+func newEnrichPreviewClosure(st *store.Store, reg *module.Registry) func(context.Context, int64, string) (api.EnrichPreview, error) {
+	return func(ctx context.Context, libraryID int64, pluginID string) (api.EnrichPreview, error) {
+		failures, err := st.ListFailures(ctx)
+		if err != nil {
+			return api.EnrichPreview{}, fmt.Errorf("preview: list ledger: %w", err)
+		}
+		nowt := time.Now()
+		cooling := make(map[string]bool)
+		for _, fr := range failures {
+			if fr.PluginID == pluginID && fr.NextEligibleAt.After(nowt) {
+				cooling[fr.ItemID] = true
+			}
+		}
+		pv := api.EnrichPreview{PluginID: pluginID, Versions: map[string]int{}}
+		account := func(rowID, moduleID string, docRaw json.RawMessage) {
+			var doc map[string]any
+			if err := json.Unmarshal(docRaw, &doc); err != nil {
+				return // soft: an unreadable document contributes nothing (decodeDoc's rule)
+			}
+			namespaced := hasSourceNamespace(doc, pluginID)
+			if namespaced {
+				pv.Matches++
+			}
+			if queueableBinding(reg, moduleID, pluginID) && !namespaced && !cooling[rowID] {
+				pv.Pending++
+			}
+			prov, ok := doc["_provenance"].(map[string]any)
+			if !ok {
+				return
+			}
+			for _, entry := range prov {
+				e, ok := entry.(map[string]any)
+				if !ok {
+					continue
+				}
+				if pid, _ := e["plugin_id"].(string); pid == pluginID {
+					v, _ := e["plugin_version"].(string)
+					pv.Versions[v]++
+				}
+			}
+		}
+		for offset := 0; ; offset += previewBatch {
+			batch, err := st.QueryItems(ctx, libraryID, "", previewBatch, offset)
+			if err != nil {
+				return api.EnrichPreview{}, fmt.Errorf("preview: query items lib %d: %w", libraryID, err)
+			}
+			for _, it := range batch {
+				account(it.ID, it.ModuleID, it.Document)
+			}
+			if len(batch) < previewBatch {
+				break
+			}
+		}
+		seriesRows, err := st.QuerySeries(ctx, libraryID, "")
+		if err != nil {
+			return api.EnrichPreview{}, fmt.Errorf("preview: query series lib %d: %w", libraryID, err)
+		}
+		for _, sr := range seriesRows {
+			account(sr.ID, sr.ModuleID, sr.Document)
+		}
+		return pv, nil
+	}
+}
+
+// hasSourceNamespace reports whether the document carries the plugin's
+// sources.<pluginID> namespace — the enrich chain's hasNamespace shape,
+// restated cmd-side (the enrich original is unexported).
+func hasSourceNamespace(doc map[string]any, pluginID string) bool {
+	sources, ok := doc["sources"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, exists := sources[pluginID]
+	return exists
+}
+
+// queueableBinding reports whether moduleID's config binds pluginID as a
+// RUNNABLE metadata source — the queue's D-Q1 predicate (Enabled and not
+// CLIENT-only) restated cmd-side; an unresolvable module or an unbound plugin
+// is not derivable.
+func queueableBinding(reg *module.Registry, moduleID, pluginID string) bool {
+	mod, err := reg.Get(moduleID)
+	if err != nil {
+		return false
+	}
+	for _, src := range mod.MetadataSources {
+		if src.PluginID == pluginID {
+			return src.Enabled && src.AuthMode != "CLIENT"
+		}
+	}
+	return false
 }
 
 // envBool reads a boolean env var (1/t/T/true/TRUE/True → true; everything else

@@ -36,6 +36,15 @@ const upgradeTVConfigSQL = `UPDATE modules
   SET config_json = ?, schema_version = 2, updated_at = ?
   WHERE id = 'tv' AND schema_version < 2`
 
+// upgradeSerialConfigSQL promotes an existing serial row from config v1 to v2
+// (enrichment D-7): the same guarded-UPDATE pattern as the tv upgrade —
+// INSERT OR IGNORE never rewrites an existing row, so the shikimori binding
+// ships as this schema-guarded UPDATE, idempotent and scoped to the serial row
+// alone (no other module row is touched).
+const upgradeSerialConfigSQL = `UPDATE modules
+  SET config_json = ?, schema_version = 2, updated_at = ?
+  WHERE id = 'serial' AND schema_version < 2`
+
 // listModulesSQL reads the enabled modules in id order so List is deterministic
 // without a Go-side sort (which would need an unallowed import).
 const listModulesSQL = `SELECT id, media_type, config_json, schema_version
@@ -151,20 +160,23 @@ const imageConfigJSON = `{
 // ENTITY (INV1/INV2) mirroring the tv seed shape. It binds serial-scanner
 // (scanner) with the structure knob "series-directories" (design.md §Interfaces
 // §3 — the plugin treats any other value as fatal config error) + serial-parser
-// (priority 1) and frame-grabber (priority 2) as the metadata_source chain,
-// under media_type "serial", schema_version 1. Both enrichers are LOCAL plugins:
-// no auth_mode (queueable per D-Q1). No display block — external show-metadata
-// sources are B3 territory; serial documents land ready for it.
-// display_name carries Russian first-class (arch §1.2). Presentation
-// declarations are CONFIG, not code (element-pages D-1, AC-4): display_fields
-// per binding (serial-parser's footer order — season_episode is the declared
-// composite, resolved label-aware in the renderer; frame-grabber's thumbnail/
-// grabbed_at resolve from the frame-grabber namespace in the renderer),
-// identity_fields per module (episode names the episode-name slot case until
-// B3/NFO lands).
+// (priority 1) and frame-grabber (priority 2) as the local metadata_source
+// chain, under media_type "serial". Schema v2 (enrichment D-7) binds shikimori
+// (priority 3) after the local pair — the first EXTERNAL source: no auth_mode
+// (the anonymous MVP → queueable per D-Q1), display_fields declared from its
+// RU-first namespace footer. display_name carries Russian first-class (arch
+// §1.2). The display block is the module's first (mirroring the tv keys):
+// language_preference is RU-first, and shikimori is the only external
+// title/rating source, so it solely names both priority lists — it is
+// SPA-consumed config, never Go logic (parseModule models none of it;
+// element-pages D-1, AC-4: presentation declarations are CONFIG, not code).
+// The per-binding display_fields stay the footer render orders (serial-parser's
+// season_episode is the declared composite, resolved label-aware in the
+// renderer; frame-grabber's fields resolve from its namespace), identity_fields
+// per module (episode names the episode-name slot case).
 const serialConfigJSON = `{
   "id": "serial",
-  "schema_version": 1,
+  "schema_version": 2,
   "display_name": {"ru": "Сериалы (каталоги)", "en": "Serial Libraries"},
   "media_type": "serial",
   "identity_fields": ["display_title", "season", "episode"],
@@ -188,8 +200,19 @@ const serialConfigJSON = `{
       "priority": 2, "enabled": true,
       "display_fields": ["thumbnail", "grabbed_at"],
       "options": {}
+    },
+    {
+      "plugin_id": "shikimori", "capability_id": "default",
+      "priority": 3, "enabled": true,
+      "display_fields": ["title", "kind", "status", "episodes", "score", "aired_on"],
+      "options": {}
     }
-  ]
+  ],
+  "display": {
+    "language_preference": ["ru", "en"],
+    "title_source_priority": ["shikimori"],
+    "rating_source_priority": ["shikimori"]
+  }
 }`
 
 // Registry is the in-memory cache of module configs, loaded once at Open.
@@ -264,13 +287,20 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 		return nil, fmt.Errorf("module: seed image: %w", err)
 	}
 	// Third idempotent seed: the serial module (serial-scanner + serial-parser +
-	// frame-grabber, serials-library design.md §Interfaces §8 — mirrors the tv
-	// seed shape). INSERT OR IGNORE keeps the tv/image rows byte-identical and
-	// Open safe to run repeatedly.
+	// frame-grabber + shikimori, serials-library design.md §Interfaces §8 —
+	// mirrors the tv seed shape). INSERT OR IGNORE keeps the tv/image rows
+	// byte-identical and Open safe to run repeatedly.
 	if _, err := db.ExecContext(ctx, seedModulesSQL,
-		"serial", "serial", serialConfigJSON, 1, 1, seedCreatedAt, seedCreatedAt,
+		"serial", "serial", serialConfigJSON, 2, 1, seedCreatedAt, seedCreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("module: seed serial: %w", err)
+	}
+	// v1→v2 promotion for stores seeded before the shikimori binding existed
+	// (enrichment D-7): the INSERT OR IGNORE above is a no-op on them, this
+	// guarded UPDATE is the actual migration — the tv upgrade pattern, scoped
+	// to the serial row alone.
+	if _, err := db.ExecContext(ctx, upgradeSerialConfigSQL, serialConfigJSON, seedCreatedAt); err != nil {
+		return nil, fmt.Errorf("module: upgrade serial v2: %w", err)
 	}
 	rows, err := db.QueryContext(ctx, listModulesSQL)
 	if err != nil {

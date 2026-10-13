@@ -139,6 +139,15 @@ func serialPluginBins(t *testing.T, tmp string) (scanner, parser, grabber string
 		buildBinary(t, tmp, "itest-frame-grabber", "./plugins/frame-grabber")
 }
 
+// shikimoriBin builds the shikimori metadata plugin once per tmp and returns
+// its path. The server loads it beside the other metadata plugins
+// (MELLIFERA_SHIKIMORI, enrichment) — a launch without the env fatals on the
+// repo-relative bin/ default, so every server-start helper pins it.
+func shikimoriBin(t *testing.T, tmp string) string {
+	t.Helper()
+	return buildBinary(t, tmp, "itest-shikimori", "./plugins/shikimori")
+}
+
 // writeFixtures builds the TV fixture tree under a temp dir and returns its root.
 // Three real (ffmpeg-generated) media files exercise TV parsing, the Cyrillic
 // path, and resolution/release-group stripping; one zero-byte file drives the
@@ -231,6 +240,7 @@ func startServer(t *testing.T, serverBin, scannerBin, tvParserBin, imageEnricher
 		"MELLIFERA_SERIAL_SCANNER="+serialScannerBin,
 		"MELLIFERA_SERIAL_PARSER="+serialParserBin,
 		"MELLIFERA_FRAME_GRABBER="+frameGrabberBin,
+		"MELLIFERA_SHIKIMORI="+shikimoriBin(t, tmp),
 		"MELLIFERA_LISTEN="+addr,
 	)
 	var log strings.Builder

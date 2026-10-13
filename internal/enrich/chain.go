@@ -12,6 +12,7 @@ import (
 	commonv1 "github.com/mellifera/mellifera/proto/mellifera/common/v1"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // outcomeKind is the result of running one source's chain. Unexported.
@@ -28,25 +29,31 @@ const (
 // provenance/_view entries) on success, or the failure detail otherwise. The
 // document is NOT mutated here — Enrich commits the contribution (INV per-source
 // isolation, R-4: a violation mid-chain leaves the pre-source document intact).
+// resolvedIDs is the source's identity anchor claim (the resolved_ids the
+// plugin resolved this run); applyContribution lands it in doc.identifiers.
 type sourceResult struct {
-	kind       outcomeKind
-	pluginID   string
-	namespace  map[string]any            // sources.<plugin_id> (succeeded only)
-	provenance map[string]map[string]any // _provenance.<field> entries (succeeded only)
-	view       map[string]map[string]any // _view.<field> entries (succeeded only)
-	warnings   []string
-	errMsg     string
-	startedAt  string
-	finishedAt string
+	kind        outcomeKind
+	pluginID    string
+	namespace   map[string]any            // sources.<plugin_id> (succeeded only)
+	provenance  map[string]map[string]any // _provenance.<field> entries (succeeded only)
+	view        map[string]map[string]any // _view.<field> entries (succeeded only)
+	resolvedIDs map[string]any            // identifiers claim (succeeded only, may be empty)
+	warnings    []string
+	errMsg      string
+	startedAt   string
+	finishedAt  string
 }
 
 // runSource drives the full 4-RPC chain for one metadata_source binding:
-// Match -> BuildRequest -> Convert -> Merge, serial (D8). The fetch between
-// BuildRequest and Convert is a no-op stub (empty raw_response) in Phase A — all
-// 4 RPCs are still invoked so Phase B swaps in a real fetcher with no signature
-// change (INV-4rpc-contract). On any per-source failure the chain soft-fails
-// (AC-6); only a cancelled context is a hard failure (handled by Enrich).
-func runSource(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult) sourceResult {
+// Match -> BuildRequest -> fetch -> Convert -> Merge, serial (D8). doc is the
+// item document being enriched: its identifiers feed Match.existing_ids (the
+// identity anchor, enrichment D-4 — first enrichment sees none). The fetch
+// between BuildRequest and Convert executes the plugin's RequestSpec
+// server-side (mode A, enrichment D-5); a spec without a url template is
+// local (no fetch, the former stub behavior). gate paces the fetch (nil = unpaced). On
+// any per-source failure the chain soft-fails (AC-6); only a cancelled
+// context is a hard failure (handled by Enrich).
+func runSource(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate) sourceResult {
 	start := stamp()
 	if !src.Enabled {
 		return sourceResult{kind: outcomeSkipped, pluginID: src.PluginID, startedAt: start, finishedAt: stamp()}
@@ -55,19 +62,36 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 	if err != nil {
 		return skipOutcome(src, start, fmt.Sprintf("unavailable: %v", err))
 	}
-	matchRes, err := md.Match(ctx, &metadatav1.MatchRequest{Item: base, ModuleType: mod.MediaType})
+	existing, err := existingIDsStruct(doc)
+	if err != nil {
+		return failOutcome(src, start, "match", err)
+	}
+	matchRes, err := md.Match(ctx, &metadatav1.MatchRequest{Item: base, ModuleType: mod.MediaType, ExistingIds: existing})
 	if err != nil {
 		return failOutcome(src, start, "match", err)
 	}
 	if !matchRes.GetApplies() { // B3: not an error — record a skipped stage, continue
 		return sourceResult{kind: outcomeSkipped, pluginID: src.PluginID, startedAt: start, finishedAt: stamp()}
 	}
-	if _, err := md.BuildRequest(ctx, &metadatav1.BuildRequestRequest{
+	buildRes, err := md.BuildRequest(ctx, &metadatav1.BuildRequestRequest{
 		Query: matchRes.GetQuery(), ModuleType: mod.MediaType, Auth: &commonv1.AuthContext{},
-	}); err != nil { // BuildRequest receives an EMPTY AuthContext in Phase A (D-7); spec is ignored (fetch stubbed)
+	})
+	if err != nil { // BuildRequest receives an EMPTY AuthContext (D-7: Mode B is unbuilt)
 		return failOutcome(src, start, "build_request", err)
 	}
-	conv, err := md.Convert(ctx, &metadatav1.ConvertRequest{Query: matchRes.GetQuery(), ModuleType: mod.MediaType})
+	var raw []byte
+	var httpStatus int32
+	var respHeaders map[string]string
+	if spec := buildRes.GetSpec(); spec != nil && spec.GetUrlTemplate() != "" { // no url template: local source, nothing to fetch
+		raw, httpStatus, respHeaders, err = fetchSource(ctx, gate, src.PluginID, spec)
+		if err != nil {
+			return failOutcome(src, start, "fetch", err)
+		}
+	}
+	conv, err := md.Convert(ctx, &metadatav1.ConvertRequest{
+		Query: matchRes.GetQuery(), ModuleType: mod.MediaType,
+		RawResponse: raw, HttpStatus: httpStatus, ResponseHeaders: respHeaders,
+	})
 	if err != nil {
 		return failOutcome(src, start, "convert", err)
 	}
@@ -92,8 +116,31 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 	return sourceResult{
 		kind: outcomeSucceeded, pluginID: src.PluginID,
 		namespace: namespace, provenance: prov, view: view,
-		startedAt: start, finishedAt: stamp(),
+		resolvedIDs: resolvedIDsOf(conv.GetMetadata()),
+		startedAt:   start, finishedAt: stamp(),
 	}
+}
+
+// existingIDsStruct reads doc.identifiers into the Match.existing_ids anchor
+// (enrichment D-4). A first enrichment (no identifiers) passes nil. The ids
+// are core-side state and never pass through namespace validation.
+func existingIDsStruct(doc map[string]any) (*structpb.Struct, error) {
+	ids, _ := doc["identifiers"].(map[string]any)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return structpb.NewStruct(ids)
+}
+
+// resolvedIDsOf lifts the resolved_ids claim out of Convert's metadata (the
+// channel the shikimori plugin uses — its Merge strips the key so it never
+// reaches namespace validation). Empty when the plugin resolved nothing.
+func resolvedIDsOf(meta *structpb.Struct) map[string]any {
+	f, ok := meta.GetFields()["resolved_ids"]
+	if !ok {
+		return nil
+	}
+	return f.GetStructValue().AsMap()
 }
 
 // validateNamespace enforces the architecture §3.3 invariant: the plugin may

@@ -61,11 +61,17 @@ func TestQAFilm_JointItemParse(t *testing.T) {
 
 	root := qaFilmWriteFixtures(t)
 
+	// The stub upstream rides the shared serial harness (the helper passes
+	// MELLIFERA_SHIKIMORI_UPSTREAM through to the server env): the vault's
+	// series row drives a real shikimori search, and the no-network rule pins
+	// it to the stub — a non-anime title 404s there and the row still settles
+	// ready, which is all this item-level contract waits for.
+	up := qaSerialStartUpstream(t)
 	srv := qaSerialStartServer(t, qaSerialServerBins{
 		server: serverBin, baseScanner: baseScannerBin, tvParser: tvParserBin,
 		imageEnricher: imageEnricherBin, serialScanner: serialScannerBin,
 		serialParser: serialParserBin, frameGrabber: frameGrabberBin,
-	}, tmp, "qa-film-admin-token")
+	}, up.baseURL, tmp, "qa-film-admin-token")
 	client := &http.Client{Timeout: httpTimeout}
 
 	lib := qaSerialCreateLibrary(t, client, srv.baseURL, "qa-film-admin-token", root, "QA Film Joint")

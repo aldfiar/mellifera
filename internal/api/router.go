@@ -63,6 +63,28 @@ type Deps struct {
 	// never load-bearing on it), mirroring Deps.Scan/Status. Keeps api free
 	// of plugin imports (INV2).
 	OnProgress func(ctx context.Context, itemID string, position int64)
+	// Reenrich is the explicit re-enrichment kickoff closure (enrichment
+	// design Interfaces, D-1/D-6): built in cmd/mellifera over
+	// enrich.Queue.ReenrichSource, owning the strip pass and the per-library
+	// whole-sweep in-flight guard. rowIDs are the opaque string row ids
+	// (itm_/ser_); nil/empty = whole-library sweep. Returns the sentinel
+	// errors (ErrRefreshInFlight/ErrUnknownPlugin/ErrUnknownRows) the
+	// handler maps to 409/400/404 — cmd translates enrich outcomes, api
+	// never imports enrich (INV2). Nil-safe (503 when nil).
+	Reenrich func(ctx context.Context, libraryID int64, pluginID string, rowIDs []string) (ReenrichResult, error)
+	// EnrichPreview is the consent-surface closure (enrichment D-7): the
+	// per-plugin drift picture for one library (namespace matches, derivable
+	// pending, ledger cooling, the `_provenance` version histogram),
+	// computed on demand — drift is never stored. Built in cmd/mellifera.
+	// Nil-safe (503 when nil), mirroring Reenrich.
+	EnrichPreview func(ctx context.Context, libraryID int64, pluginID string) (EnrichPreview, error)
+	// OnParsersChanged is the parser-wake seam (enrichment D-6): invoked by
+	// putItemParsers/deleteItemParsers after a successful SetItemParsers,
+	// with the library resolved from the item row — the cmd-side
+	// implementation notifies the enrich queue so newly-applicable (or
+	// removed) parser sources join or leave derivation without a rescan.
+	// Nil-safe (a nil closure is a no-op), mirroring OnProgress.
+	OnParsersChanged func(ctx context.Context, libraryID int64)
 }
 
 // Role is the authorization role resolved from the credential. MVP issues
@@ -184,6 +206,14 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Delete("/series/{id}/title", h.deleteSeriesTitle)
 		r.Put("/items/{id}/title", h.putItemTitle)
 		r.Delete("/items/{id}/title", h.deleteItemTitle)
+		// Re-enrichment admin surface (enrichment design Interfaces, D-6):
+		// the explicit refresh kickoff (202 + strip counts; 409 only on a
+		// whole-library sweep collision), the on-demand drift preview, and
+		// the failure-ledger listing (store-served — no closure). Operator
+		// mutations/observability, so the admin group.
+		r.Post("/libraries/{id}/refresh", h.libraryRefresh)
+		r.Get("/libraries/{id}/enrich/preview", h.enrichPreview)
+		r.Get("/enrich/failures", h.enrichFailures)
 		r.Get("/admin/status", h.adminStatus)
 	})
 }

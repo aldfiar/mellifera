@@ -33,6 +33,7 @@ const (
 	evSettled   enrichEvent = "settled"   // B1: async settlement (enriched -> ready)
 	evStale     enrichEvent = "stale"     // B1: re-scan change detected (* -> stale)
 	evRehydrate enrichEvent = "rehydrate" // B1: re-enrich after re-scan change (stale -> pending)
+	evRefresh   enrichEvent = "refresh"   // explicit re-enrichment stripped a namespace (ready|enriched -> pending; enrichment D-3)
 )
 
 // transition is a (from-state, event) pair — the key into the transition table.
@@ -59,6 +60,11 @@ type transition struct {
 //	new|pending|parsed|enriched|ready|failed --stale--> stale   (re-scan detected a file change)
 //	stale     --rehydrate-> pending (re-enrich the changed file; queue re-derives its work)
 //	stale     --deleted---> deleted
+//
+//	Explicit re-enrichment (enrichment D-3): the sweep flips ONLY rows whose
+//	namespace it actually stripped, so pending stays a truthful will-fetch signal.
+//	ready     --refresh--> pending (explicit re-enrichment stripped the plugin's namespace)
+//	enriched  --refresh--> pending (explicit re-enrichment stripped the plugin's namespace)
 var transitions = map[transition]string{
 	{statusNew, evBegin}:        statusPending,
 	{statusNew, evFailed}:       statusFailed,
@@ -80,6 +86,8 @@ var transitions = map[transition]string{
 	{statusEnriched, evStale}:   statusStale,
 	{statusReady, evStale}:      statusStale,
 	{statusReady, evDeleted}:    statusDeleted,
+	{statusReady, evRefresh}:    statusPending,
+	{statusEnriched, evRefresh}: statusPending,
 	{statusFailed, evRetry}:     statusPending,
 	{statusFailed, evDeleted}:   statusDeleted,
 	{statusFailed, evStale}:     statusStale,

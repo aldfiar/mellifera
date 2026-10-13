@@ -102,8 +102,10 @@ type Queue struct {
 
 	leases *leaseMap
 
-	libs   map[int64]struct{} // known libraries (registered via Notify)
+	libs   map[int64]struct{} // known libraries (registered via Notify, seeded from the store on Start)
 	libsMu sync.Mutex
+
+	explicit *explicitSet // process-lifetime explicitly-refreshed (row, plugin) pairs (enrichment 3.4)
 
 	work chan laneTask // bounded buffer of dispatch tasks; closed by Stop
 
@@ -133,10 +135,11 @@ var errAlreadyStarted = errors.New("enrich: queue already started")
 // construction (the metadataResolver seam, R8).
 func NewQueue(deps Deps, cfg QueueConfig) *Queue {
 	q := &Queue{
-		deps:   deps,
-		cfg:    withDefaults(cfg),
-		leases: newLeaseMap(),
-		libs:   make(map[int64]struct{}),
+		deps:     deps,
+		cfg:      withDefaults(cfg),
+		leases:   newLeaseMap(),
+		libs:     make(map[int64]struct{}),
+		explicit: newExplicitSet(),
 	}
 	if deps.Plugins != nil {
 		q.resolve = deps.Plugins.MetadataSource
@@ -156,6 +159,7 @@ func (q *Queue) Start(ctx context.Context) error {
 	q.work = make(chan laneTask, q.cfg.Workers*4) // bounded buffer: backpressure on slow drains
 	ctx, q.cancel = context.WithCancel(ctx)
 	q.leases = newLeaseMap()
+	q.seedLibs(ctx) // fresh-boot fix (enrichment D-8): sweep libraries persisted by a previous process
 	for i := 0; i < q.cfg.Workers; i++ {
 		q.wg.Add(1)
 		go q.worker(ctx)
@@ -208,6 +212,33 @@ func (q *Queue) registerLib(libraryID int64) {
 	q.libsMu.Lock()
 	q.libs[libraryID] = struct{}{}
 	q.libsMu.Unlock()
+}
+
+// seedLibs backfills the known-library registry from the store's library list
+// when the in-memory registry is empty (enrichment D-8, the backlog's
+// "enrichment restart sweep is vacuous on fresh boot"): until now only a scan
+// registered a library in-process, so a fresh boot's initial sweep saw no
+// libraries and drained nothing, even over items persisted by a previous
+// process. A non-empty registry (any Notify already seen) is left untouched,
+// and a store read error leaves the registry empty (soft: the sweep stays
+// vacuous for this Start; the next Notify re-derives normally).
+func (q *Queue) seedLibs(ctx context.Context) {
+	if q.deps.Store == nil {
+		return
+	}
+	q.libsMu.Lock()
+	empty := len(q.libs) == 0
+	q.libsMu.Unlock()
+	if !empty {
+		return
+	}
+	libs, err := q.deps.Store.ListLibraries(ctx)
+	if err != nil {
+		return
+	}
+	for _, lib := range libs {
+		q.registerLib(lib.ID)
+	}
 }
 
 // knownLibs returns a snapshot of the known-library set under the lock.

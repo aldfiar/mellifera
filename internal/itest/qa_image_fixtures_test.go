@@ -331,7 +331,7 @@ func qaImgStartServerStrippedPath(t *testing.T, serverBin, scannerBin, tvParserB
 
 	// Build the env WITHOUT the inherited PATH (filter it), then add the stripped
 	// PATH + the plugin/server vars. Filtering avoids last-wins duplicate-key ambiguity.
-	env := make([]string, 0, len(os.Environ())+11)
+	env := make([]string, 0, len(os.Environ())+12)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "PATH=") {
 			continue
@@ -348,6 +348,7 @@ func qaImgStartServerStrippedPath(t *testing.T, serverBin, scannerBin, tvParserB
 		"MELLIFERA_SERIAL_SCANNER="+serialScannerBin,
 		"MELLIFERA_SERIAL_PARSER="+serialParserBin,
 		"MELLIFERA_FRAME_GRABBER="+frameGrabberBin,
+		"MELLIFERA_SHIKIMORI="+shikimoriBin(t, tmp),
 		"MELLIFERA_LISTEN="+addr,
 	)
 

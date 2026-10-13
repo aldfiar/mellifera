@@ -267,7 +267,8 @@ func mustListLen(t *testing.T, r *Registry) int {
 // seeds an idempotent "serial" config entity mirroring the tv seed shape —
 // scanner binding serial-scanner/default with the "series-directories"
 // structure knob, and the ordered metadata chain serial-parser (priority 1) +
-// frame-grabber (priority 2), media_type "serial" — while the seeded tv and
+// frame-grabber (priority 2) + shikimori (priority 3, enrichment D-7),
+// media_type "serial" — while the seeded tv and
 // image configs stay byte-identical.
 func TestSerialModuleSeed(t *testing.T) {
 	ctx := context.Background()
@@ -286,8 +287,8 @@ func TestSerialModuleSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(serial): %v", err)
 	}
-	if m.ID != "serial" || m.MediaType != "serial" || m.SchemaVersion != 1 {
-		t.Fatalf("Get(serial) = %+v, want id=serial media_type=serial schema_version=1", m)
+	if m.ID != "serial" || m.MediaType != "serial" || m.SchemaVersion != 2 {
+		t.Fatalf("Get(serial) = %+v, want id=serial media_type=serial schema_version=2", m)
 	}
 	if m.Scanner.PluginID != "serial-scanner" || m.Scanner.CapabilityID != "default" {
 		t.Fatalf("scanner binding = %+v, want serial-scanner/default", m.Scanner)
@@ -301,8 +302,8 @@ func TestSerialModuleSeed(t *testing.T) {
 	if opts.Structure != "series-directories" {
 		t.Fatalf("options.structure = %q, want series-directories", opts.Structure)
 	}
-	if len(m.MetadataSources) != 2 {
-		t.Fatalf("metadata_sources len = %d, want 2 (serial-parser + frame-grabber)", len(m.MetadataSources))
+	if len(m.MetadataSources) != 3 {
+		t.Fatalf("metadata_sources len = %d, want 3 (serial-parser + frame-grabber + shikimori)", len(m.MetadataSources))
 	}
 	for i, want := range []struct {
 		pluginID string
@@ -310,6 +311,7 @@ func TestSerialModuleSeed(t *testing.T) {
 	}{
 		{"serial-parser", 1},
 		{"frame-grabber", 2},
+		{"shikimori", 3},
 	} {
 		src := m.MetadataSources[i]
 		if src.PluginID != want.pluginID || src.CapabilityID != "default" {

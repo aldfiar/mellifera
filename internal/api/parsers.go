@@ -76,6 +76,7 @@ func (a *app) putItemParsers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
+	a.notifyParsersChanged(r, itemID)
 	writeJSON(w, http.StatusOK, itemParsersResponse{Parsers: req.Parsers})
 }
 
@@ -103,6 +104,7 @@ func (a *app) deleteItemParsers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
+	a.notifyParsersChanged(r, itemID)
 	writeJSON(w, http.StatusOK, itemParsersResponse{Parsers: []string{}})
 }
 

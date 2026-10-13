@@ -85,6 +85,15 @@ func terminalCooldown(status string, priorAttempts int, cfg QueueConfig) (storeA
 	return storeAttempts, cool
 }
 
+// explicitCooldown is the schedule for a terminal failure of an
+// explicitly-triggered run (enrichment 3.4, the pack_failed shape): a flat
+// NoDataCool with NO doubling — an operator retry must never be punished by
+// growth, however many times they retry (Open Question 3). Attempts still
+// advance so the round stays recoverable and auditable.
+func explicitCooldown(priorAttempts, maxAttempts int, cfg QueueConfig) (storeAttempts int, cool time.Duration) {
+	return nextAttempts(priorAttempts, maxAttempts), cfg.NoDataCool
+}
+
 // nextAttempts is the attempt count written on a terminal RecordFailure: the
 // in-memory budget on the first exhaustion (priorAttempts == 0), incremented
 // thereafter so each round is distinguishable from the row.
@@ -297,7 +306,7 @@ func (q *Queue) driveSources(
 		if inCooldown(idx, rowID, src.PluginID, nowt) {
 			continue
 		}
-		sr, ledgerStatus, attempts := runSourceRetryable(ctx, q.resolve, src, mod, base, q.cfg.MaxAttempts, q.cfg.Backoff)
+		sr, ledgerStatus, attempts := runSourceRetryable(ctx, q.resolve, src, mod, base, doc, q.deps.FetchGate, q.cfg.MaxAttempts, q.cfg.Backoff)
 		*status = advanceForSource(*status, sr.kind, &res.begun)
 		appendStage(doc, sr, *status)
 		q.applyOutcome(ctx, rowID, src.PluginID, idx, sr, ledgerStatus, attempts)
@@ -350,6 +359,9 @@ func (q *Queue) applyOutcome(
 	}
 	prior := priorAttempts(idx, rowID, pluginID)
 	storeAttempts, cool := terminalCooldown(ledgerStatus, prior, q.cfg)
+	if q.takeExplicit(rowID, pluginID) { // an explicitly-triggered run cools flat, never doubled (enrichment 3.4)
+		storeAttempts, cool = explicitCooldown(prior, q.cfg.MaxAttempts, q.cfg)
+	}
 	reason := sr.errMsg
 	if reason == "" {
 		reason = ledgerStatus

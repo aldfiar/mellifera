@@ -307,15 +307,16 @@ func TestSeriesLedgerAndRestart(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Derivation covers BOTH rows under the identical predicates: two queueable
-	// sources each -> four pending tasks.
+	// Derivation covers BOTH rows under the identical predicates: three queueable
+	// sources each (serial seed v2 added the shikimori slot) -> six pending
+	// tasks.
 	q := NewQueue(Deps{Store: s, Modules: reg}, fastQueueCfg())
 	tasks, err := q.deriveLibrary(ctx, 1)
 	if err != nil {
 		t.Fatalf("deriveLibrary: %v", err)
 	}
-	if len(tasks) != 4 {
-		t.Fatalf("derived %d tasks, want 4 (2 rows x 2 sources): %+v", len(tasks), tasks)
+	if len(tasks) != 6 {
+		t.Fatalf("derived %d tasks, want 6 (2 rows x 3 sources): %+v", len(tasks), tasks)
 	}
 
 	// Phase 1: parser Match errors (terminal exhausted, short cooldown);
@@ -338,13 +339,21 @@ func TestSeriesLedgerAndRestart(t *testing.T) {
 	}, 3*time.Second)
 	q.Stop()
 
-	// Every pair is inside its cooldown -> derivation must yield nothing.
+	// Every LOCAL pair is inside its cooldown -> derivation yields only the
+	// shikimori pairs: a resolver-missed source skips WITHOUT ledgering (the
+	// seeded-but-unloaded soft-fail, AC-6), so it stays legitimately derivable
+	// — the cooldown contract is about the two sources that terminal-failed.
 	tasks, err = q.deriveLibrary(ctx, 1)
 	if err != nil {
 		t.Fatalf("deriveLibrary after drain: %v", err)
 	}
-	if len(tasks) != 0 {
+	if len(tasks) != 2 {
 		t.Fatalf("cooling pairs re-derived: %+v", tasks)
+	}
+	for _, task := range tasks {
+		if task.pluginID != "shikimori" {
+			t.Fatalf("cooling local pair re-derived: %+v", task)
+		}
 	}
 
 	// A re-scan refreshes both rows (fresh documents, status stale — the scan

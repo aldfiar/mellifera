@@ -48,6 +48,12 @@ type Deps struct {
 	// pack_failed ledger row under __streams__ and persists the failed state —
 	// metadata completion is never touched either way.
 	PackItem func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (PackOutcome, error)
+	// FetchGate spaces each plugin's outbound fetches at least its
+	// min_interval_ms apart (enrichment D-5: pacing is contract conformance
+	// the core enforces server-side). Wired flat in cmd/mellifera beside
+	// PackItem (enrich.NewFetchGate); nil (sync runs, in-package tests) means
+	// unpaced.
+	FetchGate *FetchGate
 }
 
 // Result is the outcome of enriching one item: how many sources were attempted,
@@ -104,7 +110,7 @@ func enrichDoc(ctx context.Context, resolve metadataResolver, mod module.Module,
 		if err := ctx.Err(); err != nil {
 			return doc, statusFailed, res, hardError(doc, err)
 		}
-		sr := runSource(ctx, resolve, src, mod, base)
+		sr := runSource(ctx, resolve, src, mod, base, doc, nil) // sync path: no gate (unpaced)
 		res.Stages++
 		res.Warnings = append(res.Warnings, sr.warnings...)
 		switch sr.kind {
@@ -229,9 +235,21 @@ func appendStage(doc map[string]any, sr sourceResult, advancedTo string) {
 }
 
 // applyContribution commits one source's validated namespace + provenance/_view
-// entries to the document. Called only on success (isolation: a failing source
-// commits nothing).
+// entries to the document, and lands the source's resolved_ids claim in
+// doc.identifiers (the identity anchor, enrichment D-4 — a CORE-side write
+// OUTSIDE namespace validation, which polices only the plugin's Merge output).
+// Called only on success (isolation: a failing source commits nothing).
 func applyContribution(doc map[string]any, sr sourceResult) {
+	if len(sr.resolvedIDs) > 0 {
+		ids, _ := doc["identifiers"].(map[string]any)
+		if ids == nil {
+			ids = map[string]any{}
+		}
+		for k, v := range sr.resolvedIDs {
+			ids[k] = v
+		}
+		doc["identifiers"] = ids
+	}
 	if sr.namespace != nil {
 		sources, _ := doc["sources"].(map[string]any)
 		if sources == nil {

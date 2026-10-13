@@ -9,10 +9,16 @@
 // file-backed serial); (B) the Cyrillic directory `Необычный адвокат У Ён У
 // Extraordinary Attorney Woo.2022.S01`. The full pipeline runs for real:
 // scan (serial-scanner subprocess + ffprobe) → series + episode rows + sidecar
-// facts persisted → the async queue drains serial-parser (and frame-grabber
-// when ffmpeg is on PATH — both terminal states asserted truthfully) → series
-// and episode documents settle ready → the API serves the series surface with
-// non-ASCII names verbatim.
+// facts persisted → the async queue drains serial-parser, shikimori, and
+// frame-grabber (the grabber only when ffmpeg is on PATH — both terminal
+// states asserted truthfully) → series and episode documents settle ready →
+// the API serves the series surface with non-ASCII names verbatim.
+//
+// HERMETIC: the shikimori stage's upstream fetch is pinned to a local
+// httptest stub — the server subprocess env carries
+// MELLIFERA_SHIKIMORI_UPSTREAM=<stub>, the plugin child inherits it and bakes
+// the stub origin into every fetch template — so no test byte ever reaches
+// shikimori.io, and the stub's recorded calls double as the no-network proof.
 //
 // The expected values here are re-derived independently of the plugin suites'
 // fixtures (different show/dir names, different sidecar shapes), so a
@@ -28,11 +34,14 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -66,10 +75,15 @@ const (
 // The Cyrillic one is the load-bearing verbatim assertion.
 const (
 	qaSerialBleachTitle = "Bleach"
+	qaSerialAmberTitle  = "Amber Peak" // the roman-sequel strip (Amber_Peak_II → season 2)
 	qaSerialRibbonTitle = "The Ribbon Hero"
 	qaSerialCyrDir      = "Необычный адвокат У Ён У Extraordinary Attorney Woo.2022.S01"
 	qaSerialCyrTitle    = "Необычный адвокат У Ён У Extraordinary Attorney Woo 2022"
 )
+
+// The stub upstream's search endpoint (the path BuildRequest bakes for the
+// anime-search shape; the by-id endpoint serves its subpaths).
+const qaSerialUpstreamSearch = "/api/animes"
 
 // qaSerialSeriesDTO is the QA-local decode of the series wire shape (the
 // api seriesDTO). Declared here (not reused from internal/api — black box).
@@ -113,6 +127,126 @@ type qaSerialServer struct {
 	dataDir string
 }
 
+// qaSerialUpstreamReq is one upstream request the stub recorded.
+type qaSerialUpstreamReq struct {
+	method, path, query, ua string
+}
+
+// qaSerialUpstream is the fake shikimori origin. The plugin's
+// MELLIFERA_SHIKIMORI_UPSTREAM seam pins every fetch the server subprocess
+// makes here, so the e2e never touches the network. The search endpoint
+// serves one deterministic candidate per derived title; the by-id endpoint
+// serves the same payloads — this test drives no re-enrichment, so it must
+// record ZERO hits (the upstream_stub_contract subtest proves the fetch
+// stayed on the search leg).
+type qaSerialUpstream struct {
+	baseURL string
+	srv     *httptest.Server
+	mu      sync.Mutex
+	seen    []qaSerialUpstreamReq
+}
+
+// qaSerialAnime builds one upstream anime payload (the v1 shape Convert
+// decodes; score is a decimal STRING upstream; url/image stay relative —
+// Convert projects them absolute against the resolved origin, so the
+// document-side assertions below double as the no-network proof).
+func qaSerialAnime(id int, name, russian, kind string, episodes int, aired, score string) map[string]any {
+	return map[string]any{
+		"id": id, "name": name, "russian": russian, "kind": kind, "status": "released",
+		"score": score, "episodes": episodes, "aired_on": aired,
+		"description": "qa serial stub " + name,
+		"url":         "/animes/" + strconv.Itoa(id) + "-qa",
+		"image":       map[string]any{"original": "/images/animes/" + strconv.Itoa(id) + ".jpg"},
+		"genre": []any{
+			map[string]any{"name": "Action", "russian": "Экшен"},
+		},
+	}
+}
+
+// The four stub payloads — ids far from any real upstream assignment, values
+// re-derived independently of the plugin suites' fixtures (no-coincidence
+// discipline). Bleach covers BOTH cours rows: they derive the same search
+// title under the shared grammar's season cut.
+var (
+	qaSerialAnimeBleach = qaSerialAnime(901, "Bleach", "Блич", "tv", 366, "2004-10-05", "8.3")
+	qaSerialAnimeAmber  = qaSerialAnime(902, "Amber Peak", "Янтарный пик", "tv", 12, "2011-04-01", "7.7")
+	qaSerialAnimeWoo    = qaSerialAnime(903, "Extraordinary Attorney Woo", "Необычный адвокат У Ён У", "tv", 16, "2022-06-29", "8.6")
+	qaSerialAnimeRibbon = qaSerialAnime(904, "The Ribbon Hero", "Ленточный герой", "ona", 1, "2020-01-01", "6.5")
+)
+
+// qaSerialSearchList serves the search leg: the four derived series titles of
+// this e2e's fixture libraries, each a SINGLE-candidate list so selection is
+// deterministic by construction (the preference score's decoy semantics are
+// the joint test's territory).
+var qaSerialSearchList = map[string][]map[string]any{
+	qaSerialBleachTitle: {qaSerialAnimeBleach},
+	qaSerialAmberTitle:  {qaSerialAnimeAmber},
+	qaSerialCyrTitle:    {qaSerialAnimeWoo},
+	qaSerialRibbonTitle: {qaSerialAnimeRibbon},
+}
+
+// qaSerialByID serves the anchored by-id endpoint (same payloads, keyed by
+// the stringified id).
+var qaSerialByID = map[string]map[string]any{
+	"901": qaSerialAnimeBleach,
+	"902": qaSerialAnimeAmber,
+	"903": qaSerialAnimeWoo,
+	"904": qaSerialAnimeRibbon,
+}
+
+// qaSerialStartUpstream starts the stub; its URL is what the server
+// subprocess env hands the plugin via MELLIFERA_SHIKIMORI_UPSTREAM.
+func qaSerialStartUpstream(t *testing.T) *qaSerialUpstream {
+	t.Helper()
+	s := &qaSerialUpstream{}
+	mux := http.NewServeMux()
+	mux.HandleFunc(qaSerialUpstreamSearch, func(w http.ResponseWriter, r *http.Request) {
+		s.record(r)
+		list, ok := qaSerialSearchList[r.URL.Query().Get("search")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		qaSerialWriteJSON(t, w, list)
+	})
+	mux.HandleFunc(qaSerialUpstreamSearch+"/", func(w http.ResponseWriter, r *http.Request) {
+		s.record(r)
+		e, ok := qaSerialByID[strings.TrimPrefix(r.URL.Path, qaSerialUpstreamSearch+"/")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		qaSerialWriteJSON(t, w, e)
+	})
+	s.srv = httptest.NewServer(mux)
+	s.baseURL = s.srv.URL
+	t.Cleanup(s.srv.Close)
+	return s
+}
+
+func (s *qaSerialUpstream) record(r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seen = append(s.seen, qaSerialUpstreamReq{
+		method: r.Method, path: r.URL.Path, query: r.URL.RawQuery,
+		ua: r.Header.Get("User-Agent"),
+	})
+}
+
+func (s *qaSerialUpstream) requests() []qaSerialUpstreamReq {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]qaSerialUpstreamReq(nil), s.seen...)
+}
+
+func qaSerialWriteJSON(t *testing.T, w http.ResponseWriter, v any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Errorf("stub write: %v", err)
+	}
+}
+
 // TestQASerial_JointLibraryE2E is the Tier-1 joint contract: both ground-truth
 // fixture libraries through the REAL subprocess pipeline and the REAL API.
 func TestQASerial_JointLibraryE2E(t *testing.T) {
@@ -143,14 +277,17 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 	fxA := qaSerialWriteCoursFixtures(t)
 	fxB := qaSerialWriteCyrillicFixtures(t)
 
-	// HERMETIC: all six plugin binaries are pointed at explicitly (the shipped
-	// startServer predates the serial plugins and falls back to repo-local
-	// bin/serial-* for them — non-hermetic by its own comment's standard).
+	// HERMETIC: the stub upstream starts FIRST (its URL feeds the server env's
+	// MELLIFERA_SHIKIMORI_UPSTREAM), and all six plugin binaries are pointed at
+	// explicitly (the shipped startServer predates the serial plugins and falls
+	// back to repo-local bin/serial-* for them — non-hermetic by its own
+	// comment's standard).
+	up := qaSerialStartUpstream(t)
 	srv := qaSerialStartServer(t, qaSerialServerBins{
 		server: serverBin, baseScanner: baseScannerBin, tvParser: tvParserBin,
 		imageEnricher: imageEnricherBin, serialScanner: serialScannerBin,
 		serialParser: serialParserBin, frameGrabber: frameGrabberBin,
-	}, tmp, "qa-serial-admin-token")
+	}, up.baseURL, tmp, "qa-serial-admin-token")
 	client := &http.Client{Timeout: httpTimeout}
 
 	// --- scan library A (noisy cours) ---
@@ -289,27 +426,43 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 			probes   bool
 			backing  string
 			sidecars int
+			// The shikimori contract (qaSerialSearchList's stub candidate for
+			// this row's derived search title): the RU-first title pair, the
+			// kind, and the identifier anchor.
+			shikID      int
+			shikRomaji  string
+			shikRussian string
+			shikKind    string
 		}{
-			{qaSerialSeriesByRel(seriesA)[qaSerialDirS04], qaSerialBleachTitle, 4, false, "directory", 1},
-			{qaSerialSeriesByRel(seriesA)[qaSerialDirS05], qaSerialBleachTitle, 5, false, "directory", 0},
+			{qaSerialSeriesByRel(seriesA)[qaSerialDirS04], qaSerialBleachTitle, 4, false, "directory", 1,
+				901, "Bleach", "Блич", "tv"},
+			{qaSerialSeriesByRel(seriesA)[qaSerialDirS05], qaSerialBleachTitle, 5, false, "directory", 0,
+				901, "Bleach", "Блич", "tv"},
 			// The canonical trailing-decoration shape (unified-parser): the
 			// roman-sequel marker gives the explicit season 2 and the stripped
 			// title — the always-present-season contract on a name the old
 			// grammar read as decoration-less garbage.
-			{qaSerialSeriesByRel(seriesA)[qaSerialDirDecorated], "Amber Peak", 2, false, "directory", 0},
-			{seriesB[0], qaSerialCyrTitle, 1, false, "directory", 0},
+			{qaSerialSeriesByRel(seriesA)[qaSerialDirDecorated], qaSerialAmberTitle, 2, false, "directory", 0,
+				902, "Amber Peak", "Янтарный пик", "tv"},
+			{seriesB[0], qaSerialCyrTitle, 1, false, "directory", 0,
+				903, "Extraordinary Attorney Woo", "Необычный адвокат У Ён У", "tv"},
 			// The trailing-CamelCase group-tag strip applies after ANY separator
 			// (specs/serial-library/spec.md, "Name-driven … inference"): this
 			// file-backed row pins the underscore-separated shape end-to-end,
 			// alongside the plugin-space/dot/underscore rows in the parser's
 			// TestSeriesNameGrammar.
-			{qaSerialSeriesByRel(seriesA)[qaSerialRibbonRel], qaSerialRibbonTitle, 1, true, "file", 0},
+			{qaSerialSeriesByRel(seriesA)[qaSerialRibbonRel], qaSerialRibbonTitle, 1, true, "file", 0,
+				904, "The Ribbon Hero", "Ленточный герой", "ona"},
 		} {
-			doc := parseAsyncDoc(t, qaSerialSeriesDocument(t, client, srv.baseURL, "qa-serial-admin-token", tc.series.ID))
-			// Namespace write invariant: ONLY serial-parser wrote to the series.
-			for ns := range doc.Sources {
-				if ns != "serial-parser" {
-					t.Errorf("series %q: stray source namespace %q (frame-grabber must skip series documents)", tc.series.RelativePath, ns)
+			raw := qaSerialSeriesDocument(t, client, srv.baseURL, "qa-serial-admin-token", tc.series.ID)
+			doc := parseAsyncDoc(t, raw)
+			// Namespace write contract (the enrichment change's box 6.1 joint
+			// round trip is the oracle): the serial chain writes serial-parser
+			// AND shikimori to a series row; frame-grabber still skips series
+			// documents.
+			for namespace := range doc.Sources {
+				if namespace != "serial-parser" && namespace != "shikimori" {
+					t.Errorf("series %q: stray source namespace %q (only serial-parser + shikimori write series documents)", tc.series.RelativePath, namespace)
 				}
 			}
 			ns := doc.Sources["serial-parser"]
@@ -324,17 +477,51 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 			if season := asyncInt(ns, "season"); season != tc.season {
 				t.Errorf("series %q: season = %d, want %d", tc.series.RelativePath, season, tc.season)
 			}
+			// The shikimori namespace: the RU-first projection of the stub
+			// candidate the search leg selected (one candidate per derived
+			// title, so the selection is deterministic by construction).
+			shik := doc.Sources["shikimori"]
+			if shik == nil {
+				t.Fatalf("series %q: sources.shikimori missing (stages %v)", tc.series.RelativePath, doc.Stages)
+			}
+			shikTitle, _ := shik["title"].(map[string]any)
+			if asyncStr(shikTitle, "romaji") != tc.shikRomaji || asyncStr(shikTitle, "russian") != tc.shikRussian || asyncStr(shik, "kind") != tc.shikKind {
+				t.Errorf("series %q: sources.shikimori = %v, want title{romaji:%s russian:%s} kind %s (the stub candidate %d)",
+					tc.series.RelativePath, shik, tc.shikRomaji, tc.shikRussian, tc.shikKind, tc.shikID)
+			}
+			// identifiers.shikimori_id — the anchor a re-enrichment match keys
+			// on (the joint test drives the anchored second leg; this e2e pins
+			// that the anchor LANDED on the first).
+			var fullDoc map[string]any
+			if err := json.Unmarshal(raw, &fullDoc); err != nil {
+				t.Fatalf("series %q: decode document: %v", tc.series.RelativePath, err)
+			}
+			ids, _ := fullDoc["identifiers"].(map[string]any)
+			if got, _ := ids["shikimori_id"].(float64); int(got) != tc.shikID {
+				t.Errorf("series %q: identifiers.shikimori_id = %v, want %d (the stub candidate's anchor)", tc.series.RelativePath, ids["shikimori_id"], tc.shikID)
+			}
 			// Core-stamped machinery reached the series level (D5: same rules
-			// as items), and the skipped frame-grabber stage is recorded, not
-			// an error.
-			if doc.Provenance["title"] == nil || asyncStr(doc.Provenance["title"], "plugin_id") != "serial-parser" {
-				t.Errorf("series %q: _provenance.title missing or not serial-parser: %v", tc.series.RelativePath, doc.Provenance["title"])
+			// as items), per LAST WRITER: shikimori owns title (its namespace
+			// carries one); serial-parser's season stamp survives (the
+			// shikimori namespace carries no season field).
+			if asyncStr(doc.Provenance["title"], "plugin_id") != "shikimori" {
+				t.Errorf("series %q: _provenance.title = %v, want the shikimori write", tc.series.RelativePath, doc.Provenance["title"])
+			}
+			if asyncStr(doc.Provenance["season"], "plugin_id") != "serial-parser" {
+				t.Errorf("series %q: _provenance.season = %v, want the serial-parser write", tc.series.RelativePath, doc.Provenance["season"])
+			}
+			// The no-network proof at document level: the provenance source_url
+			// is the STUB origin (Convert projects the payload url absolute
+			// against the resolved upstream base — a live fetch would name
+			// shikimori.io).
+			if su := asyncStr(doc.Provenance["title"], "source_url"); !strings.HasPrefix(su, up.baseURL) {
+				t.Errorf("series %q: provenance source_url = %q, want the stub origin %q", tc.series.RelativePath, su, up.baseURL)
 			}
 			if len(doc.View) == 0 {
 				t.Errorf("series %q: _view empty (core must project a view)", tc.series.RelativePath)
 			}
-			if !asyncStageHas(doc.Stages, "serial-parser", "ok") || !asyncStageHas(doc.Stages, "frame-grabber", "skipped") {
-				t.Errorf("series %q: _stages = %v, want {serial-parser ok} + {frame-grabber skipped}", tc.series.RelativePath, doc.Stages)
+			if !asyncStageHas(doc.Stages, "serial-parser", "ok") || !asyncStageHas(doc.Stages, "shikimori", "ok") || !asyncStageHas(doc.Stages, "frame-grabber", "skipped") {
+				t.Errorf("series %q: _stages = %v, want {serial-parser ok} + {shikimori ok} + {frame-grabber skipped}", tc.series.RelativePath, doc.Stages)
 			}
 			// Marker facts survived enrichment losslessly.
 			if doc.Parsed["serial_record"] != true || asyncStr(doc.Parsed, "backing") != tc.backing ||
@@ -354,6 +541,53 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 			if tc.backing == "file" && len(probe) == 0 {
 				t.Errorf("series %q: ffprobe empty, want the file-backed record's probe JSON", tc.series.RelativePath)
 			}
+		}
+	})
+
+	// The upstream contract at the stub: the five series rows fetched exactly
+	// five anime SEARCHES (both cours rows derive "Bleach"), each GET carrying
+	// the bounded page size and the application User-Agent, and the by-id
+	// endpoint stayed UNREACHED — this test drives no re-enrichment, so an
+	// anchored fetch here would mean a settled document got enriched twice.
+	// Fetch pacing (the gate's min_interval) is the joint test's checkpoint,
+	// not this one.
+	t.Run("upstream_stub_contract", func(t *testing.T) {
+		reqs := up.requests()
+		if len(reqs) != 5 {
+			t.Fatalf("upstream saw %d requests, want 5 (one search per series row): %+v", len(reqs), reqs)
+		}
+		searches := map[string]int{}
+		for i, r := range reqs {
+			if r.method != http.MethodGet || r.path != qaSerialUpstreamSearch {
+				t.Errorf("request %d: %s %s, want GET %s (the search leg; by-id is re-enrichment territory)", i, r.method, r.path, qaSerialUpstreamSearch)
+				continue
+			}
+			if !strings.HasPrefix(r.ua, "mellifera/") {
+				t.Errorf("request %d: User-Agent = %q, want the mellifera application UA (never a library default)", i, r.ua)
+			}
+			q, err := url.ParseQuery(r.query)
+			if err != nil {
+				t.Errorf("request %d: bad query %q: %v", i, r.query, err)
+				continue
+			}
+			if q.Get("limit") == "" {
+				t.Errorf("request %d: search query %q carries no bounded page size", i, r.query)
+			}
+			searches[q.Get("search")]++
+		}
+		want := map[string]int{
+			qaSerialBleachTitle: 2,
+			qaSerialAmberTitle:  1,
+			qaSerialCyrTitle:    1,
+			qaSerialRibbonTitle: 1,
+		}
+		for title, n := range want {
+			if searches[title] != n {
+				t.Errorf("search %q seen %d times, want %d; searches seen: %v", title, searches[title], n, searches)
+			}
+		}
+		if len(searches) != len(want) {
+			t.Errorf("searches cover %v, want exactly the derived titles %v", searches, want)
 		}
 	})
 
@@ -427,6 +661,12 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 			if !asyncStageHas(doc.Stages, "serial-parser", "ok") {
 				t.Errorf("%q: no {serial-parser ok} stage: %v", w.rel, doc.Stages)
 			}
+			// Episode documents never carry a shikimori namespace (the
+			// episode-shape dispatch skips them — series rows own the anime
+			// match).
+			if _, present := doc.Sources["shikimori"]; present {
+				t.Errorf("%q: sources.shikimori leaked onto an episode document: %v", w.rel, doc.Sources["shikimori"])
+			}
 		}
 		// The Cyrillic sidecar association regardless of script: E02's SUB .ass
 		// links by SxxExx with an EMPTY language (SUB is not a language folder).
@@ -466,6 +706,11 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 		}
 		if !asyncStageHas(doc.Stages, "serial-parser", "ok") {
 			t.Errorf("file-backed episode: _stages = %v, want a {serial-parser ok} stage (the film path applies)", doc.Stages)
+		}
+		// The same episode-shape dispatch: the file's EPISODE item carries no
+		// shikimori namespace even though its own series row does.
+		if _, present := doc.Sources["shikimori"]; present {
+			t.Errorf("file-backed episode: sources.shikimori leaked onto an episode document: %v", doc.Sources["shikimori"])
 		}
 	})
 
@@ -566,9 +811,11 @@ type qaSerialServerBins struct {
 }
 
 // qaSerialStartServer mirrors the shipped startServer harness but points ALL
-// SIX plugins (the serial trio included) at explicit binaries and returns the
+// SIX plugins (the serial trio included) at explicit binaries, pins the
+// shikimori plugin's upstream to the stub origin (the plugin child inherits
+// the server env and bakes it into every fetch template), and returns the
 // data directory the thumbs land under.
-func qaSerialStartServer(t *testing.T, bins qaSerialServerBins, tmp, token string) qaSerialServer {
+func qaSerialStartServer(t *testing.T, bins qaSerialServerBins, upstream, tmp, token string) qaSerialServer {
 	t.Helper()
 	addr := net.JoinHostPort("127.0.0.1", freePort(t))
 	dataDir := filepath.Join(tmp, "data")
@@ -582,6 +829,8 @@ func qaSerialStartServer(t *testing.T, bins qaSerialServerBins, tmp, token strin
 		"MELLIFERA_IMAGE_ENRICHER="+bins.imageEnricher,
 		"MELLIFERA_SERIAL_PARSER="+bins.serialParser,
 		"MELLIFERA_FRAME_GRABBER="+bins.frameGrabber,
+		"MELLIFERA_SHIKIMORI="+shikimoriBin(t, tmp),
+		"MELLIFERA_SHIKIMORI_UPSTREAM="+upstream,
 		"MELLIFERA_LISTEN="+addr,
 	)
 	var log strings.Builder

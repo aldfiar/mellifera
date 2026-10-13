@@ -112,7 +112,7 @@ func TestRunSourceRetryable(t *testing.T) {
 			tc.src.mergeCalls = 0
 			sr, status, attempts := runSourceRetryable(
 				context.Background(), resolverOf(tc.src, tc.resolveErr),
-				binding("tv-parser", 1, true), mod, base, 3, time.Millisecond,
+				binding("tv-parser", 1, true), mod, base, map[string]any{}, nil, 3, time.Millisecond,
 			)
 			if status != tc.wantStatus {
 				t.Fatalf("ledgerStatus = %q, want %q", status, tc.wantStatus)
@@ -144,7 +144,7 @@ func TestRunSourceRetryable_CtxCancel(t *testing.T) {
 	defer cancel()
 	sr, status, attempts := runSourceRetryable(
 		ctx, resolverOf(src, nil), binding("tv-parser", 1, true), mod,
-		&scannerv1.IdentifyResult{}, 3, 100*time.Millisecond,
+		&scannerv1.IdentifyResult{}, map[string]any{}, nil, 3, 100*time.Millisecond,
 	)
 	if status != "" {
 		t.Fatalf("ledgerStatus = %q, want \"\" (ctx abort is not a terminal outcome)", status)
