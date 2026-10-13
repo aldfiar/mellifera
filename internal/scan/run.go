@@ -110,7 +110,10 @@ type notifier func(ctx context.Context, libraryID int64)
 // notifier (the async-enqueue seam, S5). Run is the verbatim contracts.md §7
 // entrypoint. enrich is the retained serial-path seam — scan no longer invokes
 // it from persist (enrichment is async via notify); it stays wired so the serial
-// path remains available and tests can assert it is NOT called inline.
+// path remains available and tests can assert it is NOT called inline. A clean
+// drain — the precondition for the sweep and the notify — is a CONFIRMED clean
+// completion (the scanner stream reported nil) plus a live context; anything
+// less is a warning and neither sweep nor notify runs.
 func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolve scannerResolver, enrich enricher, notify notifier, libraryID int64) (Result, error) {
 	res := Result{LibraryID: libraryID, StartedAt: time.Now().UTC()}
 
@@ -132,7 +135,7 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 		res.Warnings = append(res.Warnings, optsWarn)
 	}
 
-	ch, err := sc.Scan(ctx, req)
+	ss, err := sc.Scan(ctx, req)
 	if err != nil {
 		return finish(res), fmt.Errorf("scan: open stream: %w", err)
 	}
@@ -140,22 +143,37 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 	// Drain at store-write speed (INV4, R9). The select on ctx.Done() lets a
 	// cancelled context abort even while blocked waiting for the next file
 	// (B6); the scanner subprocess observes the same ctx and closes up cleanly.
-	// notify fires ONLY after a clean drain (the !ok branch) — a cancelled
-	// context returns before notify, so a half-drained scan never signals the
-	// queue (B7: Notify is NOT called on ctx cancel). The series sweep runs in
-	// that same clean-drain branch and NOWHERE else: a scan whose stream did
-	// not drain cleanly must never advance a series row it never observed to
-	// "deleted" (serials-library box 1.6).
+	// notify and the series sweep fire ONLY after a provably clean drain — a
+	// CONFIRMED clean completion (the stream reported nil) plus a live context.
+	// A closed Files channel alone proves nothing: a cancelled context returns
+	// the context error, and a stream that ended before completing (a
+	// mid-stream error, or a bare close carrying no terminal confirmation)
+	// records a warning and returns WITHOUT sweeping or notifying (the B7
+	// analog: a half-drained scan never signals the queue). The series sweep
+	// runs in that confirmed-clean branch and NOWHERE else: a scan whose stream
+	// did not drain cleanly must never advance a series row it never observed
+	// to "deleted" (serials-library box 1.6).
 	observed := make(map[string]bool)
 	for {
 		select {
 		case <-ctx.Done():
 			return finish(res), ctx.Err()
-		case f, ok := <-ch:
+		case f, ok := <-ss.Files:
 			if !ok {
-				// Clean drain: sweep the library's series rows that this pass
-				// did not re-observe to "deleted" (vanished/renamed serial
-				// directories), then hand off to the queue.
+				// The gate is positive: a sweep needs a confirmed completion
+				// AND a live context. The ctx check also closes the select
+				// race where a cancel-closed channel and ctx.Done() are both
+				// ready — both arms then return the context error.
+				if cerr := ctx.Err(); cerr != nil {
+					return finish(res), cerr
+				}
+				if terr := ss.Err(); terr != nil {
+					res.Warnings = append(res.Warnings, fmt.Sprintf("scan: stream ended before completing: %v", terr))
+					return finish(res), nil
+				}
+				// Provably clean drain: sweep the library's series rows that
+				// this pass did not re-observe to "deleted" (vanished/renamed
+				// serial directories), then hand off to the queue.
 				if serr := sweepSeries(ctx, st, libraryID, observed, &res); serr != nil {
 					return finish(res), serr
 				}
@@ -189,7 +207,9 @@ const scanStatusDeleted = "deleted"
 // and no metadata is copied across identities). Already-deleted rows are left
 // untouched so repeated clean re-scans do not churn their updated_at. Errors
 // are soft (AC-6): a failed row sweep is a warning and the sweep continues; a
-// cancelled context aborts. The caller runs this ONLY after a clean drain.
+// cancelled context aborts. The caller runs this ONLY after a provably clean
+// drain: a CONFIRMED clean completion (the scanner stream reported nil) plus a
+// live context.
 func sweepSeries(ctx context.Context, st *store.Store, libraryID int64, observed map[string]bool, res *Result) error {
 	rows, err := st.QuerySeries(ctx, libraryID, "")
 	if err != nil {
@@ -340,10 +360,15 @@ func assembleSeriesDoc(f *scannerv1.DiscoveredFile, parsed map[string]any, rootP
 // nextSeriesStatus decides the lifecycle status scan persists for one serial
 // record — the series mirror of nextScanState over the same baseChanged /
 // canonical-JSON compare (serials-library box 1.4): "pending" for a first
-// sight, "stale" when the serial facts (parsed + ffprobe) changed, and the
-// prior status preserved for an unchanged re-scan (a ready series is not
-// regressed to pending). A lookup error is soft (AC-6): it falls back to
-// "pending" — the queue re-derives either way.
+// sight, "stale" when the serial facts (parsed + ffprobe) changed, "ready"
+// when the prior row was "deleted" but this pass re-observed it with unchanged
+// facts (the wrongful-tombstone self-heal: a truncated pass no longer sweeps,
+// and a healthy re-scan lifts the tombstones a historical truncated pass
+// wrote), and the prior status preserved for any other unchanged re-scan (a
+// ready series is not regressed to pending). A "deleted" row the pass does not
+// re-observe keeps "deleted" (sweepSeries's existing skip — no updated_at
+// churn). A lookup error is soft (AC-6): it falls back to "pending" — the
+// queue re-derives either way.
 func nextSeriesStatus(ctx context.Context, st *store.Store, libraryID int64, rel string, refreshed map[string]any, res *Result) string {
 	prior, err := st.GetSeriesByPath(ctx, libraryID, rel)
 	if err != nil {
@@ -352,18 +377,24 @@ func nextSeriesStatus(ctx context.Context, st *store.Store, libraryID int64, rel
 	if baseChanged(prior.Document, refreshed) {
 		return scanStatusStale
 	}
+	if prior.Status == scanStatusDeleted {
+		return scanStatusReady // re-observed tombstone: self-heal (fix-truncated-scan-sweep D3)
+	}
 	return prior.Status // unchanged re-scan: preserve (don't regress ready)
 }
 
-// scanStatusPending/scanStatusStale are the lifecycle values scan writes for a
-// persisted item. They are owned by internal/enrich (state.go INV-status-owner);
-// scan emits the literals it needs rather than importing enrich's unexported
-// consts (exporting them would breach the enrich <=8 exported-symbol budget).
-// The async worker/queue consume these verbatim; scan never produces the other
-// lifecycle values (failed/parsed/enriched/ready) post-B1.
+// scanStatusPending/scanStatusStale/scanStatusReady are the lifecycle values
+// scan writes for a persisted item or series. They are owned by internal/enrich
+// (state.go INV-status-owner); scan emits the literals it needs rather than
+// importing enrich's unexported consts (exporting them would breach the enrich
+// <=8 exported-symbol budget). The async worker/queue consume these verbatim;
+// scan produces "ready" ONLY as the nextSeriesStatus self-heal of a re-observed
+// "deleted" row, and never produces the remaining lifecycle values
+// (failed/parsed/enriched) post-B1.
 const (
 	scanStatusPending = "pending"
 	scanStatusStale   = "stale"
+	scanStatusReady   = "ready"
 )
 
 // nextScanState decides the lifecycle status scan persists for one file AND

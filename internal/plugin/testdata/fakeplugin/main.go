@@ -49,15 +49,18 @@ func main() {
 
 // fakeScanner is the sdk.Scanner test implementation: Scan emits a fixed pair
 // of discovered files (one with an ffprobe blob, one without), Identify echoes
-// the file id + module type. Channel is buffered so Scan can fill + close.
+// the file id + module type. Channel is buffered so Scan can fill + close; the
+// full-emission close is reported as a clean terminal state before the close.
 type fakeScanner struct{}
 
-func (fakeScanner) Scan(_ context.Context, _ *scannerv1.ScanRequest) (<-chan *scannerv1.DiscoveredFile, error) {
+func (fakeScanner) Scan(_ context.Context, _ *scannerv1.ScanRequest) (*sdk.ScanStream, error) {
 	ch := make(chan *scannerv1.DiscoveredFile, 2)
 	ch <- &scannerv1.DiscoveredFile{FileId: "f1", RelativePath: "show/s01e01.mkv", FfprobeJson: []byte(`{"format":{"duration":"1800"}}`)}
 	ch <- &scannerv1.DiscoveredFile{FileId: "f2", RelativePath: "show/s01e02.mkv"}
-	close(ch)
-	return ch, nil
+	ss := sdk.NewScanStream(ch)
+	ss.End(nil)
+	close(ch) // after End: the terminal report precedes the Files close
+	return ss, nil
 }
 
 func (fakeScanner) Identify(_ context.Context, req *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error) {

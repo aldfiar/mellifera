@@ -34,8 +34,9 @@ const baseConfidence = 0.5
 // Scan resolves + validates the library root, then streams one DiscoveredFile per
 // media file found under it. The root resolution failure is the only hard error;
 // per-file problems (escape, ffprobe) are skipped or soft-failed inside walk
-// (AC-4, AC-6) and never abort the stream.
-func (s *scannerImpl) Scan(ctx context.Context, req *scannerv1.ScanRequest) (<-chan *scannerv1.DiscoveredFile, error) {
+// (AC-4, AC-6) and never abort the stream. The walk's terminal state (clean
+// completion or ctx-cancelled abort) is reported on the returned ScanStream.
+func (s *scannerImpl) Scan(ctx context.Context, req *scannerv1.ScanRequest) (*sdk.ScanStream, error) {
 	root := req.GetLibraryPath()
 	if root == "" {
 		return nil, errors.New("scanner: scan request has empty library_path")

@@ -58,7 +58,7 @@ func buildFakePlugin(t *testing.T) string {
 // inject it (it exists so a fake-launched entry can reach "serving").
 type mockScanner struct{}
 
-func (mockScanner) Scan(context.Context, *scannerv1.ScanRequest) (<-chan *scannerv1.DiscoveredFile, error) {
+func (mockScanner) Scan(context.Context, *scannerv1.ScanRequest) (*sdk.ScanStream, error) {
 	return nil, nil
 }
 func (mockScanner) Identify(context.Context, *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error) {
@@ -214,12 +214,12 @@ func TestManager_RoundTrip(t *testing.T) {
 		t.Fatalf("Scanner: %v", err)
 	}
 
-	ch, err := sc.Scan(ctx, &scannerv1.ScanRequest{LibraryPath: ".", ModuleType: "tv"})
+	ss, err := sc.Scan(ctx, &scannerv1.ScanRequest{LibraryPath: ".", ModuleType: "tv"})
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
 	var files []*scannerv1.DiscoveredFile
-	for f := range ch {
+	for f := range ss.Files {
 		files = append(files, f)
 	}
 	if len(files) != 2 {

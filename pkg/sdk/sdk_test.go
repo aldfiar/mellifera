@@ -5,6 +5,8 @@ package sdk
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,19 +34,22 @@ type fakeScanner struct {
 	result *scannerv1.IdentifyResult
 }
 
-func (f fakeScanner) Scan(ctx context.Context, _ *scannerv1.ScanRequest) (<-chan *scannerv1.DiscoveredFile, error) {
+func (f fakeScanner) Scan(ctx context.Context, _ *scannerv1.ScanRequest) (*ScanStream, error) {
 	ch := make(chan *scannerv1.DiscoveredFile, len(f.files))
+	ss := NewScanStream(ch)
 	go func() {
-		defer close(ch)
+		defer close(ch) // after End: the terminal report precedes the Files close
 		for _, fl := range f.files {
 			select {
 			case ch <- fl:
 			case <-ctx.Done():
+				ss.End(ctx.Err())
 				return
 			}
 		}
+		ss.End(nil)
 	}()
-	return ch, nil
+	return ss, nil
 }
 
 func (f fakeScanner) Identify(context.Context, *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error) {
@@ -57,22 +62,47 @@ func (f fakeScanner) Identify(context.Context, *scannerv1.IdentifyRequest) (*sca
 // ctx propagation, not from a server-initiated close.
 type oneThenBlockScanner struct{}
 
-func (oneThenBlockScanner) Scan(ctx context.Context, _ *scannerv1.ScanRequest) (<-chan *scannerv1.DiscoveredFile, error) {
+func (oneThenBlockScanner) Scan(ctx context.Context, _ *scannerv1.ScanRequest) (*ScanStream, error) {
 	ch := make(chan *scannerv1.DiscoveredFile, 1)
+	ss := NewScanStream(ch)
 	go func() {
-		defer close(ch)
+		defer close(ch) // after End: the terminal report precedes the Files close
 		select {
 		case ch <- &scannerv1.DiscoveredFile{FileId: "only"}:
 		case <-ctx.Done():
+			ss.End(ctx.Err())
 			return
 		}
 		<-ctx.Done()
+		ss.End(ctx.Err())
 	}()
-	return ch, nil
+	return ss, nil
 }
 
 func (oneThenBlockScanner) Identify(context.Context, *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error) {
 	return &scannerv1.IdentifyResult{FileId: "only", MediaType: "tv", ParserName: "tv"}, nil
+}
+
+// breakMidStreamScanner emits its files, then reports err as the stream's
+// terminal state — the producer-side shape of a walk that aborted after
+// emitting. It drives the server-break test: the terminal error must surface
+// over the wire, and the client's ScanStream must end non-nil (never as a
+// clean end-of-stream).
+type breakMidStreamScanner struct {
+	err error
+}
+
+func (b breakMidStreamScanner) Scan(context.Context, *scannerv1.ScanRequest) (*ScanStream, error) {
+	ch := make(chan *scannerv1.DiscoveredFile, 1)
+	ch <- &scannerv1.DiscoveredFile{FileId: "before-break"}
+	ss := NewScanStream(ch)
+	ss.End(b.err)
+	close(ch) // after End: the terminal report precedes the Files close
+	return ss, nil
+}
+
+func (breakMidStreamScanner) Identify(context.Context, *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error) {
+	return &scannerv1.IdentifyResult{FileId: "before-break", MediaType: "tv", ParserName: "tv"}, nil
 }
 
 // serveInProcess serves a ScannerPlugin (server side: scannerServer adapting
@@ -132,14 +162,14 @@ func serveInProcess(t *testing.T, impl Scanner) Scanner {
 	return sc
 }
 
-// drainOrTimeout reads ch until it closes. It reports false if ch is still
-// open after d, flagging a producer leak / unpropagated cancellation.
-func drainOrTimeout(t *testing.T, ch <-chan *scannerv1.DiscoveredFile, d time.Duration) bool {
+// drainOrTimeout reads ss.Files until it closes. It reports false if Files is
+// still open after d, flagging a producer leak / unpropagated cancellation.
+func drainOrTimeout(t *testing.T, ss *ScanStream, d time.Duration) bool {
 	t.Helper()
 	deadline := time.After(d)
 	for {
 		select {
-		case _, ok := <-ch:
+		case _, ok := <-ss.Files:
 			if !ok {
 				return true
 			}
@@ -180,13 +210,18 @@ func TestScannerPlugin_RoundTrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sc := serveInProcess(t, fakeScanner{files: tc.files, result: tc.result})
 
-			ch, err := sc.Scan(context.Background(), &scannerv1.ScanRequest{LibraryPath: "/lib", ModuleType: "tv"})
+			ss, err := sc.Scan(context.Background(), &scannerv1.ScanRequest{LibraryPath: "/lib", ModuleType: "tv"})
 			if err != nil {
 				t.Fatalf("Scan: %v", err)
 			}
-			got := drainAll(t, ch)
+			got := drainAll(t, ss)
 			if len(got) != len(tc.files) {
 				t.Fatalf("got %d files, want %d", len(got), len(tc.files))
+			}
+			// Clean end: a full drain over the harness must CONFIRM clean — the
+			// terminal-state case "clean end → Err() == nil".
+			if err := ss.Err(); err != nil {
+				t.Errorf("Err after clean drain = %v, want nil", err)
 			}
 			for i, want := range tc.files {
 				if got[i].FileId != want.FileId ||
@@ -213,10 +248,10 @@ func TestScannerPlugin_RoundTrip(t *testing.T) {
 	}
 }
 
-func drainAll(t *testing.T, ch <-chan *scannerv1.DiscoveredFile) []*scannerv1.DiscoveredFile {
+func drainAll(t *testing.T, ss *ScanStream) []*scannerv1.DiscoveredFile {
 	t.Helper()
 	var out []*scannerv1.DiscoveredFile
-	for f := range ch {
+	for f := range ss.Files {
 		out = append(out, f)
 	}
 	return out
@@ -230,20 +265,80 @@ func TestScan_ContextCancellation(t *testing.T) {
 	sc := serveInProcess(t, oneThenBlockScanner{})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ch, err := sc.Scan(ctx, &scannerv1.ScanRequest{LibraryPath: "/lib", ModuleType: "tv"})
+	ss, err := sc.Scan(ctx, &scannerv1.ScanRequest{LibraryPath: "/lib", ModuleType: "tv"})
 	if err != nil {
 		cancel()
 		t.Fatalf("Scan: %v", err)
 	}
 
-	first := <-ch // synchronization point: stream is open, server now blocked
+	first := <-ss.Files // synchronization point: stream is open, server now blocked
 	if first.FileId != "only" {
 		cancel()
 		t.Fatalf("first file: got %q, want %q", first.FileId, "only")
 	}
 
 	cancel() // mid-stream cancel; server will never close on its own
-	if !drainOrTimeout(t, ch, 3*time.Second) {
+	if !drainOrTimeout(t, ss, 3*time.Second) {
 		t.Fatal("channel did not close within 3s after ctx cancel (cancellation not propagated / producer leak)")
+	}
+	// Terminal-state case: a cancelled ctx ends as THE CTX ERROR — never as a
+	// clean end (a cancelled pass is not a completed observation).
+	if err := ss.Err(); !errors.Is(err, context.Canceled) {
+		t.Errorf("Err after ctx cancel = %v, want context.Canceled", err)
+	}
+}
+
+// TestScan_ServerBreaksMidStream is the terminal-state case that motivates the
+// ScanStream surface: a stream that terminates on its own with an error must
+// be DISTINGUISHABLE from a clean end-of-stream. The server-side fake reports
+// its abort via End(err); the adapter surfaces it as the stream result, and
+// the client's Recv classification must land it in Err — non-nil, carrying the
+// producer's error.
+func TestScan_ServerBreaksMidStream(t *testing.T) {
+	sc := serveInProcess(t, breakMidStreamScanner{err: errors.New("walk aborted mid-stream")})
+
+	ss, err := sc.Scan(context.Background(), &scannerv1.ScanRequest{LibraryPath: "/lib", ModuleType: "tv"})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if got := len(drainAll(t, ss)); got != 1 {
+		t.Fatalf("got %d files before the break, want 1", got)
+	}
+	if err := ss.Err(); err == nil {
+		t.Fatal("Err after a server-side break = nil, want the abort error (mid-stream failure must not read as clean end-of-stream)")
+	} else if !strings.Contains(err.Error(), "walk aborted mid-stream") {
+		t.Errorf("Err after the break = %v, want it to carry the producer's error", err)
+	}
+}
+
+// TestScanStream_UnconfirmedClose pins the load-bearing default of D1: a
+// ScanStream whose Files close WITHOUT any End report is NEVER clean — Err is
+// ErrScanUnconfirmed, the regression floor against an error-swallowing client.
+// This case is asserted directly on the ScanStream (a gRPC-transported stream
+// cannot be unconfirmed: the client-side Recv loop always classifies).
+func TestScanStream_UnconfirmedClose(t *testing.T) {
+	ch := make(chan *scannerv1.DiscoveredFile, 1)
+	close(ch)
+	ss := NewScanStream(ch)
+	for range ss.Files {
+	}
+	if err := ss.Err(); !errors.Is(err, ErrScanUnconfirmed) {
+		t.Errorf("Err after a bare close = %v, want ErrScanUnconfirmed", err)
+	}
+
+	// End(err) reports the error; End(nil) confirms clean; the first End wins.
+	aborted := NewScanStream(make(chan *scannerv1.DiscoveredFile, 1))
+	aborted.End(errors.New("aborted"))
+	if err := aborted.Err(); err == nil || err.Error() != "aborted" {
+		t.Errorf("Err after End(err) = %v, want the reported error", err)
+	}
+	aborted.End(nil)
+	if err := aborted.Err(); err == nil || err.Error() != "aborted" {
+		t.Errorf("Err after a second End = %v, want the FIRST report to win", err)
+	}
+	clean := NewScanStream(make(chan *scannerv1.DiscoveredFile, 1))
+	clean.End(nil)
+	if err := clean.Err(); err != nil {
+		t.Errorf("Err after End(nil) = %v, want nil (confirmed clean)", err)
 	}
 }

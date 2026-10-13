@@ -13,6 +13,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/structpb"
 
+	"github.com/mellifera/mellifera/pkg/sdk"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
 )
 
@@ -53,16 +54,19 @@ var mediaMime = map[string]string{
 // opts carries the advisory scanner options from ScanRequest.options (per
 // scanner.proto they are advisory, not required); they are accepted for
 // forward-compat and deferred for MVP, so the parameter is intentionally unused.
-func walk(ctx context.Context, root, moduleType string, _ *structpb.Struct) <-chan *scannerv1.DiscoveredFile {
+func walk(ctx context.Context, root, moduleType string, _ *structpb.Struct) *sdk.ScanStream {
 	imageMode := moduleType == "image"
 	extMap := mediaMime
 	if imageMode {
 		extMap = imageMime
 	}
 	ch := make(chan *scannerv1.DiscoveredFile, walkChanBound)
+	ss := sdk.NewScanStream(ch)
 	go func() {
-		defer close(ch)
-		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		defer close(ch) // after End: the terminal report precedes the Files close
+		// Per-entry errors are skipped inside the callback, so a non-nil walk
+		// error is a walk ABORT (a cancelled ctx) — reported, never swallowed.
+		ss.End(filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil // skip unreadable entries rather than abort the walk
 			}
@@ -84,9 +88,9 @@ func walk(ctx context.Context, root, moduleType string, _ *structpb.Struct) <-ch
 				return ctx.Err()
 			}
 			return nil
-		})
+		}))
 	}()
-	return ch
+	return ss
 }
 
 // toDiscovered builds the DiscoveredFile for one media file: a stable file_id

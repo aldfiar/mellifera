@@ -49,12 +49,12 @@ func TestScan_EndToEnd(t *testing.T) {
 	}
 
 	s := &scannerImpl{}
-	ch, err := s.Scan(context.Background(), &scannerv1.ScanRequest{LibraryPath: root, ModuleType: "tv"})
+	ss, err := s.Scan(context.Background(), &scannerv1.ScanRequest{LibraryPath: root, ModuleType: "tv"})
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
 	byRel := map[string]*scannerv1.DiscoveredFile{}
-	for f := range ch {
+	for f := range ss.Files {
 		byRel[f.GetRelativePath()] = f
 	}
 

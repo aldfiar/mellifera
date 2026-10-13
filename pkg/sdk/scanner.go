@@ -5,6 +5,9 @@ package sdk
 
 import (
 	"context"
+	"errors"
+	"io"
+	"sync"
 
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
@@ -26,14 +29,68 @@ type Capability struct {
 	ProtoService string
 }
 
+// ErrScanUnconfirmed is what ScanStream.Err reports when the producer closed
+// the Files channel without ever calling End: the stream's terminal state is
+// unproven, so a consumer must treat the drain as incomplete (never clean).
+var ErrScanUnconfirmed = errors.New("scanner stream closed without a terminal confirmation")
+
+// ScanStream is the streaming half of Scanner.Scan: the DiscoveredFile channel
+// plus a producer-side terminal report. The producer calls End exactly once —
+// nil for a confirmed clean completion, the abort error otherwise — BEFORE
+// closing Files; the consumer reads Err only after draining Files to closure.
+// That ordering needs no lock: the End write precedes the channel close in the
+// producer, and the channel's close happens-before the consumer's zero-value
+// receive, so the terminal state is visible to any Err read after the drain
+// (the Go memory model's channel ordering). An implementation that closes
+// Files without End is NEVER clean — Err then reports ErrScanUnconfirmed.
+type ScanStream struct {
+	Files <-chan *scannerv1.DiscoveredFile
+
+	mu     sync.Mutex
+	term   error
+	report bool
+}
+
+// NewScanStream wraps a Scan file channel in a ScanStream whose terminal state
+// is initially unconfirmed.
+func NewScanStream(files <-chan *scannerv1.DiscoveredFile) *ScanStream {
+	return &ScanStream{Files: files}
+}
+
+// End records the stream's terminal state: nil confirms a clean completion;
+// any other error aborts the stream. The producer MUST call End before closing
+// Files. The first End wins; later calls are no-ops.
+func (s *ScanStream) End(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.report {
+		return
+	}
+	s.report = true
+	s.term = err
+}
+
+// Err returns the stream's terminal state: nil = provably clean drain,
+// ErrScanUnconfirmed = the producer closed Files without reporting, otherwise
+// the producer's abort error. The consumer reads it only after Files closed.
+func (s *ScanStream) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.report {
+		return ErrScanUnconfirmed
+	}
+	return s.term
+}
+
 // Scanner is the capability interface every scanner plugin implements. It is
 // the only interface this feature ships: it has >=2 real implementations --
 // the subprocess client wrapper built by ScannerPlugin.GRPCClient and an
 // in-process test fake -- which justifies the interface at the plugin seam
-// (R8). Scan returns a channel (the streaming surface); Identify is a pure
-// unary parse. See package doc for the streaming contract.
+// (R8). Scan returns a ScanStream (the streaming surface plus the terminal
+// report); Identify is a pure unary parse. See package doc for the streaming
+// contract.
 type Scanner interface {
-	Scan(ctx context.Context, req *scannerv1.ScanRequest) (<-chan *scannerv1.DiscoveredFile, error)
+	Scan(ctx context.Context, req *scannerv1.ScanRequest) (*ScanStream, error)
 	Identify(ctx context.Context, req *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error)
 }
 
@@ -71,18 +128,25 @@ type scannerServer struct {
 	Impl Scanner
 }
 
-// Scan drains the author's channel and forwards each file over the stream.
+// Scan drains the author's ScanStream and forwards each file over the stream.
 // stream.Context() is passed to the author so a client disconnect cancels
-// their work; a failed Send (client gone) stops the forward.
+// their work; a failed Send (client gone) stops the forward. After the drain,
+// the author's terminal report surfaces over the wire: an aborted walk reaches
+// the client as a stream error, never as a clean end-of-stream. A bare close
+// (ErrScanUnconfirmed) stays clean here — that state is a client-side property
+// of the ScanStream surface, not a server fault.
 func (s *scannerServer) Scan(req *scannerv1.ScanRequest, stream grpc.ServerStreamingServer[scannerv1.DiscoveredFile]) error {
-	ch, err := s.Impl.Scan(stream.Context(), req)
+	ss, err := s.Impl.Scan(stream.Context(), req)
 	if err != nil {
 		return err
 	}
-	for f := range ch {
+	for f := range ss.Files {
 		if err := stream.Send(f); err != nil {
 			return err
 		}
+	}
+	if terr := ss.Err(); terr != nil && !errors.Is(terr, ErrScanUnconfirmed) {
+		return terr
 	}
 	return nil
 }
@@ -99,31 +163,47 @@ type scannerGRPC struct {
 }
 
 // Scan opens the server-streaming RPC and pumps received files into a bounded
-// channel. The open error is returned; any mid-stream Recv error (normal
-// end-of-stream or transport/cancellation) closes the channel. The select on
-// ctx.Done() prevents a producer leak when the consumer stops reading after
-// cancelling ctx.
-func (c *scannerGRPC) Scan(ctx context.Context, req *scannerv1.ScanRequest) (<-chan *scannerv1.DiscoveredFile, error) {
+// channel wrapped in a ScanStream. The open error is returned. The Recv loop
+// classifies its own termination into the stream's terminal report BEFORE the
+// deferred channel close, so a consumer that reads Err after draining can
+// distinguish a confirmed clean end-of-stream from a mid-stream failure:
+// io.EOF → End(nil); any other Recv error → End(err), except that a dead ctx
+// reports the ctx error (the transport error of a cancelled stream is noise).
+// The select on ctx.Done() prevents a producer leak when the consumer stops
+// reading after cancelling ctx.
+func (c *scannerGRPC) Scan(ctx context.Context, req *scannerv1.ScanRequest) (*ScanStream, error) {
 	stream, err := c.stub.Scan(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	ch := make(chan *scannerv1.DiscoveredFile, scanChanBound)
+	ss := NewScanStream(ch)
 	go func() {
+		// The deferred close runs after every End below: the terminal report
+		// precedes the Files close (the consumer reads Err only after the close).
 		defer close(ch)
 		for {
 			f, err := stream.Recv()
 			if err != nil {
+				switch {
+				case errors.Is(err, io.EOF):
+					ss.End(nil)
+				case ctx.Err() != nil:
+					ss.End(ctx.Err())
+				default:
+					ss.End(err)
+				}
 				return
 			}
 			select {
 			case ch <- f:
 			case <-ctx.Done():
+				ss.End(ctx.Err())
 				return
 			}
 		}
 	}()
-	return ch, nil
+	return ss, nil
 }
 
 // Identify forwards to the generated stub's unary Identify.

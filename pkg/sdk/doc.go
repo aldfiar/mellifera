@@ -36,9 +36,11 @@
 //     <=32) so a fast scanner cannot memory-blow a slow consumer; the scan
 //     orchestrator drains at store-write speed, providing natural
 //     backpressure (R9).
-//   - Streaming contract: Scan returns (<-chan *DiscoveredFile, error). The
-//     error is the stream-open failure (dial/initial-send error). Mid-stream
-//     termination -- normal end-of-stream (io.EOF) or transport/cancellation
-//     error -- closes the channel. The consumer detects completion via range
-//     exit; ctx cancellation propagates to the subprocess through gRPC.
+//   - Streaming contract: Scan returns (*ScanStream, error). The error is the
+//     stream-open failure (dial/initial-send error). Mid-stream termination --
+//     normal end-of-stream (io.EOF) or transport/cancellation error -- closes
+//     ScanStream.Files, and the producer classifies WHICH termination into
+//     End before that close: the consumer drains Files, then reads Err -- nil =
+//     provably clean drain, ErrScanUnconfirmed = close without a report, else
+//     the abort error. ctx cancellation propagates to the subprocess via gRPC.
 package sdk

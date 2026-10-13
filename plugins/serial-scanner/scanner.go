@@ -71,8 +71,10 @@ const serialConfidence = 0.5
 // is a fatal config error), then streams one DiscoveredFile per serial record /
 // episode on a bounded channel. The root resolution and config failures are the
 // only hard errors; per-file problems (probe soft-fails, deep videos, junk) are
-// handled inside scanTree and never abort the stream (AC-6).
-func (s *scannerImpl) Scan(ctx context.Context, req *scannerv1.ScanRequest) (<-chan *scannerv1.DiscoveredFile, error) {
+// handled inside scanTree and never abort the stream (AC-6). scanTree's
+// terminal state (completed walk or ctx-cancelled abort) is reported on the
+// returned ScanStream.
+func (s *scannerImpl) Scan(ctx context.Context, req *scannerv1.ScanRequest) (*sdk.ScanStream, error) {
 	root := req.GetLibraryPath()
 	if root == "" {
 		return nil, errors.New("serial-scanner: scan request has empty library_path")
@@ -88,11 +90,12 @@ func (s *scannerImpl) Scan(ctx context.Context, req *scannerv1.ScanRequest) (<-c
 	}
 	s.beginScan()
 	ch := make(chan *scannerv1.DiscoveredFile, walkChanBound)
+	ss := sdk.NewScanStream(ch)
 	go func() {
-		defer close(ch)
-		scanTree(ctx, s, absRoot, ch)
+		defer close(ch) // after End: the terminal report precedes the Files close
+		ss.End(scanTree(ctx, s, absRoot, ch))
 	}()
-	return ch, nil
+	return ss, nil
 }
 
 // Identify is the pure unary parse of one discovered file. For a serial record

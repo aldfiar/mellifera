@@ -87,15 +87,16 @@ type serialDirScan struct {
 // extension sets (extensionless smbdelete junk, .txt/.nfo, …) are excluded
 // silently — no warning, no record (D2 rule 5). Directories holding no direct
 // video (a sidecars-only folder, an empty dir) are not serials; their contents
-// are skipped. ctx cancellation stops the walk and closes the channel.
-func scanTree(ctx context.Context, s *scannerImpl, root string, out chan<- *scannerv1.DiscoveredFile) {
+// are skipped. ctx cancellation stops the walk and is returned as the terminal
+// error (a nil return is a completed walk).
+func scanTree(ctx context.Context, s *scannerImpl, root string, out chan<- *scannerv1.DiscoveredFile) error {
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return // unreadable root: nothing to discover (soft, like the walk skip)
+		return nil // unreadable root: nothing to discover (soft, like the walk skip)
 	}
 	for _, entry := range entries {
 		if ctx.Err() != nil {
-			return
+			return ctx.Err()
 		}
 		name := entry.Name()
 		switch {
@@ -111,6 +112,7 @@ func scanTree(ctx context.Context, s *scannerImpl, root string, out chan<- *scan
 			// silently (D2 rule 5).
 		}
 	}
+	return nil
 }
 
 // scanSerialDir classifies one depth-1 subdirectory and, when it holds at least

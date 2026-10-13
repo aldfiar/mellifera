@@ -250,8 +250,11 @@ func TestSeriesRenameNewIdentity(t *testing.T) {
 	old := seriesRow(t, s, libID, "Show")
 
 	// The directory was renamed on disk: the next pass emits the new identity
-	// only (and no longer re-observes "Show").
+	// only (and no longer re-observes "Show"). The pass opts in to a confirmed
+	// clean end (D4) — the old-row-tombstoned assertion needs the sweep, which
+	// runs only on a confirmed clean drain.
 	renamed := serialLibrary()
+	renamed.endClean = true
 	renamed.files[0] = mkFile("rec2", "Show Renamed", nil, nil)
 	renamed.identify["rec2"] = mkSerialRecord("rec2",
 		`{"serial_record":true,"dir_name_raw":"Show Renamed","backing":"directory","series_relative_path":"Show Renamed","series_sidecars":[]}`)
@@ -298,6 +301,65 @@ func TestSeriesRenameNewIdentity(t *testing.T) {
 	swept := seriesRow(t, s, libID, "Show")
 	if swept.Status != "deleted" {
 		t.Errorf("old identity status = %q, want deleted (post-drain sweep)", swept.Status)
+	}
+}
+
+// TestSeriesReobservedDeletedSelfHeals covers fix-truncated-scan-sweep 2.2
+// (D3): on a CONFIRMED clean pass, a "deleted" series row that the pass
+// re-observes with unchanged facts self-heals to "ready" (lifting the
+// tombstones a historical truncated pass wrote), changed facts still land
+// "stale" (the baseChanged rule fires first), and a "deleted" row the clean
+// pass never re-observes (the Ghost.Show shape) keeps "deleted" — the sweep's
+// existing skip, with no updated_at churn.
+func TestSeriesReobservedDeletedSelfHeals(t *testing.T) {
+	s, r, libID := setupSerialStore(t)
+	ctx := context.Background()
+
+	// endClean fakes throughout: the heal is a clean-pass behavior (D4).
+	clean := func() *fakeScanner {
+		sc := serialLibrary()
+		sc.endClean = true
+		return sc
+	}
+
+	scanSerial(t, s, r, libID, clean())
+	// (a) Force the wrongful tombstone, keeping the same document the scan
+	// wrote — the 2026-10-12 incident shape (status column flipped only).
+	show := seriesRow(t, s, libID, "Show")
+	show.Status = "deleted"
+	if err := s.PutSeries(ctx, show); err != nil {
+		t.Fatalf("tombstone Show: %v", err)
+	}
+	// (c) seed: a second deleted row the pass never re-observes (Ghost.Show).
+	ghost := store.Series{
+		ModuleID: "serial", LibraryID: libID, RelativePath: "Ghost.Show",
+		Document:      json.RawMessage(`{"parsed":{"serial_record":true},"ffprobe":{}}`),
+		SchemaVersion: 1, Status: "deleted",
+	}
+	if err := s.PutSeries(ctx, ghost); err != nil {
+		t.Fatalf("seed Ghost.Show: %v", err)
+	}
+
+	// (a) An unchanged clean re-scan re-observes Show → the tombstone lifts.
+	scanSerial(t, s, r, libID, clean())
+	if got := seriesRow(t, s, libID, "Show").Status; got != "ready" {
+		t.Errorf("re-observed deleted series status = %q, want ready (self-heal)", got)
+	}
+
+	// (b) A re-scan with changed serial facts lands "stale" — the baseChanged
+	// rule fires BEFORE the heal (a stale row must not mask a changed base).
+	changed := clean()
+	changed.identify["rec"] = mkSerialRecord("rec",
+		`{"serial_record":true,"dir_name_raw":"Show.2022.REPACK","backing":"directory","series_relative_path":"Show","series_sidecars":[]}`)
+	scanSerial(t, s, r, libID, changed)
+	if got := seriesRow(t, s, libID, "Show").Status; got != "stale" {
+		t.Errorf("changed-facts re-scan status = %q, want stale (baseChanged fires first)", got)
+	}
+
+	// (c) The un-re-observed deleted row keeps "deleted" after both clean
+	// passes — no wrongful resurrection, no updated_at churn.
+	if got := seriesRow(t, s, libID, "Ghost.Show").Status; got != "deleted" {
+		t.Errorf("un-re-observed deleted series status = %q, want deleted (sweep skip)", got)
 	}
 }
 

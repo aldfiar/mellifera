@@ -124,8 +124,8 @@ func TestWalk_ModuleTypeGating(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveRoot: %v", err)
 		}
-		ch := walk(context.Background(), resolved, "image", nil)
-		got := drain(ch)
+		ss := walk(context.Background(), resolved, "image", nil)
+		got := drain(ss.Files)
 		if len(got) != 1 || got[0].GetRelativePath() != "IMG.jpg" {
 			t.Fatalf("image walk = %d files %v, want exactly {IMG.jpg} (.mkv must be filtered)", len(got), rels(got))
 		}
@@ -148,8 +148,8 @@ func TestWalk_ModuleTypeGating(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveRoot: %v", err)
 		}
-		ch := walk(context.Background(), resolved, "tv", nil)
-		got := drain(ch)
+		ss := walk(context.Background(), resolved, "tv", nil)
+		got := drain(ss.Files)
 		rels := rels(got)
 		if len(rels) != 1 || rels[0] != "show.mkv" {
 			t.Fatalf("tv walk = %v, want exactly {show.mkv} (cover.jpg must NOT be discovered — R-I4)", rels)
@@ -167,11 +167,11 @@ func TestScan_ForwardsModuleType(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &scannerImpl{}
-	ch, err := s.Scan(context.Background(), &scannerv1.ScanRequest{LibraryPath: root, ModuleType: "image"})
+	ss, err := s.Scan(context.Background(), &scannerv1.ScanRequest{LibraryPath: root, ModuleType: "image"})
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	got := drain(ch)
+	got := drain(ss.Files)
 	if len(got) != 1 || got[0].GetRelativePath() != "pic.jpg" {
 		t.Fatalf("image Scan = %v, want exactly {pic.jpg} (module_type forwarded into walk)", rels(got))
 	}

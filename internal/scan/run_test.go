@@ -50,37 +50,48 @@ func setupStore(t *testing.T) (*store.Store, *module.Registry, int64) {
 // in-process emitter of canned DiscoveredFiles + IdentifyResults. It is how the
 // orchestrator is exercised without a subprocess (the real subprocess client is
 // exercised by the T11 integration test). blockAfter>0 emits that many files
-// then blocks until ctx is done, so a mid-stream cancel is testable.
+// then blocks until ctx is done, so a mid-stream cancel is testable. The
+// terminal state follows D4: the natural end-of-canned-files close reports
+// NOTHING (an unconfirmed stream — the frozen repro's shape) unless endClean
+// opts in to End(nil); the ctx-Done paths End(ctx.Err()) like the production
+// client.
 type fakeScanner struct {
 	files      []*scannerv1.DiscoveredFile
 	identify   map[string]*scannerv1.IdentifyResult
 	identifyEr error
 	blockAfter int
+	endClean   bool // opt-in: End(nil) on the natural end (fix-truncated-scan-sweep D4)
 	gotReq     *scannerv1.ScanRequest
 }
 
-func (f *fakeScanner) Scan(ctx context.Context, req *scannerv1.ScanRequest) (<-chan *scannerv1.DiscoveredFile, error) {
+func (f *fakeScanner) Scan(ctx context.Context, req *scannerv1.ScanRequest) (*sdk.ScanStream, error) {
 	f.gotReq = req
 	ch := make(chan *scannerv1.DiscoveredFile, len(f.files)+1)
+	ss := sdk.NewScanStream(ch)
 	go func() {
 		sent := 0
 		for _, fl := range f.files {
 			select {
 			case ch <- fl:
 			case <-ctx.Done():
+				ss.End(ctx.Err()) // mirror the production client's cancel classification
 				close(ch)
 				return
 			}
 			sent++
 			if f.blockAfter > 0 && sent == f.blockAfter {
 				<-ctx.Done() // block: simulates a scanner mid-stream when the consumer cancels
+				ss.End(ctx.Err())
 				close(ch)
 				return
 			}
 		}
-		close(ch)
+		if f.endClean {
+			ss.End(nil) // opt-in confirmed completion (D4)
+		}
+		close(ch) // default: bare close — an UNCONFIRMED terminal state (the frozen repro's shape)
 	}()
-	return ch, nil
+	return ss, nil
 }
 
 func (f *fakeScanner) Identify(_ context.Context, req *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error) {
@@ -545,6 +556,7 @@ func TestRunScan_ContextCancellation(t *testing.T) {
 // queue's job (covered by queue_test.go + the T08 golden).
 func TestRunScan_AsyncEnqueue(t *testing.T) {
 	sc := &fakeScanner{
+		endClean: true, // the Notify-fired assertion needs a confirmed clean drain (D4)
 		files: []*scannerv1.DiscoveredFile{
 			mkFile("f1", "Show/S01E01.mkv", []byte(`{"format":{"duration":"120.5"}}`), nil),
 			mkFile("f2", "Show/S01E02.mkv", []byte(`{"format":{"duration":"125.0"}}`), nil),
@@ -607,6 +619,62 @@ func TestRunScan_AsyncEnqueue(t *testing.T) {
 	}
 	if res.StartedAt.IsZero() || res.FinishedAt.IsZero() {
 		t.Errorf("timestamps not set: started=%v finished=%v", res.StartedAt, res.FinishedAt)
+	}
+}
+
+// TestTruncatedStreamWarnsIncomplete pins the warning half of the drain gate
+// (fix-truncated-scan-sweep 2.1 / D2): a stream that ends before completing
+// (here: the fake's bare close — an unconfirmed terminal state, the frozen
+// repro's shape) surfaces a truncation warning and a nil error, but signals
+// NOTHING to the queue and sweeps nothing — the unobserved series keeps its
+// prior status. Companion to TestTruncatedStreamMustNotSweep, which pins the
+// no-sweep half; this test pins the warning, the no-notify, and the nil error.
+func TestTruncatedStreamWarnsIncomplete(t *testing.T) {
+	s, r, libID := setupSerialStore(t)
+	ctx := context.Background()
+
+	// Prior state: a ready series the truncated pass WILL re-observe ("Show")
+	// and a ready series it will NOT ("Ghost.Show" — on disk, but the stream
+	// breaks before its record arrives).
+	scanSerial(t, s, r, libID, serialLibrary())
+	show := seriesRow(t, s, libID, "Show")
+	show.Status = "ready"
+	if err := s.PutSeries(ctx, show); err != nil {
+		t.Fatalf("promote Show: %v", err)
+	}
+	ghost := store.Series{
+		ModuleID: "serial", LibraryID: libID, RelativePath: "Ghost.Show",
+		Document:      json.RawMessage(`{"parsed":{"serial_record":true},"ffprobe":{}}`),
+		SchemaVersion: 1, Status: "ready",
+	}
+	if err := s.PutSeries(ctx, ghost); err != nil {
+		t.Fatalf("seed Ghost.Show: %v", err)
+	}
+
+	// The truncated pass: serialLibrary() closes its channel bare (no End) —
+	// an unconfirmed terminal state, never a clean drain.
+	notify := &recordingNotifier{store: s}
+	rr := &recordingResolver{scanner: serialLibrary()}
+	res, err := runScan(context.Background(), s, r, rr.resolve, passthroughEnricher(), notify.notify, libID)
+	if err != nil {
+		t.Fatalf("runScan: want nil error on a truncated stream, got %v", err)
+	}
+	found := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "scan: stream ended before completing") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings %v do not carry the truncation warning", res.Warnings)
+	}
+	// B7 analog: a half-drained pass never signals the queue.
+	if n := notify.count(); n != 0 {
+		t.Errorf("Notify called %d times on a truncated drain, want 0", n)
+	}
+	// The unobserved series keeps its prior status — the sweep did not run.
+	if got := seriesRow(t, s, libID, "Ghost.Show").Status; got != "ready" {
+		t.Errorf("unobserved series %q status = %q, want ready (untouched by the truncated pass)", "Ghost.Show", got)
 	}
 }
 

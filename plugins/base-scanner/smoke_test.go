@@ -86,12 +86,12 @@ func TestBaseScannerSubprocess(t *testing.T) {
 		t.Fatalf("dispensed %T is not an sdk.Scanner", raw)
 	}
 
-	ch, err := sc.Scan(context.Background(), &scannerv1.ScanRequest{LibraryPath: root, ModuleType: "tv"})
+	ss, err := sc.Scan(context.Background(), &scannerv1.ScanRequest{LibraryPath: root, ModuleType: "tv"})
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
 	var file *scannerv1.DiscoveredFile
-	for f := range ch {
+	for f := range ss.Files {
 		file = f
 		break
 	}

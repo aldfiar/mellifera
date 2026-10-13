@@ -70,7 +70,7 @@ type scanOutput struct {
 // drainScan runs one Scan over root and collects the stream in order.
 func drainScan(t *testing.T, s *scannerImpl, root string) *scanOutput {
 	t.Helper()
-	ch, err := s.Scan(context.Background(), &scannerv1.ScanRequest{
+	ss, err := s.Scan(context.Background(), &scannerv1.ScanRequest{
 		LibraryPath: root,
 		ModuleType:  "serial",
 		Options:     mustStruct(t, map[string]any{"structure": "series-directories"}),
@@ -79,7 +79,7 @@ func drainScan(t *testing.T, s *scannerImpl, root string) *scanOutput {
 		t.Fatalf("Scan: %v", err)
 	}
 	out := &scanOutput{byRel: map[string]*scannerv1.DiscoveredFile{}, index: map[string]int{}}
-	for f := range ch {
+	for f := range ss.Files {
 		out.index[f.GetRelativePath()] = len(out.files)
 		out.files = append(out.files, f)
 		out.byRel[f.GetRelativePath()] = f
@@ -721,10 +721,10 @@ func TestStructureKnob(t *testing.T) {
 			if tc.options != nil {
 				req.Options = mustStruct(t, tc.options)
 			}
-			ch, err := s.Scan(context.Background(), req)
+			ss, err := s.Scan(context.Background(), req)
 			if tc.wantErr {
 				if err == nil {
-					for range ch {
+					for range ss.Files {
 					}
 					t.Fatal("Scan accepted a disallowed structure option")
 				}
@@ -734,7 +734,7 @@ func TestStructureKnob(t *testing.T) {
 				t.Fatalf("Scan rejected the accepted option: %v", err)
 			}
 			n := 0
-			for range ch {
+			for range ss.Files {
 				n++
 			}
 			if n != 2 {
