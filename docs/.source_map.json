@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "f60ab12",
-  "source_fingerprint": "28bf4ec244052212b353801dcea12db6e8187ce1f5f36e3fb119080ea24ae4fa",
+  "generated_from_commit": "8ccd817",
+  "source_fingerprint": "491dfbf85c673abcc6d276e8a229f934a4ce2aa839aa9e28d244e0da303cb57c",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -17,20 +17,20 @@
     "ast_backends": "python3-ast (.py); regex-floor fallback for other langs"
   },
   "counts": {
-    "files_total": 245,
+    "files_total": 246,
     "by_extension": {
       ".go": 194,
       ".sh": 2,
       ".js": 3,
-      ".tsx": 34,
-      ".ts": 12
+      ".ts": 13,
+      ".tsx": 34
     },
     "by_role": {
       "source": 140,
-      "test": 104,
+      "test": 105,
       "script": 1
     },
-    "tests": 104
+    "tests": 105
   },
   "stack": {
     "primary": "go",
@@ -38,7 +38,7 @@
       "go": 194,
       "bash": 2,
       "javascript": 3,
-      "typescript": 46
+      "typescript": 47
     },
     "frameworks": []
   },
@@ -154,7 +154,7 @@
       "role": "test"
     },
     "internal/api/router.go": {
-      "lines": 181,
+      "lines": 189,
       "lang": "go",
       "role": "source"
     },
@@ -429,17 +429,17 @@
       "role": "source"
     },
     "internal/module/parse_test.go": {
-      "lines": 90,
+      "lines": 91,
       "lang": "go",
       "role": "test"
     },
     "internal/module/registry.go": {
-      "lines": 399,
+      "lines": 423,
       "lang": "go",
       "role": "source"
     },
     "internal/module/registry_test.go": {
-      "lines": 417,
+      "lines": 479,
       "lang": "go",
       "role": "test"
     },
@@ -489,7 +489,7 @@
       "role": "test"
     },
     "internal/plugin/testdata/fakeplugin/main.go": {
-      "lines": 104,
+      "lines": 107,
       "lang": "go",
       "role": "source"
     },
@@ -509,17 +509,17 @@
       "role": "test"
     },
     "internal/scan/run.go": {
-      "lines": 579,
+      "lines": 610,
       "lang": "go",
       "role": "source"
     },
     "internal/scan/run_test.go": {
-      "lines": 692,
+      "lines": 760,
       "lang": "go",
       "role": "test"
     },
     "internal/scan/series_test.go": {
-      "lines": 372,
+      "lines": 434,
       "lang": "go",
       "role": "test"
     },
@@ -709,7 +709,7 @@
       "role": "source"
     },
     "pkg/sdk/doc.go": {
-      "lines": 44,
+      "lines": 46,
       "lang": "go",
       "role": "source"
     },
@@ -724,12 +724,12 @@
       "role": "test"
     },
     "pkg/sdk/scanner.go": {
-      "lines": 132,
+      "lines": 212,
       "lang": "go",
       "role": "source"
     },
     "pkg/sdk/sdk_test.go": {
-      "lines": 249,
+      "lines": 344,
       "lang": "go",
       "role": "test"
     },
@@ -794,7 +794,7 @@
       "role": "test"
     },
     "plugins/base-scanner/scanner.go": {
-      "lines": 95,
+      "lines": 96,
       "lang": "go",
       "role": "source"
     },
@@ -809,22 +809,22 @@
       "role": "test"
     },
     "plugins/base-scanner/walk.go": {
-      "lines": 146,
+      "lines": 150,
       "lang": "go",
       "role": "source"
     },
     "plugins/frame-grabber/ffmpeg.go": {
-      "lines": 66,
+      "lines": 70,
       "lang": "go",
       "role": "source"
     },
     "plugins/frame-grabber/grabber.go": {
-      "lines": 194,
+      "lines": 209,
       "lang": "go",
       "role": "source"
     },
     "plugins/frame-grabber/grabber_test.go": {
-      "lines": 254,
+      "lines": 392,
       "lang": "go",
       "role": "test"
     },
@@ -934,7 +934,7 @@
       "role": "source"
     },
     "plugins/serial-scanner/scanner.go": {
-      "lines": 237,
+      "lines": 240,
       "lang": "go",
       "role": "source"
     },
@@ -949,7 +949,7 @@
       "role": "source"
     },
     "plugins/serial-scanner/walk.go": {
-      "lines": 394,
+      "lines": 396,
       "lang": "go",
       "role": "source"
     },
@@ -1034,6 +1034,11 @@
         "api",
         "seed_libs"
       ]
+    },
+    "web/devproxy.test.ts": {
+      "lines": 48,
+      "lang": "typescript",
+      "role": "test"
     },
     "web/eslint.config.js": {
       "lines": 15,
