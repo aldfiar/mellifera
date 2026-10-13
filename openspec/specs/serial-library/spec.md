@@ -257,9 +257,17 @@ within the library. An unchanged re-scan SHALL preserve the prior series status 
 SHALL advance the series to `stale`; a serial directory that vanished SHALL have
 its series row advanced to `deleted` by a post-drain sweep; a serial directory
 that was renamed or moved SHALL become a NEW series identity and the old row SHALL
-be swept to `deleted`, with no automatic migration of enrichment data; a scan
-whose stream did not drain cleanly (cancelled context) SHALL NOT sweep. Enrichment
-of a re-created identity re-runs from scratch under the same namespace rules.
+be swept to `deleted`, with no automatic migration of enrichment data. The
+post-drain sweep SHALL run ONLY after the scanner stream ended with a confirmed
+clean completion: a scan whose stream did not end cleanly — a cancelled context,
+a stream that terminated on its own before completing, or a stream that reports
+no terminal state — SHALL NOT sweep and SHALL NOT hand off to the enrichment
+queue. A series re-observed by a scan while its row is at `deleted` SHALL leave
+`deleted` — `ready` when its serial scanned facts are unchanged (a wrongful
+tombstone heals on the rescan that re-observes the directory), `stale` when they
+changed; a `deleted` row that a pass did not re-observe keeps `deleted`.
+Enrichment of a re-created identity re-runs from scratch under the same namespace
+rules.
 
 #### Scenario: Unchanged rescan preserves a ready series
 
@@ -294,6 +302,30 @@ go test ./internal/scan -run TestSeriesRenameNewIdentity
 ```bash
 set -e
 go test ./internal/scan -run TestCancelledScanDoesNotSweep
+```
+<!-- /wf:probe -->
+
+#### Scenario: A stream that ends without completing does not sweep
+
+- **WHEN** a serial library is re-scanned and the scanner stream terminates on its own before completing — the channel closes with no clean-completion confirmation and no context cancellation — after re-observing only part of the library
+- **THEN** no series row the partial pass did not re-observe advances to `deleted` (the unobserved rows keep their prior status), and the scan reports no error
+
+<!-- wf:probe id=f2ddf8f24c53232e -->
+```bash
+set -e
+go test -run TestTruncatedStreamMustNotSweep ./internal/scan/
+```
+<!-- /wf:probe -->
+
+#### Scenario: A re-observed deleted series heals on rescan
+
+- **WHEN** a serial library is re-scanned and a series row at status `deleted` is re-observed
+- **THEN** the row leaves `deleted` — `ready` when its serial scanned facts are unchanged and `stale` when they changed — while a `deleted` row the pass did not re-observe keeps `deleted`
+
+<!-- wf:probe id=10894af4d44c3a67 -->
+```bash
+set -e
+go test ./internal/scan -run TestSeriesReobservedDeletedSelfHeals
 ```
 <!-- /wf:probe -->
 

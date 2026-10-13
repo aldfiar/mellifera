@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-10-12
+goal: Never sweep series on a truncated scan stream; let a re-observed series
+  leave deleted so wrongful tombstones self-heal on rescan

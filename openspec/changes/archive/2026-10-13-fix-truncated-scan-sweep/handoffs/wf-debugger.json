@@ -1,0 +1,11 @@
+{
+  "status": "done",
+  "summary": "scan sweep tombstoned 19/20 series of library 2 (updated_at 2026-10-12T18:48:57Z cluster): scannerGRPC.Scan (pkg/sdk/scanner.go:107-110) swallows mid-stream Recv errors as clean end-of-stream so runScan (internal/scan/run.go:152-160) ran sweepSeries over a partial observation (1/20); nextSeriesStatus (run.go:347+) preserves deleted on unchanged re-observe so the damage never self-heals (proven live via rescan 19:27Z)",
+  "next": "group 1: surface mid-stream errors in scannerGRPC.Scan; gate sweepSeries on a provably clean drain in runScan; let nextSeriesStatus resurrect a re-observed deleted series; repro internal/scan/sweep_truncated_stream_test.go (TestTruncatedStreamMustNotSweep) anchors the first probe",
+  "findings": [
+    "no per-library scan concurrency guard (internal/api/handlers.go:671-688) - the 18:48 fatal pass overlapped an in-flight scan; scope cut by user decision 2026-10-12",
+    "transport-level truncation cause unrecoverable from DB; /Volumes/kofe is an SMB mount - candidates: plugin process death, volume hiccup, concurrent-scan interference",
+    "wf index carries no Go defs (regex floor) - fault sites verified in live source this session"
+  ],
+  "updated_at": "2026-10-12T19:44:17.133658Z"
+}
