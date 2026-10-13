@@ -128,12 +128,13 @@ func TestQA_C01_StagesRoundTrip(t *testing.T) {
 		if !c01StageHas(after, "tmdb", "unavailable") {
 			t.Fatalf("C-01: tmdb:unavailable stage absent after re-derive; stages=%v", after["_stages"])
 		}
-		// total stage count: 2 prior (tv-parser:ok, tmdb:unavailable) preserved + 1 fresh
-		// tmdb append = 3. The doc is round-tripped again after persist, so count tolerantly
-		// across both forms (decodeDoc now normalizes to []map[string]any either way).
-		if n := c01StageCount(after); n != 3 {
-			t.Fatalf("C-01: post-rederive _stages count = %d, want 3 (2 prior preserved + "+
-				"1 fresh append); stages=%v", n, after["_stages"])
+		// total stage count: 2 prior (tv-parser:ok, tmdb:unavailable) preserved + 2 fresh
+		// appends (tmdb retry + the v2 chain's frame-grabber) = 4. The doc is round-tripped
+		// again after persist, so count tolerantly across both forms (decodeDoc now
+		// normalizes to []map[string]any either way).
+		if n := c01StageCount(after); n != 4 {
+			t.Fatalf("C-01: post-rederive _stages count = %d, want 4 (2 prior preserved + "+
+				"2 fresh appends); stages=%v", n, after["_stages"])
 		}
 	})
 }

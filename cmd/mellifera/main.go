@@ -312,6 +312,14 @@ func main() {
 			}
 			return true, nil // 202 accepted
 		},
+		// Stop-frame re-grab (continue-nextup-media D-1..D-4): the watch-event
+		// seam — a per-item debounced, request-detached re-grab of the
+		// frame-grabber thumbnail at the viewer's stop position. The JPEG
+		// overwrites the same deterministic path, so there is NO document
+		// write and NO enrich round-trip (grabbed_at stays stale by design);
+		// every executor failure is log-and-skip — progress is never
+		// load-bearing and the PUT response never carries it.
+		OnProgress: newThumbRegrab(st, mgr),
 		// Module presentation (element-pages 3.4/3.1): the GET /libraries/{id}
 		// block — identity_fields plus the ordered parser bindings (scanner
 		// slot, then the metadata_source chain in config order) with their

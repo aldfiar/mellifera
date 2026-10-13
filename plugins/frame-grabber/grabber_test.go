@@ -254,18 +254,17 @@ func TestThumbPathScheme(t *testing.T) {
 	}
 }
 
-// TestResolveSeek pins the seek policy (continue-nextup-media D-4/D-5): the
+// TestSeekPolicy pins the seek policy (continue-nextup-media D-4/D-5): the
 // enrich-time default is min(300s, 50% of a positive probe duration), an
 // explicit seek_seconds (the stop-position re-grab) replaces the default,
 // and the duration clamp still applies to the override so a position past
 // EOF lands on a real frame. Non-positive overrides never widen the seek.
-func TestResolveSeek(t *testing.T) {
+func TestSeekPolicy(t *testing.T) {
 	cases := []struct {
-		name     string
-		def      time.Duration
-		query    map[string]any
-		want     time.Duration
-		wantClamp bool
+		name  string
+		def   time.Duration
+		query map[string]any
+		want  time.Duration
 	}{
 		{
 			name: "default below the half-duration clamp",
@@ -365,11 +364,11 @@ func TestRegrabOverwritesStopFrame(t *testing.T) {
 
 	// Stop-position re-grab: seek_seconds well inside the file.
 	st := queryStruct(t, map[string]any{
-		"absolute_path":        video,
-		"relative_path":        "Show/Show.S01E02.mkv",
-		"series_relative_path": "Show",
+		"absolute_path":          video,
+		"relative_path":          "Show/Show.S01E02.mkv",
+		"series_relative_path":   "Show",
 		"probe_duration_seconds": 6.0,
-		"seek_seconds":          1.0,
+		"seek_seconds":           1.0,
 	})
 	res, err = g.Convert(context.Background(), &metadatav1.ConvertRequest{Query: st})
 	if err != nil || len(res.GetWarnings()) > 0 {

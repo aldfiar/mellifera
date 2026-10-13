@@ -556,7 +556,13 @@ func (a *app) libraryFolders(w http.ResponseWriter, r *http.Request) {
 // non-integer 1.5 or "90" fails the decode; a missing field fails the nil
 // check) and a negative value are 400 bad_request with the stored value
 // untouched; an unknown item is 404 not_found (store.PutProgress refuses
-// before writing, so no orphan row is minted). The endpoint is never retried.
+// before writing, so no orphan row is minted). After a successful upsert the
+// Deps.OnProgress watch-event seam fires (continue-nextup-media D-2) with the
+// request context and the saved write's id + position — after the store call,
+// before the response write, so a closure observes only confirmed writes. A
+// nil closure is a silent no-op (progress persistence is never load-bearing
+// on it), and the response is byte-identical either way. The endpoint is
+// never retried.
 //
 // @Summary      Store the playback position for an item
 // @Tags         progress
@@ -591,6 +597,9 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
+	}
+	if a.deps.OnProgress != nil {
+		a.deps.OnProgress(r.Context(), itemID, *req.PositionSeconds)
 	}
 	writeJSON(w, http.StatusOK, toProgressDTO(rec))
 }
@@ -807,12 +816,17 @@ const (
 // path fact / missing file are all 404 not_found, an unknown variant and a
 // missing/non-integer/negative sidecar index are 400 bad_request. Serving is
 // http.ServeContent (media-preview D3): Content-Type by extension, a strong
-// ETag (size+mtime — no content hashing of multi-GB files), Cache-Control:
-// private, immutable (bearer-authed content must not sit in shared caches),
-// and stdlib 304/HEAD/Range handling for free. HEAD and If-None-Match are
-// answered by ServeContent from the same headers. Non-image content carries
-// Content-Disposition: attachment — video downloads, it does not stream
-// (media-preview D4; the deferred internal/stream surface owns playback).
+// ETag (size+mtime — no content hashing of multi-GB files), and stdlib
+// 304/HEAD/Range handling for free. HEAD and If-None-Match are answered by
+// ServeContent from the same headers. Cache-Control is per variant
+// (continue-nextup-media D-6): the thumb is a regenerable derived artifact
+// that scans/enrich overwrites in place, so it revalidates on every fetch —
+// `private, no-cache` (the strong ETag still answers If-None-Match with 304
+// when the file is unchanged); the write-once original and sidecar keep
+// `private, immutable` (bearer-authed content must not sit in shared caches
+// either way). Non-image content carries Content-Disposition: attachment —
+// video downloads, it does not stream (media-preview D4; the deferred
+// internal/stream surface owns playback).
 //
 // @Summary      Serve an item's media bytes
 // @Tags         items
@@ -886,10 +900,17 @@ func (a *app) itemMedia(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(ct, "image/") {
 		disposition = "inline"
 	}
+	// Per-variant cache policy (continue-nextup-media D-6): the thumb is
+	// regenerable and overwritten in place, so it must revalidate every fetch;
+	// the write-once original and sidecars are immutable.
+	cacheControl := "private, immutable"
+	if variant == mediaVariantThumb {
+		cacheControl = "private, no-cache"
+	}
 	h := w.Header()
 	h.Set("Content-Type", ct)
 	h.Set("ETag", strongETag(fi))
-	h.Set("Cache-Control", "private, immutable")
+	h.Set("Cache-Control", cacheControl)
 	h.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
 	http.ServeContent(w, r, name, fi.ModTime(), f)
 }

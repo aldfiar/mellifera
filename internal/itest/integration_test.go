@@ -527,7 +527,9 @@ func checkParsed(t *testing.T, want expectedItem, doc itemDoc) {
 	if doc.ModuleType != "tv" {
 		t.Errorf("%q: module_type = %q, want tv", want.rel, doc.ModuleType)
 	}
-	if doc.SchemaVersion != 1 {
+	// Documents copy the module row's schema_version — the tv seed moved to
+	// v2 (frame-grabber binding), so tv items stamp 2.
+	if doc.SchemaVersion != 2 {
 		t.Errorf("%q: schema_version = %d, want 1", want.rel, doc.SchemaVersion)
 	}
 }

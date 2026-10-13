@@ -20,8 +20,9 @@ import (
 func chainDoneDoc(relPath string) map[string]any {
 	doc := baseDoc(relPath)
 	doc["sources"] = map[string]any{
-		"tv-parser": map[string]any{"title": "done"},
-		"tmdb":      map[string]any{"title": "done"},
+		"tv-parser":     map[string]any{"title": "done"},
+		"tmdb":          map[string]any{"title": "done"},
+		"frame-grabber": map[string]any{"thumbnail": "done"},
 	}
 	return doc
 }

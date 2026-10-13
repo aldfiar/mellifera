@@ -56,7 +56,9 @@ func (s *grpcBreakScanner) Scan(context.Context, *scannerv1.ScanRequest) (*sdk.S
 	return ss, nil
 }
 
-func (s *grpcBreakScanner) Identify(_ context.Context, req *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error) {
+func (s *grpcBreakScanner) Identify(_ context.Context,
+	req *scannerv1.IdentifyRequest,
+) (*scannerv1.IdentifyResult, error) {
 	return s.identify[req.GetFile().GetFileId()], nil
 }
 
@@ -172,7 +174,9 @@ func TestJointTruncatedGRPStreamDoesNotSweep(t *testing.T) {
 	// genuinely partial, so the no-sweep assertions below cannot pass vacuously
 	// on a harness that emitted nothing.
 	if res.Discovered != 3 || res.Persisted != 3 {
-		t.Fatalf("partial pass discovered=%d persisted=%d, want 3/3 (Show record + 2 episodes over the wire)", res.Discovered, res.Persisted)
+		t.Fatalf("partial pass discovered=%d persisted=%d, want 3/3 "+
+			"(Show record + 2 episodes over the wire)",
+			res.Discovered, res.Persisted)
 	}
 	// The warning names the incomplete stream AND carries the producer's error
 	// text — proving the server's abort traversed the wire and scannerGRPC
@@ -185,7 +189,9 @@ func TestJointTruncatedGRPStreamDoesNotSweep(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("warnings %v do not name the incomplete stream (truncation warning missing or stripped of the producer error)", res.Warnings)
+		t.Errorf("warnings %v do not name the incomplete stream "+
+			"(truncation warning missing or stripped of the producer error)",
+			res.Warnings)
 	}
 	// B7 analog: a half-drained pass never signals the queue.
 	if n := notify.count(); n != 0 {

@@ -59,8 +59,10 @@ func TestB2_Ac3Additive(t *testing.T) {
 	// internal/enrich is no longer guarded either: serials-library legitimately
 	// extended the queue source (the spec'd two-level serial enrichment), so it is
 	// no longer byte-identical to B2's baseline; forward behavior is guarded by
-	// serials-library's own probe set.
-	noSeam := []string{"proto/", "pkg/sdk/"}
+	// serials-library's own probe set. pkg/sdk is retired here too (same rule):
+	// fix-truncated-scan-sweep legitimately reworked the in-repo Scanner surface
+	// (ScanStream, wire untouched); forward behavior is guarded by its probe set.
+	noSeam := []string{"proto/"}
 	out := b2Git(t, root, append([]string{"diff", "--name-only", b2MergeBase, "--"}, noSeam...)...)
 	if changed := strings.TrimSpace(string(out)); changed != "" {
 		t.Errorf("AC-3/AC-queue ADDITIVITY BREACH: B2 modified no_seam trees (must be additive only):\n%s", changed)

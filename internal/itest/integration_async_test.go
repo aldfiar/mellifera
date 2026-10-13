@@ -283,10 +283,12 @@ func asyncAssertSoftFail(t *testing.T, byRel map[string]itemDTO) {
 			continue // reported elsewhere
 		}
 		doc := parseAsyncDoc(t, item.Document)
-		// B6: sources contains ONLY tv-parser (tmdb/kinopoisk produced no namespace).
+		// B6: sources carries the chain that ran — tv-parser plus the v2
+		// seed's frame-grabber (tmdb unavailable, kinopoisk CLIENT produced
+		// no namespace).
 		for k := range doc.Sources {
-			if k != "tv-parser" {
-				t.Errorf("B6: %q sources has %q (only tv-parser should be present; tmdb unavailable, kinopoisk CLIENT)", rel, k)
+			if k != "tv-parser" && k != "frame-grabber" {
+				t.Errorf("B6: %q sources has %q (want tv-parser + frame-grabber only; tmdb unavailable, kinopoisk CLIENT)", rel, k)
 			}
 		}
 		// B6: the lease serialized within-item -> no two _stages entries share both
@@ -311,9 +313,21 @@ func asyncAssertStates(t *testing.T, c *http.Client, baseURL string, libID int64
 			t.Errorf("AC-states: ?status=ready returned %q with status %q", it.RelativePath, it.Status)
 		}
 	}
+	// Post-drain nothing stays pending: the corrupt fixture's chain-derived
+	// frame-grabber work soft-fails and advances it to parsed (v2 tv seed).
 	pending := asyncItemsByStatus(t, c, baseURL, asyncToken, libID, "pending")
-	if len(pending) == 0 {
-		t.Errorf("AC-states: ?status=pending returned 0 items post-drain; want the corrupt fixture (tv-parser skips non-TV)")
+	if len(pending) != 0 {
+		t.Errorf("AC-states: ?status=pending returned %d items post-drain; want 0 (all chain sources terminal), got %v", len(pending), asyncPaths(pending))
+	}
+	parsed := asyncItemsByStatus(t, c, baseURL, asyncToken, libID, "parsed")
+	foundCorrupt := false
+	for _, it := range parsed {
+		if it.RelativePath == "corrupt.mkv" {
+			foundCorrupt = true
+		}
+	}
+	if !foundCorrupt {
+		t.Errorf("AC-states: corrupt.mkv not under ?status=parsed post-drain (chain-derived frame-grabber soft-fail must settle it at parsed), got %v", asyncPaths(parsed))
 	}
 }
 

@@ -186,6 +186,90 @@ func TestProgressListEndpoint(t *testing.T) {
 	})
 }
 
+// TestProgressOnProgress covers the watch-event seam (continue-nextup-media
+// D-2): with the Deps.OnProgress closure wired, putProgress invokes it exactly
+// once with the saved write's item id + position — after the store upsert (the
+// closure reads the NEW value back) and before the response write (doRequest is
+// synchronous, so the closure has run by the time the response is observed);
+// with it nil, the response is unchanged.
+func TestProgressOnProgress(t *testing.T) {
+	t.Run("closure_receives_saved_write", func(t *testing.T) {
+		st := openAPIStore(t)
+		libID, err := st.CreateLibrary(context.Background(), "tv", "/media/onprogress", "TV")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		itemID := "itm_op1"
+		seedItem(t, st, libID, "op1", "OP S01E01.mkv")
+
+		var calls []struct {
+			itemID   string
+			position int64
+			hasCtx   bool
+			upserted bool
+		}
+		h := New(Deps{
+			AdminToken: adminToken,
+			Store:      st,
+			OnProgress: func(ctx context.Context, id string, pos int64) {
+				_, err := st.GetProgress(ctx, id)
+				calls = append(calls, struct {
+					itemID   string
+					position int64
+					hasCtx   bool
+					upserted bool
+				}{id, pos, ctx != nil, err == nil})
+			},
+		})
+
+		resp := putProgressBody(t, h, itemID, `{"position_seconds": 735}`)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("OnProgress calls = %d, want exactly 1", len(calls))
+		}
+		c := calls[0]
+		if c.itemID != itemID || c.position != 735 {
+			t.Fatalf("closure args = (%q, %d), want (%q, 735)", c.itemID, c.position, itemID)
+		}
+		if !c.hasCtx {
+			t.Fatal("closure received a nil context, want the request context")
+		}
+		if !c.upserted {
+			t.Fatal("closure fired before the store upsert — GetProgress saw no row")
+		}
+		// The response body is byte-identical to the nil-closure shape.
+		var pr progressDTO
+		if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+			t.Fatalf("decode progressDTO: %v", err)
+		}
+		if pr.ItemID != itemID || pr.PositionSeconds != 735 {
+			t.Fatalf("DTO = %+v, want item_id %s position 735", pr, itemID)
+		}
+	})
+
+	t.Run("nil_closure_response_unchanged", func(t *testing.T) {
+		h, st, libID := newProgressAPI(t)
+		itemID := "itm_nop"
+		seedItem(t, st, libID, "nop", "NP.mkv")
+
+		resp := putProgressBody(t, h, itemID, `{"position_seconds": 90}`)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var pr progressDTO
+		if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+			t.Fatalf("decode progressDTO: %v", err)
+		}
+		if pr.ItemID != itemID || pr.PositionSeconds != 90 || pr.UpdatedAt == "" {
+			t.Fatalf("DTO = %+v, want the standard stored-write shape (no seam, no change)", pr)
+		}
+	})
+}
+
 // TestListProgressLimit covers the ?limit contract (2.3): default 20, clamp to
 // max 100, non-positive is 400.
 func TestListProgressLimit(t *testing.T) {

@@ -291,9 +291,11 @@ func qasyncAssertSoftFail(t *testing.T, byRel map[string]itemDTO) {
 	if fp := parseAsyncDoc(t, it.Document).Ffprobe; len(fp) != 0 {
 		t.Errorf("AC-6: %q ffprobe = %d bytes, want empty (unprobeable soft-fail)", qasyncCorrupt, len(fp))
 	}
-	// AC-lease observable: the corrupt item stayed pending (no source succeeded).
-	if it.Status != "pending" {
-		t.Errorf("AC-lease: %q status = %q, want pending (tv-parser skips non-TV; no source succeeds)", qasyncCorrupt, it.Status)
+	// AC-lease observable: the corrupt item settles at parsed — its chain-derived
+	// frame-grabber work soft-fails (no probe data to match) and the written trail
+	// advances it past pending (v2 tv seed; previously it stayed pending).
+	if it.Status != "parsed" {
+		t.Errorf("AC-lease: %q status = %q, want parsed (chain-derived frame-grabber soft-fail)", qasyncCorrupt, it.Status)
 	}
 	for _, want := range qasyncTVFixtures {
 		item, present := byRel[want.rel]
@@ -301,10 +303,11 @@ func qasyncAssertSoftFail(t *testing.T, byRel map[string]itemDTO) {
 			continue
 		}
 		doc := parseAsyncDoc(t, item.Document)
-		// sources carries ONLY tv-parser (tmdb unloaded -> unavailable; kinopoisk CLIENT).
+		// sources carries the chain that ran — tv-parser plus the v2 seed's
+		// frame-grabber (tmdb unloaded -> unavailable; kinopoisk CLIENT).
 		for k := range doc.Sources {
-			if k != "tv-parser" {
-				t.Errorf("AC-lease: %q sources has %q (only tv-parser expected)", want.rel, k)
+			if k != "tv-parser" && k != "frame-grabber" {
+				t.Errorf("AC-lease: %q sources has %q (want tv-parser + frame-grabber only)", want.rel, k)
 			}
 		}
 		if asyncHasDupStage(doc.Stages) {
@@ -322,9 +325,21 @@ func qasyncAssertStates(t *testing.T, c *http.Client, baseURL string, libID int6
 	if len(ready) != len(qasyncTVFixtures) {
 		t.Fatalf("AC-states: ?status=ready returned %d items, want %d; got %v", len(ready), len(qasyncTVFixtures), asyncPaths(ready))
 	}
+	// Post-drain nothing stays pending; the corrupt fixture settles at parsed
+	// via its chain-derived frame-grabber soft-fail (v2 tv seed).
 	pending := asyncItemsByStatus(t, c, baseURL, qasyncToken, libID, "pending")
-	if len(pending) == 0 {
-		t.Errorf("AC-states: ?status=pending returned 0 items post-drain; want %q (tv-parser skips non-TV)", qasyncCorrupt)
+	if len(pending) != 0 {
+		t.Errorf("AC-states: ?status=pending returned %d items post-drain; want 0 (all chain sources terminal), got %v", len(pending), asyncPaths(pending))
+	}
+	parsed := asyncItemsByStatus(t, c, baseURL, qasyncToken, libID, "parsed")
+	foundCorrupt := false
+	for _, it := range parsed {
+		if it.RelativePath == qasyncCorrupt {
+			foundCorrupt = true
+		}
+	}
+	if !foundCorrupt {
+		t.Errorf("AC-states: %q not under ?status=parsed post-drain (chain-derived frame-grabber soft-fail must settle it at parsed), got %v", qasyncCorrupt, asyncPaths(parsed))
 	}
 }
 

@@ -6,14 +6,17 @@ import { useQueries } from "@tanstack/react-query";
 
 import {
   ENDPOINTS,
+  getSeries,
+  getSeriesEpisodes,
   hasFrameGrabberThumb,
   hasOriginalFile,
   type ApiError,
   type ItemDTO,
   type LibraryDTO,
   type ProgressDTO,
+  type SeriesDTO,
 } from "@/lib/api";
-import { getItem, listItems } from "@/lib/api";
+import { getItem } from "@/lib/api";
 import {
   useItemMedia,
   useItems,
@@ -33,22 +36,28 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 //      type chips as a client-side filter; zero-item collections render the
 //      explicit "Not scanned yet" card state;
 //   2. the Continue row — GET /progress records (newest-first, positive
-//      positions) as Play cards deep-linking into /items/{id}, with a
-//      percent-of-duration bar when the item's ffprobe duration is known;
-//   3. the Next up row — per series touched by Continue, the lowest-numbered
-//      episode AFTER the highest started one, derived client-side from the
-//      items' parsed episode facts (episodeFacts/startedSeries/nextUpEntries
-//      below — the derivation's pure core, unit-tested in Home.test.tsx).
+//      positions) as Play cards deep-linking into /items/{id}, with the
+//      item's frame-grabber thumb preview (authenticated fetch; no thumb fact
+//      → the honest badge-only card), a percent-of-duration bar when the
+//      item's ffprobe duration is known, and a real name: serial episodes
+//      render `<seriesTitle> · SxxEyy` resolved through the series row the
+//      parsed.series_relative_path anchors (D-8); tv-module films keep
+//      viewTitle;
+//   3. the Next up row — keyed on SERIES records (D-8): progress items map
+//      through (library, parsed.series_relative_path) to the series row
+//      (GET /series?library={id}, the collection page's shared cache), the
+//      started tuple is the max (season, episode) across the series' progress
+//      items, and the offered episode is the lowest strictly after it from
+//      GET /series/{id}/episodes (one cached fetch per started series)
+//      (episodeFacts/startedSeries/nextUpEntries below — the derivation's
+//      pure core, unit-tested in Home.test.tsx). Films never enter Next up —
+//      it is an episode concept; films surface via Continue.
 //
 // No root folders and no enrich-lifecycle pills ever render here, and the
-// surface never guesses: an item document without parseable episode facts is
-// OMITTED from Next up (honest empty state over a wrong suggestion). Play
-// deep-links only — inline streaming is a deferred capability (design D3).
-
-// Server pagination ceiling for the per-collection Next up scan
-// (handlers.go parsePagination maxLimit) — one bounded page per touched
-// collection; a series whose next episode falls beyond the page is omitted.
-const SCAN_LIMIT = 200;
+// surface never guesses: an episode whose series row does not resolve is
+// OMITTED from Next up and keeps viewTitle in Continue (honest fallback over
+// a wrong suggestion). Play deep-links only — inline streaming is a deferred
+// capability (design D3).
 
 // Bounded first page the collection cards scan for a representative preview
 // item (media-preview D8 — the card fetches the collection's first items; one
@@ -106,13 +115,14 @@ export function formatPosition(seconds: number): string {
 
 // ---- Next up derivation (pure core) ----------------------------------------
 
-// EpisodeFacts — the parsed series identity the Next up derivation runs on.
-// tv-parser stamps numeric `season`/`episode` plus the series `title` into
-// the document's sources namespaces; the collection grouping key is
-// (library, title).
+// EpisodeFacts — the parsed episode identity the Next up derivation and the
+// Continue naming run on (D-8): the (season, episode) pair out of the source
+// namespaces plus the series anchor parsed.series_relative_path the
+// serial-scanner stamps — the series row is matched on the PATH fact, never
+// on a title (serial episodes carry no title fact).
 export interface EpisodeFacts {
   libraryId: number;
-  seriesKey: string;
+  seriesPath: string;
   season: number;
   episode: number;
 }
@@ -122,10 +132,26 @@ function numberField(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) ? value : null;
 }
 
-// episodeFacts — the item's (library, series, season, episode) facts, or null
-// when the document carries no parseable episode facts (the caller omits the
-// series from Next up rather than guessing).
+// stringField — a non-empty string field out of a dynamic namespace, or null
+// (same contract as Collection's local copy).
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+// episodeFacts — the item's (library, series path, season, episode) facts, or
+// null when the document carries no parsed.series_relative_path anchor or no
+// parseable episode numbers (the caller omits it rather than guessing).
 export function episodeFacts(item: ItemDTO): EpisodeFacts | null {
+  const parsed = item.document.parsed;
+  if (!parsed || typeof parsed !== "object") {
+    return null;
+  }
+  const seriesPath = stringField(
+    (parsed as Record<string, unknown>).series_relative_path,
+  );
+  if (seriesPath === null) {
+    return null;
+  }
   const sources = item.document.sources;
   if (!sources || typeof sources !== "object") {
     return null;
@@ -136,17 +162,16 @@ export function episodeFacts(item: ItemDTO): EpisodeFacts | null {
     }
     const season = numberField(namespace.season);
     const episode = numberField(namespace.episode);
-    const title = namespace.title;
-    if (
-      season !== null &&
-      episode !== null &&
-      typeof title === "string" &&
-      title !== ""
-    ) {
-      return { libraryId: item.library_id, seriesKey: title, season, episode };
+    if (season !== null && episode !== null) {
+      return { libraryId: item.library_id, seriesPath, season, episode };
     }
   }
   return null;
+}
+
+// seriesKey — the (library, series path) grouping key.
+function seriesKey(facts: { libraryId: number; seriesPath: string }): string {
+  return `${String(facts.libraryId)}|${facts.seriesPath}`;
 }
 
 // tupleGt — (season, episode) ordering: a later season wins; within a season,
@@ -156,16 +181,17 @@ function tupleGt(a: EpisodeFacts, b: EpisodeFacts): boolean {
 }
 
 // StartedSeries — one touched series: the HIGHEST started (season, episode)
-// plus its newest progress record (recency order comes from the progress
-// list, which the server returns newest-first).
+// across its progress items (recency order comes from the progress list,
+// which the server returns newest-first).
 export interface StartedSeries {
   libraryId: number;
-  seriesKey: string;
+  seriesPath: string;
   season: number;
   episode: number;
 }
 
-// startedSeries — groups the progress list into touched series. Records whose
+// startedSeries — groups the progress list into touched series. tv-module
+// items (films) never enter — Next up is an episode concept; records whose
 // item has no parseable episode facts are skipped (the Next up fallback).
 export function startedSeries(
   progress: ProgressDTO[],
@@ -174,30 +200,73 @@ export function startedSeries(
   const byKey = new Map<string, StartedSeries>();
   for (const record of progress) {
     const item = itemById.get(record.item_id);
-    if (!item) {
+    if (!item || item.module_id === "tv") {
       continue;
     }
     const facts = episodeFacts(item);
     if (!facts) {
       continue;
     }
-    const key = `${String(facts.libraryId)}|${facts.seriesKey}`;
+    const key = seriesKey(facts);
     const existing = byKey.get(key);
-    if (!existing) {
-      byKey.set(key, facts);
-    } else if (tupleGt(facts, existing)) {
+    if (!existing || tupleGt(facts, existing)) {
       byKey.set(key, facts);
     }
   }
   return [...byKey.values()];
 }
 
-// NextUpEntry — one Play-able suggestion: the collection item to deep-link
-// into plus its display label ("S02E06").
-export interface NextUpEntry {
-  item: ItemDTO;
-  seriesKey: string;
-  label: string;
+// fileName — the raw last path segment, verbatim (same contract as
+// Collection's local copy).
+function fileName(relativePath: string): string {
+  const parts = relativePath.split("/");
+  return parts[parts.length - 1] ?? relativePath;
+}
+
+// seriesDisplayTitle — the series row's display title, precedence-ordered
+// (D-8, mirroring the collection page's serialTitle): the stored manual
+// override first (title_override — the operator's name beats every document
+// fact), then the cleaned display title serial-parser writes into its source
+// namespace once enrichment has run, then the raw directory name
+// (parsed.dir_name_raw verbatim — Cyrillic names are never reformatted), else
+// the relative path's last segment (a row whose scan produced neither fact
+// still names itself honestly). Exported pure for tests.
+export function seriesDisplayTitle(sr: SeriesDTO): string {
+  if (sr.title_override) {
+    return sr.title_override;
+  }
+  const parser = sr.document.sources?.["serial-parser"];
+  if (parser && typeof parser === "object") {
+    const title = stringField(parser.title);
+    if (title !== null) {
+      return title;
+    }
+  }
+  const parsed = sr.document.parsed;
+  if (parsed && typeof parsed === "object") {
+    const raw = stringField((parsed as Record<string, unknown>).dir_name_raw);
+    if (raw !== null) {
+      return raw;
+    }
+  }
+  return fileName(sr.relative_path);
+}
+
+// matchSeries — the series row for one episode's series anchor: the row whose
+// relative_path equals parsed.series_relative_path. Deleted rows (the
+// janitor's tombstones) are not a browse surface and never match. Null when
+// no row resolves — the caller omits the series rather than guessing.
+// Exported pure for tests.
+export function matchSeries(
+  rows: SeriesDTO[],
+  seriesPath: string,
+): SeriesDTO | null {
+  for (const sr of rows) {
+    if (sr.status !== "deleted" && sr.relative_path === seriesPath) {
+      return sr;
+    }
+  }
+  return null;
 }
 
 // episodeLabel — zero-padded "S02E06" display form.
@@ -205,24 +274,41 @@ function episodeLabel(facts: EpisodeFacts): string {
   return `S${String(facts.season).padStart(2, "0")}E${String(facts.episode).padStart(2, "0")}`;
 }
 
-// nextUpEntries — per touched series (progress recency order), the
-// lowest-numbered episode strictly AFTER the highest started one, found in
-// the touched collections' scanned items. A series with no such episode —
-// none exists, or its items carry no parseable facts — is omitted.
+// NextUpEntry — one Play-able suggestion: the episode item to deep-link into,
+// the series record that owns it, its display title and the "S02E06" label.
+export interface NextUpEntry {
+  item: ItemDTO;
+  seriesId: string;
+  title: string;
+  label: string;
+}
+
+// nextUpEntries — per started series (progress recency order), the
+// lowest-numbered episode strictly AFTER the highest started one, taken from
+// the series record's episode list (GET /series/{id}/episodes — one cached
+// fetch per started series). A series whose row did not resolve (the
+// episode-without-series fallback) or that has no later episode — none
+// exists, or its items carry no parseable facts — is omitted.
 export function nextUpEntries(
   started: StartedSeries[],
-  collectionItems: ItemDTO[],
+  seriesByKey: Map<string, SeriesDTO>,
+  episodesBySeriesId: Map<string, ItemDTO[]>,
 ): NextUpEntry[] {
   const out: NextUpEntry[] = [];
   for (const s of started) {
+    const series = seriesByKey.get(seriesKey(s));
+    if (!series) {
+      continue;
+    }
+    const episodes = episodesBySeriesId.get(series.id);
+    if (!episodes) {
+      continue;
+    }
     let best: EpisodeFacts | null = null;
     let bestItem: ItemDTO | null = null;
-    for (const item of collectionItems) {
-      if (item.library_id !== s.libraryId) {
-        continue;
-      }
+    for (const item of episodes) {
       const facts = episodeFacts(item);
-      if (!facts || facts.seriesKey !== s.seriesKey || !tupleGt(facts, s)) {
+      if (!facts || !tupleGt(facts, s)) {
         continue;
       }
       if (!best || tupleGt(best, facts)) {
@@ -231,10 +317,29 @@ export function nextUpEntries(
       }
     }
     if (best && bestItem) {
-      out.push({ item: bestItem, seriesKey: s.seriesKey, label: episodeLabel(best) });
+      out.push({
+        item: bestItem,
+        seriesId: series.id,
+        title: seriesDisplayTitle(series),
+        label: episodeLabel(best),
+      });
     }
   }
   return out;
+}
+
+// continueTitle — the Continue card's real name (D-8): a non-tv item with a
+// resolved series row renders `<seriesTitle> · SxxEyy`; everything else —
+// tv-module films, episodes whose series row did not resolve — keeps
+// viewTitle. Exported pure for tests.
+export function continueTitle(item: ItemDTO, series: SeriesDTO | null): string {
+  if (series !== null && item.module_id !== "tv") {
+    const facts = episodeFacts(item);
+    if (facts !== null) {
+      return `${seriesDisplayTitle(series)} · ${episodeLabel(facts)}`;
+    }
+  }
+  return viewTitle(item.document);
 }
 
 // durationSeconds — the item's total whole-second duration, read from the
@@ -495,14 +600,44 @@ function useProgressDocs(records: ProgressDTO[]): Map<string, ItemDTO> | null {
 }
 
 // ContinueRow — GET /progress (newest-first, positive positions) as one card
-// per in-progress item: title, percent-of-duration label + bar when the
-// item's ffprobe duration is known (position label always), source
-// collection, updated stamp, and Play deep-linking into the item detail
-// (real playback is out of scope — design D3).
+// per in-progress item: the item's frame-grabber thumb preview when the
+// document carries that fact (authenticated fetch — absent fact → the honest
+// badge-only card), the real name (serial episodes resolve their series row
+// through parsed.series_relative_path, D-8; films keep viewTitle),
+// percent-of-duration label + bar when the item's ffprobe duration is known
+// (position label always), source collection, updated stamp, and Play
+// deep-linking into the item detail (real playback is out of scope — D3).
 function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
   const progress = useProgressList();
   const records: ProgressDTO[] = progress.data?.items ?? [];
   const docs = useProgressDocs(records);
+
+  const cards = useMemo(() => {
+    if (!docs) {
+      return [];
+    }
+    return records
+      .filter((r) => docs.has(r.item_id))
+      .map((r) => ({ record: r, item: docs.get(r.item_id)! }));
+  }, [records, docs]);
+
+  // One series list per library holding episodes with a series anchor — the
+  // naming source for serial episodes, keyed on the collection page's shared
+  // ["series", id] cache. Cards render BEFORE it lands (the name degrades to
+  // viewTitle until the row resolves) so the row never blocks on naming.
+  const seriesLibIds = [
+    ...new Set(
+      cards
+        .filter((c) => episodeFacts(c.item) !== null)
+        .map((c) => c.item.library_id),
+    ),
+  ];
+  const seriesLists = useQueries({
+    queries: seriesLibIds.map((id) => ({
+      queryKey: ["series", id],
+      queryFn: () => getSeries(id),
+    })),
+  });
 
   if (progress.isLoading) {
     return <LoadingState label="Loading progress…" />;
@@ -518,25 +653,37 @@ function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
   if (!docs) {
     return <LoadingState label="Loading items…" />;
   }
-
-  const cards = records.filter((r) => docs.has(r.item_id));
   if (cards.length === 0) {
     return <RowEmpty />;
   }
+
+  const resolveSeries = (item: ItemDTO): SeriesDTO | null => {
+    const facts = episodeFacts(item);
+    if (facts === null) {
+      return null;
+    }
+    const idx = seriesLibIds.indexOf(item.library_id);
+    if (idx === -1) {
+      return null;
+    }
+    const rows = seriesLists[idx]?.data?.items ?? [];
+    return matchSeries(rows, facts.seriesPath);
+  };
 
   return (
     <section aria-label="Continue" className="flex flex-col gap-3">
       <h2 className="text-lg font-semibold">Continue</h2>
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {cards.map((r) => (
+        {cards.map((c) => (
           <ContinueCard
-            key={r.item_id}
-            record={r}
-            item={docs.get(r.item_id)!}
+            key={c.record.item_id}
+            record={c.record}
+            item={c.item}
             libraryName={
-              props.libraries.find((l) => l.id === docs.get(r.item_id)!.library_id)
+              props.libraries.find((l) => l.id === c.item.library_id)
                 ?.display_name ?? ""
             }
+            series={resolveSeries(c.item)}
           />
         ))}
       </ul>
@@ -544,28 +691,38 @@ function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
   );
 }
 
-// ContinueCard — one resume card. The bar renders only when the duration is
-// known: an unfilled track would read as "not started", which would be a lie.
+// ContinueCard — one resume card: the thumb preview above the name (only when
+// the document carries the frame-grabber fact — an absent fact keeps the
+// badge-only card, never a broken image), the series-named title, and the
+// bar only when the duration is known: an unfilled track would read as "not
+// started", which would be a lie.
 function ContinueCard(props: {
   record: ProgressDTO;
   item: ItemDTO;
   libraryName: string;
+  series: SeriesDTO | null;
 }): ReactElement {
   const { record, item } = props;
+  const title = continueTitle(item, props.series);
   const duration = durationSeconds(item.document);
   const percent =
     duration !== null
       ? Math.min(100, Math.round((record.position_seconds / duration) * 100))
       : null;
+  const hasThumb = hasFrameGrabberThumb(item.document);
+  const thumb = useItemMedia(
+    hasThumb ? ENDPOINTS.itemMedia(item.id, "thumb") : null,
+  );
 
   return (
     <li>
       <Link
         to={`/items/${item.id}`}
-        aria-label={`Play ${viewTitle(item.document)}`}
+        aria-label={`Play ${title}`}
         className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
       >
-        <span className="text-sm font-medium">{viewTitle(item.document)}</span>
+        {hasThumb ? <CardPreview src={thumb} /> : null}
+        <span className="text-sm font-medium">{title}</span>
         <span className="text-xs text-muted-foreground">
           {percent !== null ? `${String(percent)}% · ` : ""}
           {formatPosition(record.position_seconds)}
@@ -596,12 +753,17 @@ function ContinueCard(props: {
 
 // ---- Next up ----------------------------------------------------------------
 
-// NextUpRow — per series touched by Continue, the lowest-numbered episode
-// strictly after the highest started one, derived client-side from the
-// touched collections' item facts: one bounded scan (SCAN_LIMIT, the server
-// pagination ceiling) per touched collection. A series with no parseable
-// facts or no later episode is omitted; with no derivable episodes at all
-// the row renders its empty state (honest, never a guess).
+// NextUpRow — keyed on SERIES records (D-8): progress items map through
+// (library, parsed.series_relative_path) to the series row (one
+// GET /series?library={id} per touched library, the collection page's shared
+// ["series", id] cache), and per started series with a resolved row the
+// episode list loads once (GET /series/{id}/episodes, the shared
+// ["series-episodes", id] cache). The offered episode is the lowest
+// (season, episode) strictly after the highest started one. A series whose
+// row did not resolve — the episode-without-series fallback — or with no
+// later episode is omitted; with nothing derivable the row renders its empty
+// state (honest, never a guess). Films never enter (startedSeries skips the
+// tv module).
 function NextUpRow(): ReactElement {
   const progress = useProgressList();
   const records = useMemo(() => progress.data?.items ?? [], [progress.data]);
@@ -611,22 +773,46 @@ function NextUpRow(): ReactElement {
     () => (docs ? startedSeries(records, docs) : []),
     [records, docs],
   );
-  const libraryIds = [...new Set(started.map((s) => s.libraryId))];
 
-  const scans = useQueries({
+  const libraryIds = [...new Set(started.map((s) => s.libraryId))];
+  const seriesLists = useQueries({
     queries: libraryIds.map((id) => ({
-      queryKey: ["items", { library: id, limit: SCAN_LIMIT, offset: 0 }],
-      queryFn: () => listItems({ library: id, limit: SCAN_LIMIT, offset: 0 }),
+      queryKey: ["series", id],
+      queryFn: () => getSeries(id),
     })),
   });
 
-  const scanItems: ItemDTO[] = [];
-  for (const scan of scans) {
-    if (scan.data) {
-      scanItems.push(...scan.data.items);
+  const seriesByKey = new Map<string, SeriesDTO>();
+  for (const s of started) {
+    const idx = libraryIds.indexOf(s.libraryId);
+    const rows = seriesLists[idx]?.data?.items ?? [];
+    const series = matchSeries(rows, s.seriesPath);
+    if (series !== null) {
+      seriesByKey.set(seriesKey(s), series);
     }
   }
-  const nextUp = docs ? nextUpEntries(started, scanItems) : [];
+
+  const resolved = started
+    .map((s) => seriesByKey.get(seriesKey(s)))
+    .filter((s): s is SeriesDTO => s !== undefined);
+  const episodePages = useQueries({
+    queries: resolved.map((series) => ({
+      queryKey: ["series-episodes", series.id],
+      queryFn: () => getSeriesEpisodes(series.id),
+    })),
+  });
+
+  const episodesBySeriesId = new Map<string, ItemDTO[]>();
+  resolved.forEach((series, i) => {
+    const data = episodePages[i]?.data;
+    if (data) {
+      episodesBySeriesId.set(series.id, data.items);
+    }
+  });
+
+  const nextUp = docs
+    ? nextUpEntries(started, seriesByKey, episodesBySeriesId)
+    : [];
 
   if (progress.isLoading) {
     return <LoadingState label="Loading progress…" />;
@@ -639,7 +825,13 @@ function NextUpRow(): ReactElement {
   if (records.length === 0) {
     return <RowEmpty />;
   }
-  if (docs === null || scans.some((s) => s.isLoading)) {
+  if (docs === null) {
+    return <LoadingState label="Loading items…" />;
+  }
+  if (seriesLists.some((q) => q.isLoading)) {
+    return <LoadingState label="Loading series…" />;
+  }
+  if (episodePages.some((q) => q.isLoading)) {
     return <LoadingState label="Loading episodes…" />;
   }
   if (nextUp.length === 0) {
@@ -651,24 +843,41 @@ function NextUpRow(): ReactElement {
       <h2 className="text-lg font-semibold">Next up</h2>
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {nextUp.slice(0, NEXT_UP_LIMIT).map((entry) => (
-          <li key={entry.item.id}>
-            <Link
-              to={`/items/${entry.item.id}`}
-              aria-label={`Play ${entry.seriesKey} ${entry.label}`}
-              className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
-            >
-              <span className="text-sm font-medium">{entry.seriesKey}</span>
-              <span className="flex gap-1">
-                <span className="chip">{entry.label}</span>
-                <span className="chip">not started</span>
-              </span>
-              <span className="mt-auto flex items-center justify-end">
-                <span className="chip">Play</span>
-              </span>
-            </Link>
-          </li>
+          <NextUpCard key={entry.item.id} entry={entry} />
         ))}
       </ul>
     </section>
+  );
+}
+
+// NextUpCard — one suggestion: the series' display title, the SxxEyy chip and
+// the episode's frame-grabber thumb (absent fact → no preview area — the same
+// honest fallback as Continue). Play deep-links into the episode detail
+// (inline streaming stays out of scope, D3).
+function NextUpCard(props: { entry: NextUpEntry }): ReactElement {
+  const { entry } = props;
+  const hasThumb = hasFrameGrabberThumb(entry.item.document);
+  const thumb = useItemMedia(
+    hasThumb ? ENDPOINTS.itemMedia(entry.item.id, "thumb") : null,
+  );
+
+  return (
+    <li>
+      <Link
+        to={`/items/${entry.item.id}`}
+        aria-label={`Play ${entry.title} ${entry.label}`}
+        className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
+      >
+        {hasThumb ? <CardPreview src={thumb} /> : null}
+        <span className="text-sm font-medium">{entry.title}</span>
+        <span className="flex gap-1">
+          <span className="chip">{entry.label}</span>
+          <span className="chip">not started</span>
+        </span>
+        <span className="mt-auto flex items-center justify-end">
+          <span className="chip">Play</span>
+        </span>
+      </Link>
+    </li>
   );
 }

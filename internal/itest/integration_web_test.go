@@ -440,8 +440,11 @@ func TestWeb_Integration(t *testing.T) {
 		// web-ui baseline; forward behavior there is guarded by each feature's
 		// own spec probes (the serials-library probe set), not by this diff
 		// pin.
+		// pkg/sdk dropped from the pin: fix-truncated-scan-sweep legitimately
+		// reworked the in-repo Scanner surface (ScanStream, wire untouched);
+		// the additive guard stays on the wire (proto/) only.
 		diff := exec.Command("git", "diff", "--stat", "58a1130", "HEAD", "--",
-			"proto/", "pkg/sdk/")
+			"proto/")
 		diff.Dir = moduleRoot(t) // git pathspecs resolve against cwd — must be the module root
 		out, err := diff.CombinedOutput()
 		if err != nil {

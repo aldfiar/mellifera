@@ -169,7 +169,10 @@ func TestItemMediaOriginal(t *testing.T) {
 
 // TestItemMediaThumb proves the thumb variant (spec: "Thumb variant serves the
 // frame-grabber grab"): ?variant=thumb serves the frame-grabber JPEG's exact
-// bytes, and HEAD answers the same headers with no body.
+// bytes, HEAD answers the same headers with no body, and the cache policy is
+// the thumb-specific revalidate-every-fetch form (continue-nextup-media D-6:
+// `private, no-cache` — the thumb is a regenerable derived artifact) while the
+// strong ETag still revalidates to 304 when the file is unchanged.
 func TestItemMediaThumb(t *testing.T) {
 	mh := newMediaHarness(t)
 	thumb := writeMediaFile(t, "thumb.jpg", "jpeg-thumb-bytes")
@@ -187,8 +190,25 @@ func TestItemMediaThumb(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); ct != "image/jpeg" {
 		t.Fatalf("Content-Type = %q, want image/jpeg", ct)
 	}
-	if cc := resp.Header.Get("Cache-Control"); cc != "private, immutable" {
-		t.Fatalf("Cache-Control = %q, want %q", cc, "private, immutable")
+	if cc := resp.Header.Get("Cache-Control"); cc != "private, no-cache" {
+		t.Fatalf("Cache-Control = %q, want %q (thumb revalidates — D-6)", cc, "private, no-cache")
+	}
+
+	// no-cache means revalidate, not never-store: the unchanged file's strong
+	// ETag still answers If-None-Match with 304.
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("ETag missing, want a strong entity tag")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/items/itm-thumb/media?variant=thumb", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("If-None-Match", etag)
+	rec := httptest.NewRecorder()
+	mh.h.ServeHTTP(rec, req)
+	cond := rec.Result()
+	defer cond.Body.Close()
+	if cond.StatusCode != http.StatusNotModified {
+		t.Fatalf("If-None-Match status = %d, want %d (no-cache revalidates, not disables)", cond.StatusCode, http.StatusNotModified)
 	}
 
 	// HEAD answers the same headers, no body (stdlib ServeContent semantics
