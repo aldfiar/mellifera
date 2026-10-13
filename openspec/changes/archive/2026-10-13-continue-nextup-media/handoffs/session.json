@@ -1,0 +1,6 @@
+{
+  "status": "partial",
+  "summary": "Apply complete: all 7 boxes ticked (6 via wf probes incl. full make-gate 6.1; 6.2 hand-ticked — unprobeable, shadow e2e evidence in change README.md: ETag flip 1s, bytes changed, progress+original untouched, debounce held, live datadir hash unchanged). Fixture ripples fixed: v2-seed schema_version 1->2 (scan run_test), frame-grabber sources + corrupt->parsed (3 itest files), enrich chain wants; B2 pins narrowed to proto/ (pkg/sdk halves retired by sibling fix-truncated-scan-sweep). GATE 2 in flight: wf-reviewer dispatched (probe re-runs + diff-vs-deltas + unprobeable inspection + 5 disclosed deviations).",
+  "next": "On reviewer PASS: wf change check continue-nextup-media green -> human archive approval in review.md -> pinned openspec archive -> police TBD placeholders. On FAIL: fix named blockers, re-tick via wf, re-dispatch reviewer.",
+  "updated_at": "2026-10-13T08:55:21.458001Z"
+}

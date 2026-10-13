@@ -413,12 +413,16 @@ go test ./plugins/serial-parser -run TestEpisodeNameGrammar
 The `frame-grabber` plugin SHALL produce a default image for an episode by
 invoking the system `ffmpeg` binary via `os/exec` with an explicit argument slice
 (NEVER a shell) under a bounded timeout, seeking into the first minutes of the
-file (the seek point SHALL be the configured seek seconds, default 60, clamped to
-a fraction of the probe-reported duration so short files still yield a frame) and
+file (the enrich-time seek point SHALL be `min(300s, 50% duration)` — the
+"about 5 first minutes" preview still, with shorter files still yielding a frame
+at half their probe duration, never past EOF; previously `min(60s, 10%)`) and
 writing a single JPEG frame into the data directory
 (`<data_dir>/thumbs/<hash16(series relative path)>/<hash16(episode relative path)>.jpg`;
 the data directory root is the `MELLIFERA_DATA_DIR` environment value, default
-`./data`). The plugin SHALL write ONLY `sources.frame-grabber` — carrying the
+`./data`). `Convert` SHALL honor an explicit integer `seek_seconds` query field:
+it replaces the default seek (the stop-position override) while staying clamped
+by the probe-reported duration — never past EOF, never negative. The plugin SHALL
+write ONLY `sources.frame-grabber` — carrying the
 thumbnail path — never a BLOB in the document, and never touching
 `_provenance`/`_view`/`_stages` (core-stamped). Every ffmpeg failure (missing
 binary, non-zero exit, timeout, unwritable output) SHALL be a per-source SOFT-FAIL
@@ -460,6 +464,30 @@ go test ./plugins/frame-grabber -run TestMissingFfmpegSoftFails
 ```bash
 set -e
 go test ./internal/enrich -run TestPosterOutranksFrameGrab
+```
+<!-- /wf:probe -->
+
+#### Scenario: Five-minute default seek clamped to half duration
+
+- **WHEN** frame-grabber enriches a video whose probe reports a 24-minute duration and one whose probe reports 8 minutes
+- **THEN** the default enrich-time seek lands at 300 seconds for the first and at 240 seconds — half the probe duration — for the second, never past EOF
+
+<!-- wf:probe id=c140a9be3ddbad7f -->
+```bash
+set -e
+go test ./plugins/frame-grabber -run TestSeekPolicy
+```
+<!-- /wf:probe -->
+
+#### Scenario: seek_seconds override replaces the default and stays clamped
+
+- **WHEN** `Convert` is invoked with an explicit integer `seek_seconds` — one below the duration clamp, one above it, and a non-positive value
+- **THEN** the override replaces the default seek while remaining subject to the same `min(300s, 50% duration)` clamp — a beyond-clamp override is pulled back to the clamp, an override without a probed duration is honored unclamped — and a non-positive override is ignored in favor of the default
+
+<!-- wf:probe id=92c558a32a6b0699 -->
+```bash
+set -e
+go test ./plugins/frame-grabber -run TestSeekPolicy
 ```
 <!-- /wf:probe -->
 

@@ -88,6 +88,25 @@ The Go build gate (`make build`/`check`/`lint`/`test`) SHALL stay green on a hos
 - **WHEN** `make build && make check` runs on a node-less host
 - **THEN** it exits 0 with no node/npm/swag invoked
 
+<!-- wf:probe id=b0341cf7e1b1f06e -->
+```bash
+set -e
+make build check
+```
+<!-- /wf:probe -->
+
+#### Scenario: The change's full Go gate stays green
+
+- **WHEN** the change's Go gate runs from the repo root — `make build check test lint`
+- **THEN** it exits 0 node-free
+
+<!-- wf:probe id=ebd254ceacffd32c -->
+```bash
+set -e
+make build check test lint
+```
+<!-- /wf:probe -->
+
 ### Requirement: SPA token authentication
 
 The SPA SHALL store the admin token in localStorage under `mellifera.token`; `<RequireAuth>` SHALL guard protected routes by token presence, redirecting to `/login` when absent. Every `/api/v1/*` request SHALL carry `Authorization: Bearer <token>` via the fetch wrapper. A 401 from any API call SHALL clear the token and redirect to `/login`.
@@ -633,16 +652,26 @@ test -z "$(grep -rn 'pill ok\|pill warn\|pill stale\|pill bad' web/src/pages/col
 The home surface SHALL render a **Continue** row from
 `GET /api/v1/progress`: one card per item with `position_seconds > 0`, ordered
 by recency, showing a progress bar, remaining-time or percent label, source
-collection, and a Play affordance; and a **Next up** row deriving, per series
-touched by Continue, the lowest-numbered episode that comes strictly AFTER the
-highest-started one (the skip-aware reading of "no progress record": with
-sequential viewing the two readings coincide — the derivation never suggests
-an episode the viewer has already moved past) (season/episode and series
-grouping read from the items' existing
-document facts), each with a Play affordance. Until the playback capability
-ships, Play SHALL deep-link to the item's detail page — the surfaces MUST NOT
-attempt inline streaming. Both rows SHALL render shared empty states when the
-progress list is empty.
+collection, and a Play affordance — plus the item's frame-grabber thumb preview
+(loaded through the authenticated media fetch, the same pattern as the
+collection card's preview) and a real name: a serial-library episode SHALL
+resolve its series record (`GET /series?library={id}`, matched by the episode's
+`parsed.series_relative_path`, sharing the collection page's series cache) and
+render `<series title> · SxxEyy`; a tv-module item SHALL keep `viewTitle`. An
+item whose document carries no thumb fact SHALL keep the honest badge-only card
+— never a broken-image state. The **Next up** row SHALL key on SERIES RECORDS
+instead of episode-carried titles: each progress item maps through its library
+and `parsed.series_relative_path` to its series row, the series' episodes load
+once per started series (`GET /series/{id}/episodes`, cached), and the offered
+episode is the lowest `(season, episode)` strictly after the highest-started
+one — the skip-aware reading of "no progress record": with sequential viewing
+the two readings coincide, and the derivation never suggests an episode the
+viewer has already moved past. Next-up cards SHALL render the series title, an
+`SxxEyy` chip, and the episode's thumb; tv-module films never enter Next up
+(it is an episode concept — films surface via Continue). Each card carries a
+Play affordance; until the playback capability ships, Play SHALL deep-link to
+the item's detail page — the surfaces MUST NOT attempt inline streaming. Both
+rows SHALL render shared empty states when the progress list is empty.
 
 #### Scenario: Continue renders in-progress items with progress
 
@@ -668,6 +697,30 @@ grep -q 'deep-link\|/items/' web/src/pages/home/Home.tsx
 set -e
 grep -q 'Next up' web/src/pages/home/Home.tsx
 go test ./internal/api -run TestProgressList
+```
+<!-- /wf:probe -->
+
+#### Scenario: Continue cards carry the stop-frame thumb and the series-named title
+
+- **WHEN** the home surface renders an in-progress serial episode whose series record resolves and whose document carries the thumb fact, alongside an episode with no thumb fact and a tv-module film
+- **THEN** the serial episode card shows the thumb preview and `<series title> · SxxEyy`, the no-thumb item keeps the honest badge-only card, and the film keeps its `viewTitle`
+
+<!-- wf:probe id=b64772ba8f0655ba -->
+```bash
+set -e
+cd web && npx vitest run && npx tsc --noEmit
+```
+<!-- /wf:probe -->
+
+#### Scenario: Next up derives from series records and their episode lists
+
+- **WHEN** Continue touches episodes of a series whose episode list holds later-numbered episodes
+- **THEN** Next up offers the lowest `(season, episode)` strictly after the highest-started one, rendered with the series title, the `SxxEyy` chip, and the episode thumb — a film item never enters Next up, and the empty state renders when nothing follows
+
+<!-- wf:probe id=e5b85e17341465f0 -->
+```bash
+set -e
+cd web && npx vitest run && npx tsc --noEmit
 ```
 <!-- /wf:probe -->
 

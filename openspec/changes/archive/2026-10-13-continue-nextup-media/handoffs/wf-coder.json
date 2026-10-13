@@ -1,0 +1,6 @@
+{
+  "status": "done",
+  "summary": "box 5.1: Next up rekeyed on series records (D-8) — progress->(library,parsed.series_relative_path)->series row (shared [\"series\",id] cache) -> per-series episode lists (shared [\"series-episodes\",id]); Continue cards gain thumb preview + <seriesTitle> . SxxEyy naming (title_override->serial-parser->dir_name_raw->last segment); films never enter Next up; exports seriesDisplayTitle/matchSeries/continueTitle + reworked episodeFacts/startedSeries/nextUpEntries; Home.test.tsx covers title resolution, next-up-from-episodes, episode-without-series fallback; probe b64772ba8f0655ba PASS (161 vitest tests, tsc clean)",
+  "next": "next undone box of continue-nextup-media, if any",
+  "updated_at": "2026-10-13T08:04:06.818083Z"
+}

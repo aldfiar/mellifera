@@ -17,8 +17,13 @@ principal. Without a `variant` parameter the endpoint SHALL serve the item's
 original file bytes from the document's `parsed.absolute_path`; with
 `?variant=thumb` it SHALL serve the frame-grabber JPEG at the document's
 `sources["frame-grabber"].thumbnail_path` when the document carries one. The
-response SHALL carry a Content-Type derived from the file extension, a strong
-ETag, and `Cache-Control: private, immutable`; conditional requests
+response SHALL carry a Content-Type derived from the file extension and a
+strong ETag; the cache policy SHALL be per-variant — the write-once `original`
+and `sidecar` variants keep `Cache-Control: private, immutable`, while the
+re-grabbable `thumb` variant SHALL carry `Cache-Control: private, no-cache`
+(an `immutable` thumb would pin stale bytes in the browser cache forever after
+a stop-frame re-grab) with its strong ETag still answering an unchanged
+`If-None-Match` with 304; conditional requests
 (`If-None-Match`) SHALL revalidate to 304, and `HEAD` SHALL be answered with
 the same headers and no body. Non-image content SHALL carry
 `Content-Disposition: attachment` — through this endpoint video files
@@ -57,6 +62,18 @@ go test ./internal/api -run TestItemMediaOriginal
 ```bash
 set -e
 go test ./internal/api -run TestItemMediaThumb
+```
+<!-- /wf:probe -->
+
+#### Scenario: Thumb serves no-cache while original and sidecar stay immutable
+
+- **WHEN** an authorized caller requests the `thumb`, `original` (no variant), and `sidecar` variants of an item whose document resolves all three
+- **THEN** the thumb response carries `Cache-Control: private, no-cache` with a strong ETag that still answers an unchanged `If-None-Match` with 304, while the original and sidecar responses keep `Cache-Control: private, immutable`
+
+<!-- wf:probe id=ae26726f293257a2 -->
+```bash
+set -e
+go test ./internal/api -run 'TestItemMediaThumb|TestItemMediaOriginal|TestItemMediaSidecar'
 ```
 <!-- /wf:probe -->
 
