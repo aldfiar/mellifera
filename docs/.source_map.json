@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "8ccd817",
-  "source_fingerprint": "491dfbf85c673abcc6d276e8a229f934a4ce2aa839aa9e28d244e0da303cb57c",
+  "generated_from_commit": "f844ff4",
+  "source_fingerprint": "fc9f4b2543e8f1c7fa2628f33654bfc7244454e593537188b3cc013f27baa76c",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -17,25 +17,25 @@
     "ast_backends": "python3-ast (.py); regex-floor fallback for other langs"
   },
   "counts": {
-    "files_total": 246,
+    "files_total": 271,
     "by_extension": {
-      ".go": 194,
+      ".go": 219,
       ".sh": 2,
       ".js": 3,
       ".ts": 13,
       ".tsx": 34
     },
     "by_role": {
-      "source": 140,
-      "test": 105,
+      "source": 150,
+      "test": 120,
       "script": 1
     },
-    "tests": 105
+    "tests": 120
   },
   "stack": {
     "primary": "go",
     "languages": {
-      "go": 194,
+      "go": 219,
       "bash": 2,
       "javascript": 3,
       "typescript": 47
@@ -69,7 +69,7 @@
       "role": "test"
     },
     "cmd/mellifera/main.go": {
-      "lines": 589,
+      "lines": 858,
       "lang": "go",
       "role": "source"
     },
@@ -77,6 +77,16 @@
       "lines": 357,
       "lang": "go",
       "role": "source"
+    },
+    "cmd/mellifera/thumb.go": {
+      "lines": 208,
+      "lang": "go",
+      "role": "source"
+    },
+    "cmd/mellifera/thumb_test.go": {
+      "lines": 359,
+      "lang": "go",
+      "role": "test"
     },
     "internal/api/admin_status_test.go": {
       "lines": 98,
@@ -88,13 +98,23 @@
       "lang": "go",
       "role": "source"
     },
+    "internal/api/enrich_admin.go": {
+      "lines": 295,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/api/enrich_admin_test.go": {
+      "lines": 380,
+      "lang": "go",
+      "role": "test"
+    },
     "internal/api/handlers.go": {
-      "lines": 1252,
+      "lines": 1273,
       "lang": "go",
       "role": "source"
     },
     "internal/api/item_media_test.go": {
-      "lines": 475,
+      "lines": 495,
       "lang": "go",
       "role": "test"
     },
@@ -119,9 +139,14 @@
       "role": "test"
     },
     "internal/api/parsers.go": {
-      "lines": 135,
+      "lines": 137,
       "lang": "go",
       "role": "source"
+    },
+    "internal/api/parsers_changed_test.go": {
+      "lines": 138,
+      "lang": "go",
+      "role": "test"
     },
     "internal/api/playback.go": {
       "lines": 168,
@@ -134,7 +159,7 @@
       "role": "test"
     },
     "internal/api/progress_test.go": {
-      "lines": 250,
+      "lines": 334,
       "lang": "go",
       "role": "test"
     },
@@ -154,7 +179,7 @@
       "role": "test"
     },
     "internal/api/router.go": {
-      "lines": 189,
+      "lines": 219,
       "lang": "go",
       "role": "source"
     },
@@ -183,8 +208,13 @@
       "lang": "go",
       "role": "test"
     },
+    "internal/enrich/anchor_test.go": {
+      "lines": 102,
+      "lang": "go",
+      "role": "test"
+    },
     "internal/enrich/chain.go": {
-      "lines": 145,
+      "lines": 192,
       "lang": "go",
       "role": "source"
     },
@@ -194,7 +224,7 @@
       "role": "source"
     },
     "internal/enrich/enrich.go": {
-      "lines": 284,
+      "lines": 302,
       "lang": "go",
       "role": "source"
     },
@@ -204,6 +234,16 @@
       "role": "test"
     },
     "internal/enrich/extras_test.go": {
+      "lines": 261,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/enrich/fetch.go": {
+      "lines": 193,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/fetch_test.go": {
       "lines": 260,
       "lang": "go",
       "role": "test"
@@ -224,22 +264,32 @@
       "role": "source"
     },
     "internal/enrich/qa_c01_stages_roundtrip_test.go": {
-      "lines": 203,
+      "lines": 204,
       "lang": "go",
       "role": "test"
     },
     "internal/enrich/queue.go": {
-      "lines": 687,
+      "lines": 718,
       "lang": "go",
       "role": "source"
     },
     "internal/enrich/queue_test.go": {
-      "lines": 606,
+      "lines": 609,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/enrich/reenrich.go": {
+      "lines": 212,
+      "lang": "go",
+      "role": "source"
+    },
+    "internal/enrich/reenrich_test.go": {
+      "lines": 423,
       "lang": "go",
       "role": "test"
     },
     "internal/enrich/retry.go": {
-      "lines": 71,
+      "lines": 72,
       "lang": "go",
       "role": "source"
     },
@@ -249,12 +299,12 @@
       "role": "test"
     },
     "internal/enrich/series_queue_test.go": {
-      "lines": 588,
+      "lines": 597,
       "lang": "go",
       "role": "test"
     },
     "internal/enrich/state.go": {
-      "lines": 101,
+      "lines": 109,
       "lang": "go",
       "role": "source"
     },
@@ -269,7 +319,7 @@
       "role": "test"
     },
     "internal/enrich/worker.go": {
-      "lines": 407,
+      "lines": 419,
       "lang": "go",
       "role": "source"
     },
@@ -289,7 +339,7 @@
       "role": "test"
     },
     "internal/itest/integration_async_test.go": {
-      "lines": 433,
+      "lines": 447,
       "lang": "go",
       "role": "test"
     },
@@ -309,7 +359,7 @@
       "role": "test"
     },
     "internal/itest/integration_test.go": {
-      "lines": 588,
+      "lines": 600,
       "lang": "go",
       "role": "test"
     },
@@ -319,17 +369,17 @@
       "role": "test"
     },
     "internal/itest/integration_web_test.go": {
-      "lines": 486,
+      "lines": 489,
       "lang": "go",
       "role": "test"
     },
     "internal/itest/qa_acceptance_test.go": {
-      "lines": 576,
+      "lines": 577,
       "lang": "go",
       "role": "test"
     },
     "internal/itest/qa_async_acceptance_test.go": {
-      "lines": 370,
+      "lines": 385,
       "lang": "go",
       "role": "test"
     },
@@ -354,7 +404,7 @@
       "role": "test"
     },
     "internal/itest/qa_film_joint_test.go": {
-      "lines": 175,
+      "lines": 181,
       "lang": "go",
       "role": "test"
     },
@@ -364,12 +414,12 @@
       "role": "test"
     },
     "internal/itest/qa_image_fixtures_test.go": {
-      "lines": 368,
+      "lines": 369,
       "lang": "go",
       "role": "test"
     },
     "internal/itest/qa_image_regression_test.go": {
-      "lines": 193,
+      "lines": 195,
       "lang": "go",
       "role": "test"
     },
@@ -399,12 +449,17 @@
       "role": "test"
     },
     "internal/itest/qa_serial_e2e_test.go": {
-      "lines": 922,
+      "lines": 1171,
       "lang": "go",
       "role": "test"
     },
     "internal/itest/qa_serial_watch_flow_test.go": {
       "lines": 361,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_shikimori_joint_test.go": {
+      "lines": 572,
       "lang": "go",
       "role": "test"
     },
@@ -434,12 +489,17 @@
       "role": "test"
     },
     "internal/module/registry.go": {
-      "lines": 423,
+      "lines": 453,
       "lang": "go",
       "role": "source"
     },
+    "internal/module/registry_serial_v2_test.go": {
+      "lines": 202,
+      "lang": "go",
+      "role": "test"
+    },
     "internal/module/registry_test.go": {
-      "lines": 479,
+      "lines": 622,
       "lang": "go",
       "role": "test"
     },
@@ -503,6 +563,11 @@
       "lang": "go",
       "role": "source"
     },
+    "internal/scan/joint_truncated_grpc_test.go": {
+      "lines": 211,
+      "lang": "go",
+      "role": "test"
+    },
     "internal/scan/parsed_abs_test.go": {
       "lines": 128,
       "lang": "go",
@@ -514,12 +579,17 @@
       "role": "source"
     },
     "internal/scan/run_test.go": {
-      "lines": 760,
+      "lines": 763,
       "lang": "go",
       "role": "test"
     },
     "internal/scan/series_test.go": {
       "lines": 434,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/scan/sweep_truncated_stream_test.go": {
+      "lines": 82,
       "lang": "go",
       "role": "test"
     },
@@ -663,7 +733,7 @@
       "lang": "go",
       "role": "source"
     },
-    "internal/web/dist/assets/index-KUf24VLL.js": {
+    "internal/web/dist/assets/index-BYBLJAsn.js": {
       "lines": 205,
       "lang": "javascript",
       "role": "source"
@@ -824,7 +894,7 @@
       "role": "source"
     },
     "plugins/frame-grabber/grabber_test.go": {
-      "lines": 392,
+      "lines": 391,
       "lang": "go",
       "role": "test"
     },
@@ -952,6 +1022,61 @@
       "lines": 396,
       "lang": "go",
       "role": "source"
+    },
+    "plugins/shikimori/buildrequest_test.go": {
+      "lines": 119,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/shikimori/convert.go": {
+      "lines": 178,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/shikimori/convert_test.go": {
+      "lines": 184,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/shikimori/doc.go": {
+      "lines": 43,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/shikimori/main.go": {
+      "lines": 48,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/shikimori/match_test.go": {
+      "lines": 170,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/shikimori/pluginsvc.go": {
+      "lines": 77,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/shikimori/seriesname.go": {
+      "lines": 263,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/shikimori/seriesname_test.go": {
+      "lines": 47,
+      "lang": "go",
+      "role": "test"
+    },
+    "plugins/shikimori/source.go": {
+      "lines": 313,
+      "lang": "go",
+      "role": "source"
+    },
+    "plugins/shikimori/upstream_test.go": {
+      "lines": 30,
+      "lang": "go",
+      "role": "test"
     },
     "plugins/tv-parser/doc.go": {
       "lines": 41,
@@ -1424,19 +1549,22 @@
       ]
     },
     "web/src/pages/home/Home.test.tsx": {
-      "lines": 571,
+      "lines": 880,
       "lang": "typescript",
       "role": "test"
     },
     "web/src/pages/home/Home.tsx": {
-      "lines": 674,
+      "lines": 883,
       "lang": "typescript",
       "role": "source",
       "exports": [
         "formatPosition",
         "episodeFacts",
         "startedSeries",
+        "seriesDisplayTitle",
+        "matchSeries",
         "nextUpEntries",
+        "continueTitle",
         "durationSeconds",
         "representativeItem",
         "Home"
@@ -1469,6 +1597,7 @@
     "plugins/image-enricher/main.go",
     "plugins/serial-parser/main.go",
     "plugins/serial-scanner/main.go",
+    "plugins/shikimori/main.go",
     "plugins/tv-parser/main.go"
   ],
   "tests": []
