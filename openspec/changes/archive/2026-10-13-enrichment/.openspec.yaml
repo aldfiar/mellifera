@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-10-13
+goal: Enrich anime films and series with Shikimori metadata; opt-in per-library
+  re-enrichment replacing sources.shikimori
