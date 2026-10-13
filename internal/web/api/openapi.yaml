@@ -1,5 +1,20 @@
 basePath: /api/v1
 definitions:
+  api.EnrichPreview:
+    properties:
+      cooling:
+        type: integer
+      matches:
+        type: integer
+      pending:
+        type: integer
+      plugin_id:
+        type: string
+      versions:
+        additionalProperties:
+          type: integer
+        type: object
+    type: object
   api.EnrichStats:
     properties:
       done:
@@ -44,6 +59,15 @@ definitions:
       state:
         type: string
     type: object
+  api.ReenrichResult:
+    properties:
+      deferred:
+        type: integer
+      queued:
+        type: integer
+      stripped:
+        type: integer
+    type: object
   api.apiError:
     properties:
       code:
@@ -63,6 +87,34 @@ definitions:
         type: string
       root_path:
         type: string
+    type: object
+  api.enrichFailureDTO:
+    properties:
+      attempts:
+        type: integer
+      failed_at:
+        type: string
+      next_eligible_at:
+        type: string
+      plugin_id:
+        type: string
+      reason:
+        type: string
+      row_id:
+        type: string
+      row_kind:
+        type: string
+      status:
+        type: string
+      title:
+        type: string
+    type: object
+  api.enrichFailuresResponse:
+    properties:
+      failures:
+        items:
+          $ref: '#/definitions/api.enrichFailureDTO'
+        type: array
     type: object
   api.errorBody:
     properties:
@@ -160,6 +212,15 @@ definitions:
       folders:
         items:
           $ref: '#/definitions/api.folderDTO'
+        type: array
+    type: object
+  api.libraryRefreshRequest:
+    properties:
+      plugin_id:
+        type: string
+      row_ids:
+        items:
+          type: string
         type: array
     type: object
   api.librarySummaryResponse:
@@ -337,6 +398,21 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: Admin liveness snapshot (plugins + enrich queue)
+      tags:
+      - admin
+  /enrich/failures:
+    get:
+      operationId: enrich-failures
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.enrichFailuresResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List the enrichment failure ledger
       tags:
       - admin
   /items:
@@ -716,6 +792,44 @@ paths:
       summary: Update a library's display name, description, and/or parser chain
       tags:
       - libraries
+  /libraries/{id}/enrich/preview:
+    get:
+      operationId: library-enrich-preview
+      parameters:
+      - description: library id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: plugin id
+        in: query
+        name: plugin_id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.EnrichPreview'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Preview a plugin's re-enrichment drift for a library
+      tags:
+      - libraries
   /libraries/{id}/folders:
     get:
       operationId: library-folders
@@ -743,6 +857,49 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: Depth-1 folder prefixes and item counts for a library
+      tags:
+      - libraries
+  /libraries/{id}/refresh:
+    post:
+      operationId: library-refresh
+      parameters:
+      - description: library id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: plugin_id required; row_ids omitted = whole-library sweep
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.libraryRefreshRequest'
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/api.ReenrichResult'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Kick off a plugin re-enrichment sweep for a library
       tags:
       - libraries
   /libraries/{id}/scan:

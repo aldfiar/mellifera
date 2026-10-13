@@ -41,6 +41,29 @@
                 }
             }
         },
+        "/enrich/failures": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List the enrichment failure ledger",
+                "operationId": "enrich-failures",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.enrichFailuresResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/items": {
             "get": {
                 "tags": [
@@ -612,6 +635,63 @@
                 }
             }
         },
+        "/libraries/{id}/enrich/preview": {
+            "get": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "Preview a plugin's re-enrichment drift for a library",
+                "operationId": "library-enrich-preview",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "plugin id",
+                        "name": "plugin_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.EnrichPreview"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/libraries/{id}/folders": {
             "get": {
                 "tags": [
@@ -649,6 +729,71 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/libraries/{id}/refresh": {
+            "post": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "Kick off a plugin re-enrichment sweep for a library",
+                "operationId": "library-refresh",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "plugin_id required; row_ids omitted = whole-library sweep",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.libraryRefreshRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/api.ReenrichResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "$ref": "#/definitions/api.errorBody"
                         }
@@ -1060,6 +1205,29 @@
         }
     },
     "definitions": {
+        "api.EnrichPreview": {
+            "type": "object",
+            "properties": {
+                "cooling": {
+                    "type": "integer"
+                },
+                "matches": {
+                    "type": "integer"
+                },
+                "pending": {
+                    "type": "integer"
+                },
+                "plugin_id": {
+                    "type": "string"
+                },
+                "versions": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
         "api.EnrichStats": {
             "type": "object",
             "properties": {
@@ -1128,6 +1296,20 @@
                 }
             }
         },
+        "api.ReenrichResult": {
+            "type": "object",
+            "properties": {
+                "deferred": {
+                    "type": "integer"
+                },
+                "queued": {
+                    "type": "integer"
+                },
+                "stripped": {
+                    "type": "integer"
+                }
+            }
+        },
         "api.apiError": {
             "type": "object",
             "properties": {
@@ -1156,6 +1338,49 @@
                 },
                 "root_path": {
                     "type": "string"
+                }
+            }
+        },
+        "api.enrichFailureDTO": {
+            "type": "object",
+            "properties": {
+                "attempts": {
+                    "type": "integer"
+                },
+                "failed_at": {
+                    "type": "string"
+                },
+                "next_eligible_at": {
+                    "type": "string"
+                },
+                "plugin_id": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "row_id": {
+                    "type": "string"
+                },
+                "row_kind": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.enrichFailuresResponse": {
+            "type": "object",
+            "properties": {
+                "failures": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.enrichFailureDTO"
+                    }
                 }
             }
         },
@@ -1307,6 +1532,20 @@
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/api.folderDTO"
+                    }
+                }
+            }
+        },
+        "api.libraryRefreshRequest": {
+            "type": "object",
+            "properties": {
+                "plugin_id": {
+                    "type": "string"
+                },
+                "row_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
                     }
                 }
             }
