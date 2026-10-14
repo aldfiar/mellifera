@@ -74,9 +74,9 @@ topology, not product behavior; no living spec's requirements change.
 
 ## Verification
 
-- **Probe (box 1.1, hermetic):** `cd /Users/aldfiar/projects/go/mellifera/web && npx vitest run devproxy.test.ts`
+- **Probe (box 1.1, hermetic):** `cd mellifera/web && npx vitest run devproxy.test.ts`
   — fails now on the `/media` assertion; passes after the proxy line lands.
-- **Regression gate (box 1.2):** `cd /Users/aldfiar/projects/go/mellifera/web && npx vitest run && npx tsc --noEmit`.
+- **Regression gate (box 1.2):** `cd mellifera/web && npx vitest run && npx tsc --noEmit`.
 - **HTTP confirmation (manual evidence, NOT a probe — needs the user's live
   dev servers):** GET the item's `play_url` through :5173 and confirm
   `200 video/x-matroska` instead of `200 text/html`.

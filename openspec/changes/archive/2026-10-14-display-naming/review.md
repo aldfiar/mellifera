@@ -49,7 +49,7 @@ by wf itself).
 
 ## Backstop
 
-`bash ~/.claude/bin/wf --repo-root /Users/aldfiar/projects/go/mellifera change check
+`bash ~/.claude/bin/wf --repo-root mellifera change check
 display-naming` → OK (rc=0) after the Option B fix: 12 done (re-run), 0 pending;
 coverage requirements=9 probe_backed=9 unprobeable=0 gaps=0. The dirty-outside-
 openspec WARNs are the change's own uncommitted work in the main tree (D3 run —

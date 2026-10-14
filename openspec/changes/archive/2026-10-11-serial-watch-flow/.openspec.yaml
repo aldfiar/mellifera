@@ -1,6 +1,6 @@
 schema: lite
 created: 2026-10-11
-goal: User adds a serial collection (e.g. /Volumes/kofe/ongoing), sees serials
+goal: User adds a serial collection (e.g. /media/kofe/ongoing), sees serials
   titled by plugin or manual override else folder name, opens a serial to its
   episode list (plugin or manual title else filename), opens an episode page
   with play + voiceover/subtitle pickers, and starts playback; a default plugin

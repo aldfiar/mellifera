@@ -9,8 +9,8 @@
 #
 # The Go server is also SEEDED with real media roots (idempotent — already-known
 # root paths are skipped, unmounted volumes soft-skip):
-#   serial|/Volumes/kofe/ongoing|Ongoing
-#   serial|/Volumes/inrat/anime|Anime
+#   serial|/media/kofe/ongoing|Ongoing
+#   serial|/media/inrat/anime|Anime
 # Override with MELLIFERA_DEV_LIBS (same `module|path|name` format, `;` between
 # entries); MELLIFERA_DEV_LIBS="" disables seeding entirely.
 #
@@ -102,7 +102,7 @@ log "Go server ready (admin token: $TOKEN)"
 api() { curl -sf -H "Authorization: Bearer $TOKEN" "$@"; }
 
 seed_libs() {
-  local DEV_LIBS="${MELLIFERA_DEV_LIBS-serial|/Volumes/kofe/ongoing|Ongoing;serial|/Volumes/inrat/anime|Anime}"
+  local DEV_LIBS="${MELLIFERA_DEV_LIBS-serial|/media/kofe/ongoing|Ongoing;serial|/media/inrat/anime|Anime}"
   [ -z "$DEV_LIBS" ] && { log "seeding disabled (MELLIFERA_DEV_LIBS=\"\")"; return 0; }
   local known entries entry module path name created id scan
   log "seeding media libraries..."

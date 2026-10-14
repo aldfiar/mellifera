@@ -2,7 +2,7 @@
 
 ## Why
 
-Mellifera's shipped library types (`tv`, `image`) are filename-flat: every media file under the root is one item, and identity comes from the filename. The user's real serial libraries (`/Volumes/kofe/ongoing`, `/Volumes/ojir/serials`) are directory-structured: one subdirectory per serial (show), episode files directly under it, and subtitle/voiceover/soundtrack sidecars in nested language folders. Today that structure is invisible — a `tv` scan flattens it, sidecars are never associated, and there is no serial-level document for per-plugin show metadata. This change adds a third library type, `serial`, that makes the directory the serial identity while reusing the shipped document model, enrichment pipeline, and API posture unchanged.
+Mellifera's shipped library types (`tv`, `image`) are filename-flat: every media file under the root is one item, and identity comes from the filename. The user's real serial libraries (`/media/kofe/ongoing`, `/media/ojir/serials`) are directory-structured: one subdirectory per serial (show), episode files directly under it, and subtitle/voiceover/soundtrack sidecars in nested language folders. Today that structure is invisible — a `tv` scan flattens it, sidecars are never associated, and there is no serial-level document for per-plugin show metadata. This change adds a third library type, `serial`, that makes the directory the serial identity while reusing the shipped document model, enrichment pipeline, and API posture unchanged.
 
 ## What Changes
 

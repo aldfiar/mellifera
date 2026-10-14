@@ -54,7 +54,7 @@ is on disk and FAILING while the bug is live.
 Explicitly out of scope (wf-debugger handoff findings, user-scoped out
 2026-10-12): a per-library scan concurrency guard
 (`internal/api/handlers.go` — the 18:48 fatal pass overlapped an in-flight
-scan); root-causing the transport-level truncation itself (`/Volumes/kofe` is
+scan); root-causing the transport-level truncation itself (`/media/kofe` is
 an SMB mount — candidates: plugin process death, volume hiccup, concurrent
 scan interference). Also unchanged: the proto contracts, the enrich lifecycle
 state machine (`deleted` stays terminal for the queue — the heal is scan-side,

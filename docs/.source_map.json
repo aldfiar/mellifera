@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "f9a6f4a",
-  "source_fingerprint": "cc330e7c283f63604ddd01609fb35440c0c6250025ac1f0dc7708c34cf727b6f",
+  "generated_from_commit": "87b5fef",
+  "source_fingerprint": "597e26766d79a0e845de8a09feb3f0ee6ad631d4fe48834401febfcdf549e29b",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {

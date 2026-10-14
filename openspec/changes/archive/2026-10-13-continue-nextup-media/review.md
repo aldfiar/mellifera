@@ -16,7 +16,7 @@ Reviewer-found defects fixed before check: F1 — three vacuous probe blocks rew
 
 ## Backstop
 
-`bash ~/.claude/bin/wf --repo-root /Users/aldfiar/projects/go/mellifera change check continue-nextup-media` → OK (rc=0); coverage 7/7 probe-backed, 0 gaps.
+`bash ~/.claude/bin/wf --repo-root mellifera change check continue-nextup-media` → OK (rc=0); coverage 7/7 probe-backed, 0 gaps.
 
 ## Human archive approval
 

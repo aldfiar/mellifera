@@ -2,7 +2,7 @@
 
 ## Context
 
-The user's real serial libraries (`/Volumes/kofe/ongoing`, `/Volumes/ojir/serials`) are
+The user's real serial libraries (`/media/kofe/ongoing`, `/media/ojir/serials`) are
 directory-structured: one subdirectory per serial (show), episode video files directly under
 it, subtitle/voiceover sidecars in nested language folders (`Eng/`, `Rus/`, `SUB/`), and
 depth-3-4 `OST/` soundtrack folders that are serial-level attachments, not episode media.

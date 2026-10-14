@@ -16,7 +16,7 @@ touched — verified by hash after the run.
   from the repo root and read the live `data/` by that rule. Read-only; no
   live bytes changed at any point.)
 - Target: `itm_3_8e64597f89c07366` (ACCA - 13-ku Kansatsu-ka - 01, 345 MB mkv
-  on `/Volumes/inrat/anime`), progress 490 s, thumb
+  on `/media/inrat/anime`), progress 490 s, thumb
   `data/thumbs/f22a497f87638be5/8e64597f89c07366.jpg`.
 
 ## Run

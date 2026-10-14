@@ -142,7 +142,7 @@ brand-named rename through the parser.
 
 Beyond the six literal acceptance rows, the test tables gain rows DERIVED
 from the operator's real anime collection. Sourcing is AUTHORING-TIME ONLY:
-the inventory below was harvested once from `/Volumes/inrat/anime` and
+the inventory below was harvested once from `/media/inrat/anime` and
 lives here as source material — no probe, no test, and no runtime path
 reads the volume (probes stay self-contained Go table tests).
 

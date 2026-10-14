@@ -6,7 +6,7 @@ subtitle/voiceover/soundtrack sidecars in nested folders associate to episodes o
 to the serial record. Serial-level metadata lives in a first-class series document
 with the shipped per-source namespace machinery; episodes keep their own item
 documents; default images come from ffmpeg frame grabs. Grounded in the user's real
-libraries (`/Volumes/kofe/ongoing`, `/Volumes/ojir/serials`): noisy release-name
+libraries (`/media/kofe/ongoing`, `/media/ojir/serials`): noisy release-name
 directories with season markers, `.srt/.ass` sidecars in `Eng/`/`Rus/`/`SUB/`
 folders, depth-3 `OST/` soundtracks, Cyrillic directory names, one stray top-level
 video, and extensionless `smbdelete` junk.

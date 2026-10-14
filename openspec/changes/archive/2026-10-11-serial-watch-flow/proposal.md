@@ -12,10 +12,10 @@ name a serial, episode rows do not apply a title fallback chain, and the
 watch page has no voiceover or subtitle selection even though the scan
 already discovered exactly those facts (`parsed.sidecars` carries every
 subtitle file and every voiceover audio track at any depth under a serial
-directory). The user's own libraries are the target layouts: `/Volumes/kofe/ongoing`
-(folders per serial), `/Volumes/inrat/anime/ID Invaded [BDRip 1080p]`
+directory). The user's own libraries are the target layouts: `/media/kofe/ongoing`
+(folders per serial), `/media/inrat/anime/ID Invaded [BDRip 1080p]`
 (`Rus sound/` holding `.mka` dubs, `Rus subs/` holding `.ass` subtitles),
-and `/Volumes/inrat/anime/ACCA_13-ku_Kansatsu-ka` (`.ass` sidecars beside
+and `/media/inrat/anime/ACCA_13-ku_Kansatsu-ka` (`.ass` sidecars beside
 the episodes).
 
 ## What Changes

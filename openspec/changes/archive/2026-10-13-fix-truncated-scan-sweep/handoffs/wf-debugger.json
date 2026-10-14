@@ -4,7 +4,7 @@
   "next": "group 1: surface mid-stream errors in scannerGRPC.Scan; gate sweepSeries on a provably clean drain in runScan; let nextSeriesStatus resurrect a re-observed deleted series; repro internal/scan/sweep_truncated_stream_test.go (TestTruncatedStreamMustNotSweep) anchors the first probe",
   "findings": [
     "no per-library scan concurrency guard (internal/api/handlers.go:671-688) - the 18:48 fatal pass overlapped an in-flight scan; scope cut by user decision 2026-10-12",
-    "transport-level truncation cause unrecoverable from DB; /Volumes/kofe is an SMB mount - candidates: plugin process death, volume hiccup, concurrent-scan interference",
+    "transport-level truncation cause unrecoverable from DB; /media/kofe is an SMB mount - candidates: plugin process death, volume hiccup, concurrent-scan interference",
     "wf index carries no Go defs (regex floor) - fault sites verified in live source this session"
   ],
   "updated_at": "2026-10-12T19:44:17.133658Z"
