@@ -32,6 +32,13 @@ definitions:
         items:
           type: string
         type: array
+      item_name:
+        description: |-
+          ItemName is the module's default display.item_name element template
+          (display-naming 3.2/3.3): the composition floor under the library's
+          own naming_element_name option — namerFor uses the library option when
+          set, else this default, else no composition.
+        type: string
       parsers:
         items:
           $ref: '#/definitions/api.ParserBinding'
@@ -130,6 +137,8 @@ definitions:
     type: object
   api.itemDTO:
     properties:
+      display_name:
+        type: string
       document:
         items:
           type: integer
@@ -201,6 +210,10 @@ definitions:
       module:
         $ref: '#/definitions/api.ModulePresentation'
       module_id:
+        type: string
+      naming_element_name:
+        type: string
+      naming_group_style:
         type: string
       root_path:
         type: string
@@ -299,6 +312,8 @@ definitions:
     type: object
   api.seriesDTO:
     properties:
+      display_name:
+        type: string
       document:
         items:
           type: integer
@@ -360,6 +375,10 @@ definitions:
       display_name:
         type: string
       module_id:
+        type: string
+      naming_element_name:
+        type: string
+      naming_group_style:
         type: string
       parsers:
         items:

@@ -1254,6 +1254,10 @@
                         "type": "string"
                     }
                 },
+                "item_name": {
+                    "description": "ItemName is the module's default display.item_name element template\n(display-naming 3.2/3.3): the composition floor under the library's\nown naming_element_name option — namerFor uses the library option when\nset, else this default, else no composition.",
+                    "type": "string"
+                },
                 "parsers": {
                     "type": "array",
                     "items": {
@@ -1406,6 +1410,9 @@
         "api.itemDTO": {
             "type": "object",
             "properties": {
+                "display_name": {
+                    "type": "string"
+                },
                 "document": {
                     "type": "array",
                     "items": {
@@ -1515,6 +1522,12 @@
                     "$ref": "#/definitions/api.ModulePresentation"
                 },
                 "module_id": {
+                    "type": "string"
+                },
+                "naming_element_name": {
+                    "type": "string"
+                },
+                "naming_group_style": {
                     "type": "string"
                 },
                 "root_path": {
@@ -1667,6 +1680,9 @@
         "api.seriesDTO": {
             "type": "object",
             "properties": {
+                "display_name": {
+                    "type": "string"
+                },
                 "document": {
                     "type": "array",
                     "items": {
@@ -1761,6 +1777,12 @@
                     "type": "string"
                 },
                 "module_id": {
+                    "type": "string"
+                },
+                "naming_element_name": {
+                    "type": "string"
+                },
+                "naming_group_style": {
                     "type": "string"
                 },
                 "parsers": {
