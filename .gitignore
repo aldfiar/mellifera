@@ -22,6 +22,9 @@ coverage.html
 # Runtime data (SQLite DBs, plugin extraction, caches)
 /data/
 
+# Local compose secrets (see .env.example)
+.env
+
 # Dev-mode artifacts (scripts/dev.sh: the dev server binary + logs)
 /.tmp/
 

@@ -1,0 +1,31 @@
+# Mellifera — compose deployment example.
+#
+#   cp .env.example .env    # fill in MELLIFERA_ADMIN_TOKEN (+ MELLIFERA_MEDIA_SECRET)
+#   docker compose up -d --build
+#
+# Media roots: edit the /srv/media bind mount below to your server's media
+# directory (mounted read-only — Mellifera writes only under /app/data).
+# Libraries must be added in the UI using the CONTAINER-side path (/media/...).
+
+services:
+  mellifera:
+    build: .
+    image: mellifera:local
+    container_name: mellifera
+    restart: unless-stopped
+    ports:
+      # "8080:8080" exposes to the whole network. To keep it host-local and
+      # front it with a TLS reverse proxy instead, use "127.0.0.1:8080:8080".
+      - "8080:8080"
+    environment:
+      # the only fail-fast variable — the server refuses to start without it
+      MELLIFERA_ADMIN_TOKEN: ${MELLIFERA_ADMIN_TOKEN:?set MELLIFERA_ADMIN_TOKEN in .env}
+      # HMAC secret for playback media tokens. Empty = a random per-boot
+      # secret (in-flight playback breaks on every restart), so set it.
+      # Generate with: openssl rand -hex 32
+      MELLIFERA_MEDIA_SECRET: ${MELLIFERA_MEDIA_SECRET:-}
+    volumes:
+      # server state: SQLite DB (WAL), thumbnails, packaged HLS artifacts
+      - ./data:/app/data
+      # EDIT ME: your media roots, read-only
+      - /srv/media:/media:ro

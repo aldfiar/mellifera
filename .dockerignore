@@ -1,0 +1,17 @@
+# keep the build context small: git history, workspace state, build outputs,
+# dev tooling and runtime data never enter the image stages
+.git
+.claude
+.idea
+.tmp
+data
+bin
+docs
+openspec
+web/node_modules
+node_modules
+*.db
+*.prof
+coverage.out
+coverage.html
+internal/itest/data
