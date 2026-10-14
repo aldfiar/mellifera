@@ -115,6 +115,13 @@ its default with a warning.
 
 ## Quickstart (Docker)
 
+A prebuilt multi-arch image (`linux/amd64` + `linux/arm64`, ffmpeg/exiftool
+included) is published by CI on every push to `main`:
+
+```bash
+docker pull ghcr.io/aldfiar/mellifera:main
+```
+
 With [compose](compose.yaml) (recommended):
 
 ```bash

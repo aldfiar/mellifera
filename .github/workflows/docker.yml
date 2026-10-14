@@ -1,0 +1,52 @@
+# Builds and publishes the multi-arch Docker image to ghcr.io.
+#   - push to main        -> ghcr.io/aldfiar/mellifera:main (+ :sha)
+#   - push a v* tag       -> :<version>, :<major.minor>, :latest
+# Uses the same Dockerfile as `docker build .` locally: node stage builds the
+# SPA, Go stage compiles the server + all seven plugin binaries, debian:13-slim
+# runtime carries ffmpeg/ffprobe + exiftool.
+name: Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/aldfiar/mellifera
+          tags: |
+            type=ref,event=branch
+            type=sha
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
