@@ -24,14 +24,14 @@ type. The core SHALL NOT hardcode field names, provider names, or media-type
 literals outside module seed config (AC-4). Seeds SHALL ship for the loaded
 modules: `base-scanner` (container, duration, video, audio, size),
 `tv-parser` (title, year, resolution, parsed_from),
-`serial-parser` (display_title, season_episode, parsed_from), `frame-grabber`
+`serial-parser` (title, season_episode, parsed_from), `frame-grabber`
 (thumbnail, grabbed_at), `image-enricher` (date_taken, camera, dimensions,
 gps) — where `camera` renders as make + model, `dimensions` as width×height,
 `season_episode` renders as "Season N · Episode M" from the season and
 episode facts (the season part alone as "Season N" when the episode fact is
 absent), and `thumbnail`/`grabbed_at` resolve from the frame-grabber
 namespace;
-`identity_fields`: tv = title, year; serial = display_title, season,
+`identity_fields`: tv = title, year; serial = title, season,
 episode; image = date_taken.
 
 #### Scenario: The footer order is the parser's declared order

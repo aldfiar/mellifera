@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-14
+goal: Episodes and films display parsed composed names (never raw filenames);
+  per-library naming option governs subcollection/element name styles; SPA
+  consumes served display_name and retires triplicated client helpers
