@@ -431,8 +431,15 @@ func TestWeb_Integration(t *testing.T) {
 				t.Errorf("make %s: exit %v (output: %s)", target, err, out)
 			}
 		}
-		// Additive probe: proto/ + pkg/sdk/ byte-identical vs the 58a1130
-		// baseline (the wire/plugin CONTRACT trees stay frozen). RETIRED for
+		// Additive probe: proto/ byte-identical vs the split-repo baseline
+		// f2dc2e8 (the wire CONTRACT tree stays frozen; the 2026-10-14 subtree
+		// split is where proto/ first lives at root level, and no sanctioned
+		// proto change has landed since). The old pin 58a1130 (the web-ui-era
+		// baseline) cannot work in the split repo: its tree predates
+		// root-level proto/, so a diff against it reports the directory as
+		// all-insertions (13 files, +4057) — vacuously failing on every run.
+		// Re-baselining to f2dc2e8 preserves the guard's semantics: "no
+		// proto/ change since the sanctioned baseline". RETIRED for
 		// internal/scan/ internal/enrich/ internal/plugin/ internal/module/:
 		// serials-library legitimately extended those sources (the spec'd
 		// two-level enrichment queue, serial-record routing, the series sweep,
@@ -443,7 +450,7 @@ func TestWeb_Integration(t *testing.T) {
 		// pkg/sdk dropped from the pin: fix-truncated-scan-sweep legitimately
 		// reworked the in-repo Scanner surface (ScanStream, wire untouched);
 		// the additive guard stays on the wire (proto/) only.
-		diff := exec.Command("git", "diff", "--stat", "58a1130", "HEAD", "--",
+		diff := exec.Command("git", "diff", "--stat", "f2dc2e8", "HEAD", "--",
 			"proto/")
 		diff.Dir = moduleRoot(t) // git pathspecs resolve against cwd — must be the module root
 		out, err := diff.CombinedOutput()
@@ -451,7 +458,7 @@ func TestWeb_Integration(t *testing.T) {
 			t.Logf("git diff additive probe: %v (output: %s) — continuing", err, out)
 		}
 		if strings.TrimSpace(string(out)) != "" {
-			t.Errorf("additive probe: git diff 58a1130 HEAD over proto/sdk is NON-empty:\n%s", out)
+			t.Errorf("additive probe: git diff f2dc2e8 HEAD over proto/ is NON-empty:\n%s", out)
 		}
 	})
 }

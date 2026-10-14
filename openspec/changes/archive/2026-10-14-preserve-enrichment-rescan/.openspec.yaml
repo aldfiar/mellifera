@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-14
+goal: A rescan of an enriched library stops wiping
+  sources/_provenance/_view/_stages/identifiers; plugin update / drift
+  re-enrichment (follow-up change) becomes observable

@@ -88,6 +88,39 @@ func seriesRow(t *testing.T, s *store.Store, libID int64, rel string) store.Seri
 	return sr
 }
 
+// seriesDerived is the derived-state fixture for the series carry tests
+// (preserve-enrichment-rescan): the namespaces the enrich side stamps onto a
+// settled series document besides the {parsed, ffprobe} base — sources.* per
+// plugin plus the core-stamped provenance/view/stages trio. A series record is
+// never packaged, so there is no `streams` lane here.
+func seriesDerived() map[string]any {
+	return map[string]any{
+		"sources":     map[string]any{"serial-parser": map[string]any{"title": "Show"}},
+		"_provenance": map[string]any{"serial-parser": "serial-parser@1.0.0"},
+		"_view":       map[string]any{"poster": "/posters/show.jpg"},
+		"_stages":     map[string]any{"identify": "done"},
+	}
+}
+
+// stampSeriesDerived merges the derived-state fixture into a persisted series
+// row's document and rewrites the row at the given status — the settled,
+// enriched state the series carry tests rescan against.
+func stampSeriesDerived(t *testing.T, ctx context.Context, s *store.Store, prior store.Series, derived map[string]any, status string) {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(prior.Document, &doc); err != nil {
+		t.Fatalf("decode prior series document: %v", err)
+	}
+	for k, v := range derived {
+		doc[k] = v
+	}
+	prior.Document = marshalDoc(doc)
+	prior.Status = status
+	if err := s.PutSeries(ctx, prior); err != nil {
+		t.Fatalf("seed derived series: %v", err)
+	}
+}
+
 // TestSeriesRescanIdempotent covers box 1.3: a serial record drains through the
 // SAME loop as items into a series row (parsed marker facts + ffprobe {} for
 // directory-backed), episodes keep their series_relative_path + sidecars
@@ -176,10 +209,12 @@ func TestSeriesRescanIdempotent(t *testing.T) {
 	}
 }
 
-// TestSeriesUnchangedRescanPreservesReady covers box 1.4 — the series mirror of
-// the baseChanged/canonical-JSON stale basis: first sight lands "pending";
-// an unchanged re-scan preserves the prior status (a ready series is NOT
-// regressed); changed serial facts advance to "stale".
+// TestSeriesUnchangedRescanPreservesReady covers box 1.4 + the series tier-A
+// carry (preserve-enrichment-rescan): first sight lands "pending"; an
+// unchanged re-scan preserves the prior status (a ready series is NOT
+// regressed) AND carries the prior document's derived namespaces verbatim
+// beside the fresh base; changed serial facts advance to "stale" and drop
+// every derived namespace.
 func TestSeriesUnchangedRescanPreservesReady(t *testing.T) {
 	record := func(dirName string) *fakeScanner {
 		sc := serialLibrary()
@@ -223,19 +258,105 @@ func TestSeriesUnchangedRescanPreservesReady(t *testing.T) {
 				return
 			}
 
-			// Promote the series to ready with the SAME document scan #1 wrote
-			// (an enriched settled series), then re-scan.
+			// Promote the series to ready with an ENRICHED document — the same
+			// document scan #1 wrote plus the derived namespaces the enrich
+			// side stamps onto a settled series — then re-scan.
 			prior := seriesRow(t, s, libID, "Show")
-			prior.Status = "ready"
-			if err := s.PutSeries(ctx, prior); err != nil {
-				t.Fatalf("promote ready: %v", err)
-			}
+			stampSeriesDerived(t, ctx, s, prior, seriesDerived(), "ready")
 			scanSerial(t, s, r, libID, tc.rescan)
 
-			if got := seriesRow(t, s, libID, "Show").Status; got != tc.wantStatus {
-				t.Fatalf("re-scan status = %q, want %q", got, tc.wantStatus)
+			after := seriesRow(t, s, libID, "Show")
+			if after.Status != tc.wantStatus {
+				t.Fatalf("re-scan status = %q, want %q", after.Status, tc.wantStatus)
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(after.Document, &doc); err != nil {
+				t.Fatalf("decode re-scanned document: %v", err)
+			}
+			if tc.name == "changed_facts_to_stale" {
+				// Stale leg: the changed parsed identity invalidates every
+				// derived namespace — the fresh base alone survives.
+				for k := range seriesDerived() {
+					if _, ok := doc[k]; ok {
+						t.Errorf("derived namespace %q survived a parsed change, want dropped", k)
+					}
+				}
+				return
+			}
+			// Unchanged leg: the derived namespaces survive verbatim beside the
+			// fresh base (the upsert replaces the document; scan carried them).
+			for k, want := range seriesDerived() {
+				got, ok := doc[k]
+				if !ok {
+					t.Errorf("derived namespace %q missing after rescan (doc=%s)", k, canonicalJSON(doc))
+					continue
+				}
+				if !canonicalEqual(got, want) {
+					t.Errorf("carried %q = %s, want %s (verbatim carry)", k, canonicalJSON(got), canonicalJSON(want))
+				}
+			}
+			if parsed, _ := doc["parsed"].(map[string]any); parsed["dir_name_raw"] != "Show" {
+				t.Errorf("rescanned parsed.dir_name_raw = %v, want the fresh base's facts", parsed["dir_name_raw"])
 			}
 		})
+	}
+}
+
+// TestSeriesFfprobeDriftPreservesDerived is the series tier-B leg
+// (preserve-enrichment-rescan) over a FILE-BACKED series record — the only
+// shape where the ffprobe base can drift at all: a directory-backed record's
+// base carries an empty ffprobe {} (Interfaces §4), so a re-scan of the same
+// directory compares byte-equal on ffprobe and tier B is a no-op there. Here
+// the re-scan carries the SAME parsed facts but a DIFFERENT FfprobeJson
+// (scanner toolchain drift): the status is preserved, the derived namespaces
+// survive verbatim, and the ffprobe blob refreshes to the new value (the fresh
+// base wins for the reserved keys). A series record is never packaged, so —
+// unlike the item tier B — `streams` has no lane here and nothing is dropped:
+// derivedCarry runs with dropStreams=false in both tiers.
+func TestSeriesFfprobeDriftPreservesDerived(t *testing.T) {
+	probeA := []byte(`{"format":{"duration":"120.5"}}`)
+	probeB := []byte(`{"format":{"duration":"120.6","bit_rate":"8000000"}}`)
+	record := func(probe []byte) *fakeScanner {
+		sc := serialLibrary()
+		sc.files[0] = mkFile("rec", "Show", probe, nil) // file-backed: the record itself is probed
+		sc.identify["rec"] = mkSerialRecord("rec",
+			`{"serial_record":true,"dir_name_raw":"Show","backing":"file","series_relative_path":"Show","series_sidecars":[]}`)
+		return sc
+	}
+	derived := seriesDerived()
+
+	s, r, libID := setupSerialStore(t)
+	ctx := context.Background()
+
+	scanSerial(t, s, r, libID, record(probeA))
+	prior := seriesRow(t, s, libID, "Show")
+	stampSeriesDerived(t, ctx, s, prior, derived, "ready")
+	scanSerial(t, s, r, libID, record(probeB))
+
+	after := seriesRow(t, s, libID, "Show")
+	if after.Status != "ready" {
+		t.Errorf("ffprobe-drift re-scan status = %q, want ready (tier B preserves the prior status)", after.Status)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(after.Document, &doc); err != nil {
+		t.Fatalf("decode re-scanned document: %v", err)
+	}
+	for k, want := range derived {
+		got, ok := doc[k]
+		if !ok {
+			t.Errorf("derived namespace %q missing after ffprobe drift (doc=%s)", k, canonicalJSON(doc))
+			continue
+		}
+		if !canonicalEqual(got, want) {
+			t.Errorf("carried %q = %s, want %s (verbatim carry)", k, canonicalJSON(got), canonicalJSON(want))
+		}
+	}
+	var wantProbe map[string]any
+	if err := json.Unmarshal(probeB, &wantProbe); err != nil {
+		t.Fatalf("decode probeB: %v", err)
+	}
+	if !canonicalEqual(doc["ffprobe"], wantProbe) {
+		t.Errorf("ffprobe = %s, want refreshed to %s", canonicalJSON(doc["ffprobe"]), probeB)
 	}
 }
 

@@ -4,10 +4,12 @@
 package scan
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/store"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
 )
@@ -124,5 +126,191 @@ func TestRescanCarryForward(t *testing.T) {
 				t.Errorf("status = %q, want ready (unchanged re-scan preserves prior status)", items[0].Status)
 			}
 		})
+	}
+}
+
+// rescanDerived is the derived-state fixture for the two-tier carry tests
+// (preserve-enrichment-rescan): every namespace the enrich side stamps onto a
+// settled document besides the {parsed, ffprobe} base — sources.* per plugin,
+// the core-stamped provenance/view/stages trio, Match identifiers, and the
+// pack lane's streams.
+func rescanDerived() map[string]any {
+	return map[string]any{
+		"sources":     map[string]any{"tvmeta": map[string]any{"title": "Breaking Bad"}},
+		"_provenance": map[string]any{"tvmeta": "tvmeta@2.1.0"},
+		"_view":       map[string]any{"poster": "/posters/bb.jpg"},
+		"_stages":     map[string]any{"identify": "done"},
+		"identifiers": map[string]any{"imdb_id": "tt0903747"},
+		"streams":     map[string]any{"pack": map[string]any{"state": "ready", "build": "b1"}},
+	}
+}
+
+// seedItemWithDerived writes the prior row the carry tests rescan against: the
+// fresh base for (file, identify) plus every namespace in derived, at status
+// ready — a settled row, the state a re-scan must not regress. schemaVersion is
+// the module's own (persist stamps mod.SchemaVersion into the fresh base, so
+// the seeded prior row must carry the same for an honest byte-compare).
+func seedItemWithDerived(t *testing.T, s *store.Store, libID int64, file *scannerv1.DiscoveredFile, identify *scannerv1.IdentifyResult, derived map[string]any, schemaVersion int) {
+	t.Helper()
+	doc := assembleBaseDoc(file, identify, "tv", schemaVersion, libRoot)
+	for k, v := range derived {
+		doc[k] = v
+	}
+	if err := s.PutItem(context.Background(), store.Item{
+		ID: itemID(libID, file.GetFileId()), ModuleID: "tv", LibraryID: libID, FileID: file.GetFileId(),
+		RelativePath: file.GetRelativePath(), MediaType: "tv",
+		Document: marshalDoc(doc), SchemaVersion: schemaVersion, Status: "ready",
+	}); err != nil {
+		t.Fatalf("seed PutItem: %v", err)
+	}
+}
+
+// tvMod is the built-in TV module from the seeded registry — its SchemaVersion
+// is what persist stamps into the fresh base.
+func tvMod(t *testing.T, r *module.Registry) module.Module {
+	t.Helper()
+	mod, err := r.Get("tv")
+	if err != nil {
+		t.Fatalf("registry Get tv: %v", err)
+	}
+	return mod
+}
+
+// canonicalEqual reports whether two decoded JSON values are byte-equal after
+// canonicalJSON normalization — the same key-order-independent compare the
+// carry decision itself runs on.
+func canonicalEqual(a, b any) bool {
+	return bytes.Equal(canonicalJSON(a), canonicalJSON(b))
+}
+
+// rescanOnce drains one canned scan pass over the seeded store and returns the
+// single persisted item's decoded document plus its status column.
+func rescanOnce(t *testing.T, s *store.Store, r *module.Registry, libID int64, file *scannerv1.DiscoveredFile, identify *scannerv1.IdentifyResult) (map[string]any, string) {
+	t.Helper()
+	sc := &fakeScanner{
+		files:    []*scannerv1.DiscoveredFile{file},
+		identify: map[string]*scannerv1.IdentifyResult{file.GetFileId(): identify},
+	}
+	rr := &recordingResolver{scanner: sc}
+	if _, err := runScan(context.Background(), s, r, rr.resolve, passthroughEnricher(), nil, libID); err != nil {
+		t.Fatalf("runScan: %v", err)
+	}
+	items, err := s.QueryItems(context.Background(), libID, "", 100, 0)
+	if err != nil {
+		t.Fatalf("QueryItems: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("persisted items = %d, want 1 (upsert by file_id)", len(items))
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(items[0].Document, &doc); err != nil {
+		t.Fatalf("decode document: %v", err)
+	}
+	return doc, items[0].Status
+}
+
+// TestRescanCarriesEnrichmentNamespaces is the tier A acceptance test
+// (preserve-enrichment-rescan): an unchanged re-scan keeps the prior status AND
+// carries every derived namespace of the prior document forward verbatim —
+// sources/_provenance/_view/_stages/identifiers/streams — where the
+// packaged-playback core carried only `streams`. The PutItem upsert overwrites
+// document = excluded.document, so scan must carry the namespaces itself.
+func TestRescanCarriesEnrichmentNamespaces(t *testing.T) {
+	file := mkFile("f1", "Show/S01E01.mkv", []byte(`{"format":{"duration":"120.5"}}`), nil)
+	identify := mkIdentified("f1", `{"title":"Breaking Bad","season":1,"episode":1}`)
+	derived := rescanDerived()
+
+	s, r, libID := setupStore(t)
+	seedItemWithDerived(t, s, libID, file, identify, derived, tvMod(t, r).SchemaVersion)
+
+	doc, status := rescanOnce(t, s, r, libID, file, identify)
+	for k, want := range derived {
+		got, ok := doc[k]
+		if !ok {
+			t.Errorf("derived namespace %q missing after rescan (doc=%s)", k, canonicalJSON(doc))
+			continue
+		}
+		if !canonicalEqual(got, want) {
+			t.Errorf("carried %q = %s, want %s (verbatim carry)", k, canonicalJSON(got), canonicalJSON(want))
+		}
+	}
+	if status != "ready" {
+		t.Errorf("status = %q, want ready (tier A preserves the prior status)", status)
+	}
+}
+
+// TestFfprobeDriftKeepsEnrichmentDropsStreams is the tier B acceptance test:
+// the re-scan carries the SAME parsed but a DIFFERENT FfprobeJson (scanner
+// toolchain drift). The derived namespaces survive verbatim, the ffprobe blob
+// refreshes to the new value (the fresh base wins for the reserved keys), and
+// `streams` alone is dropped — packaging state keys on parsed+ffprobe, so the
+// changed probe invalidates any packaged artifact. The status is preserved: an
+// ffprobe-only drift must not regress a ready row.
+func TestFfprobeDriftKeepsEnrichmentDropsStreams(t *testing.T) {
+	identify := mkIdentified("f1", `{"title":"Breaking Bad","season":1,"episode":1}`)
+	probeA := []byte(`{"format":{"duration":"120.5"}}`)
+	probeB := []byte(`{"format":{"duration":"120.6","bit_rate":"8000000"}}`)
+	priorFile := mkFile("f1", "Show/S01E01.mkv", probeA, nil)
+	rescanFile := mkFile("f1", "Show/S01E01.mkv", probeB, nil)
+	derived := rescanDerived()
+
+	s, r, libID := setupStore(t)
+	seedItemWithDerived(t, s, libID, priorFile, identify, derived, tvMod(t, r).SchemaVersion)
+
+	doc, status := rescanOnce(t, s, r, libID, rescanFile, identify)
+	for k, want := range derived {
+		if k == "streams" {
+			continue // tier B drops exactly streams
+		}
+		got, ok := doc[k]
+		if !ok {
+			t.Errorf("derived namespace %q missing after ffprobe drift (doc=%s)", k, canonicalJSON(doc))
+			continue
+		}
+		if !canonicalEqual(got, want) {
+			t.Errorf("carried %q = %s, want %s (verbatim carry)", k, canonicalJSON(got), canonicalJSON(want))
+		}
+	}
+	if _, ok := doc["streams"]; ok {
+		t.Errorf("streams namespace present after ffprobe drift, want dropped (tier B)")
+	}
+	var wantProbe map[string]any
+	if err := json.Unmarshal(probeB, &wantProbe); err != nil {
+		t.Fatalf("decode probeB: %v", err)
+	}
+	if !canonicalEqual(doc["ffprobe"], wantProbe) {
+		t.Errorf("ffprobe = %s, want refreshed to %s", canonicalJSON(doc["ffprobe"]), probeB)
+	}
+	if status != "ready" {
+		t.Errorf("status = %q, want ready (tier B preserves the prior status)", status)
+	}
+}
+
+// TestChangedParsedDropsDerivedNamespaces is the stale leg: a re-scan whose
+// parsed identity differs advances the row to stale and persists ONLY the fresh
+// base — no prior namespace survives, because the changed identity invalidates
+// every derived namespace (today's pre-change semantics, unchanged).
+func TestChangedParsedDropsDerivedNamespaces(t *testing.T) {
+	file := mkFile("f1", "Show/S01E01.mkv", []byte(`{"format":{"duration":"120.5"}}`), nil)
+	identifyA := mkIdentified("f1", `{"title":"Breaking Bad","season":1,"episode":1}`)
+	identifyB := mkIdentified("f1", `{"title":"Better Call Saul","season":1,"episode":1}`)
+	derived := rescanDerived()
+
+	s, r, libID := setupStore(t)
+	mod := tvMod(t, r)
+	seedItemWithDerived(t, s, libID, file, identifyA, derived, mod.SchemaVersion)
+
+	doc, status := rescanOnce(t, s, r, libID, file, identifyB)
+	fresh := assembleBaseDoc(file, identifyB, "tv", mod.SchemaVersion, libRoot)
+	for k := range derived {
+		if _, ok := doc[k]; ok {
+			t.Errorf("derived namespace %q survived a parsed change, want dropped", k)
+		}
+	}
+	if !canonicalEqual(doc, fresh) {
+		t.Errorf("persisted document = %s, want exactly the fresh base %s", canonicalJSON(doc), canonicalJSON(fresh))
+	}
+	if status != "stale" {
+		t.Errorf("status = %q, want stale (parsed identity changed)", status)
 	}
 }

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "87b5fef",
-  "source_fingerprint": "597e26766d79a0e845de8a09feb3f0ee6ad631d4fe48834401febfcdf549e29b",
+  "generated_from_commit": "a09a268",
+  "source_fingerprint": "563d335a5be356a826e2044340f2cf481776359eb90f101bf7836e028e394090",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -17,9 +17,9 @@
     "ast_backends": "python3-ast (.py); regex-floor fallback for other langs"
   },
   "counts": {
-    "files_total": 276,
+    "files_total": 277,
     "by_extension": {
-      ".go": 224,
+      ".go": 225,
       ".sh": 2,
       ".js": 3,
       ".ts": 13,
@@ -27,15 +27,15 @@
     },
     "by_role": {
       "source": 151,
-      "test": 124,
+      "test": 125,
       "script": 1
     },
-    "tests": 124
+    "tests": 125
   },
   "stack": {
     "primary": "go",
     "languages": {
-      "go": 224,
+      "go": 225,
       "bash": 2,
       "javascript": 3,
       "typescript": 47
@@ -389,7 +389,7 @@
       "role": "test"
     },
     "internal/itest/integration_web_test.go": {
-      "lines": 489,
+      "lines": 496,
       "lang": "go",
       "role": "test"
     },
@@ -444,7 +444,7 @@
       "role": "test"
     },
     "internal/itest/qa_image_regression_test.go": {
-      "lines": 195,
+      "lines": 198,
       "lang": "go",
       "role": "test"
     },
@@ -454,7 +454,7 @@
       "role": "test"
     },
     "internal/itest/qa_pipeline_regression_test.go": {
-      "lines": 161,
+      "lines": 168,
       "lang": "go",
       "role": "test"
     },
@@ -465,6 +465,11 @@
     },
     "internal/itest/qa_playback_roundtrip_test.go": {
       "lines": 232,
+      "lang": "go",
+      "role": "test"
+    },
+    "internal/itest/qa_rescan_preservation_test.go": {
+      "lines": 724,
       "lang": "go",
       "role": "test"
     },
@@ -579,7 +584,7 @@
       "role": "source"
     },
     "internal/scan/carry_test.go": {
-      "lines": 128,
+      "lines": 316,
       "lang": "go",
       "role": "test"
     },
@@ -599,7 +604,7 @@
       "role": "test"
     },
     "internal/scan/run.go": {
-      "lines": 610,
+      "lines": 666,
       "lang": "go",
       "role": "source"
     },
@@ -609,7 +614,7 @@
       "role": "test"
     },
     "internal/scan/series_test.go": {
-      "lines": 434,
+      "lines": 555,
       "lang": "go",
       "role": "test"
     },

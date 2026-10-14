@@ -252,32 +252,53 @@ go test ./internal/scan -run TestSeriesRescanIdempotent
 ### Requirement: Series identity and re-scan semantics
 
 A series SHALL be identified by `(library_id, relative_path)` — the directory path
-within the library. An unchanged re-scan SHALL preserve the prior series status (a
-`ready` series is not regressed); a re-scan whose serial scanned facts changed
-SHALL advance the series to `stale`; a serial directory that vanished SHALL have
-its series row advanced to `deleted` by a post-drain sweep; a serial directory
-that was renamed or moved SHALL become a NEW series identity and the old row SHALL
-be swept to `deleted`, with no automatic migration of enrichment data. The
-post-drain sweep SHALL run ONLY after the scanner stream ended with a confirmed
-clean completion: a scan whose stream did not end cleanly — a cancelled context,
-a stream that terminated on its own before completing, or a stream that reports
-no terminal state — SHALL NOT sweep and SHALL NOT hand off to the enrichment
-queue. A series re-observed by a scan while its row is at `deleted` SHALL leave
-`deleted` — `ready` when its serial scanned facts are unchanged (a wrongful
-tombstone heals on the rescan that re-observes the directory), `stale` when they
-changed; a `deleted` row that a pass did not re-observe keeps `deleted`.
+within the library. An unchanged re-scan — the series' parsed identity facts equal
+to the prior document's — SHALL preserve the prior series status (a `ready` series
+is not regressed) and SHALL carry the prior document's entire derived state forward
+verbatim (every namespace outside the identity base: `sources`, `_provenance`,
+`_view`, `_stages`, `identifiers`); the persisted document is the freshly assembled
+`{parsed, ffprobe}` base plus the carried namespaces. A re-scan whose serial
+identity facts changed SHALL advance the series to `stale` and drop every derived
+namespace; a re-scan whose parsed identity is unchanged but whose ffprobe blob
+changed SHALL preserve the prior status and carry the derived namespaces while the
+ffprobe blob refreshes verbatim (directory-backed series persist an empty ffprobe
+object, so this case arises only for file-backed records). A serial directory that
+vanished SHALL have its series row advanced to `deleted` by a post-drain sweep; a
+serial directory that was renamed or moved SHALL become a NEW series identity and
+the old row SHALL be swept to `deleted`, with no automatic migration of enrichment
+data. The post-drain sweep SHALL run ONLY after the scanner stream ended with a
+confirmed clean completion: a scan whose stream did not end cleanly — a cancelled
+context, a stream that terminated on its own before completing, or a stream that
+reports no terminal state — SHALL NOT sweep and SHALL NOT hand off to the
+enrichment queue. A series re-observed by a scan while its row is at `deleted`
+SHALL leave `deleted` — `ready` when its serial identity facts are unchanged (a
+wrongful tombstone heals on the rescan that re-observes the directory), `stale`
+when they changed; a `deleted` row that a pass did not re-observe keeps `deleted`.
 Enrichment of a re-created identity re-runs from scratch under the same namespace
 rules.
 
 #### Scenario: Unchanged rescan preserves a ready series
 
 - **WHEN** a `ready` series' library is re-scanned with the directory unchanged
-- **THEN** the series row keeps status `ready` and its document is not regressed
+- **THEN** the series row keeps status `ready` and its document carries the prior derived namespaces (`sources`, `_provenance`, `_view`, `_stages`) verbatim alongside the fresh `parsed`/`ffprobe` base
 
-<!-- wf:probe id=7b91b8ca7b9a5ecb -->
+<!-- wf:probe id=34fbd0d5302da3cd -->
 ```bash
 set -e
-go test ./internal/scan -run TestSeriesUnchangedRescanPreservesReady
+go test ./internal/scan -run '^TestSeriesUnchangedRescanPreservesReady$' -count=1
+```
+<!-- /wf:probe -->
+
+#### Scenario: Ffprobe-only drift preserves a file-backed series' enrichment
+
+- **WHEN** a file-backed series' library is re-scanned and the record's ffprobe blob differs from the prior document's while its parsed identity facts are unchanged
+- **THEN** the series row keeps its prior status, its derived namespaces survive verbatim, and the ffprobe blob is refreshed
+
+<!-- wf:probe id=3803283174c0f651 -->
+```bash
+set -e
+grep -q 'func TestSeriesFfprobeDriftPreservesDerived(' internal/scan/series_test.go
+go test ./internal/scan -run '^TestSeriesFfprobeDriftPreservesDerived$' -count=1
 ```
 <!-- /wf:probe -->
 
