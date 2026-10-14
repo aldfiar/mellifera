@@ -133,7 +133,7 @@ func TestLibraryStreamsEnabledRoundtrip(t *testing.T) {
 			t.Fatalf("CreateLibrary: %v", err)
 		}
 		off := false
-		got, err := s.UpdateLibrary(ctx, id, nil, nil, &off)
+		got, err := s.UpdateLibrary(ctx, id, nil, nil, &off, nil, nil)
 		if err != nil {
 			t.Fatalf("UpdateLibrary(off): %v", err)
 		}
@@ -141,7 +141,7 @@ func TestLibraryStreamsEnabledRoundtrip(t *testing.T) {
 			t.Fatalf("UpdateLibrary(off).StreamsEnabled = true, want false")
 		}
 		// A nil pointer leaves the gate untouched (partial-update contract).
-		got, err = s.UpdateLibrary(ctx, id, nil, nil, nil)
+		got, err = s.UpdateLibrary(ctx, id, nil, nil, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("UpdateLibrary(nil): %v", err)
 		}
@@ -149,7 +149,7 @@ func TestLibraryStreamsEnabledRoundtrip(t *testing.T) {
 			t.Fatalf("UpdateLibrary(nil).StreamsEnabled = true, want false (nil = unchanged)")
 		}
 		on := true
-		got, err = s.UpdateLibrary(ctx, id, nil, nil, &on)
+		got, err = s.UpdateLibrary(ctx, id, nil, nil, &on, nil, nil)
 		if err != nil {
 			t.Fatalf("UpdateLibrary(on): %v", err)
 		}
@@ -169,6 +169,156 @@ func TestLibraryStreamsEnabledRoundtrip(t *testing.T) {
 		}
 		if !byRoot["/data/streams-default"] || !byRoot["/data/streams-flip"] {
 			t.Fatalf("ListLibraries gates = %v, want both enabled", byRoot)
+		}
+	})
+}
+
+// TestLibraryNamingOptions covers display-naming box 1.1: the two flat
+// nullable naming columns (naming_group_style, naming_element_name) exist via
+// idempotent migrations on fresh AND pre-existing DBs, UpdateLibrary treats
+// them exactly like displayName/description (nil = unchanged, non-nil "" =
+// store the empty string — the module-default marker), and every read
+// round-trips the stored strings verbatim (Cyrillic included — first-class
+// data, never normalized). The store parses nothing: the values are opaque.
+func TestLibraryNamingOptions(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name        string
+		groupStyle  string
+		elementName string
+	}{
+		{
+			name:        "cyrillic_verbatim",
+			groupStyle:  "Стиль: сезон · серия",
+			elementName: "Название · С1Э2",
+		},
+		{
+			name:        "latin_template",
+			groupStyle:  "season-folder",
+			elementName: "{title} · S{season}E{episode}",
+		},
+		{
+			name:        "empty_is_the_module_default_marker",
+			groupStyle:  "",
+			elementName: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run("update_"+tc.name, func(t *testing.T) {
+			s := openStore(t)
+			id, err := s.CreateLibrary(ctx, "serial", "/data/naming-"+tc.name, "Naming")
+			if err != nil {
+				t.Fatalf("CreateLibrary: %v", err)
+			}
+			got, err := s.UpdateLibrary(ctx, id, nil, nil, nil, &tc.groupStyle, &tc.elementName)
+			if err != nil {
+				t.Fatalf("UpdateLibrary(naming): %v", err)
+			}
+			if got.NamingGroupStyle != tc.groupStyle || got.NamingElementName != tc.elementName {
+				t.Fatalf("UpdateLibrary naming = (%q, %q), want (%q, %q) verbatim",
+					got.NamingGroupStyle, got.NamingElementName, tc.groupStyle, tc.elementName)
+			}
+			// Read-back roundtrip through both readers.
+			roundtrip, err := s.GetLibrary(ctx, id)
+			if err != nil {
+				t.Fatalf("GetLibrary: %v", err)
+			}
+			if roundtrip.NamingGroupStyle != tc.groupStyle || roundtrip.NamingElementName != tc.elementName {
+				t.Fatalf("GetLibrary naming = (%q, %q), want (%q, %q)",
+					roundtrip.NamingGroupStyle, roundtrip.NamingElementName, tc.groupStyle, tc.elementName)
+			}
+			libs, err := s.ListLibraries(ctx)
+			if err != nil {
+				t.Fatalf("ListLibraries: %v", err)
+			}
+			if len(libs) != 1 || libs[0].NamingGroupStyle != tc.groupStyle || libs[0].NamingElementName != tc.elementName {
+				t.Fatalf("ListLibraries naming = %+v, want (%q, %q) round-tripped", libs, tc.groupStyle, tc.elementName)
+			}
+		})
+	}
+
+	t.Run("nil_pointers_leave_naming_unchanged", func(t *testing.T) {
+		s := openStore(t)
+		id, err := s.CreateLibrary(ctx, "serial", "/data/naming-nil", "Nil No-Op")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		style, element := "по умолчанию", "эпизод"
+		if _, err := s.UpdateLibrary(ctx, id, nil, nil, nil, &style, &element); err != nil {
+			t.Fatalf("UpdateLibrary(set): %v", err)
+		}
+		// All-nil update: nothing changes (the partial-update contract).
+		got, err := s.UpdateLibrary(ctx, id, nil, nil, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("UpdateLibrary(nil): %v", err)
+		}
+		if got.NamingGroupStyle != style || got.NamingElementName != element {
+			t.Fatalf("after all-nil update naming = (%q, %q), want unchanged (%q, %q)",
+				got.NamingGroupStyle, got.NamingElementName, style, element)
+		}
+	})
+
+	t.Run("fresh_library_reads_empty_default", func(t *testing.T) {
+		s := openStore(t)
+		id, err := s.CreateLibrary(ctx, "serial", "/data/naming-fresh", "Fresh")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		got, err := s.GetLibrary(ctx, id)
+		if err != nil {
+			t.Fatalf("GetLibrary: %v", err)
+		}
+		if got.NamingGroupStyle != "" || got.NamingElementName != "" {
+			t.Fatalf("fresh library naming = (%q, %q), want empty (column DEFAULT '')",
+				got.NamingGroupStyle, got.NamingElementName)
+		}
+	})
+
+	// The pre-existing-DB migration path: a database created BEFORE the naming
+	// columns (dropped here) must regain them on the next Open, with existing
+	// rows reading as "" (the module-default marker), and a further Open must
+	// stay safe (INV-idempotent-migration).
+	t.Run("migration_on_preexisting_db", func(t *testing.T) {
+		dsn := filepath.Join(t.TempDir(), "legacy-naming.db")
+		legacy, err := Open(ctx, dsn)
+		if err != nil {
+			t.Fatalf("Open legacy: %v", err)
+		}
+		id, err := legacy.CreateLibrary(ctx, "serial", "/data/naming-legacy", "Legacy Naming")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		if _, err := legacy.db.ExecContext(ctx,
+			"ALTER TABLE libraries DROP COLUMN naming_group_style"); err != nil {
+			t.Fatalf("drop naming_group_style (simulate pre-display-naming DB): %v", err)
+		}
+		if _, err := legacy.db.ExecContext(ctx,
+			"ALTER TABLE libraries DROP COLUMN naming_element_name"); err != nil {
+			t.Fatalf("drop naming_element_name (simulate pre-display-naming DB): %v", err)
+		}
+		if err := legacy.Close(); err != nil {
+			t.Fatalf("Close legacy: %v", err)
+		}
+		reopened, err := Open(ctx, dsn)
+		if err != nil {
+			t.Fatalf("re-Open (additive migration): %v", err)
+		}
+		defer reopened.Close()
+		again, err := Open(ctx, dsn)
+		if err != nil {
+			t.Fatalf("second re-Open (idempotent migration): %v", err)
+		}
+		if err := again.Close(); err != nil {
+			t.Fatalf("Close after second re-Open: %v", err)
+		}
+		got, err := reopened.GetLibrary(ctx, id)
+		if err != nil {
+			t.Fatalf("GetLibrary after migration: %v", err)
+		}
+		if got.NamingGroupStyle != "" || got.NamingElementName != "" {
+			t.Fatalf("migrated row naming = (%q, %q), want empty defaults",
+				got.NamingGroupStyle, got.NamingElementName)
 		}
 	})
 }

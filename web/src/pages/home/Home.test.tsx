@@ -5,13 +5,11 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import Home, {
-  continueTitle,
   durationSeconds,
   episodeFacts,
   formatPosition,
   matchSeries,
   nextUpEntries,
-  seriesDisplayTitle,
   startedSeries,
 } from "@/pages/home/Home";
 import type { ItemDTO, LibraryDTO, ProgressDTO, SeriesDTO } from "@/lib/api";
@@ -20,10 +18,12 @@ import type { ItemDocument } from "@/lib/document";
 // Group-4/5 slice: the collections surface's OWN behavior, asserted at the
 // fetch seam (the same idiom as Sidebar.test.tsx). The grid (summary data,
 // zero-item state, type-chip client-side filter), the Continue row (recency
-// order, series-named titles, thumbs, percent bars, Play deep links), the
-// shared empty state and the Next up derivation (series-record keyed, D-8 —
-// pure core + the episode-without-series fallback) are the load-bearing
-// logic here; layout itself is CSS's contract.
+// order, SERVED display_name consumption with the `_view.title` floor,
+// thumbs, percent bars, Play deep links), the shared empty state and the
+// Next up derivation (series-record keyed, D-8 — pure core + the
+// episode-without-series fallback; titles from the served series
+// display_name, the SxxEyy chip still from the raw facts) are the
+// load-bearing logic here; layout itself is CSS's contract.
 
 // NOTE on fixtures: pages/home must never carry a filesystem-path literal
 // (D5 — the group probe greps for it), so the fixtures omit the library
@@ -337,7 +337,7 @@ describe("Home — Continue row", () => {
     expect(await within(continueRow).findByText(/45:12/)).toBeDefined();
   });
 
-  it("names a serial episode <seriesTitle> · SxxEyy from its series row and renders its thumb; keeps badge-only without the thumb fact; films keep viewTitle", async () => {
+  it("renders the SERVED display_name on serial episode cards (composed name, not a client chain) and floors films to _view.title; thumb only with the fact", async () => {
     stubObjectUrls();
     const spy = fetchWith({
       "/api/v1/progress": () =>
@@ -353,17 +353,23 @@ describe("Home — Continue row", () => {
       "/api/v1/items/itm_2_ep5": () =>
         Promise.resolve(
           jsonResponse(200, {
-            item: item(
-              "itm_2_ep5",
-              2,
-              thumbDoc(doc({ seriesPath: "Show", season: 1, episode: 5, duration: 2400 })),
-            ),
+            item: {
+              ...item(
+                "itm_2_ep5",
+                2,
+                thumbDoc(doc({ seriesPath: "Show", season: 1, episode: 5, duration: 2400 })),
+              ),
+              display_name: "Very Cold Show · S01E05",
+            },
           }),
         ),
       "/api/v1/items/itm_2_ep6": () =>
         Promise.resolve(
           jsonResponse(200, {
-            item: item("itm_2_ep6", 2, doc({ seriesPath: "Show", season: 1, episode: 6 })),
+            item: {
+              ...item("itm_2_ep6", 2, doc({ seriesPath: "Show", season: 1, episode: 6 })),
+              display_name: "Very Cold Show · S01E06",
+            },
           }),
         ),
       "/api/v1/items/itm_1_film": () =>
@@ -372,12 +378,15 @@ describe("Home — Continue row", () => {
             item: item("itm_1_film", 1, doc({ title: "Some Film" }), "tv"),
           }),
         ),
+      // The series row still resolves (Next up needs its id), but its document
+      // facts are a DECOY: the card name must come from the served
+      // display_name, never from a client-side chain over the row.
       "/api/v1/series?library=2": () =>
         Promise.resolve(
           jsonResponse(200, {
             items: [
               seriesRow("ser_2_show", 2, "Show", {
-                sources: { "serial-parser": { title: "Very Cold Show" } },
+                sources: { "serial-parser": { title: "Client Chain Decoy" } },
               }),
             ],
           }),
@@ -399,9 +408,8 @@ describe("Home — Continue row", () => {
 
     const continueRow = await screen.findByRole("region", { name: "Continue" });
 
-    // The serial episodes resolve their series row through
-    // parsed.series_relative_path (D-8) and render <seriesTitle> · SxxEyy;
-    // the tv-module film keeps viewTitle.
+    // The serial episodes render the SERVED composed name verbatim; the
+    // tv-module film (no display_name served) floors to its `_view` title.
     const ep5 = await within(continueRow).findByRole("link", {
       name: "Play Very Cold Show · S01E05",
     });
@@ -413,6 +421,8 @@ describe("Home — Continue row", () => {
     expect(
       within(continueRow).getByRole("link", { name: "Play Some Film" }).getAttribute("href"),
     ).toBe("/items/itm_1_film");
+    // The decoy chain name never leaks into any card.
+    expect(within(continueRow).queryByText(/Decoy/)).toBeNull();
 
     // The thumb renders only where the document carries the fact, through the
     // authenticated thumb fetch — exactly one media request, no fake media
@@ -476,13 +486,16 @@ describe("Home — Next up row", () => {
         Promise.resolve(
           jsonResponse(200, { item: item("itm_1_film", 1, doc({ title: "Film One" }), "tv") }),
         ),
-      // The (library, series path) → series-row resolution (D-8): the serial
-      // row named from parsed.dir_name_raw.
+      // The (library, series path) → series-row resolution (D-8). The row's
+      // document fact (dir_name_raw "Show") is the decoy the old client chain
+      // would have rendered — the card must carry the SERVED display_name.
       "/api/v1/series?library=2": () =>
         Promise.resolve(
           jsonResponse(200, {
             items: [
-              seriesRow("ser_2_show", 2, "Show", { parsed: { dir_name_raw: "Show" } }),
+              seriesRow("ser_2_show", 2, "Show", { parsed: { dir_name_raw: "Show" } }, {
+                display_name: "Моё сериальное имя",
+              }),
             ],
           }),
         ),
@@ -514,12 +527,16 @@ describe("Home — Next up row", () => {
     const nextUpRow = await screen.findByRole("region", { name: "Next up" });
 
     // One card: S01E03 — the lowest (season, episode) strictly after the
-    // started S01E02 — with the series' display title and the chip.
+    // started S01E02 — with the SERVED series display_name as the title and
+    // the chip still composed from the episode's raw facts.
     const cards = within(nextUpRow).getAllByRole("link");
     expect(cards.length).toBe(1);
-    expect(cards[0]!.getAttribute("aria-label")).toBe("Play Show S01E03");
+    expect(cards[0]!.getAttribute("aria-label")).toBe(
+      "Play Моё сериальное имя S01E03",
+    );
     expect(cards[0]!.getAttribute("href")).toBe("/items/itm_2_e03");
-    expect(within(nextUpRow).getByText("Show")).toBeDefined();
+    expect(within(nextUpRow).getByText("Моё сериальное имя")).toBeDefined();
+    expect(within(nextUpRow).queryByText("Show")).toBeNull();
     expect(within(nextUpRow).getByText("S01E03")).toBeDefined();
 
     // The episode's thumb rides the card through the authenticated thumb
@@ -631,38 +648,6 @@ describe("Home — Next up derivation (pure core)", () => {
     expect(episodeFacts(item("itm_z", 1, doc({ title: "A film" })))).toBeNull();
   });
 
-  it("seriesDisplayTitle precedence: title_override → serial-parser title → dir_name_raw → last path segment", () => {
-    const row = seriesRow("ser_1", 1, "Скрытое/Show (2020)");
-    // Neither fact scanned → the relative path's last segment, honest.
-    expect(seriesDisplayTitle(row)).toBe("Show (2020)");
-    // The raw directory name beats the path; Cyrillic passes through verbatim.
-    expect(
-      seriesDisplayTitle({ ...row, document: { parsed: { dir_name_raw: "Скрытое" } } }),
-    ).toBe("Скрытое");
-    // The serial-parser's cleaned title beats the raw name.
-    expect(
-      seriesDisplayTitle({
-        ...row,
-        document: {
-          parsed: { dir_name_raw: "Скрытое" },
-          sources: { "serial-parser": { title: "Hidden" } },
-        },
-      }),
-    ).toBe("Hidden");
-    // The operator's override beats every document fact.
-    expect(
-      seriesDisplayTitle({
-        ...row,
-        title_override: "Operator Name",
-        document: { sources: { "serial-parser": { title: "Hidden" } } },
-      }),
-    ).toBe("Operator Name");
-    // "" is unset — the chain continues.
-    expect(seriesDisplayTitle({ ...row, title_override: "", document: {} })).toBe(
-      "Show (2020)",
-    );
-  });
-
   it("matchSeries resolves by relative_path, skips deleted rows, null when nothing matches", () => {
     const rows = [
       seriesRow("ser_1", 1, "Show"),
@@ -701,15 +686,17 @@ describe("Home — Next up derivation (pure core)", () => {
     ]);
   });
 
-  it("nextUpEntries picks the lowest strictly-after episode from the series' list; unresolved and exhausted series are omitted", () => {
+  it("nextUpEntries picks the lowest strictly-after episode from the series' list; titles carry the served display_name verbatim (empty stays empty); unresolved and exhausted series are omitted", () => {
     const started: Parameters<typeof nextUpEntries>[0] = [
       { libraryId: 1, seriesPath: "Show", season: 1, episode: 3 },
       { libraryId: 2, seriesPath: "Other", season: 2, episode: 9 }, // exhausted
       { libraryId: 3, seriesPath: "Ghost", season: 1, episode: 1 }, // no series row
+      { libraryId: 4, seriesPath: "Bare", season: 1, episode: 1 }, // floor-empty name
     ];
     const seriesByKey = new Map<string, SeriesDTO>([
-      ["1|Show", seriesRow("ser_1_show", 1, "Show")],
+      ["1|Show", seriesRow("ser_1_show", 1, "Show", {}, { display_name: "Моё имя" })],
       ["2|Other", seriesRow("ser_2_other", 2, "Other")],
+      ["4|Bare", seriesRow("ser_4_bare", 4, "Bare", {}, { display_name: "" })],
     ]);
     const episodesBySeriesId = new Map<string, ItemDTO[]>([
       [
@@ -723,34 +710,19 @@ describe("Home — Next up derivation (pure core)", () => {
         ],
       ],
       ["ser_2_other", [SHOW(2, 2, 9)]], // nothing after → omitted
+      ["ser_4_bare", [SHOW(4, 1, 2)]],
     ]);
 
     const next = nextUpEntries(started, seriesByKey, episodesBySeriesId);
-    expect(next.length).toBe(1);
+    expect(next.length).toBe(2);
     expect(next[0]!.label).toBe("S01E04");
     expect(next[0]!.item.id).toBe("itm_1_s1e4");
     expect(next[0]!.seriesId).toBe("ser_1_show");
-    expect(next[0]!.title).toBe("Show");
-  });
-
-  it("continueTitle renders <seriesTitle> · SxxEyy when the row resolves; films and unresolved rows keep viewTitle", () => {
-    const ep = item(
-      "itm_2_s1e5",
-      2,
-      doc({ seriesPath: "Show", season: 1, episode: 5, title: "Show S01E05" }),
-    );
-    const series = seriesRow("ser_2_show", 2, "Show");
-    expect(continueTitle(ep, series)).toBe("Show · S01E05");
-    // Unresolved row → viewTitle (the honest fallback).
-    expect(continueTitle(ep, null)).toBe("Show S01E05");
-    // A tv-module film keeps viewTitle even with a resolved row.
-    const film = item(
-      "itm_1_f",
-      1,
-      doc({ title: "Film", seriesPath: "Show", season: 1, episode: 2 }),
-      "tv",
-    );
-    expect(continueTitle(film, series)).toBe("Film");
+    expect(next[0]!.title).toBe("Моё имя");
+    // A floor-empty display_name ("") renders VERBATIM EMPTY — strict
+    // served-verbatim: the client never floors to the row's relative path.
+    expect(next[1]!.title).toBe("");
+    expect(next[1]!.item.id).toBe("itm_4_s1e2");
   });
 
   it("durationSeconds parses the ffprobe blob's duration; anything else is null", () => {

@@ -39,10 +39,10 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 //      positions) as Play cards deep-linking into /items/{id}, with the
 //      item's frame-grabber thumb preview (authenticated fetch; no thumb fact
 //      → the honest badge-only card), a percent-of-duration bar when the
-//      item's ffprobe duration is known, and a real name: serial episodes
-//      render `<seriesTitle> · SxxEyy` resolved through the series row the
-//      parsed.series_relative_path anchors (D-8); tv-module films keep
-//      viewTitle;
+//      item's ffprobe duration is known, and a real name: the SERVED
+//      item `display_name` (display-naming — the server composes
+//      `{serial title} · SxxEyy` and floors through `_view.title`), floored
+//      client-side to viewTitle only when the served name is empty;
 //   3. the Next up row — keyed on SERIES records (D-8): progress items map
 //      through (library, parsed.series_relative_path) to the series row
 //      (GET /series?library={id}, the collection page's shared cache), the
@@ -50,14 +50,15 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 //      items, and the offered episode is the lowest strictly after it from
 //      GET /series/{id}/episodes (one cached fetch per started series)
 //      (episodeFacts/startedSeries/nextUpEntries below — the derivation's
-//      pure core, unit-tested in Home.test.tsx). Films never enter Next up —
-//      it is an episode concept; films surface via Continue.
+//      pure core, unit-tested in Home.test.tsx). Card titles carry the
+//      SERVED series `display_name`; the SxxEyy chip still composes from the
+//      raw episode facts, which remain on the wire. Films never enter Next
+//      up — it is an episode concept; films surface via Continue.
 //
 // No root folders and no enrich-lifecycle pills ever render here, and the
 // surface never guesses: an episode whose series row does not resolve is
-// OMITTED from Next up and keeps viewTitle in Continue (honest fallback over
-// a wrong suggestion). Play deep-links only — inline streaming is a deferred
-// capability (design D3).
+// OMITTED from Next up (honest fallback over a wrong suggestion). Play
+// deep-links only — inline streaming is a deferred capability (design D3).
 
 // Bounded first page the collection cards scan for a representative preview
 // item (media-preview D8 — the card fetches the collection's first items; one
@@ -115,11 +116,11 @@ export function formatPosition(seconds: number): string {
 
 // ---- Next up derivation (pure core) ----------------------------------------
 
-// EpisodeFacts — the parsed episode identity the Next up derivation and the
-// Continue naming run on (D-8): the (season, episode) pair out of the source
-// namespaces plus the series anchor parsed.series_relative_path the
-// serial-scanner stamps — the series row is matched on the PATH fact, never
-// on a title (serial episodes carry no title fact).
+// EpisodeFacts — the parsed episode identity the Next up derivation runs on
+// (D-8): the (season, episode) pair out of the source namespaces plus the
+// series anchor parsed.series_relative_path the serial-scanner stamps — the
+// series row is matched on the PATH fact, never on a title (serial episodes
+// carry no title fact).
 export interface EpisodeFacts {
   libraryId: number;
   seriesPath: string;
@@ -216,42 +217,6 @@ export function startedSeries(
   return [...byKey.values()];
 }
 
-// fileName — the raw last path segment, verbatim (same contract as
-// Collection's local copy).
-function fileName(relativePath: string): string {
-  const parts = relativePath.split("/");
-  return parts[parts.length - 1] ?? relativePath;
-}
-
-// seriesDisplayTitle — the series row's display title, precedence-ordered
-// (D-8, mirroring the collection page's serialTitle): the stored manual
-// override first (title_override — the operator's name beats every document
-// fact), then the cleaned display title serial-parser writes into its source
-// namespace once enrichment has run, then the raw directory name
-// (parsed.dir_name_raw verbatim — Cyrillic names are never reformatted), else
-// the relative path's last segment (a row whose scan produced neither fact
-// still names itself honestly). Exported pure for tests.
-export function seriesDisplayTitle(sr: SeriesDTO): string {
-  if (sr.title_override) {
-    return sr.title_override;
-  }
-  const parser = sr.document.sources?.["serial-parser"];
-  if (parser && typeof parser === "object") {
-    const title = stringField(parser.title);
-    if (title !== null) {
-      return title;
-    }
-  }
-  const parsed = sr.document.parsed;
-  if (parsed && typeof parsed === "object") {
-    const raw = stringField((parsed as Record<string, unknown>).dir_name_raw);
-    if (raw !== null) {
-      return raw;
-    }
-  }
-  return fileName(sr.relative_path);
-}
-
 // matchSeries — the series row for one episode's series anchor: the row whose
 // relative_path equals parsed.series_relative_path. Deleted rows (the
 // janitor's tombstones) are not a browse surface and never match. Null when
@@ -269,13 +234,10 @@ export function matchSeries(
   return null;
 }
 
-// episodeLabel — zero-padded "S02E06" display form.
-function episodeLabel(facts: EpisodeFacts): string {
-  return `S${String(facts.season).padStart(2, "0")}E${String(facts.episode).padStart(2, "0")}`;
-}
-
 // NextUpEntry — one Play-able suggestion: the episode item to deep-link into,
-// the series record that owns it, its display title and the "S02E06" label.
+// the series record that owns it, its SERVED display title and the "S02E06"
+// label composed from the episode's raw facts (facts stay on the wire; only
+// the naming moved server-side).
 export interface NextUpEntry {
   item: ItemDTO;
   seriesId: string;
@@ -320,26 +282,15 @@ export function nextUpEntries(
       out.push({
         item: bestItem,
         seriesId: series.id,
-        title: seriesDisplayTitle(series),
-        label: episodeLabel(best),
+        // The SERVED series name VERBATIM (display-naming) — a floor-empty ""
+        // renders empty, never a client-side file-name fallback; the `?? ""`
+        // only normalizes the optional TS field's absence.
+        title: series.display_name ?? "",
+        label: `S${String(best.season).padStart(2, "0")}E${String(best.episode).padStart(2, "0")}`,
       });
     }
   }
   return out;
-}
-
-// continueTitle — the Continue card's real name (D-8): a non-tv item with a
-// resolved series row renders `<seriesTitle> · SxxEyy`; everything else —
-// tv-module films, episodes whose series row did not resolve — keeps
-// viewTitle. Exported pure for tests.
-export function continueTitle(item: ItemDTO, series: SeriesDTO | null): string {
-  if (series !== null && item.module_id !== "tv") {
-    const facts = episodeFacts(item);
-    if (facts !== null) {
-      return `${seriesDisplayTitle(series)} · ${episodeLabel(facts)}`;
-    }
-  }
-  return viewTitle(item.document);
 }
 
 // durationSeconds — the item's total whole-second duration, read from the
@@ -602,11 +553,10 @@ function useProgressDocs(records: ProgressDTO[]): Map<string, ItemDTO> | null {
 // ContinueRow — GET /progress (newest-first, positive positions) as one card
 // per in-progress item: the item's frame-grabber thumb preview when the
 // document carries that fact (authenticated fetch — absent fact → the honest
-// badge-only card), the real name (serial episodes resolve their series row
-// through parsed.series_relative_path, D-8; films keep viewTitle),
-// percent-of-duration label + bar when the item's ffprobe duration is known
-// (position label always), source collection, updated stamp, and Play
-// deep-linking into the item detail (real playback is out of scope — D3).
+// badge-only card), the SERVED display_name (display-naming — the server
+// composes serial-episode names), percent-of-duration label + bar when the
+// item's ffprobe duration is known (position label always), source
+// collection, updated stamp, and Play deep-linking into the item detail.
 function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
   const progress = useProgressList();
   const records: ProgressDTO[] = progress.data?.items ?? [];
@@ -620,24 +570,6 @@ function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
       .filter((r) => docs.has(r.item_id))
       .map((r) => ({ record: r, item: docs.get(r.item_id)! }));
   }, [records, docs]);
-
-  // One series list per library holding episodes with a series anchor — the
-  // naming source for serial episodes, keyed on the collection page's shared
-  // ["series", id] cache. Cards render BEFORE it lands (the name degrades to
-  // viewTitle until the row resolves) so the row never blocks on naming.
-  const seriesLibIds = [
-    ...new Set(
-      cards
-        .filter((c) => episodeFacts(c.item) !== null)
-        .map((c) => c.item.library_id),
-    ),
-  ];
-  const seriesLists = useQueries({
-    queries: seriesLibIds.map((id) => ({
-      queryKey: ["series", id],
-      queryFn: () => getSeries(id),
-    })),
-  });
 
   if (progress.isLoading) {
     return <LoadingState label="Loading progress…" />;
@@ -657,19 +589,6 @@ function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
     return <RowEmpty />;
   }
 
-  const resolveSeries = (item: ItemDTO): SeriesDTO | null => {
-    const facts = episodeFacts(item);
-    if (facts === null) {
-      return null;
-    }
-    const idx = seriesLibIds.indexOf(item.library_id);
-    if (idx === -1) {
-      return null;
-    }
-    const rows = seriesLists[idx]?.data?.items ?? [];
-    return matchSeries(rows, facts.seriesPath);
-  };
-
   return (
     <section aria-label="Continue" className="flex flex-col gap-3">
       <h2 className="text-lg font-semibold">Continue</h2>
@@ -683,7 +602,6 @@ function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
               props.libraries.find((l) => l.id === c.item.library_id)
                 ?.display_name ?? ""
             }
-            series={resolveSeries(c.item)}
           />
         ))}
       </ul>
@@ -693,17 +611,18 @@ function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
 
 // ContinueCard — one resume card: the thumb preview above the name (only when
 // the document carries the frame-grabber fact — an absent fact keeps the
-// badge-only card, never a broken image), the series-named title, and the
-// bar only when the duration is known: an unfilled track would read as "not
-// started", which would be a lie.
+// badge-only card, never a broken image), the SERVED display_name (the
+// server-composed episode name or the film's name; a floor-empty "" falls
+// back to the document's `_view` title), and the bar only when the duration
+// is known: an unfilled track would read as "not started", which would be a
+// lie.
 function ContinueCard(props: {
   record: ProgressDTO;
   item: ItemDTO;
   libraryName: string;
-  series: SeriesDTO | null;
 }): ReactElement {
   const { record, item } = props;
-  const title = continueTitle(item, props.series);
+  const title = item.display_name || viewTitle(item.document);
   const duration = durationSeconds(item.document);
   const percent =
     duration !== null

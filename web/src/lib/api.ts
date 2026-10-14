@@ -150,11 +150,17 @@ export interface ItemDTO {
   // footer groups after the collection chain, pill-marked element-only.
   extra_parsers?: string[];
   // title_override — the stored manual display-title override
-  // (serial-watch-flow 2.1, additive; "" when unset). The FIRST tier of the
-  // episode flow's title fallback chain (box 4.2). Optional in TS (like
-  // extra_parsers): the server carries the field on every read, but an
-  // absent field must mean unset, not a type hole.
+  // (serial-watch-flow 2.1, additive; "" when unset). Feeds the rename
+  // dialog's initial value; the SERVED name itself travels as display_name.
+  // Optional in TS (like extra_parsers): the server carries the field on
+  // every read, but an absent field must mean unset, not a type hole.
   title_override?: string;
+  // display_name — the SERVED display name (display-naming group 1, always
+  // present on the wire): title_override > the composed name
+  // (`{serial title} · SxxEyy` per the library/module naming template) >
+  // `_view.title` > "". Optional in TS like title_override — an absent
+  // field means unset, and the caller floors to its own honest fallback.
+  display_name?: string;
 }
 
 // handlers.go itemsResponse — empty array, never null
@@ -220,11 +226,16 @@ export interface SeriesDTO {
   schema_version: number;
   status: string; // "pending" | "stale" | "ready" | "deleted"
   // title_override — the stored manual display-title override
-  // (serial-watch-flow 2.1, additive; "" when unset). The FIRST tier of the
-  // SPA's title fallback chain (box 4.1) — it wins over every document fact.
+  // (serial-watch-flow 2.1, additive; "" when unset). Feeds the rename
+  // dialog's initial value; the SERVED name itself travels as display_name.
   // Optional in TS (like extra_parsers): the server carries the field on
   // every read, but an absent field must mean unset, not a type hole.
   title_override?: string;
+  // display_name — the SERVED display title (display-naming group 1, always
+  // present on the wire): title_override > the composed chain > "". Optional
+  // in TS like title_override — an absent field means unset, and the caller
+  // floors to its own honest fallback.
+  display_name?: string;
 }
 
 // handlers.go seriesListResponse — empty array, never null. GET /series is NOT

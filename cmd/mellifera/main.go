@@ -347,6 +347,10 @@ func main() {
 			return api.ModulePresentation{
 				IdentityFields: copyStrings(m.IdentityFields),
 				Parsers:        parsers,
+				// Module default element template (display-naming 3.3): the
+				// composition floor under a library's own naming_element_name
+				// option — namerFor layers the library option OVER this.
+				ItemName: m.ItemName,
 			}, nil
 		},
 		// Parser-attachment validation (element-pages 3.3/3.1): is pluginID

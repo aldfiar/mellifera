@@ -62,6 +62,8 @@ var schemaSQL = []string{
   display_name TEXT,
   description  TEXT NOT NULL DEFAULT '',
   streams_enabled INTEGER NOT NULL DEFAULT 1,
+  naming_group_style  TEXT DEFAULT '',
+  naming_element_name TEXT DEFAULT '',
   created_at   TEXT NOT NULL,
   UNIQUE (module_id, root_path)
 )`,
@@ -223,6 +225,14 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureLibrariesNamingGroupStyle(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureLibrariesNamingElementName(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := ensurePlaybackProgressSeconds(ctx, db); err != nil {
 		db.Close()
 		return nil, err
@@ -336,6 +346,28 @@ func ensureLibrariesDescription(ctx context.Context, db *sql.DB) error {
 func ensureLibrariesStreamsEnabled(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "libraries", "streams_enabled",
 		"ALTER TABLE libraries ADD COLUMN streams_enabled INTEGER NOT NULL DEFAULT 1")
+}
+
+// ensureLibrariesNamingGroupStyle makes Open additive for
+// libraries.naming_group_style (display-naming): the opaque group-style
+// naming knob. Fresh DBs get the column from the CREATE TABLE in schemaSQL;
+// pre-existing DBs get it via ensureColumn's guarded ALTER with the same
+// DEFAULT ” the fresh DDL declares (every existing row reads as "" — the
+// module-default marker). Store stays value-agnostic: the column is an
+// opaque string, parsed by nobody.
+func ensureLibrariesNamingGroupStyle(ctx context.Context, db *sql.DB) error {
+	return ensureColumn(ctx, db, "libraries", "naming_group_style",
+		"ALTER TABLE libraries ADD COLUMN naming_group_style TEXT DEFAULT ''")
+}
+
+// ensureLibrariesNamingElementName makes Open additive for
+// libraries.naming_element_name (display-naming): the opaque element-name
+// naming knob. Same mechanics as ensureLibrariesNamingGroupStyle — fresh
+// DBs from schemaSQL, pre-existing DBs via the guarded ALTER, existing rows
+// reading as "" (the module-default marker).
+func ensureLibrariesNamingElementName(ctx context.Context, db *sql.DB) error {
+	return ensureColumn(ctx, db, "libraries", "naming_element_name",
+		"ALTER TABLE libraries ADD COLUMN naming_element_name TEXT DEFAULT ''")
 }
 
 // ensurePlaybackProgressSeconds bridges PRE-phase-3 databases whose

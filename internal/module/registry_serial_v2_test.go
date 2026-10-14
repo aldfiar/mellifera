@@ -41,12 +41,13 @@ func v1SerialConfigJSON(t *testing.T) []byte {
 	return out
 }
 
-// TestSerialModuleSeedV2 covers box 5.1 (enrichment D-7): the serial seed is
-// schema_version 2 — the shikimori binding (priority 3, enabled, no auth_mode
-// → queueable, RU-first display_fields) after the local serial-parser (1) and
+// TestSerialModuleSeedV2 covers box 5.1 (enrichment D-7): the serial seed
+// carries the shikimori binding (priority 3, enabled, no auth_mode →
+// queueable, RU-first display_fields) after the local serial-parser (1) and
 // frame-grabber (2) pair, plus the module's first display block — asserted on
-// a fresh open, with the persisted row byte-identical to the seed constant and
-// the tv/image rows untouched.
+// a fresh open, with the persisted row byte-identical to the seed constant
+// (now at the v3 the seed declares — display-naming) and the tv/image rows
+// untouched.
 func TestSerialModuleSeedV2(t *testing.T) {
 	r, s := openRegistry(t)
 	ctx := context.Background()
@@ -55,8 +56,8 @@ func TestSerialModuleSeedV2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(serial): %v", err)
 	}
-	if m.ID != "serial" || m.MediaType != "serial" || m.SchemaVersion != 2 {
-		t.Fatalf("Get(serial) = %+v, want id=serial media_type=serial schema_version=2", m)
+	if m.ID != "serial" || m.MediaType != "serial" || m.SchemaVersion != 3 {
+		t.Fatalf("Get(serial) = %+v, want id=serial media_type=serial schema_version=3", m)
 	}
 	if m.Scanner.PluginID != "serial-scanner" || m.Scanner.CapabilityID != "default" {
 		t.Fatalf("scanner binding = %+v, want serial-scanner/default", m.Scanner)
@@ -90,11 +91,11 @@ func TestSerialModuleSeedV2(t *testing.T) {
 	if wantFields := []string{"title", "kind", "status", "episodes", "score", "aired_on"}; !reflect.DeepEqual(fields, wantFields) {
 		t.Errorf("shikimori display_fields = %v, want %v", fields, wantFields)
 	}
-	if wantIdent := []string{"display_title", "season", "episode"}; !reflect.DeepEqual(m.IdentityFields, wantIdent) {
+	if wantIdent := []string{"title", "season", "episode"}; !reflect.DeepEqual(m.IdentityFields, wantIdent) {
 		t.Errorf("identity_fields = %v, want %v", m.IdentityFields, wantIdent)
 	}
 
-	// The persisted serial row is v2 with the exact seed blob, so the guarded
+	// The persisted serial row is v3 with the exact seed blob, so the guarded
 	// UPDATE finds nothing to do on the next Open.
 	var gotCfg string
 	var ver int
@@ -102,8 +103,8 @@ func TestSerialModuleSeedV2(t *testing.T) {
 		`SELECT config_json, schema_version FROM modules WHERE id = 'serial'`).Scan(&gotCfg, &ver); err != nil {
 		t.Fatalf("load serial row: %v", err)
 	}
-	if ver != 2 {
-		t.Errorf("stored schema_version = %d, want 2", ver)
+	if ver != 3 {
+		t.Errorf("stored schema_version = %d, want 3", ver)
 	}
 	if gotCfg != serialConfigJSON {
 		t.Errorf("stored config_json differs from serialConfigJSON (%d vs %d bytes)", len(gotCfg), len(serialConfigJSON))
@@ -150,19 +151,20 @@ func TestSerialModuleV1Upgrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(serial): %v", err)
 	}
-	if m.SchemaVersion != 2 || len(m.MetadataSources) != 3 ||
+	if m.SchemaVersion != 3 || len(m.MetadataSources) != 3 ||
 		m.MetadataSources[2].PluginID != "shikimori" {
-		t.Fatalf("after upgrade: schema=%d chain=%+v, want v2 with shikimori last", m.SchemaVersion, m.MetadataSources)
+		t.Fatalf("after upgrade: schema=%d chain=%+v, want v3 with shikimori last", m.SchemaVersion, m.MetadataSources)
 	}
-	// The row itself must be v2 on disk with the exact v2 seed blob.
+	// The row itself must be v3 on disk with the exact v3 seed blob (the v2
+	// then v3 guarded UPDATEs both ran).
 	var gotCfg string
 	var ver int
 	if err := s.DB().QueryRowContext(ctx,
 		`SELECT config_json, schema_version FROM modules WHERE id = 'serial'`).Scan(&gotCfg, &ver); err != nil {
 		t.Fatalf("load serial row: %v", err)
 	}
-	if ver != 2 {
-		t.Fatalf("stored schema_version = %d, want 2", ver)
+	if ver != 3 {
+		t.Fatalf("stored schema_version = %d, want 3", ver)
 	}
 	if gotCfg != serialConfigJSON {
 		t.Fatalf("stored config_json differs from serialConfigJSON (%d vs %d bytes)", len(gotCfg), len(serialConfigJSON))
@@ -185,7 +187,7 @@ func TestSerialModuleV1Upgrade(t *testing.T) {
 	rows["serial"] = gotCfg
 
 	// Second Open is a no-op: every module row is byte-identical afterwards
-	// (the schema guard, schema_version < 2, no longer matches).
+	// (the schema guards, schema_version < 2 and < 3, no longer match).
 	if _, err := Open(ctx, s); err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
@@ -198,5 +200,141 @@ func TestSerialModuleV1Upgrade(t *testing.T) {
 		if got != wantCfg {
 			t.Errorf("%s config_json changed across the second Open (%d vs %d bytes)", id, len(got), len(wantCfg))
 		}
+	}
+}
+
+// v2SerialConfigJSON derives the pre-display-naming (v2) serial seed: the
+// current config with display.item_name removed and schema_version rolled
+// back to 2. Decoded and re-encoded rather than string-spliced so it cannot
+// drift with the seed text (the same derivation rule as v1SerialConfigJSON —
+// a splice that silently misses leaves item_name in the "v2" row and the
+// migration assertions pass vacuously).
+func v2SerialConfigJSON(t *testing.T) []byte {
+	t.Helper()
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(serialConfigJSON), &cfg); err != nil {
+		t.Fatalf("parse serialConfigJSON: %v", err)
+	}
+	cfg["schema_version"] = 2
+	display, ok := cfg["display"].(map[string]any)
+	if !ok {
+		t.Fatalf("serialConfigJSON display = %#v, want a display block", cfg["display"])
+	}
+	if _, ok := display["item_name"]; !ok {
+		t.Fatalf("display block = %#v, want item_name present", display)
+	}
+	delete(display, "item_name")
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("re-encode v2 config: %v", err)
+	}
+	return out
+}
+
+// wantSerialItemName is the box's declared item_name template, written with
+// the escaped U+00B7 MIDDLE DOT so the byte-match against the seed (and the
+// SPA compose it mirrors) is explicit rather than source-encoding-dependent.
+const wantSerialItemName = "{title} · S{season}E{episode}"
+
+// TestSerialModuleSeedV3 covers display-naming box 1.2 fresh-open: the serial
+// seed is schema_version 3 whose display block carries item_name — decoded
+// verbatim into Module.ItemName (parseModule's ONE modeled display key) —
+// with the persisted row byte-identical to the seed constant and a re-Open a
+// no-op.
+func TestSerialModuleSeedV3(t *testing.T) {
+	r, s := openRegistry(t)
+	ctx := context.Background()
+
+	m, err := r.Get("serial")
+	if err != nil {
+		t.Fatalf("Get(serial): %v", err)
+	}
+	if m.SchemaVersion != 3 {
+		t.Fatalf("Get(serial).SchemaVersion = %d, want 3", m.SchemaVersion)
+	}
+	if m.ItemName != wantSerialItemName {
+		t.Fatalf("Module.ItemName = %q, want %q (byte-exact, U+00B7 separator)", m.ItemName, wantSerialItemName)
+	}
+
+	// The persisted row is v3 with the exact seed blob: the guarded UPDATE
+	// finds nothing to do on the next Open.
+	var gotCfg string
+	var ver int
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT config_json, schema_version FROM modules WHERE id = 'serial'`).Scan(&gotCfg, &ver); err != nil {
+		t.Fatalf("load serial row: %v", err)
+	}
+	if ver != 3 {
+		t.Errorf("stored schema_version = %d, want 3", ver)
+	}
+	if gotCfg != serialConfigJSON {
+		t.Errorf("stored config_json differs from serialConfigJSON (%d vs %d bytes)", len(gotCfg), len(serialConfigJSON))
+	}
+
+	if _, err := Open(ctx, s); err != nil {
+		t.Fatalf("second Open: %v (the v3 guard must not rewrite a fresh v3 row)", err)
+	}
+}
+
+// TestSerialModuleV2Upgrade covers the box 1.2 migration path: a store
+// pre-seeded with the v2 serial row (shikimori bound, no display.item_name)
+// is promoted to v3 on the first Open — the guarded UPDATE runs because
+// INSERT OR IGNORE never rewrites an existing row — Module.ItemName is
+// populated from the rewritten blob, the row lands on disk as the exact v3
+// seed blob, and the second Open is a no-op (the schema_version < 3 guard no
+// longer matches).
+func TestSerialModuleV2Upgrade(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// The v2 shape: schema_version 2, the display block WITHOUT item_name.
+	if _, err := s.DB().ExecContext(ctx, seedModulesSQL,
+		"serial", "serial", v2SerialConfigJSON(t), 2, 1, seedCreatedAt, seedCreatedAt); err != nil {
+		t.Fatalf("seed v2: %v", err)
+	}
+
+	r, err := Open(ctx, s)
+	if err != nil {
+		t.Fatalf("module.Open: %v", err)
+	}
+	m, err := r.Get("serial")
+	if err != nil {
+		t.Fatalf("Get(serial): %v", err)
+	}
+	if m.SchemaVersion != 3 {
+		t.Fatalf("after upgrade: schema=%d, want 3", m.SchemaVersion)
+	}
+	if m.ItemName != wantSerialItemName {
+		t.Fatalf("after upgrade Module.ItemName = %q, want %q", m.ItemName, wantSerialItemName)
+	}
+
+	// The row itself must be promoted on disk: v3 with the exact v3 seed blob
+	// (the guarded UPDATE rewrote it — INSERT OR IGNORE alone would have left
+	// the v2 row untouched).
+	var gotCfg string
+	var ver int
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT config_json, schema_version FROM modules WHERE id = 'serial'`).Scan(&gotCfg, &ver); err != nil {
+		t.Fatalf("load serial row: %v", err)
+	}
+	if ver != 3 {
+		t.Fatalf("stored schema_version = %d, want 3 (the UPDATE must promote the row)", ver)
+	}
+	if gotCfg != serialConfigJSON {
+		t.Fatalf("stored config_json differs from serialConfigJSON (%d vs %d bytes)", len(gotCfg), len(serialConfigJSON))
+	}
+
+	// Idempotent: a re-Open is error-free and the row stays v3/unchanged.
+	if _, err := Open(ctx, s); err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	var ver2 int
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT schema_version FROM modules WHERE id = 'serial'`).Scan(&ver2); err != nil || ver2 != 3 {
+		t.Fatalf("schema_version after re-Open = %d (err=%v), want 3", ver2, err)
 	}
 }

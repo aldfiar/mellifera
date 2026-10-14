@@ -80,12 +80,15 @@ func qa3Req(method, target, body string) *http.Request {
 // expected; the invariant — no store persistence internals — still holds.
 // The spec'd `streams_enabled` field (packaged-playback task 3.1, the
 // per-library packaging gate + PATCH field) joined the wire contract the
-// same way.
+// same way, as did the spec'd `naming_group_style`/`naming_element_name`
+// pair (display-naming 3.2, the per-library naming options the PATCH
+// validates).
 func TestQA_LibraryWireKeySet_INV4(t *testing.T) {
 	h, _ := qa3Handler(t)
 	wantKeys := map[string]bool{
 		"id": true, "module_id": true, "root_path": true, "display_name": true,
 		"description": true, "streams_enabled": true,
+		"naming_group_style": true, "naming_element_name": true,
 	}
 
 	checkKeys := func(label string, obj map[string]any) {

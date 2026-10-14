@@ -54,13 +54,19 @@ type createLibraryRequest struct {
 // pointer (absent field) changes nothing, a PRESENT list replaces the chain —
 // an explicitly empty list is 400 (the chain edit is a reorder, never a clear;
 // the module seed's chain is the default a library starts on).
+// NamingGroupStyle/NamingElementName (display-naming 3.2) are the display
+// naming options: nil changes nothing, a non-nil "" resets to the module
+// default; both are validated BEFORE any write (group style "" | clean | raw,
+// element template's {...} groups exactly {title}/{season}/{episode}).
 type updateLibraryRequest struct {
-	DisplayName    *string   `json:"display_name"`
-	Description    *string   `json:"description"`
-	StreamsEnabled *bool     `json:"streams_enabled"`
-	RootPath       *string   `json:"root_path"`
-	ModuleID       *string   `json:"module_id"`
-	Parsers        *[]string `json:"parsers"`
+	DisplayName       *string   `json:"display_name"`
+	Description       *string   `json:"description"`
+	StreamsEnabled    *bool     `json:"streams_enabled"`
+	RootPath          *string   `json:"root_path"`
+	ModuleID          *string   `json:"module_id"`
+	Parsers           *[]string `json:"parsers"`
+	NamingGroupStyle  *string   `json:"naming_group_style"`
+	NamingElementName *string   `json:"naming_element_name"`
 }
 
 // libraryDTO is the ONE wire shape for a library (no store.Library leaked) —
@@ -71,15 +77,20 @@ type updateLibraryRequest struct {
 // disallowed time import) — INV4. Module is the additive presentation block
 // (element-pages 3.4), present only on GET /libraries/{id} and only when the
 // Deps.ModulePresentation closure is wired — the list/create/patch responses
-// never carry it.
+// never carry it. NamingGroupStyle/NamingElementName (display-naming 3.2)
+// are the library's two naming options, ALWAYS on the wire as flat strings —
+// "" = module default (the module default layers under the library option at
+// composition, namerFor).
 type libraryDTO struct {
-	ID             int64               `json:"id"`
-	ModuleID       string              `json:"module_id"`
-	RootPath       string              `json:"root_path"`
-	DisplayName    string              `json:"display_name"`
-	Description    string              `json:"description"`
-	StreamsEnabled bool                `json:"streams_enabled"`
-	Module         *ModulePresentation `json:"module,omitempty"`
+	ID                int64               `json:"id"`
+	ModuleID          string              `json:"module_id"`
+	RootPath          string              `json:"root_path"`
+	DisplayName       string              `json:"display_name"`
+	Description       string              `json:"description"`
+	StreamsEnabled    bool                `json:"streams_enabled"`
+	NamingGroupStyle  string              `json:"naming_group_style"`
+	NamingElementName string              `json:"naming_element_name"`
+	Module            *ModulePresentation `json:"module,omitempty"`
 }
 
 // ParserBinding is one entry of the module presentation block's ordered parser
@@ -104,6 +115,11 @@ type ParserBinding struct {
 type ModulePresentation struct {
 	IdentityFields []string        `json:"identity_fields"`
 	Parsers        []ParserBinding `json:"parsers"`
+	// ItemName is the module's default display.item_name element template
+	// (display-naming 3.2/3.3): the composition floor under the library's
+	// own naming_element_name option — namerFor uses the library option when
+	// set, else this default, else no composition.
+	ItemName string `json:"item_name"`
 }
 
 // librariesResponse is the wire shape for GET /libraries.
@@ -183,6 +199,10 @@ type itemsResponse struct {
 // force a disallowed time import). TitleOverride is the additive manual
 // display-title override (serial-watch-flow 2.1) — "" when unset (always on
 // the wire; the SPA's fallback chain reads the empty string as absent).
+// Display is the server-composed display name (display-naming 3.1): the
+// seriesName chain — override > parser title > dir_name_raw > last path
+// segment, byte-for-byte the SPA's seriesDisplayTitle — stamped per row
+// through the same seam; ALWAYS on the wire, "" when nothing resolves.
 type seriesDTO struct {
 	ID            string          `json:"id"`
 	ModuleID      string          `json:"module_id"`
@@ -192,6 +212,7 @@ type seriesDTO struct {
 	SchemaVersion int             `json:"schema_version"`
 	Status        string          `json:"status"`
 	TitleOverride string          `json:"title_override"`
+	Display       string          `json:"display_name"`
 }
 
 // seriesListResponse is the wire shape for GET /series.
@@ -269,7 +290,11 @@ type statusResponse struct {
 // field is absent until a first attachment. TitleOverride is the additive
 // manual display-title override (serial-watch-flow 2.1) — "" when unset
 // (always on the wire, unlike ExtraParsers: the SPA's fallback chain reads the
-// empty string as absent).
+// empty string as absent). Display is the server-composed display name
+// (display-naming 3.1): the full chain — override > composed element name >
+// _view.title.value floor — stamped per row through the same seam as
+// TitleOverride; ALWAYS on the wire with the same ""=unset precedent (no
+// omitempty — the SPA renders its em-dash placeholder for the empty string).
 type itemDTO struct {
 	ID            string          `json:"id"`
 	ModuleID      string          `json:"module_id"`
@@ -281,6 +306,7 @@ type itemDTO struct {
 	SchemaVersion int             `json:"schema_version"`
 	Status        string          `json:"status"`
 	TitleOverride string          `json:"title_override"`
+	Display       string          `json:"display_name"`
 	ExtraParsers  []string        `json:"extra_parsers,omitempty"`
 }
 
@@ -330,6 +356,14 @@ func (a *app) createLibrary(w http.ResponseWriter, r *http.Request) {
 // surfaces from store as a wrapped sql.ErrNoRows → 404 not_found. Handlers do
 // not retry or auto-correct.
 //
+// Naming options (display-naming 3.2): a nil naming_* field changes nothing;
+// a non-nil "" resets the column to the module default. Both are validated
+// BEFORE any write, parsers-precedent: naming_group_style must be "",
+// "clean", or "raw"; naming_element_name's {...} groups must each be exactly
+// {title}, {season}, or {episode} — anything else is 400 bad_request with
+// the stored columns unchanged. A changed option re-composes display_names
+// on the NEXT read (composition is read-time; no invalidation exists).
+//
 // @Summary      Update a library's display name, description, and/or parser chain
 // @Tags         libraries
 // @ID           update-library
@@ -371,7 +405,24 @@ func (a *app) patchLibrary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	lib, err := a.deps.Store.UpdateLibrary(r.Context(), id, req.DisplayName, req.Description, req.StreamsEnabled)
+	// Naming-option validation (display-naming 3.2): pure checks, run BEFORE
+	// the store call so a rejected body leaves both columns untouched. A nil
+	// field changes nothing; a non-nil "" is the module-default reset.
+	if req.NamingGroupStyle != nil {
+		switch *req.NamingGroupStyle {
+		case "", "clean", "raw":
+		default:
+			writeError(w, http.StatusBadRequest, "bad_request",
+				`naming_group_style must be "", "clean", or "raw"`, false)
+			return
+		}
+	}
+	if req.NamingElementName != nil && !validElementTemplate(*req.NamingElementName) {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"naming_element_name's {...} groups must each be exactly {title}, {season}, or {episode}", false)
+		return
+	}
+	lib, err := a.deps.Store.UpdateLibrary(r.Context(), id, req.DisplayName, req.Description, req.StreamsEnabled, req.NamingGroupStyle, req.NamingElementName)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
@@ -725,7 +776,18 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dtos, err := a.itemDTOs(r.Context(), items)
+	// The display-naming namer is per-library: the naming options off the
+	// library row plus the whole-series map the composed names join against.
+	// A MISSING library floors to the empty namer inside namerFor — the one
+	// floor every namerFor call site shares — so the browse contract for a
+	// nonexistent ?library= stays 200-with-empty-items. Any other read
+	// failure is a real failure → 500, like any other store read here.
+	n, err := a.namerFor(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dtos, err := a.itemDTOs(r.Context(), items, n)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -786,7 +848,20 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dto := toItemDTO(it, override)
+	// Display-naming namer (display-naming 3.1): built off the item's own
+	// library so the detail view carries the same composed display_name the
+	// list serves. A read failure is a real failure → 500.
+	n, err := a.namerFor(r.Context(), it.LibraryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	n, err = a.withSeriesOverride(r.Context(), n, it.Document)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dto := toItemDTO(it, override, n)
 	extras, err := a.deps.Store.ListItemParsers(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1003,7 +1078,15 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dtos, err := a.seriesDTOs(r.Context(), series)
+	// The display-naming namer is per-library: the naming options off the
+	// library row plus the whole-series map the composed names join against.
+	// A read failure is a real failure → 500, like any other store read here.
+	n, err := a.namerFor(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dtos, err := a.seriesDTOs(r.Context(), series, n)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1041,7 +1124,15 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusOK, seriesResponse{Series: toSeriesDTO(sr, override)})
+	// Display-naming namer (display-naming 3.1): built off the series' own
+	// library so the detail view carries the same display_name the list
+	// serves. A read failure is a real failure → 500.
+	n, err := a.namerFor(r.Context(), sr.LibraryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, seriesResponse{Series: toSeriesDTO(sr, override, n)})
 }
 
 // seriesEpisodes: parse {id} → store.GetSeries → store.QueryItemsBySeries →
@@ -1077,7 +1168,15 @@ func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dtos, err := a.itemDTOs(r.Context(), items)
+	// Display-naming namer (display-naming 3.1), built off the series' own
+	// library — the episodes' composed names join against this library's
+	// naming options and series map. A read failure is a real failure → 500.
+	n, err := a.namerFor(r.Context(), sr.LibraryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dtos, err := a.itemDTOs(r.Context(), items, n)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1131,24 +1230,34 @@ func parsePagination(r *http.Request) (limit, offset int) {
 // itemDTOs performs the boundary struct conversion (INV4): every store.Item
 // becomes an itemDTO before it leaves the package, each row carrying its
 // stored title override (serial-watch-flow 2.1 — the per-row read is the
-// MVP posture; design defers batching to implementation latitude). A store
-// failure on any override read propagates (500 at the call site).
-func (a *app) itemDTOs(ctx context.Context, items []store.Item) ([]itemDTO, error) {
+// MVP posture; design defers batching to implementation latitude) and its
+// server-composed display name through the namer threaded in from the
+// handler (display-naming 3.1 — the same seam stamps title_override per
+// row). When a template is active and the row resolves to a series, the
+// series' stored override is point-read beside the row's own, so a series
+// rename reaches the composed name while the item's own override still wins.
+// A store failure on any override read propagates (500 at the call site).
+func (a *app) itemDTOs(ctx context.Context, items []store.Item, n namer) ([]itemDTO, error) {
 	out := make([]itemDTO, len(items))
 	for i, it := range items {
 		override, err := a.storedTitle(ctx, it.ID)
 		if err != nil {
 			return nil, err
 		}
-		out[i] = toItemDTO(it, override)
+		n, err = a.withSeriesOverride(ctx, n, it.Document)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = toItemDTO(it, override, n)
 	}
 	return out, nil
 }
 
 // toItemDTO maps a single store.Item to its wire shape; override is the
-// entity's stored title override ("" when unset). Factored out so the list
-// and detail handlers share one conversion (DRY).
-func toItemDTO(it store.Item, override string) itemDTO {
+// entity's stored title override ("" when unset) and n the request's namer,
+// whose itemName chain stamps Display (display-naming 3.1). Factored out so
+// the list and detail handlers share one conversion (DRY).
+func toItemDTO(it store.Item, override string, n namer) itemDTO {
 	return itemDTO{
 		ID:            it.ID,
 		ModuleID:      it.ModuleID,
@@ -1160,6 +1269,7 @@ func toItemDTO(it store.Item, override string) itemDTO {
 		SchemaVersion: it.SchemaVersion,
 		Status:        it.Status,
 		TitleOverride: override,
+		Display:       n.itemName(it, override),
 	}
 }
 
@@ -1177,35 +1287,41 @@ func toLibraryDTOs(libs []store.Library) []libraryDTO {
 // the list, create, and patch responses share one conversion (DRY).
 func toLibraryDTO(l store.Library) libraryDTO {
 	return libraryDTO{
-		ID:             l.ID,
-		ModuleID:       l.ModuleID,
-		RootPath:       l.RootPath,
-		DisplayName:    l.DisplayName,
-		Description:    l.Description,
-		StreamsEnabled: l.StreamsEnabled,
+		ID:                l.ID,
+		ModuleID:          l.ModuleID,
+		RootPath:          l.RootPath,
+		DisplayName:       l.DisplayName,
+		Description:       l.Description,
+		StreamsEnabled:    l.StreamsEnabled,
+		NamingGroupStyle:  l.NamingGroupStyle,
+		NamingElementName: l.NamingElementName,
 	}
 }
 
 // seriesDTOs performs the boundary struct conversion (INV4): every
 // store.Series becomes a seriesDTO before it leaves the package, each row
-// carrying its stored title override (serial-watch-flow 2.1). A store failure
-// on any override read propagates (500 at the call site).
-func (a *app) seriesDTOs(ctx context.Context, srs []store.Series) ([]seriesDTO, error) {
+// carrying its stored title override (serial-watch-flow 2.1) and its
+// server-composed display name through the namer threaded in from the
+// handler (display-naming 3.1 — the same seam stamps title_override per
+// row). A store failure on any override read propagates (500 at the call
+// site).
+func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n namer) ([]seriesDTO, error) {
 	out := make([]seriesDTO, len(srs))
 	for i, sr := range srs {
 		override, err := a.storedTitle(ctx, sr.ID)
 		if err != nil {
 			return nil, err
 		}
-		out[i] = toSeriesDTO(sr, override)
+		out[i] = toSeriesDTO(sr, override, n)
 	}
 	return out, nil
 }
 
 // toSeriesDTO maps a single store.Series to its wire shape; override is the
-// entity's stored title override ("" when unset). Factored out so the list
-// and detail responses share one conversion (DRY).
-func toSeriesDTO(sr store.Series, override string) seriesDTO {
+// entity's stored title override ("" when unset) and n the request's namer,
+// whose seriesName chain stamps Display (display-naming 3.1). Factored out so
+// the list and detail responses share one conversion (DRY).
+func toSeriesDTO(sr store.Series, override string, n namer) seriesDTO {
 	return seriesDTO{
 		ID:            sr.ID,
 		ModuleID:      sr.ModuleID,
@@ -1215,6 +1331,7 @@ func toSeriesDTO(sr store.Series, override string) seriesDTO {
 		SchemaVersion: sr.SchemaVersion,
 		Status:        sr.Status,
 		TitleOverride: override,
+		Display:       n.seriesName(sr, override),
 	}
 }
 

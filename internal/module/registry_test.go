@@ -428,8 +428,8 @@ func TestSerialModuleSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(serial): %v", err)
 	}
-	if m.ID != "serial" || m.MediaType != "serial" || m.SchemaVersion != 2 {
-		t.Fatalf("Get(serial) = %+v, want id=serial media_type=serial schema_version=2", m)
+	if m.ID != "serial" || m.MediaType != "serial" || m.SchemaVersion != 3 {
+		t.Fatalf("Get(serial) = %+v, want id=serial media_type=serial schema_version=3", m)
 	}
 	if m.Scanner.PluginID != "serial-scanner" || m.Scanner.CapabilityID != "default" {
 		t.Fatalf("scanner binding = %+v, want serial-scanner/default", m.Scanner)
@@ -469,10 +469,11 @@ func TestSerialModuleSeed(t *testing.T) {
 	}
 
 	// The serial-parser binding declares the label-aware season_episode
-	// composite (unified-parser 3.1): footer order display_title →
-	// season_episode → parsed_from. identity_fields keep the raw season and
+	// composite (unified-parser 3.1): footer order title → season_episode →
+	// parsed_from (the drift fix: serial-parser writes "title", not the
+	// store-side display_title alias). identity_fields keep the raw season and
 	// episode facts.
-	wantDisplay := []string{"display_title", "season_episode", "parsed_from"}
+	wantDisplay := []string{"title", "season_episode", "parsed_from"}
 	if got := m.MetadataSources[0].DisplayFields; !reflect.DeepEqual(got, wantDisplay) {
 		t.Errorf("serial-parser display_fields = %v, want %v", got, wantDisplay)
 	}
@@ -538,14 +539,14 @@ func TestPresentationFields(t *testing.T) {
 		{
 			name:       "serial identity + serial-parser order",
 			moduleID:   "serial",
-			wantIdent:  []string{"display_title", "season", "episode"},
+			wantIdent:  []string{"title", "season", "episode"},
 			pluginID:   "serial-parser",
-			wantFields: []string{"display_title", "season_episode", "parsed_from"},
+			wantFields: []string{"title", "season_episode", "parsed_from"},
 		},
 		{
 			name:       "serial frame-grabber order",
 			moduleID:   "serial",
-			wantIdent:  []string{"display_title", "season", "episode"},
+			wantIdent:  []string{"title", "season", "episode"},
 			pluginID:   "frame-grabber",
 			wantFields: []string{"thumbnail", "grabbed_at"},
 		},

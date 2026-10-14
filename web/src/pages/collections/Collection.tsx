@@ -113,19 +113,6 @@ function episodeLabel(season: number, episode: number): string {
   return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
 }
 
-// episodeTitle — the episode row's display title, the SAME fallback chain as
-// the series card (serial-watch-flow 4.2): the stored manual override first
-// (title_override), then the document's parsed/plugin title (`_view.title`
-// verbatim — a document with no title fact reports "—", which is NOT a name,
-// so the chain continues), then the raw file name.
-function episodeTitle(item: ItemDTO): string {
-  if (item.title_override) {
-    return item.title_override;
-  }
-  const parsed = viewTitle(item.document);
-  return parsed === "—" ? fileName(item.relative_path) : parsed;
-}
-
 // parsedChips — the parsed-fact chips for a movie file card, read generically
 // across the document's source namespaces: the season/episode token
 // ("S01E02", tv-parser), the release year, and the resolution. Any fact that
@@ -446,10 +433,10 @@ function MoviesBody(props: { libraryId: number }): ReactElement {
 // duration, raw filename, deep-link into the item detail. A document without
 // the fact renders exactly the text card — never a broken-image state (D6:
 // the thumb variant is requested only when the fact exists).
-// `displayTitle` lets a caller resolve the title through its own fallback
-// chain (the episode flow passes episodeTitle); the default is the
-// document's `_view` title. `rename` renders an affordance row INSIDE the
-// card but OUTSIDE the Link — a form control is never nested in an anchor.
+// `displayTitle` lets a caller pass the SERVED display_name (the episode
+// flow does); the default is the document's `_view` title. `rename` renders
+// an affordance row INSIDE the card but OUTSIDE the Link — a form control is
+// never nested in an anchor.
 function MovieCard(props: {
   item: ItemDTO;
   handoff: BrowseHandoff;
@@ -686,32 +673,12 @@ function SerialsBody(props: { libraryId: number }): ReactElement {
   return <SeriesGrid libraryId={props.libraryId} />;
 }
 
-// serialTitle — the series' display title, precedence-ordered (serial-watch-flow
-// 4.1): the stored manual override first (title_override — the operator's name
-// beats every document fact), then the cleaned display title serial-parser
-// writes into its source namespace once enrichment has run, then the raw
-// directory name (parsed.dir_name_raw) verbatim — Cyrillic names are
-// first-class and are never reformatted — else the relative path's last
-// segment (a row whose scan produced neither fact still names itself honestly).
-function serialTitle(sr: SeriesDTO): string {
-  if (sr.title_override) {
-    return sr.title_override;
-  }
-  const parser = sr.document.sources?.["serial-parser"];
-  if (parser) {
-    const title = stringField(parser.title);
-    if (title !== null) {
-      return title;
-    }
-  }
-  const parsed = sr.document.parsed;
-  if (parsed && typeof parsed === "object") {
-    const raw = stringField((parsed as Record<string, unknown>).dir_name_raw);
-    if (raw !== null) {
-      return raw;
-    }
-  }
-  return fileName(sr.relative_path);
+// seriesTitle — the series card's display title: the SERVED `display_name`
+// verbatim (display-naming — the server resolves override > composed chain
+// > ""), floored only from undefined to "" for the optional TS field. A
+// floor-empty "" renders EMPTY — the client never invents a name.
+function seriesTitle(sr: SeriesDTO): string {
+  return sr.display_name ?? "";
 }
 
 // seriesSeason — the series' season number out of the document's source
@@ -896,12 +863,14 @@ function RenameTitle(props: {
 }
 
 // SeriesCard — one series card: poster-ratio placeholder (media serving is a
-// deferred capability), display title (serialTitle precedence, override tier
-// first — 4.1), and the fact chips — the lifecycle status (ready/stale/
-// pending), the season when the document carries one, and the "file" backing
-// marker (directory-backed series are the default and stay unmarked). The
-// rename affordance (4.3) lives inside the card but OUTSIDE the Link — a
-// form control is never nested in an anchor. Links into the episode flow.
+// deferred capability), display title (the SERVED display_name, display-
+// naming — title_override already rides inside it), and the fact chips — the
+// lifecycle status (ready/stale/pending), the season when the document
+// carries one, and the "file" backing marker (directory-backed series are
+// the default and stay unmarked). The rename affordance (4.3) lives inside
+// the card but OUTSIDE the Link — a form control is never nested in an
+// anchor; its initial value is still the raw title_override. Links into the
+// episode flow.
 function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
   const { sr } = props;
   const season = seriesSeason(sr.document);
@@ -917,11 +886,11 @@ function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
       <Link
         to={`?series=${encodeURIComponent(sr.id)}`}
         className="block"
-        aria-label={`Open ${serialTitle(sr)}`}
+        aria-label={`Open ${seriesTitle(sr)}`}
       >
         <span className="scard-poster" aria-hidden="true" />
         <span className="scard-body">
-          <span className="scard-title">{serialTitle(sr)}</span>
+          <span className="scard-title">{seriesTitle(sr)}</span>
           <span className="flex flex-wrap gap-1">
             <span className="chip">{sr.status}</span>
             {season !== null ? (
@@ -933,7 +902,7 @@ function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
       </Link>
       <div className="px-2 pb-2">
         <RenameTitle
-          entityLabel={serialTitle(sr)}
+          entityLabel={seriesTitle(sr)}
           initial={titleOverride}
           set={set}
           clear={clear}
@@ -998,10 +967,12 @@ function EpisodesView(props: {
   );
 }
 
-// EpisodeCard — one episode flow row: the movie card idiom with the title
-// resolved through the override-aware chain (serial-watch-flow 4.2) and the
-// row's rename affordance (box 4.3) wired to the item title routes; a set or
-// clear invalidates the episode list so the display follows the stored row.
+// EpisodeCard — one episode flow row: the movie card idiom with the SERVED
+// display_name as its title VERBATIM (display-naming — the server composes
+// `{serial} · SxxEyy`; a floor-empty "" renders empty, never a client-side
+// fallback) and the row's rename affordance (box 4.3) wired to the item title
+// routes; a set or clear invalidates the episode list so the display follows
+// the stored row.
 function EpisodeCard(props: {
   item: ItemDTO;
   seriesId: string;
@@ -1013,15 +984,16 @@ function EpisodeCard(props: {
     ["series-episodes", props.seriesId],
   );
   const titleOverride = props.item.title_override ?? "";
+  const title = props.item.display_name ?? "";
 
   return (
     <MovieCard
       item={props.item}
       handoff={props.handoff}
-      displayTitle={episodeTitle(props.item)}
+      displayTitle={title}
       rename={
         <RenameTitle
-          entityLabel={episodeTitle(props.item)}
+          entityLabel={title}
           initial={titleOverride}
           set={set}
           clear={clear}

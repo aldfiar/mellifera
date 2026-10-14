@@ -45,6 +45,16 @@ const upgradeSerialConfigSQL = `UPDATE modules
   SET config_json = ?, schema_version = 2, updated_at = ?
   WHERE id = 'serial' AND schema_version < 2`
 
+// upgradeSerialConfigV3SQL promotes an existing serial row from config v2 to
+// v3 (display-naming): the same guarded-UPDATE pattern as the v1→v2 upgrade —
+// INSERT OR IGNORE never rewrites an existing row, so the display.item_name
+// template ships as this schema-guarded UPDATE, idempotent and scoped to the
+// serial row alone. Open runs it AFTER the v2 upgrade, so a pre-shikimori v1
+// row passes through both and lands on v3.
+const upgradeSerialConfigV3SQL = `UPDATE modules
+  SET config_json = ?, schema_version = 3, updated_at = ?
+  WHERE id = 'serial' AND schema_version < 3`
+
 // listModulesSQL reads the enabled modules in id order so List is deterministic
 // without a Go-side sort (which would need an unallowed import).
 const listModulesSQL = `SELECT id, media_type, config_json, schema_version
@@ -164,22 +174,27 @@ const imageConfigJSON = `{
 // chain, under media_type "serial". Schema v2 (enrichment D-7) binds shikimori
 // (priority 3) after the local pair — the first EXTERNAL source: no auth_mode
 // (the anonymous MVP → queueable per D-Q1), display_fields declared from its
-// RU-first namespace footer. display_name carries Russian first-class (arch
-// §1.2). The display block is the module's first (mirroring the tv keys):
+// RU-first namespace footer. Schema v3 (display-naming) adds the display
+// block's item_name — the per-episode element naming template
+// "{title} · S{season}E{episode}" (U+00B7 separator, byte-matching the SPA
+// compose) — the ONE display key parseModule models (decoded verbatim into
+// Module.ItemName). display_name carries Russian first-class (arch §1.2).
+// The display block is the module's first (mirroring the tv keys):
 // language_preference is RU-first, and shikimori is the only external
-// title/rating source, so it solely names both priority lists — it is
-// SPA-consumed config, never Go logic (parseModule models none of it;
-// element-pages D-1, AC-4: presentation declarations are CONFIG, not code).
-// The per-binding display_fields stay the footer render orders (serial-parser's
-// season_episode is the declared composite, resolved label-aware in the
-// renderer; frame-grabber's fields resolve from its namespace), identity_fields
-// per module (episode names the episode-name slot case).
+// title/rating source, so it solely names both priority lists — those
+// remaining display keys are SPA-consumed config, never Go logic
+// (element-pages D-1, AC-4: presentation declarations are CONFIG, not code).
+// The per-binding display_fields stay the footer render orders (serial-parser
+// declares the title literal it actually writes — its season_episode is the
+// composite, resolved label-aware in the renderer; frame-grabber's fields
+// resolve from its namespace), identity_fields per module (episode names the
+// episode-name slot case).
 const serialConfigJSON = `{
   "id": "serial",
-  "schema_version": 2,
+  "schema_version": 3,
   "display_name": {"ru": "Сериалы (каталоги)", "en": "Serial Libraries"},
   "media_type": "serial",
-  "identity_fields": ["display_title", "season", "episode"],
+  "identity_fields": ["title", "season", "episode"],
   "scanner": {
     "plugin_id": "serial-scanner",
     "capability_id": "default",
@@ -192,7 +207,7 @@ const serialConfigJSON = `{
     {
       "plugin_id": "serial-parser", "capability_id": "default",
       "priority": 1, "enabled": true,
-      "display_fields": ["display_title", "season_episode", "parsed_from"],
+      "display_fields": ["title", "season_episode", "parsed_from"],
       "options": {}
     },
     {
@@ -209,6 +224,7 @@ const serialConfigJSON = `{
     }
   ],
   "display": {
+    "item_name": "{title} · S{season}E{episode}",
     "language_preference": ["ru", "en"],
     "title_source_priority": ["shikimori"],
     "rating_source_priority": ["shikimori"]
@@ -230,6 +246,7 @@ type Module struct {
 	MediaType       string
 	SchemaVersion   int
 	IdentityFields  []string                // mandatory identity block, declared order
+	ItemName        string                  // display.item_name element-naming template (display-naming), decoded verbatim — config data, never core logic
 	Scanner         ScannerBinding          // scan-side capability slot
 	MetadataSources []MetadataSourceBinding // enrichment chain, config order
 }
@@ -291,7 +308,7 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	// mirrors the tv seed shape). INSERT OR IGNORE keeps the tv/image rows
 	// byte-identical and Open safe to run repeatedly.
 	if _, err := db.ExecContext(ctx, seedModulesSQL,
-		"serial", "serial", serialConfigJSON, 2, 1, seedCreatedAt, seedCreatedAt,
+		"serial", "serial", serialConfigJSON, 3, 1, seedCreatedAt, seedCreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("module: seed serial: %w", err)
 	}
@@ -301,6 +318,12 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	// to the serial row alone.
 	if _, err := db.ExecContext(ctx, upgradeSerialConfigSQL, serialConfigJSON, seedCreatedAt); err != nil {
 		return nil, fmt.Errorf("module: upgrade serial v2: %w", err)
+	}
+	// v2→v3 promotion for stores seeded before display.item_name existed
+	// (display-naming): the same guarded-UPDATE chain step, run after the v2
+	// promotion so a pre-shikimori v1 row passes through both upgrades.
+	if _, err := db.ExecContext(ctx, upgradeSerialConfigV3SQL, serialConfigJSON, seedCreatedAt); err != nil {
+		return nil, fmt.Errorf("module: upgrade serial v3: %w", err)
 	}
 	rows, err := db.QueryContext(ctx, listModulesSQL)
 	if err != nil {
@@ -395,9 +418,12 @@ func copyFields(src []string) []string {
 // parseModule decodes a config_json blob into a Module, extracting the scanner
 // slot, the ordered metadata_sources enrichment chain, and the presentation
 // declarations (identity_fields per module, display_fields per binding —
-// element-pages D-1). The remaining config (display, ...) is intentionally not
-// modeled in Go (arch §2.4.2: options are opaque pass-through; module is a
-// config entity, not a typed schema).
+// element-pages D-1). The remaining config is intentionally not modeled in Go
+// (arch §2.4.2: options are opaque pass-through; module is a config entity,
+// not a typed schema) — with ONE display exception: item_name (display-naming)
+// is decoded verbatim into Module.ItemName; every other display key
+// (language_preference, the title/rating source priorities) stays
+// SPA-consumed config.
 //
 // The metadata_sources are modeled verbatim in CONFIG order: Enabled is carried
 // (not filtered) so the binding stays lossless; the enrich orchestrator
@@ -406,7 +432,10 @@ func copyFields(src []string) []string {
 func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (Module, error) {
 	var cfg struct {
 		IdentityFields []string `json:"identity_fields"`
-		Scanner        struct {
+		Display        struct {
+			ItemName string `json:"item_name"`
+		} `json:"display"`
+		Scanner struct {
 			PluginID      string          `json:"plugin_id"`
 			CapabilityID  string          `json:"capability_id"`
 			DisplayFields []string        `json:"display_fields"`
@@ -430,6 +459,7 @@ func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (M
 		MediaType:      mediaType,
 		SchemaVersion:  schemaVersion,
 		IdentityFields: cfg.IdentityFields,
+		ItemName:       cfg.Display.ItemName,
 		Scanner: ScannerBinding{
 			PluginID:      cfg.Scanner.PluginID,
 			CapabilityID:  cfg.Scanner.CapabilityID,

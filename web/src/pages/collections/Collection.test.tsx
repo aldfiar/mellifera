@@ -306,7 +306,8 @@ describe("Collection — image body (box 5.3)", () => {
 describe("Collection — serial body (box 5.4)", () => {
   // seriesRow — a /series wire row fixture. The serial-level document is
   // opaque dynamic JSON: `parsed` facts (dir_name_raw, backing) plus the
-  // sources.<plugin_id> namespaces serial-parser writes into.
+  // sources.<plugin_id> namespaces serial-parser writes into. displayName is
+  // the SERVED display_name the card must render verbatim.
   function seriesRow(parts: {
     id: string;
     title?: string; // serial-parser's cleaned display title
@@ -315,6 +316,7 @@ describe("Collection — serial body (box 5.4)", () => {
     backing?: string;
     status?: string;
     relativePath?: string;
+    displayName?: string;
   }): SeriesDTO {
     const d: ItemDocument = {};
     if (parts.title !== undefined || parts.season !== undefined) {
@@ -337,6 +339,7 @@ describe("Collection — serial body (box 5.4)", () => {
       document: d,
       schema_version: 1,
       status: parts.status ?? "ready",
+      ...(parts.displayName !== undefined ? { display_name: parts.displayName } : {}),
     };
   }
 
@@ -347,7 +350,7 @@ describe("Collection — serial body (box 5.4)", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders one card per series with title precedence serial-parser → dir_name_raw, status/season/backing chips, skipping deleted rows", async () => {
+  it("renders one card per series with the SERVED display_name (document facts never leak), status/season/backing chips, skipping deleted rows", async () => {
     fetchWith({
       ...headerSeam("serial", 3),
       "/api/v1/series?library=1": () =>
@@ -356,14 +359,19 @@ describe("Collection — serial body (box 5.4)", () => {
             items: [
               seriesRow({
                 id: "ser_1_enriched",
-                title: "Тайна Смолвуда",
+                title: "Parser Name Decoy",
                 dirNameRaw: "smolwood.s01",
                 season: 1,
+                displayName: "Тайна Смолвуда",
               }),
-              seriesRow({ id: "ser_1_raw", dirNameRaw: "Очень Странные Дела" }),
+              seriesRow({
+                id: "ser_1_raw",
+                dirNameRaw: "Очень Странные Дела",
+                displayName: "Очень Странные Дела",
+              }),
               seriesRow({
                 id: "ser_1_stray",
-                title: "Stray File",
+                displayName: "Stray File",
                 dirNameRaw: "stray.mkv",
                 backing: "file",
                 status: "stale",
@@ -375,12 +383,14 @@ describe("Collection — serial body (box 5.4)", () => {
     });
     renderCollection("1");
 
-    // Precedence: serial-parser's cleaned title wins over dir_name_raw.
+    // The served name wins verbatim; the row's document facts (parser title,
+    // dir_name_raw) never leak into the card.
     const enriched = await screen.findByRole("link", { name: /Тайна Смолвуда/ });
+    expect(within(enriched).queryByText("Parser Name Decoy")).toBeNull();
     expect(within(enriched).queryByText("smolwood.s01")).toBeNull();
     expect(within(enriched).getByText("Season 1")).toBeDefined();
 
-    // No parser title → the raw directory name, verbatim (Cyrillic intact).
+    // The raw-named row renders its served name, verbatim (Cyrillic intact).
     expect(screen.getByRole("link", { name: /Очень Странные Дела/ })).toBeDefined();
 
     // File-backed stray: "file" marker + its stale status chip.
@@ -402,22 +412,25 @@ describe("Collection — serial body (box 5.4)", () => {
       "/api/v1/series?library=1": () =>
         Promise.resolve(
           jsonResponse(200, {
-            items: [seriesRow({ id: "ser_1_show", dirNameRaw: "Show 2019" })],
+            items: [
+              // The SERVED name rides on the row (display-naming) — the card
+              // renders it verbatim; dir_name_raw never leaks.
+              seriesRow({ id: "ser_1_show", dirNameRaw: "Show 2019", displayName: "Show 2019" }),
+            ],
           }),
         ),
       "/api/v1/series/ser_1_show/episodes": () => {
         episodesFetches += 1;
+        const ep1 = item(
+          "itm_1_e1",
+          "serial",
+          "Show 2019/S01E01.mkv",
+          doc({ season: 1, episode: 1 }),
+        );
+        // The SERVED composed name (display-naming) rides on the episode row.
+        ep1.display_name = "Show 2019 · S01E01";
         return Promise.resolve(
-          jsonResponse(200, {
-            items: [
-              item(
-                "itm_1_e1",
-                "serial",
-                "Show 2019/S01E01.mkv",
-                doc({ title: "Show 2019 S01E01", season: 1, episode: 1 }),
-              ),
-            ],
-          }),
+          jsonResponse(200, { items: [ep1] }),
         );
       },
     });
@@ -425,9 +438,9 @@ describe("Collection — serial body (box 5.4)", () => {
 
     fireEvent.click(await screen.findByRole("link", { name: /Show 2019/ }));
 
-    // The episode card reuses the movie idiom: parsed chips + raw filename,
-    // deep-linking into /items/{id}.
-    const ep = await screen.findByRole("link", { name: /Show 2019 S01E01/ });
+    // The episode card reuses the movie idiom: the served composed name,
+    // parsed chips + raw filename, deep-linking into /items/{id}.
+    const ep = await screen.findByRole("link", { name: /Show 2019 · S01E01/ });
     expect(ep.getAttribute("href")).toBe("/items/itm_1_e1");
     expect(within(ep).getByText("S01E01")).toBeDefined();
     expect(within(ep).getByText("S01E01.mkv")).toBeDefined();
@@ -483,15 +496,16 @@ describe("Collection — serial body (box 5.4)", () => {
   });
 });
 
-describe("Collection — serial title chains (serial-watch-flow group 4)", () => {
-  // srow — a /series wire row fixture for the title-chain cases: parser
-  // namespace, parsed.dir_name_raw, and the stored title_override ("" when
-  // unset) are all independently controllable.
+describe("Collection — served display_name (display-naming group 4)", () => {
+  // srow — a /series wire row fixture for the naming cases: parser
+  // namespace, parsed.dir_name_raw, the stored title_override ("" when
+  // unset) and the SERVED display_name are all independently controllable.
   function srow(parts: {
     id: string;
     title?: string;
     dirNameRaw?: string;
     titleOverride?: string;
+    displayName?: string;
   }): SeriesDTO {
     const d: ItemDocument = {};
     if (parts.title !== undefined) {
@@ -509,6 +523,7 @@ describe("Collection — serial title chains (serial-watch-flow group 4)", () =>
       schema_version: 1,
       status: "ready",
       title_override: parts.titleOverride ?? "",
+      ...(parts.displayName !== undefined ? { display_name: parts.displayName } : {}),
     };
   }
 
@@ -519,7 +534,7 @@ describe("Collection — serial title chains (serial-watch-flow group 4)", () =>
     vi.restoreAllMocks();
   });
 
-  it("series cards resolve override → parser title → raw directory name", async () => {
+  it("series cards render the SERVED display_name verbatim — override tier included, document facts never leak; floor-empty renders EMPTY", async () => {
     fetchWith({
       ...headerSeam("serial", 3),
       "/api/v1/series?library=1": () =>
@@ -528,42 +543,53 @@ describe("Collection — serial title chains (serial-watch-flow group 4)", () =>
             items: [
               srow({
                 id: "ser_1_ovr",
-                title: "Parser Name",
+                title: "Parser Decoy",
                 dirNameRaw: "dir.raw",
                 titleOverride: "Operator's Name",
+                displayName: "Operator's Name",
               }),
-              srow({ id: "ser_1_par", title: "Only Parser" }),
-              srow({ id: "ser_1_raw", dirNameRaw: "Сырое Имя" }),
+              srow({ id: "ser_1_par", title: "Parser Decoy 2", displayName: "Only Served" }),
+              srow({ id: "ser_1_raw", dirNameRaw: "Сырое Имя", displayName: "" }),
             ],
           }),
         ),
     });
     renderCollection("1");
 
-    // The override wins over every document fact.
+    // The served name wins verbatim — for the overridden row it IS the
+    // override; neither document fact leaks.
     const ovr = await screen.findByRole("link", { name: /Operator's Name/ });
-    expect(within(ovr).queryByText("Parser Name")).toBeNull();
+    expect(within(ovr).queryByText("Parser Decoy")).toBeNull();
     expect(within(ovr).queryByText("dir.raw")).toBeNull();
-    // No override → the parser title…
-    expect(screen.getByRole("link", { name: /Only Parser/ })).toBeDefined();
-    // …and no parser title → the raw directory name, verbatim.
-    expect(screen.getByRole("link", { name: /Сырое Имя/ })).toBeDefined();
+    // A served composed name renders verbatim, not the row's parser title.
+    expect(screen.getByRole("link", { name: /Only Served/ })).toBeDefined();
+    expect(screen.queryByRole("link", { name: /Parser Decoy 2/ })).toBeNull();
+    // Floor-empty ("") renders VERBATIM EMPTY — strict served-verbatim: the
+    // card's aria-label is "Open " (name "Open" after whitespace trimming)
+    // and the path name never leaks in as a client-side fallback.
+    const raw = screen.getByRole("link", { name: "Open" });
+    expect(within(raw).getByText("ready")).toBeDefined(); // chips still render
+    expect(screen.queryByRole("link", { name: /Сырое Имя/ })).toBeNull();
+    // The rename affordance's label is likewise the empty served name.
+    expect(screen.getByRole("button", { name: "Rename" })).toBeDefined();
   });
 
-  it("episode rows resolve override → parsed title → file name", async () => {
+  it("episode rows render the SERVED display_name verbatim — override tier included; floor-empty renders EMPTY", async () => {
     const overridden = item(
       "itm_1_e0",
       "serial",
       "Show 2019/S01E00.mkv",
-      doc({ title: "Parsed E0" }),
+      doc({ season: 1, episode: 0 }),
     );
     overridden.title_override = "Renamed Episode";
-    const parsedOnly = item(
+    overridden.display_name = "Renamed Episode";
+    const composed = item(
       "itm_1_e1",
       "serial",
       "Show 2019/S01E01.mkv",
-      doc({ title: "Show 2019 S01E01" }),
+      doc({ title: "View Decoy", season: 1, episode: 1 }),
     );
+    composed.display_name = "Show 2019 · S01E01";
     const nameless = item("itm_1_e2", "serial", "Show 2019/S01E02.mkv", doc({}));
 
     fetchWith({
@@ -571,26 +597,34 @@ describe("Collection — serial title chains (serial-watch-flow group 4)", () =>
       "/api/v1/series?library=1": () =>
         Promise.resolve(
           jsonResponse(200, {
-            items: [srow({ id: "ser_1_show", dirNameRaw: "Show 2019" })],
+            items: [
+              srow({ id: "ser_1_show", dirNameRaw: "Show 2019", displayName: "Show 2019" }),
+            ],
           }),
         ),
       "/api/v1/series/ser_1_show/episodes": () =>
         Promise.resolve(
-          jsonResponse(200, { items: [overridden, parsedOnly, nameless] }),
+          jsonResponse(200, { items: [overridden, composed, nameless] }),
         ),
     });
     renderCollection("1");
 
     fireEvent.click(await screen.findByRole("link", { name: /Show 2019/ }));
 
-    // The override beats the parsed title.
+    // The override tier rides inside the served name.
     const e0 = await screen.findByRole("link", { name: /Renamed Episode/ });
-    expect(within(e0).queryByText("Parsed E0")).toBeNull();
-    // Parsed title with no override.
-    expect(screen.getByRole("link", { name: /Show 2019 S01E01/ })).toBeDefined();
-    // Neither → the raw file name (title span AND filename span agree).
+    expect(within(e0).queryByText("View Decoy")).toBeNull();
+    // The served composed name renders verbatim — the document's `_view`
+    // title never leaks.
+    expect(screen.getByRole("link", { name: /Show 2019 · S01E01/ })).toBeDefined();
+    expect(screen.queryByText("View Decoy")).toBeNull();
+    // Floor-empty → the served name renders VERBATIM EMPTY (strict served-
+    // verbatim): no title fallback, so the file name appears exactly ONCE —
+    // the movie card's own filename span — and the rename affordance's label
+    // is likewise empty ("Rename " → name "Rename").
     const e2 = screen.getByRole("link", { name: /S01E02\.mkv/ });
-    expect(within(e2).getAllByText("S01E02.mkv").length).toBe(2);
+    expect(within(e2).getAllByText("S01E02.mkv").length).toBe(1);
+    expect(screen.getByRole("button", { name: "Rename" })).toBeDefined();
   });
 
   it("rename PUTs and the display follows; clear DELETEs back to the chain; a 400 surfaces inline once", async () => {
@@ -636,6 +670,10 @@ describe("Collection — serial title chains (serial-watch-flow group 4)", () =>
                 id: "ser_1_show",
                 dirNameRaw: "Show 2019",
                 titleOverride: override || undefined,
+                // The SERVED name follows the stored override; on clear the
+                // chain value comes back served (strict served-verbatim — the
+                // client never floors to the path name) — display-naming.
+                displayName: override !== "" ? override : "Show 2019",
               }),
             ],
           }),
