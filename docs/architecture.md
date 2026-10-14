@@ -746,7 +746,7 @@ display:
 3. **`priority` is module-local.** Lower number = higher precedence for *view* computation only (§3.3). It does NOT affect data persistence — every enabled source's data is always stored.
 4. **`auth_mode` per source.** SERVER = core injects secrets from config; CLIENT = the RequestSpec carries `redacted_ref` placeholders for the user's own credentials (§6). This lets a module mix server-backed (TMDB) and user-backed (Kinopoisk) sources.
 5. **`options` are opaque pass-through.** The core does not interpret them; it validates them against the plugin's `config_schema` (declared at handshake) and forwards them to every RPC. This is how a module customizes a plugin without the core learning the plugin's knobs.
-6. **Schema is light and JSON-Schema-shaped.** The core validates the document's top-level structural keys on write; it does NOT model fields typed in Go. A module owner evolves the schema by bumping `schema_version`; old documents are migrated lazily (or flagged) per the deprecation policy.
+6. **Schema is light and JSON-Schema-shaped.** The core validates the document's top-level structural keys on write; it does NOT model fields typed in Go — with ONE exception (display-naming, 2026-10): the module registry decodes the display block's `item_name` verbatim into `Module.ItemName` (config data, never core logic); every other display key remains SPA-consumed config. The serial module's seed ships at `schema_version` 3 with `"item_name": "{title} · S{season}E{episode}"`; pre-v3 serial rows are promoted by a schema-guarded UPDATE on Open (idempotent, scoped to the serial row, chained after the v1→v2 upgrade). A module owner evolves the schema by bumping `schema_version`; old documents are migrated lazily (or flagged) per the deprecation policy.
 7. **Proto-version resolution (Q12/D16).** A module source binds by `(plugin_id, capability_id)`; the core resolves the live capability stub by FQN, preferring the plugin's latest stable proto major that the core supports. A module MAY set optional `prefer_proto_version` (e.g. `"v1"`) to pin a specific major when a plugin speaks several; if the preference is unavailable, the core falls back to the latest supported major and warns — it never hard-fails. If no compatible major is registered (capability skipped at handshake, §2.2.4), the source is `degraded`.
 
 #### 2.4.3 Module resolution at runtime
@@ -1528,7 +1528,10 @@ mellifera/
       plugin/v1/plugin.proto
 
   internal/               # core binary packages (not importable by plugins)
-    api/                  # chi router, JSON handlers, SSE for scan progress
+    api/                  # chi router, JSON handlers, SSE for scan progress;
+                          #   display.go — display-name composition core (all-unexported):
+                          #   item/library responses carry the server-composed display_name,
+                          #   keyed off the per-library naming_group_style/naming_element_name options
       handler/            # Mode B endpoints (§5), item browse, stream
       middleware/          # request-id, logging, recover
     enrich/               # orchestrates Match→Build→Convert→Merge for both modes
