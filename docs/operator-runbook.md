@@ -18,7 +18,7 @@ embeds the **committed** artifacts (`internal/web/dist/*`,
 
 ```bash
 make build          # server + all packages (CGO_ENABLED=0)
-make build-plugin   # bin/{base-scanner,serial-scanner,tv-parser,image-enricher,serial-parser,frame-grabber}
+make build-plugin   # bin/{base-scanner,serial-scanner,tv-parser,image-enricher,serial-parser,frame-grabber,shikimori}
 make web-build      # dev/CI only — regenerates the embedded web artifacts (§6)
 
 export MELLIFERA_ADMIN_TOKEN='change-me'
@@ -71,6 +71,7 @@ every other malformed/missing value falls back to its default with a warning
 | `MELLIFERA_SERIAL_SCANNER` | `bin/serial-scanner` | Plugin binary path. |
 | `MELLIFERA_SERIAL_PARSER` | `bin/serial-parser` | Plugin binary path. |
 | `MELLIFERA_FRAME_GRABBER` | `bin/frame-grabber` | Plugin binary path (needs `ffmpeg` at runtime). |
+| `MELLIFERA_SHIKIMORI` | `bin/shikimori` | Plugin binary path (fetches shikimori.io anonymously — needs outbound HTTPS). |
 | `MELLIFERA_ENRICH_WORKERS` | `4` | Async worker-pool size (§5). |
 | `MELLIFERA_ENRICH_MAX_ATTEMPTS` | `3` | In-memory retries per source before terminal `exhausted`. |
 | `MELLIFERA_ENRICH_LEASE_TTL` | `60s` | Per-item in-memory lease lifetime (lazy expiry). |
@@ -102,13 +103,17 @@ and Swagger UI carry **no data**; all data stays behind role-gated
 
 ## 4. Plugins
 
-Three subprocess binaries ship (all pure Go, built by `make build-plugin`):
+Seven subprocess binaries ship (all pure Go, built by `make build-plugin`):
 
 | Binary | Capability | Service |
 |---|---|---|
 | `bin/base-scanner` | `scanner` | `mellifera.scanner.v1.Scanner` (Scan stream + Identify) |
+| `bin/serial-scanner` | `scanner` | `mellifera.scanner.v1.Scanner` (serial roots → series candidates) |
 | `bin/tv-parser` | `metadata_source` | `mellifera.metadata.v1.MetadataSource` (Match→BuildRequest→Convert→Merge) |
 | `bin/image-enricher` | `metadata_source` | `mellifera.metadata.v1.MetadataSource` (EXIF via system exiftool) |
+| `bin/serial-parser` | `metadata_source` | `mellifera.metadata.v1.MetadataSource` (serial/episode facts from directory structure) |
+| `bin/frame-grabber` | `metadata_source` | `mellifera.metadata.v1.MetadataSource` (ffmpeg JPEG episode thumbnails) |
+| `bin/shikimori` | `metadata_source` | `mellifera.metadata.v1.MetadataSource` (anonymous shikimori.io fetch — needs outbound HTTPS) |
 
 - Launched via `hashicorp/go-plugin` with the magic-cookie handshake; a plugin
   crash never takes down the server. Restart policy (arch §7.3): exponential
@@ -120,9 +125,8 @@ Three subprocess binaries ship (all pure Go, built by `make build-plugin`):
   modules), never media-type branching.
 - The plugin **process** is mandatory at startup (a missing binary aborts
   startup); the external tools it shells out to (ffprobe, exiftool) are
-  optional at runtime (soft-fail). Override binary paths with the
-  `MELLIFERA_BASE_SCANNER` / `MELLIFERA_TV_PARSER` / `MELLIFERA_IMAGE_ENRICHER`
-  env vars.
+  optional at runtime (soft-fail). Override binary paths with the per-plugin
+  `MELLIFERA_*` env vars (§2).
 - Image discovery is module-type-gated: a `module_type == "image"` library
   discovers exactly `.jpg .jpeg .png .webp .heic .heif` (stdlib base dims for
   jpeg/png only — webp/heic get their dims from exiftool at enrichment).
