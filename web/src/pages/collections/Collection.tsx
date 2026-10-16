@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   useMutation,
   useQueryClient,
@@ -47,6 +46,7 @@ import { cn } from "@/lib/utils";
 import { formatPosition } from "@/pages/home/Home";
 import type { BrowseHandoff } from "@/pages/browse/ItemDetail";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
+import { DialogShell } from "@/components/DialogShell";
 
 // Collection — the per-collection page at /collections/:id (web-ui-phase-3
 // group 5, boxes 5.1–5.3). The header comes from GET /api/v1/libraries +
@@ -275,6 +275,12 @@ export default function Collection(): ReactElement {
     ? libraries.data?.items.find((l) => l.id === libraryId)
     : undefined;
 
+  // The Manage overlay (ui-management pass 3): opened from the header's gear
+  // trigger, closed by its own shell mechanics. Overlay state is LOCAL, never
+  // URL state — a route change unmounts the page and discards it.
+  const gearRef = useRef<HTMLButtonElement>(null);
+  const [manageOpen, setManageOpen] = useState(false);
+
   if (libraries.isLoading) {
     return <LoadingState label="Loading collections…" />;
   }
@@ -297,6 +303,9 @@ export default function Collection(): ReactElement {
         lib={lib}
         itemCount={summary.data?.items}
         updatedAt={summary.data?.updated_at}
+        gearRef={gearRef}
+        manageOpen={manageOpen}
+        onManage={() => setManageOpen(true)}
       />
       <CollectionBody
         module_id={lib.module_id}
@@ -305,6 +314,14 @@ export default function Collection(): ReactElement {
         summaryLoaded={!summary.isLoading}
         itemCount={summary.data?.items}
       />
+      {manageOpen ? (
+        <ManageOverlay
+          lib={lib}
+          detail={libraryDetail.data}
+          gearRef={gearRef}
+          onClose={() => setManageOpen(false)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -312,19 +329,39 @@ export default function Collection(): ReactElement {
 // CollectionHeader — name, pastel type badge (module_id), description, item
 // count and updated stamp from the summary. The count shows once the summary
 // lands; the header itself never waits on it.
+//
+// The quiet gear trigger (ui-management pass 3) opens the ONE Manage overlay:
+// revealed on header hover/focus (the shared .cardact-trigger CSS inside the
+// cardact-host row) and keyboard-reachable (a real button — tab focus reveals
+// it via :focus-within). It carries the dialog a11y pair like every overlay
+// trigger; the gear's ref is the Manage sheet's focus-return target.
 function CollectionHeader(props: {
   lib: LibraryDTO;
   itemCount?: number;
   updatedAt?: string;
+  gearRef: RefObject<HTMLButtonElement>;
+  manageOpen: boolean;
+  onManage: () => void;
 }): ReactElement {
   const { lib } = props;
 
   return (
     <header className="flex flex-col gap-2">
-      <div className="flex items-center gap-3">
+      <div className="cardact-host relative flex items-center gap-3">
         <span className={dotClass(lib.module_id)} aria-hidden="true" />
         <h1 className="text-xl font-semibold">{lib.display_name}</h1>
         <span className="chip">{lib.module_id}</span>
+        <button
+          type="button"
+          ref={props.gearRef}
+          className="cardact-trigger"
+          aria-label="Manage collection"
+          aria-haspopup="dialog"
+          aria-expanded={props.manageOpen}
+          onClick={props.onManage}
+        >
+          ⚙
+        </button>
       </div>
       {lib.description ? (
         <p className="text-sm text-muted-foreground">{lib.description}</p>
@@ -366,6 +403,74 @@ function CollectionBody(props: {
     default:
       return <ItemGrid libraryId={props.libraryId} />;
   }
+}
+
+// ---- Manage overlay (ui-management pass 3) -----------------------------------
+
+// ManageOverlay — the collection header gear's ONE wide Manage sheet, rendered
+// through the shared lifted DialogShell (portal/fixed, scrim click-away,
+// Escape, focus-return to the gear, focus trap, aria-modal, wide scrollable
+// sheet). It renders FIVE sections — Rescan, Parser chain, Naming, Refresh
+// metadata, Edit library — each an independent SAVE BOUNDARY: one request per
+// section save, never one giant PATCH (the Go PATCH /libraries/{id} writes
+// the row and the chain in two non-atomic store calls, so a mid-write failure
+// on a combined save would leave row and chain divergent).
+//
+// `detail` is the GET /libraries/{id} DTO — the ONLY response that carries
+// the additive module block (the served parser chain) and the two naming
+// options; the PATCH response never carries the module block, so every
+// section re-reads through this query after a save (the save/invalidation
+// contract in queries.ts).
+//
+// Gate semantics (kept from the Identify row): the module block's ABSENCE
+// signals module wiring, not authorization — sections that read it render
+// their designed empty state, the sheet itself is never gated.
+function ManageOverlay(props: {
+  lib: LibraryDTO;
+  detail?: LibraryDTO;
+  gearRef: RefObject<HTMLButtonElement>;
+  onClose: () => void;
+}): ReactElement {
+  return (
+    <DialogShell
+      open
+      label={`Manage ${props.lib.display_name}`}
+      width="wide"
+      returnFocusRef={props.gearRef}
+      onClose={props.onClose}
+    >
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-base font-semibold">Manage collection</h3>
+          <button
+            type="button"
+            className="rounded-md border px-3 py-1.5 text-sm transition-colors hover:bg-accent"
+            onClick={props.onClose}
+          >
+            Close
+          </button>
+        </div>
+        <ManageSection title="Rescan" />
+        <ManageSection title="Parser chain" />
+        <ManageSection title="Naming" />
+        <ManageSection title="Refresh metadata" />
+        <ManageSection title="Edit library" />
+      </div>
+    </DialogShell>
+  );
+}
+
+// ManageSection — one Manage sheet section: a bordered block with its
+// heading. The section OWNS its save boundary — its controls and its own
+// save request; a failed save surfaces the canonical error inline and leaves
+// the sheet open.
+function ManageSection(props: { title: string; children?: ReactNode }): ReactElement {
+  return (
+    <section className="flex flex-col gap-2 rounded-md border p-3">
+      <h4 className="text-sm font-semibold">{props.title}</h4>
+      {props.children}
+    </section>
+  );
 }
 
 // ---- Shared pagination ------------------------------------------------------
@@ -888,26 +993,19 @@ function useTitleOverride(
 // CardActions — the per-card management unit (ui-management §2): a quiet ⋯
 // trigger top-right of the card, revealed on card hover/focus on fine
 // pointers (the coarse-pointer persistent reveal is box 1.4's CSS), opening
-// ONE portaled dialog overlay whose views are `menu` and `rename`. The
-// trigger carries aria-haspopup="dialog" + aria-expanded; the open state
-// persists via data-open because the overlay is portaled (`.scard` is
-// overflow:hidden — in-card positioning would clip) and :focus-within goes
-// false once focus enters the panel. Esc matrix: a view (rename, identify,
-// refresh) → menu, menu → close all, IGNORED while a mutation is pending (an
-// unmounted view could never render the canonical inline error). Focus is
-// trapped (two-sentinel Tab loop) and returns to the trigger on close.
-// Overlay state is LOCAL (closed|menu|rename|identify|refresh), never URL
-// state: a route change unmounts the card and discards it.
+// ONE dialog overlay whose views are `menu`, `rename`, `identify` and
+// `refresh`. The trigger carries aria-haspopup="dialog" + aria-expanded; the
+// open state persists via data-open because the overlay is portaled (`.scard`
+// is overflow:hidden — in-card positioning would clip) and :focus-within goes
+// false once focus enters the panel. The shell mechanics (portal, scrim
+// click-away, Esc, focus trap, focus-return, aria-modal) live in the shared
+// DialogShell (pass 3 lift) — this component keeps the POLICY: the view state
+// machine and the Esc matrix (a view → menu, menu → close all, IGNORED while
+// a mutation is pending — an unmounted view could never render the canonical
+// inline error). Overlay state is LOCAL
+// (closed|menu|rename|identify|refresh), never URL state: a route change
+// unmounts the card and discards it.
 type OverlayState = "closed" | "menu" | "rename" | "identify" | "refresh";
-
-const FOCUSABLE_SEL =
-  "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])";
-
-function focusables(panel: HTMLElement): HTMLElement[] {
-  return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE_SEL)).filter(
-    (el) => !el.classList.contains("cardact-sentinel"),
-  );
-}
 
 function CardActions(props: {
   triggerLabel: string;
@@ -921,40 +1019,10 @@ function CardActions(props: {
 }): ReactElement {
   const [overlay, setOverlay] = useState<OverlayState>("closed");
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const prevOverlay = useRef<OverlayState>("closed");
 
   const closeAll = (): void => setOverlay("closed");
-
-  // Focus routing: into the panel's first focusable on every open/view flip,
-  // back to the trigger on close (not on initial mount).
-  useEffect(() => {
-    const wasOpen = prevOverlay.current !== "closed";
-    prevOverlay.current = overlay;
-    if (overlay === "closed") {
-      if (wasOpen) {
-        triggerRef.current?.focus();
-      }
-      return;
-    }
-    const panel = panelRef.current;
-    if (panel) {
-      focusables(panel)[0]?.focus();
-    }
-  }, [overlay]);
-
-  // The two-sentinel Tab loop: focusing a sentinel wraps focus to the
-  // opposite edge of the panel's real focusables.
-  const wrapFocus = (edge: "top" | "bottom"): void => {
-    const panel = panelRef.current;
-    if (!panel) {
-      return;
-    }
-    const els = focusables(panel);
-    (edge === "top" ? els[els.length - 1] : els[0])?.focus();
-  };
-
   const open = overlay !== "closed";
+
   const trigger = (
     <button
       type="button"
@@ -970,115 +1038,86 @@ function CardActions(props: {
     </button>
   );
 
-  if (!open) {
-    return trigger;
-  }
-
   return (
     <>
       {trigger}
-      {createPortal(
-        <div
-          className="overlay-backdrop"
-          onClick={closeAll}
-        >
-          <div
-            ref={panelRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label={props.triggerLabel}
-            className="cardact-panel"
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => {
-              if (e.key !== "Escape" || props.pending) {
-                return;
-              }
-              if (
-                overlay === "rename" ||
-                overlay === "identify" ||
-                overlay === "refresh"
-              ) {
-                setOverlay("menu");
-              } else {
-                closeAll();
-              }
-            }}
-          >
-            <span
-              aria-hidden="true"
-              tabIndex={0}
-              className="cardact-sentinel"
-              onFocus={() => wrapFocus("top")}
-            />
-            {overlay === "menu" ? (
-              <>
-                {/* Identify… rides the module-wired chain (the row is absent
-                    without it) and is promoted to the first row when the card
-                    is unidentified — curing the name is the operator's next
-                    most likely intent there. */}
-                {props.identifyFirst && props.identify ? (
-                  <button
-                    type="button"
-                    className="cardact-row"
-                    onClick={() => setOverlay("identify")}
-                  >
-                    Identify…
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="cardact-row"
-                  onClick={() => setOverlay("rename")}
-                >
-                  Rename…
-                </button>
-                {!props.identifyFirst && props.identify ? (
-                  <button
-                    type="button"
-                    className="cardact-row"
-                    onClick={() => setOverlay("identify")}
-                  >
-                    Identify…
-                  </button>
-                ) : null}
-                {props.refresh ? (
-                  <button
-                    type="button"
-                    className="cardact-row"
-                    onClick={() => setOverlay("refresh")}
-                  >
-                    Refresh metadata…
-                  </button>
-                ) : null}
-                {props.rows ?? null}
-                {props.footer ?? null}
-              </>
-            ) : overlay === "rename" ? (
-              props.rename({
-                collapse: closeAll,
-                back: () => setOverlay("menu"),
-              })
-            ) : overlay === "identify" && props.identify ? (
-              props.identify({
-                collapse: closeAll,
-                back: () => setOverlay("menu"),
-              })
-            ) : overlay === "refresh" && props.refresh ? (
-              props.refresh({
-                collapse: closeAll,
-                back: () => setOverlay("menu"),
-              })
+      <DialogShell
+        open={open}
+        label={props.triggerLabel}
+        returnFocusRef={triggerRef}
+        focusKey={overlay}
+        onClose={closeAll}
+        onEscape={() => {
+          if (props.pending) {
+            return;
+          }
+          if (overlay === "menu") {
+            closeAll();
+          } else {
+            setOverlay("menu");
+          }
+        }}
+      >
+        {overlay === "menu" ? (
+          <>
+            {/* Identify… rides the module-wired chain (the row is absent
+                without it) and is promoted to the first row when the card
+                is unidentified — curing the name is the operator's next
+                most likely intent there. */}
+            {props.identifyFirst && props.identify ? (
+              <button
+                type="button"
+                className="cardact-row"
+                onClick={() => setOverlay("identify")}
+              >
+                Identify…
+              </button>
             ) : null}
-            <span
-              aria-hidden="true"
-              tabIndex={0}
-              className="cardact-sentinel"
-              onFocus={() => wrapFocus("bottom")}
-            />
-          </div>
-        </div>,
-        document.body,
-      )}
+            <button
+              type="button"
+              className="cardact-row"
+              onClick={() => setOverlay("rename")}
+            >
+              Rename…
+            </button>
+            {!props.identifyFirst && props.identify ? (
+              <button
+                type="button"
+                className="cardact-row"
+                onClick={() => setOverlay("identify")}
+              >
+                Identify…
+              </button>
+            ) : null}
+            {props.refresh ? (
+              <button
+                type="button"
+                className="cardact-row"
+                onClick={() => setOverlay("refresh")}
+              >
+                Refresh metadata…
+              </button>
+            ) : null}
+            {props.rows ?? null}
+            {props.footer ?? null}
+          </>
+        ) : overlay === "rename" ? (
+          props.rename({
+            collapse: closeAll,
+            back: () => setOverlay("menu"),
+          })
+        ) : overlay === "identify" && props.identify ? (
+          props.identify({
+            collapse: closeAll,
+            back: () => setOverlay("menu"),
+          })
+        ) : overlay === "refresh" && props.refresh ? (
+          props.refresh({
+            collapse: closeAll,
+            back: () => setOverlay("menu"),
+          })
+        ) : null}
+      </DialogShell>
     </>
   );
 }

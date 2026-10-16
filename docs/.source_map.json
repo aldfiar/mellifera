@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "ff6133e",
-  "source_fingerprint": "7b883f53e4ce2a4929402e6f53db2afe9636b137ff475462fd0d32ebc436052f",
+  "generated_from_commit": "7a7d5f5",
+  "source_fingerprint": "c366e0f9e8d75d1005806f422dc1bf6901742c088135a189d074d1f3e1a36fb5",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -17,16 +17,16 @@
     "ast_backends": "python3-ast (.py); regex-floor fallback for other langs"
   },
   "counts": {
-    "files_total": 276,
+    "files_total": 277,
     "by_extension": {
       ".go": 224,
       ".sh": 2,
       ".js": 3,
       ".ts": 13,
-      ".tsx": 34
+      ".tsx": 35
     },
     "by_role": {
-      "source": 151,
+      "source": 152,
       "test": 124,
       "script": 1
     },
@@ -38,7 +38,7 @@
       "go": 224,
       "bash": 2,
       "javascript": 3,
-      "typescript": 47
+      "typescript": 48
     },
     "frameworks": []
   },
@@ -1208,6 +1208,14 @@
         "App"
       ]
     },
+    "web/src/components/DialogShell.tsx": {
+      "lines": 134,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "DialogShell"
+      ]
+    },
     "web/src/components/RequireAuth.tsx": {
       "lines": 25,
       "lang": "typescript",
@@ -1414,7 +1422,7 @@
       "role": "test"
     },
     "web/src/lib/api.ts": {
-      "lines": 753,
+      "lines": 845,
       "lang": "typescript",
       "role": "source",
       "exports": [
@@ -1433,11 +1441,11 @@
         "apiRequestVoid",
         "deleteSeriesTitle",
         "deleteItemTitle",
+        "putItemParsers",
         "getPlayback",
         "playItem",
         "putProgress",
-        "getItem",
-        "hasFrameGrabberThumb"
+        "postLibraryRefresh"
       ]
     },
     "web/src/lib/auth.ts": {
@@ -1559,12 +1567,12 @@
       ]
     },
     "web/src/pages/collections/Collection.test.tsx": {
-      "lines": 1563,
+      "lines": 2038,
       "lang": "typescript",
       "role": "test"
     },
     "web/src/pages/collections/Collection.tsx": {
-      "lines": 1473,
+      "lines": 1744,
       "lang": "typescript",
       "role": "source",
       "exports": [

@@ -24,6 +24,21 @@ export interface UpdateLibraryRequest {
   display_name?: string;
   description?: string;
   streams_enabled?: boolean;
+  // parsers (element-pages 3.1, ui-management pass 3) — the ordered
+  // parser-chain replacement: an absent field changes nothing; a PRESENT
+  // list replaces the chain. An explicitly EMPTY list is a server 400 (the
+  // chain edit is a reorder, never a clear) — the UI never sends one. The
+  // Manage overlay's chain section sends this field ALONE: the Go PATCH
+  // writes the row and the chain in two non-atomic store calls, so a section
+  // save = one request, never one giant PATCH.
+  parsers?: string[];
+  // naming_group_style / naming_element_name (display-naming 3.2) — the two
+  // display naming options; a non-nil "" resets the column to the module
+  // default. The server validates both BEFORE any write (group style "" |
+  // "clean" | "raw"; the template's {...} groups exactly {title}/{season}/
+  // {episode}); refusals surface through the canonical inline-error path.
+  naming_group_style?: string;
+  naming_element_name?: string;
 }
 
 // handlers.go parserBinding — one entry of module.parsers (element-pages 3.4):
@@ -57,6 +72,12 @@ export interface LibraryDTO {
   description: string;
   streams_enabled: boolean;
   module?: ModulePresentation;
+  // naming_group_style / naming_element_name — the library's two display
+  // naming options (display-naming 3.2, flat strings on the wire; "" =
+  // module default). Optional in TS like the other additive fields: an
+  // absent field must mean unset, not a type hole.
+  naming_group_style?: string;
+  naming_element_name?: string;
 }
 
 // handlers.go librarySummaryResponse — the constant-time count + last-update

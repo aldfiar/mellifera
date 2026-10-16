@@ -1938,3 +1938,101 @@ describe("Collection — media tiles (media-preview group 2)", () => {
     expect(within(plain).queryByText(/\.mkv/)).toBeNull();
   });
 });
+
+describe("Collection — Manage overlay (ui-management pass 3)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // manageSeam — a tv library whose GET /libraries/1 detail carries the
+  // additive module block (a WIRED module). Entry order matters: the summary
+  // and detail paths are checked before the bare list fragment.
+  function manageSeam(moduleBlock?: ModulePresentation): void {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(
+          jsonResponse(200, { library_id: 1, items: 1, updated_at: "" }),
+        );
+      }
+      if (url.endsWith("/api/v1/libraries/1")) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            ...lib(1, "tv", "films"),
+            streams_enabled: true,
+            naming_group_style: "",
+            naming_element_name: "",
+            ...(moduleBlock ? { module: moduleBlock } : {}),
+          }),
+        );
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films")] }));
+      }
+      if (url.includes("/api/v1/items?")) {
+        return Promise.resolve(jsonResponse(200, { items: [] }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+  }
+
+  it("the header gear opens the wide Manage sheet through the lifted shell: aria-modal, five sections, Esc closes with focus-return", async () => {
+    manageSeam({ identity_fields: [], parsers: [{ id: "tv-parser", display_fields: [] }] });
+    renderCollection("1");
+
+    const gear = await screen.findByRole("button", { name: "Manage collection" });
+    // The gear carries the dialog a11y pair and is keyboard-reachable.
+    expect(gear.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(gear.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(gear);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(gear.getAttribute("aria-expanded")).toBe("true");
+
+    // The five sections render as independent save boundaries (each
+    // section's controls land in its own box).
+    for (const title of ["Rescan", "Parser chain", "Naming", "Refresh metadata", "Edit library"]) {
+      expect(within(dialog).getByRole("heading", { name: title })).toBeDefined();
+    }
+
+    // On open, focus moves into the sheet (its first focusable — Close).
+    const close = within(dialog).getByRole("button", { name: "Close" });
+    await waitFor(() => expect(document.activeElement).toBe(close));
+
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(gear);
+    expect(gear.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("scrim click-away closes and returns focus to the gear; the two-sentinel trap wraps at both edges", async () => {
+    manageSeam();
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const dialog = await screen.findByRole("dialog");
+
+    // Sentinels wrap: bottom → first focusable, top → last focusable.
+    const close = within(dialog).getByRole("button", { name: "Close" });
+    await waitFor(() => expect(document.activeElement).toBe(close));
+    const sentinels = dialog.querySelectorAll<HTMLElement>(".cardact-sentinel");
+    expect(sentinels.length).toBe(2);
+    fireEvent.focus(sentinels[sentinels.length - 1]);
+    expect(document.activeElement).toBe(close);
+    fireEvent.focus(sentinels[0]);
+    expect(document.activeElement).toBe(close);
+
+    // Scrim click-away closes all and returns focus to the gear.
+    const backdrop = document.querySelector(".overlay-backdrop");
+    expect(backdrop).not.toBeNull();
+    fireEvent.click(backdrop as Element);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Manage collection" }),
+    );
+  });
+});
