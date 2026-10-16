@@ -431,8 +431,10 @@ func TestWeb_Integration(t *testing.T) {
 				t.Errorf("make %s: exit %v (output: %s)", target, err, out)
 			}
 		}
-		// Additive probe: proto/ + pkg/sdk/ byte-identical vs the 58a1130
-		// baseline (the wire/plugin CONTRACT trees stay frozen). RETIRED for
+		// Additive probe: proto/ + pkg/sdk/ byte-identical vs the cf9b47c
+		// baseline (the wire/plugin CONTRACT trees stay frozen; the original
+		// 58a1130 pin was orphaned by the public-release history rewrite —
+		// cf9b47c is its scrubbed counterpart with a byte-identical proto/). RETIRED for
 		// internal/scan/ internal/enrich/ internal/plugin/ internal/module/:
 		// serials-library legitimately extended those sources (the spec'd
 		// two-level enrichment queue, serial-record routing, the series sweep,
@@ -443,7 +445,7 @@ func TestWeb_Integration(t *testing.T) {
 		// pkg/sdk dropped from the pin: fix-truncated-scan-sweep legitimately
 		// reworked the in-repo Scanner surface (ScanStream, wire untouched);
 		// the additive guard stays on the wire (proto/) only.
-		diff := exec.Command("git", "diff", "--stat", "58a1130", "HEAD", "--",
+		diff := exec.Command("git", "diff", "--stat", "cf9b47c", "HEAD", "--",
 			"proto/")
 		diff.Dir = moduleRoot(t) // git pathspecs resolve against cwd — must be the module root
 		out, err := diff.CombinedOutput()
@@ -451,7 +453,7 @@ func TestWeb_Integration(t *testing.T) {
 			t.Logf("git diff additive probe: %v (output: %s) — continuing", err, out)
 		}
 		if strings.TrimSpace(string(out)) != "" {
-			t.Errorf("additive probe: git diff 58a1130 HEAD over proto/sdk is NON-empty:\n%s", out)
+			t.Errorf("additive probe: git diff cf9b47c HEAD over proto/sdk is NON-empty:\n%s", out)
 		}
 	})
 }
