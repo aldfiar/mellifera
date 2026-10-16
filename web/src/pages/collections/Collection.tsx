@@ -40,7 +40,9 @@ import {
   useLibrarySummary,
   useSeries,
   useSeriesEpisodes,
+  useUpdateLibrary,
 } from "@/lib/queries";
+import { composeItemName, episodeFacts, seriesName } from "@/lib/naming";
 import type { ItemDocument } from "@/lib/document";
 import { cn } from "@/lib/utils";
 import { formatPosition } from "@/pages/home/Home";
@@ -451,8 +453,19 @@ function ManageOverlay(props: {
           </button>
         </div>
         <ManageSection title="Rescan" />
-        <ManageSection title="Parser chain" />
-        <ManageSection title="Naming" />
+        <ManageSection title="Parser chain">
+          <ParserChainSection
+            libraryId={props.lib.id}
+            chain={props.detail?.module?.parsers}
+          />
+        </ManageSection>
+        <ManageSection title="Naming">
+          <NamingSection
+            libraryId={props.lib.id}
+            groupStyle={props.detail?.naming_group_style}
+            elementName={props.detail?.naming_element_name}
+          />
+        </ManageSection>
         <ManageSection title="Refresh metadata" />
         <ManageSection title="Edit library" />
       </div>
@@ -470,6 +483,282 @@ function ManageSection(props: { title: string; children?: ReactNode }): ReactEle
       <h4 className="text-sm font-semibold">{props.title}</h4>
       {props.children}
     </section>
+  );
+}
+
+// sectionSaveButton — the shared Save row of the section save boundaries:
+// canonical errors inline (role="alert"), the awaited success flips the
+// section's own Saved status — the sheet NEVER auto-closes on a section save
+// (each boundary saves independently; closing would discard the others'
+// drafts).
+function sectionError(err: ApiError | null): ReactElement | null {
+  return err ? (
+    <p role="alert" className="text-xs text-destructive">
+      {err.code}: {err.message}
+    </p>
+  ) : null;
+}
+
+// ParserChainSection — the Parser chain save boundary (ui-management pass 3):
+// the SERVED-ORDER chain from the module block, editable as a local draft —
+// up/down reorder, remove, add from the module's declared parsers — saved as
+// ONE PATCH of ONLY `parsers` (a full replacement; order IS the footer group
+// order and the enrichment queue priority). The UI MUST NOT submit an empty
+// list: the Go PATCH 400s a present-and-empty `parsers` (the chain edit is a
+// reorder, never a clear — the module seed chain is the floor), so Save is
+// disabled on an emptied draft.
+//
+// The module block's ABSENCE signals wiring, not authorization: without it
+// the section renders its designed empty state — the sheet is never gated.
+function ParserChainSection(props: {
+  libraryId: number;
+  chain?: ParserBinding[];
+}): ReactElement {
+  const served = (props.chain ?? []).map((b) => b.id);
+  const servedKey = served.join("\n");
+  // The draft: null until the operator edits — i.e. the served order
+  // verbatim; any edit pins the edited order (an EMPTY pinned draft is the
+  // emptied chain — Save is disabled there, never a silent no-op).
+  const [draft, setDraft] = useState<string[] | null>(null);
+  const [saved, setSaved] = useState(false);
+  const save = useUpdateLibrary();
+  const order = draft ?? served;
+
+  // A refetch that changed the served chain (this save's own invalidation,
+  // or another operator's) resets the draft — the draft edits WHAT IS
+  // SERVED, never a stale local fork.
+  useEffect(() => {
+    setDraft(null);
+    setSaved(false);
+  }, [servedKey]);
+
+  const move = (index: number, dir: -1 | 1): void => {
+    const target = index + dir;
+    if (target < 0 || target >= order.length) {
+      return;
+    }
+    const next = [...order];
+    const [picked] = next.splice(index, 1);
+    next.splice(target, 0, picked);
+    setDraft(next);
+  };
+
+  const remove = (id: string): void => {
+    setDraft(order.filter((a) => a !== id));
+  };
+
+  const saveDraft = (): void => {
+    save.mutate(
+      { id: props.libraryId, req: { parsers: order } },
+      { onSuccess: () => setSaved(true) },
+    );
+  };
+
+  if (props.chain === undefined) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        The module block is unavailable — the chain needs a wired module.
+      </p>
+    );
+  }
+
+  const addable = props.chain.filter((b) => !order.includes(b.id));
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ul className="flex flex-col gap-1" aria-label="Parser chain order">
+        {order.map((id, i) => (
+          <li key={id} className="flex items-center justify-between gap-2">
+            <span className="text-xs">
+              {String(i + 1)}. {id}
+            </span>
+            <span className="flex gap-1">
+              <button
+                type="button"
+                className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                aria-label={`Move ${id} up`}
+                disabled={i === 0}
+                onClick={() => move(i, -1)}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                aria-label={`Move ${id} down`}
+                disabled={i === order.length - 1}
+                onClick={() => move(i, 1)}
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                aria-label={`Remove ${id}`}
+                onClick={() => remove(id)}
+              >
+                ×
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {addable.length > 0 ? (
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Add parser">
+          {addable.map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              className="chip"
+              aria-label={`Add ${b.id}`}
+              onClick={() => setDraft([...order, b.id])}
+            >
+              + {b.id}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <p className="text-xs text-muted-foreground">Order is enrichment priority</p>
+      <button
+        type="button"
+        className="cardact-row rounded-md border text-xs"
+        disabled={order.length === 0 || save.isPending}
+        onClick={saveDraft}
+      >
+        Save
+      </button>
+      {order.length === 0 ? (
+        <p className="text-xs text-destructive">
+          The chain cannot be emptied — add a parser before saving.
+        </p>
+      ) : null}
+      {saved ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          Saved.
+        </p>
+      ) : null}
+      {sectionError(save.error)}
+    </div>
+  );
+}
+
+// NamingSection — the Naming save boundary (ui-management pass 3): the two
+// display naming options — naming_group_style ("" = module default | clean |
+// raw) and naming_element_name (the element template; its {...} groups are
+// validated server-side to exactly {title}/{season}/{episode} — a refusal
+// surfaces inline and the sheet stays open) — saved as ONE PATCH of ONLY the
+// two fields. The live preview is composed CLIENT-side through the pinned
+// mirror (lib/naming.ts): the sample row is the library's FIRST episode
+// (GET /items?library={id}&limit=1), its episode facts joined to the series
+// row its parsed anchor names — the same join the Go composer performs.
+// names re-compose on save, no rescan.
+function NamingSection(props: {
+  libraryId: number;
+  groupStyle?: string;
+  elementName?: string;
+}): ReactElement {
+  const servedGroup = props.groupStyle ?? "";
+  const servedTmpl = props.elementName ?? "";
+  const servedKey = `${servedGroup}\n${servedTmpl}`;
+  const [groupDraft, setGroupDraft] = useState<string | null>(null);
+  const [tmplDraft, setTmplDraft] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const save = useUpdateLibrary();
+  const group = groupDraft ?? servedGroup;
+  const tmpl = tmplDraft ?? servedTmpl;
+
+  // A refetch that changed the served options resets the drafts (same
+  // posture as the chain draft — edits track WHAT IS SERVED).
+  useEffect(() => {
+    setGroupDraft(null);
+    setTmplDraft(null);
+    setSaved(false);
+  }, [servedKey]);
+
+  // The sample row: the library's first episode + the series its parsed
+  // anchor names (tombstones skipped, like the Go join).
+  const sample = useItems({ library: props.libraryId, limit: 1 });
+  const series = useSeries(props.libraryId);
+  const ep = sample.data?.items[0];
+  const facts = ep ? episodeFacts(ep.document) : null;
+  const seriesRow = facts
+    ? (series.data?.items ?? []).find(
+        (s) => s.relative_path === facts.path && s.status !== "deleted",
+      )
+    : undefined;
+  const title = seriesRow ? seriesName(seriesRow, group) : null;
+  const preview =
+    facts && title !== null
+      ? composeItemName(tmpl, { title, season: facts.season, episode: facts.episode })
+      : null;
+
+  const saveDraft = (): void => {
+    save.mutate(
+      {
+        id: props.libraryId,
+        req: { naming_group_style: group, naming_element_name: tmpl },
+      },
+      { onSuccess: () => setSaved(true) },
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div role="radiogroup" aria-label="Group style" className="flex flex-wrap gap-3">
+        {(
+          [
+            ["", "Module default"],
+            ["clean", "clean"],
+            ["raw", "raw"],
+          ] as const
+        ).map(([value, label]) => (
+          <label key={value} className="flex items-center gap-1 text-xs">
+            <input
+              type="radio"
+              name="naming-group-style"
+              value={value}
+              checked={group === value}
+              onChange={() => setGroupDraft(value)}
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+      <input
+        aria-label="Element name template"
+        className="w-full rounded-md border bg-transparent px-2 py-1 text-xs"
+        value={tmpl}
+        onChange={(e) => setTmplDraft(e.target.value)}
+      />
+      {sample.isLoading ? (
+        <p className="text-xs text-muted-foreground">Loading sample episode…</p>
+      ) : preview !== null ? (
+        <p aria-label="Name preview" className="text-xs">
+          Preview: <span className="font-medium">{preview}</span>
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          No episodes scanned yet — the preview appears with the first episode.
+        </p>
+      )}
+      <p className="text-xs text-muted-foreground">
+        Names re-compose on save, no rescan.
+      </p>
+      <button
+        type="button"
+        className="cardact-row rounded-md border text-xs"
+        disabled={save.isPending}
+        onClick={saveDraft}
+      >
+        Save
+      </button>
+      {saved ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          Saved.
+        </p>
+      ) : null}
+      {sectionError(save.error)}
+    </div>
   );
 }
 

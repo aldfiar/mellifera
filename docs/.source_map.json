@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "7a7d5f5",
-  "source_fingerprint": "c366e0f9e8d75d1005806f422dc1bf6901742c088135a189d074d1f3e1a36fb5",
+  "generated_from_commit": "143126f",
+  "source_fingerprint": "73e322373216dd80ac4c544462af0d9ea1770e3343b6022df71c6ac5c030e47b",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -17,20 +17,20 @@
     "ast_backends": "python3-ast (.py); regex-floor fallback for other langs"
   },
   "counts": {
-    "files_total": 277,
+    "files_total": 279,
     "by_extension": {
       ".go": 224,
       ".sh": 2,
       ".js": 3,
-      ".ts": 13,
+      ".ts": 15,
       ".tsx": 35
     },
     "by_role": {
-      "source": 152,
-      "test": 124,
+      "source": 153,
+      "test": 125,
       "script": 1
     },
-    "tests": 124
+    "tests": 125
   },
   "stack": {
     "primary": "go",
@@ -38,7 +38,7 @@
       "go": 224,
       "bash": 2,
       "javascript": 3,
-      "typescript": 48
+      "typescript": 50
     },
     "frameworks": []
   },
@@ -1476,6 +1476,21 @@
         "stageEntries"
       ]
     },
+    "web/src/lib/naming.test.ts": {
+      "lines": 142,
+      "lang": "typescript",
+      "role": "test"
+    },
+    "web/src/lib/naming.ts": {
+      "lines": 171,
+      "lang": "typescript",
+      "role": "source",
+      "exports": [
+        "composeItemName",
+        "episodeFacts",
+        "seriesName"
+      ]
+    },
     "web/src/lib/queries.test.tsx": {
       "lines": 213,
       "lang": "typescript",
@@ -1567,12 +1582,12 @@
       ]
     },
     "web/src/pages/collections/Collection.test.tsx": {
-      "lines": 2038,
+      "lines": 2194,
       "lang": "typescript",
       "role": "test"
     },
     "web/src/pages/collections/Collection.tsx": {
-      "lines": 1744,
+      "lines": 2033,
       "lang": "typescript",
       "role": "source",
       "exports": [

@@ -2016,15 +2016,19 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
     const dialog = await screen.findByRole("dialog");
 
-    // Sentinels wrap: bottom → first focusable, top → last focusable.
+    // Sentinels wrap: bottom → first focusable, top → last focusable (the
+    // sheet's focusable set grows with its sections — derive the edges).
     const close = within(dialog).getByRole("button", { name: "Close" });
     await waitFor(() => expect(document.activeElement).toBe(close));
+    const tabbables = Array.from(
+      dialog.querySelectorAll<HTMLElement>("button"),
+    ).filter((el) => !el.classList.contains("cardact-sentinel"));
     const sentinels = dialog.querySelectorAll<HTMLElement>(".cardact-sentinel");
     expect(sentinels.length).toBe(2);
     fireEvent.focus(sentinels[sentinels.length - 1]);
-    expect(document.activeElement).toBe(close);
+    expect(document.activeElement).toBe(tabbables[0]);
     fireEvent.focus(sentinels[0]);
-    expect(document.activeElement).toBe(close);
+    expect(document.activeElement).toBe(tabbables[tabbables.length - 1]);
 
     // Scrim click-away closes all and returns focus to the gear.
     const backdrop = document.querySelector(".overlay-backdrop");
@@ -2034,5 +2038,157 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Manage collection" }),
     );
+  });
+
+  // saveSeam — the manage seam with the WRITE side: PATCH bodies to
+  // /libraries/1 are recorded (and answered with a module-block-less DTO —
+  // the server truth: PATCH responses never carry the module block), the
+  // module block carries a three-parser chain, and the naming section's
+  // sample row (the library's FIRST episode) + its series are served.
+  const CHAIN: ParserBinding[] = [
+    { id: "tv-parser", display_fields: [] },
+    { id: "frame-grabber", display_fields: [] },
+    { id: "image-enricher", display_fields: [] },
+  ];
+
+  function episodeRow(): ItemDTO {
+    return item("itm_1_ep1", "serial", "Show (2019)/S01E05.mkv", {
+      parsed: { series_relative_path: "Show (2019)" },
+      sources: { "serial-parser": { season: 1, episode: 5 } },
+    });
+  }
+
+  function seriesRow(): SeriesDTO {
+    return {
+      id: "ser_1_show",
+      module_id: "serial",
+      library_id: 1,
+      relative_path: "Show (2019)",
+      document: { sources: { "serial-parser": { title: "Ход королевы" } } },
+      schema_version: 1,
+      status: "ready",
+    };
+  }
+
+  function saveSeam(): { patches: Record<string, unknown>[] } {
+    const patches: Record<string, unknown>[] = [];
+    const patched = {
+      ...lib(1, "tv", "films"),
+      streams_enabled: true,
+      naming_group_style: "",
+      naming_element_name: "{title} · S{season}E{episode}",
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(
+          jsonResponse(200, { library_id: 1, items: 1, updated_at: "" }),
+        );
+      }
+      if (url.endsWith("/api/v1/libraries/1")) {
+        if (method === "PATCH") {
+          patches.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          return Promise.resolve(jsonResponse(200, patched));
+        }
+        return Promise.resolve(
+          jsonResponse(200, {
+            ...patched,
+            module: { identity_fields: [], parsers: CHAIN },
+          }),
+        );
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films")] }));
+      }
+      if (url.includes("/api/v1/items?library=1&limit=1")) {
+        return Promise.resolve(jsonResponse(200, { items: [episodeRow()] }));
+      }
+      if (url.includes("/api/v1/items?")) {
+        return Promise.resolve(jsonResponse(200, { items: [] }));
+      }
+      if (url.includes("/api/v1/series?")) {
+        return Promise.resolve(jsonResponse(200, { items: [seriesRow()] }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    return { patches };
+  }
+
+  function manageSection(title: string): HTMLElement {
+    const dialog = screen.getByRole("dialog");
+    return within(dialog)
+      .getByRole("heading", { name: title })
+      .closest("section") as HTMLElement;
+  }
+
+  it("the chain section edits a draft of the served order and each Save PATCHes ONLY parsers", async () => {
+    const { patches } = saveSeam();
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const section = manageSection("Parser chain");
+
+    // The served order renders numbered, from the module block.
+    expect(within(section).getByText("1. tv-parser")).toBeDefined();
+    expect(within(section).getByText("2. frame-grabber")).toBeDefined();
+    expect(within(section).getByText("3. image-enricher")).toBeDefined();
+    expect(within(section).getByText("Order is enrichment priority")).toBeDefined();
+
+    // Reorder + remove the draft; Save PATCHes ONLY the drafted parsers.
+    fireEvent.click(within(section).getByRole("button", { name: "Move tv-parser down" }));
+    fireEvent.click(within(section).getByRole("button", { name: "Remove image-enricher" }));
+    fireEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patches.length).toBe(1));
+    expect(patches[0]).toEqual({ parsers: ["frame-grabber", "tv-parser"] });
+
+    // Add it back from the module's declared parsers; the second save is
+    // again its own request, parsers alone.
+    fireEvent.click(within(section).getByRole("button", { name: "Add image-enricher" }));
+    fireEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patches.length).toBe(2));
+    expect(patches[1]).toEqual({
+      parsers: ["frame-grabber", "tv-parser", "image-enricher"],
+    });
+  });
+
+  it("the chain save is blocked from submitting an emptied list (present-and-empty is a server 400)", async () => {
+    const { patches } = saveSeam();
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const section = manageSection("Parser chain");
+
+    for (const b of CHAIN) {
+      fireEvent.click(within(section).getByRole("button", { name: `Remove ${b.id}` }));
+    }
+    const save = within(section).getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(within(section).getByText(/cannot be emptied/)).toBeDefined();
+    fireEvent.click(save);
+    expect(patches.length).toBe(0);
+  });
+
+  it("the naming section previews the first episode CLIENT-side and Save PATCHes ONLY the naming fields", async () => {
+    const { patches } = saveSeam();
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const section = manageSection("Naming");
+
+    // The live preview composes from the sample episode (season 1, episode 5)
+    // + its resolved series' name — Cyrillic verbatim through the mirror.
+    expect(await within(section).findByText("Ход королевы · S01E05")).toBeDefined();
+
+    // Edits preview live (free text + Cyrillic copied through byte-for-byte).
+    fireEvent.change(within(section).getByLabelText("Element name template"), {
+      target: { value: "{title} — серия {episode}" },
+    });
+    expect(within(section).getByText("Ход королевы — серия 05")).toBeDefined();
+
+    // Save PATCHes ONLY the two naming fields — never parsers.
+    fireEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patches.length).toBe(1));
+    expect(patches[0]).toEqual({
+      naming_group_style: "",
+      naming_element_name: "{title} — серия {episode}",
+    });
   });
 });
