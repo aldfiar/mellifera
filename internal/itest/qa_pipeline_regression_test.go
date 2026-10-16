@@ -30,7 +30,9 @@ import (
 
 // TestQA_AdditiveContract_ProtoAndDepsUnchanged is the AC-3 verify probe
 // (acceptance.md): Phase A is additive (deprecate-don't-delete), so proto/ (no
-// proto edits) must be byte-unchanged since scan-library's shipped tip (7bcc6c9).
+// proto edits) must be byte-unchanged since the additive baseline (cf9b47c —
+// re-pinned post-scrub; the original 7bcc6c9 pin was orphaned by the
+// public-release history rewrite).
 // (go.mod/go.sum were previously guarded as "no new deps", but web-ui Phase 1
 // legitimately adds the first Go dependency — swaggo/http-swagger — so deps are no
 // longer repo-wide-constant; forward additivity is each feature's AC-7 probe.)
@@ -40,12 +42,12 @@ func TestQA_AdditiveContract_ProtoAndDepsUnchanged(t *testing.T) {
 		t.Skip("git not on PATH — cannot verify the additive proto/deps contract")
 	}
 	root := moduleRoot(t)
-	if !qprCommitExists(t, root, "7bcc6c9") {
-		t.Skip("commit 7bcc6c9 not present — cannot verify additive contract (shallow clone?)")
+	if !qprCommitExists(t, root, "cf9b47c") {
+		t.Skip("commit cf9b47c not present — cannot verify additive contract (shallow clone?)")
 	}
 	for _, target := range []string{"proto/"} {
-		if diff := qprDiffNames(t, root, "7bcc6c9", target); diff != "" {
-			t.Errorf("AC-3: additive contract broken — %s changed since 7bcc6c9 (deprecate-don't-delete):\n%s", target, diff)
+		if diff := qprDiffNames(t, root, "cf9b47c", target); diff != "" {
+			t.Errorf("AC-3: additive contract broken — %s changed since cf9b47c (deprecate-don't-delete):\n%s", target, diff)
 		}
 	}
 }

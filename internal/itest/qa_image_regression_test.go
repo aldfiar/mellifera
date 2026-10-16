@@ -31,11 +31,12 @@ import (
 )
 
 // b2MergeBase is the feature's merge base (main @ e2a7562 — confirmed
-// merge-base(HEAD, main)). All additive diff probes anchor here. HEAD == e2a7562
-// during development (B2 work is uncommitted in the working tree), so the diff is
-// the working-tree diff; after commit it is the branch diff. Either way, empty in
-// the no_seam trees = additive holds.
-const b2MergeBase = "e2a7562"
+// merge-base(HEAD, main)). All additive diff probes anchor here. Re-pinned to
+// cf9b47c: the original e2a7562 anchor was orphaned by the public-release
+// history rewrite (its object survives but no branch contains it); cf9b47c is
+// the post-scrub tree whose proto/ is byte-identical, so the additive
+// assertion is unchanged in intent.
+const b2MergeBase = "cf9b47c"
 
 // b2Token is the admin bearer for the TV regression server.
 const b2Token = "qa-b2-regression-token"
