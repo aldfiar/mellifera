@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "9d0870e",
-  "source_fingerprint": "683b593a6a20ed179d0a4f6dbbd3437825e23b9ea7215aface12797de4f29f3b",
+  "generated_from_commit": "0aae3dd",
+  "source_fingerprint": "9045f55ef8671c6166c07e35f7c9bf8f42c274b1f2f5f4a49035b01b23f0357d",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -389,7 +389,7 @@
       "role": "test"
     },
     "internal/itest/integration_web_test.go": {
-      "lines": 489,
+      "lines": 491,
       "lang": "go",
       "role": "test"
     },
@@ -444,7 +444,7 @@
       "role": "test"
     },
     "internal/itest/qa_image_regression_test.go": {
-      "lines": 195,
+      "lines": 196,
       "lang": "go",
       "role": "test"
     },
@@ -454,7 +454,7 @@
       "role": "test"
     },
     "internal/itest/qa_pipeline_regression_test.go": {
-      "lines": 161,
+      "lines": 163,
       "lang": "go",
       "role": "test"
     },
@@ -758,8 +758,8 @@
       "lang": "go",
       "role": "source"
     },
-    "internal/web/dist/assets/index-CLDfZ3JZ.js": {
-      "lines": 205,
+    "internal/web/dist/assets/index-NGn7hsax.js": {
+      "lines": 207,
       "lang": "javascript",
       "role": "source"
     },
@@ -1583,12 +1583,12 @@
       ]
     },
     "web/src/pages/collections/Collection.test.tsx": {
-      "lines": 2559,
+      "lines": 2620,
       "lang": "typescript",
       "role": "test"
     },
     "web/src/pages/collections/Collection.tsx": {
-      "lines": 2229,
+      "lines": 2243,
       "lang": "typescript",
       "role": "source",
       "exports": [

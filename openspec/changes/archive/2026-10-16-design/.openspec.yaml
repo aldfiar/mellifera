@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-16
+goal: Raw filenames off viewer surfaces; CardActions element menu
+  (rename/identify/refresh/mark-watched); library Manage overlay; merge-series
+  cut
