@@ -1663,10 +1663,12 @@ function MarkWatchedRow(props: { itemId: string; duration: number }): ReactEleme
 //     full replacement, so the draft is always sent whole (empty clears).
 //   - the parser chain — the library module's declared bindings, served
 //     order, from the page-level module block (read-only here; the library
-//     Manage overlay owns editing it).
-//   - attachable — the declared chain minus the attached parsers (an absent
-//     `extra_parsers` field means empty attachments, so every declared parser
-//     is attachable).
+//     Manage overlay owns editing it). Attached entries carry a status label;
+//     the attachable ones — declared minus attached (an absent `extra_parsers`
+//     field means empty attachments, so every declared parser is attachable) —
+//     render as add chips (ParserChainSection's pattern, box 2.4): tapping one
+//     appends that id to the END of the draft and the chip disappears; the
+//     row's remove affordance returns the parser to the chips.
 //
 // Save PUTs the full draft (retry:0); a canonical 400 (unknown/mismatched
 // parser) surfaces inline and the overlay stays open; the awaited success
@@ -1813,11 +1815,20 @@ function IdentifyView(props: {
       <p className="text-xs font-medium">Parser chain</p>
       <ul className="flex flex-col gap-1" aria-label="Parser chain">
         {props.chain.map((b) => (
-          <li key={b.id} className="flex items-center gap-2">
+          <li key={b.id} className="flex items-center justify-between gap-2">
             <span className="text-xs">{b.id}</span>
-            <span className="text-xs text-muted-foreground">
-              {attached.includes(b.id) ? "attached" : "attachable"}
-            </span>
+            {attached.includes(b.id) ? (
+              <span className="text-xs text-muted-foreground">attached</span>
+            ) : (
+              <button
+                type="button"
+                className="chip"
+                aria-label={`Add ${b.id}`}
+                onClick={() => setOrder([...attached, b.id])}
+              >
+                + {b.id}
+              </button>
+            )}
           </li>
         ))}
       </ul>

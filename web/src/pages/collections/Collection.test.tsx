@@ -1239,10 +1239,12 @@ describe("Collection — Identify view (ui-management pass 2)", () => {
     expect(chainRows.length).toBe(3);
     expect(within(chainRows[0]).getByText("anitomy")).toBeDefined();
     expect(within(chainRows[0]).getByText("attached")).toBeDefined();
+    // The attachable entries carry add chips, not a status label.
     expect(within(chainRows[1]).getByText("tmdb")).toBeDefined();
-    expect(within(chainRows[1]).getByText("attachable")).toBeDefined();
+    expect(within(chainRows[1]).getByRole("button", { name: "Add tmdb" })).toBeDefined();
     expect(within(chainRows[2]).getByText("tvmaze")).toBeDefined();
-    expect(within(chainRows[2]).getByText("attachable")).toBeDefined();
+    expect(within(chainRows[2]).getByRole("button", { name: "Add tvmaze" })).toBeDefined();
+    expect(within(chainRows[1]).queryByText("attachable")).toBeNull();
 
     // The attached draft renders the attachment, reorder edge-disabled.
     const attachedRows = within(
@@ -1275,12 +1277,11 @@ describe("Collection — Identify view (ui-management pass 2)", () => {
     await screen.findByRole("list", { name: "Parser chain" });
     expect(screen.getByText("Nothing attached.")).toBeDefined();
     expect(screen.queryByRole("list", { name: "Attached parsers" })).toBeNull();
-    const chainRows = within(
-      screen.getByRole("list", { name: "Parser chain" }),
-    ).getAllByRole("listitem");
-    expect(chainRows.length).toBe(3);
-    for (const row of chainRows) {
-      expect(within(row).getByText("attachable")).toBeDefined();
+    // Every declared parser is attachable — each row carries its add chip.
+    const chainList = screen.getByRole("list", { name: "Parser chain" });
+    expect(within(chainList).getAllByRole("listitem").length).toBe(3);
+    for (const id of ["anitomy", "tmdb", "tvmaze"]) {
+      expect(within(chainList).getByRole("button", { name: `Add ${id}` })).toBeDefined();
     }
   });
 
@@ -1316,6 +1317,66 @@ describe("Collection — Identify view (ui-management pass 2)", () => {
     );
     expect(within(after[0]).getByText("anitomy")).toBeDefined();
     expect(within(after[1]).getByText("tmdb")).toBeDefined();
+  });
+
+  it("tapping an attach chip appends the parser to the END of the draft and the chip disappears", async () => {
+    const { releaseDetail } = identifySeam({
+      module: { identity_fields: ["title"], parsers: CHAIN },
+      rows: [item("itm_1_a", "tv", "Movies/known.mkv", doc({ title: "Known" }), "Known")],
+      detailId: "itm_1_a",
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Known" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Identify…" }),
+    );
+    releaseDetail(["tmdb"]);
+
+    // tmdb is attached; the other two declared parsers render as add chips.
+    const chainList = await screen.findByRole("list", { name: "Parser chain" });
+    expect(within(chainList).getByRole("button", { name: "Add anitomy" })).toBeDefined();
+    expect(within(chainList).getByRole("button", { name: "Add tvmaze" })).toBeDefined();
+    expect(within(chainList).queryByRole("button", { name: "Add tmdb" })).toBeNull();
+
+    // anitomy precedes tmdb in the SERVED chain, yet the tap appends it to
+    // the END of the draft — the chips never reorder the existing draft.
+    fireEvent.click(within(chainList).getByRole("button", { name: "Add anitomy" }));
+    const rows = within(screen.getByRole("list", { name: "Attached parsers" })).getAllByRole(
+      "listitem",
+    );
+    expect(within(rows[0]).getByText("tmdb")).toBeDefined();
+    expect(within(rows[1]).getByText("anitomy")).toBeDefined();
+
+    // The tapped chip disappeared (its row now carries the attached label);
+    // the remaining attachable chip is untouched.
+    const after = screen.getByRole("list", { name: "Parser chain" });
+    expect(within(after).queryByRole("button", { name: "Add anitomy" })).toBeNull();
+    expect(within(after).getByRole("button", { name: "Add tvmaze" })).toBeDefined();
+  });
+
+  it("removing an attached parser returns it to the attachable chips", async () => {
+    const { releaseDetail } = identifySeam({
+      module: { identity_fields: ["title"], parsers: CHAIN },
+      rows: [item("itm_1_a", "tv", "Movies/known.mkv", doc({ title: "Known" }), "Known")],
+      detailId: "itm_1_a",
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Known" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Identify…" }),
+    );
+    releaseDetail(["anitomy"]);
+
+    // anitomy is attached — it has no chip; the other two do.
+    await screen.findByRole("list", { name: "Parser chain" });
+    expect(screen.queryByRole("button", { name: "Add anitomy" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove anitomy" }));
+    expect(screen.getByText("Nothing attached.")).toBeDefined();
+    // The removed parser is attachable again — its chip is back.
+    expect(screen.getByRole("button", { name: "Add anitomy" })).toBeDefined();
   });
 
   it("promotes Identify… to the first menu row on an unidentified card; an identified card keeps Rename… first", async () => {
