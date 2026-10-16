@@ -1019,11 +1019,14 @@ function usePagedItems(libraryId: number) {
 // ---- tv (movies) — box 5.2 --------------------------------------------------
 
 // MoviesBody — the movies layout: a paginated card grid over
-// GET /api/v1/items?library={id}. Each card shows the parsed title (verbatim
-// from `_view`), the parsed fact chips (season/episode token, year,
-// resolution — from the document's source namespaces), the ffprobe duration
-// when known, and the raw filename; cards deep-link into /items/{id}. No
-// paths, no lifecycle pills (D5).
+// GET /api/v1/items?library={id}. Each card's title is the SERVED
+// display_name (display-naming: chain-served or composed; the pathStem
+// fallback marks the card "Not identified"), and its meta line joins the
+// parsed fact chips (year/resolution/capture date — from the document's
+// source namespaces) with the ffprobe duration when known; cards deep-link
+// into /items/{id} and carry the CardActions menu (rename/identify/refresh).
+// No raw filename row, no season/episode token (display-naming took both off
+// the card), no paths, no lifecycle pills (D5).
 function MoviesBody(props: {
   libraryId: number;
   chain?: ParserBinding[];
