@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
 import {
   useMutation,
+  useQuery,
   useQueryClient,
   type UseMutationResult,
 } from "@tanstack/react-query";
@@ -12,6 +13,7 @@ import {
   ENDPOINTS,
   deleteItemTitle,
   deleteSeriesTitle,
+  getEnrichPreview,
   hasFrameGrabberThumb,
   hasOriginalFile,
   postLibraryRefresh,
@@ -20,6 +22,7 @@ import {
   setItemTitle,
   setSeriesTitle,
   type ApiError,
+  type EnrichPreview,
   type ItemDTO,
   type ItemParsersResponse,
   type LibraryDTO,
@@ -471,7 +474,12 @@ function ManageOverlay(props: {
             elementName={props.detail?.naming_element_name}
           />
         </ManageSection>
-        <ManageSection title="Refresh metadata" />
+        <ManageSection title="Refresh metadata">
+          <RefreshMetadataSection
+            libraryId={props.lib.id}
+            chain={props.detail?.module?.parsers}
+          />
+        </ManageSection>
         <ManageSection title="Edit library">
           {/* The SHARED form (admin/Collections.tsx). Success closes the whole
               Manage sheet — the edit landing IS this section's done signal
@@ -811,6 +819,141 @@ function RescanSection(props: { libraryId: number }): ReactElement {
         </ul>
       ) : null}
       {sectionError(scan.error)}
+    </div>
+  );
+}
+
+// RefreshMetadataSection — the Refresh metadata save boundary (ui-management
+// pass 3): a chain-parser picker (one radio per declared parser — the refresh
+// endpoint requires exactly one plugin_id per invocation); picking one (or
+// the served-first preselection) fetches GET /libraries/{id}/enrich/preview
+// for that plugin, whose drift picture (matches/pending/cooling + the
+// `_provenance` version histogram) renders BEFORE the trigger enables — the
+// preview IS the consent surface (enrichment D-7): no drift picture, no
+// kickoff. The preview composition is slow by design (a whole-library
+// namespace scan) — a loading line, never a spinner. The trigger POSTs the
+// same postLibraryRefresh client with the picked plugin and NO row_ids —
+// omitted row_ids is the whole-library sweep (Go `row_ids,omitempty`).
+// 409 refresh_in_flight renders its own line; any other canonical error
+// renders inline as code: message (retry:0 — no auto-retry). A 503
+// "unavailable" preview means the endpoint is UNWIRED — the section disables
+// itself with explanatory copy. The module block's ABSENCE still signals
+// wiring, not authorization: without the declared chain the section renders
+// its designed empty state.
+function RefreshMetadataSection(props: {
+  libraryId: number;
+  chain?: ParserBinding[];
+}): ReactElement {
+  const chain = props.chain;
+  const [pluginId, setPluginId] = useState<string | null>(null);
+  const picked = pluginId ?? chain?.[0]?.id ?? "";
+  const preview = useQuery<EnrichPreview, ApiError>({
+    queryKey: ["enrich-preview", props.libraryId, picked],
+    queryFn: () => getEnrichPreview(props.libraryId, picked),
+    enabled: chain !== undefined && picked !== "",
+  });
+  const refresh = useMutation<LibraryRefreshResult, ApiError, void>({
+    mutationFn: () => postLibraryRefresh(props.libraryId, { plugin_id: picked }),
+    retry: 0,
+  });
+  const res = refresh.data;
+
+  if (chain === undefined) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        The module block is unavailable — refresh metadata needs a wired
+        module.
+      </p>
+    );
+  }
+
+  return (
+    <div
+      className="flex flex-col gap-2"
+      onKeyDown={(e) => {
+        // While the POST is in flight the sheet's Esc walk is suppressed —
+        // an unmounted section could never render the canonical inline
+        // error (the per-item views' guard).
+        if (e.key === "Escape" && refresh.isPending) {
+          e.stopPropagation();
+        }
+      }}
+    >
+      {preview.error?.code === "unavailable" ? (
+        // 503 unwired — a wiring fact, not an authorization one: the section
+        // disables itself rather than offering a kickoff that cannot run.
+        <p className="text-xs text-muted-foreground">
+          The enrichment preview is unavailable — refresh metadata is disabled
+          for this collection (the endpoint is not wired).
+        </p>
+      ) : (
+        <>
+          <div
+            role="radiogroup"
+            aria-label="Refresh metadata with parser"
+            className="flex flex-wrap gap-3"
+          >
+            {chain.map((b) => (
+              <label key={b.id} className="flex items-center gap-1 text-xs">
+                <input
+                  type="radio"
+                  name="refresh-metadata-plugin"
+                  value={b.id}
+                  checked={picked === b.id}
+                  onChange={() => setPluginId(b.id)}
+                />
+                {b.id}
+              </label>
+            ))}
+          </div>
+          {preview.isLoading ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              Computing preview… slow by design — a whole-library scan.
+            </p>
+          ) : preview.data ? (
+            <div className="flex flex-col gap-1 text-xs">
+              <p aria-label="Enrichment preview">
+                matches {String(preview.data.matches)} · pending{" "}
+                {String(preview.data.pending)} · cooling{" "}
+                {String(preview.data.cooling)}
+              </p>
+              {Object.keys(preview.data.versions).length > 0 ? (
+                <p className="text-muted-foreground">
+                  versions:{" "}
+                  {Object.entries(preview.data.versions)
+                    .map(([v, n]) => `${v} (${String(n)})`)
+                    .join(", ")}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="cardact-row rounded-md border text-xs"
+            disabled={!preview.data || refresh.isPending}
+            onClick={() => refresh.mutate(undefined)}
+          >
+            {refresh.isPending ? "Refreshing…" : "Refresh metadata"}
+          </button>
+          {res ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              {String(res.queued)} queued · {String(res.stripped)} stripped ·{" "}
+              {String(res.deferred)} deferred
+            </p>
+          ) : null}
+          {refresh.error ? (
+            refresh.error.code === "refresh_in_flight" ? (
+              <p role="alert" className="text-xs text-destructive">
+                A refresh is already running
+              </p>
+            ) : (
+              <p role="alert" className="text-xs text-destructive">
+                {refresh.error.code}: {refresh.error.message}
+              </p>
+            )
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

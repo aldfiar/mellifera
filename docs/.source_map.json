@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "1067f6d",
-  "source_fingerprint": "30206e9d96ad7cd9d8cf5a72acc6216403593ef878477c4a4f66480305d7ab0c",
+  "generated_from_commit": "9d0870e",
+  "source_fingerprint": "683b593a6a20ed179d0a4f6dbbd3437825e23b9ea7215aface12797de4f29f3b",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -1422,7 +1422,7 @@
       "role": "test"
     },
     "web/src/lib/api.ts": {
-      "lines": 845,
+      "lines": 884,
       "lang": "typescript",
       "role": "source",
       "exports": [
@@ -1583,12 +1583,12 @@
       ]
     },
     "web/src/pages/collections/Collection.test.tsx": {
-      "lines": 2389,
+      "lines": 2559,
       "lang": "typescript",
       "role": "test"
     },
     "web/src/pages/collections/Collection.tsx": {
-      "lines": 2086,
+      "lines": 2229,
       "lang": "typescript",
       "role": "source",
       "exports": [

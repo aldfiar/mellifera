@@ -1972,6 +1972,20 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
           }),
         );
       }
+      if (url.includes("/api/v1/libraries/1/enrich/preview")) {
+        // GET .../enrich/preview?plugin_id= — the Refresh metadata section's
+        // drift preview (a harmless empty histogram for the shell tests).
+        const pid = decodeURIComponent(/plugin_id=([^&]+)/.exec(url)?.[1] ?? "");
+        return Promise.resolve(
+          jsonResponse(200, {
+            plugin_id: pid,
+            matches: 0,
+            pending: 0,
+            cooling: 0,
+            versions: {},
+          }),
+        );
+      }
       if (url.includes("/api/v1/libraries")) {
         return Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films")] }));
       }
@@ -2076,13 +2090,19 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
   function saveSeam(opts?: {
     patch?: () => Response;
     scan?: () => Response;
-    detailAfterPatch?: () => ModulePresentation;
+    detailAfterPatch?: () => ParserBinding[];
+    preview?: (pluginId: string) => Response | Promise<Response>;
+    refresh?: () => Response;
   }): {
     patches: Record<string, unknown>[];
     detailGets: () => number;
     listGets: () => number;
+    previewCalls: () => string[];
+    refreshes: Record<string, unknown>[];
   } {
     const patches: Record<string, unknown>[] = [];
+    const refreshes: Record<string, unknown>[] = [];
+    const previewCalls: string[] = [];
     let detailGets = 0;
     let listGets = 0;
     const patched = {
@@ -2094,6 +2114,16 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     const patchOk = (): Response => jsonResponse(200, patched);
     const scanOk = (): Response =>
       jsonResponse(200, { library_id: 1, discovered: 2, persisted: 2 });
+    const previewOk = (pid: string): Response =>
+      jsonResponse(200, {
+        plugin_id: pid,
+        matches: 3,
+        pending: 1,
+        cooling: 0,
+        versions: {},
+      });
+    const refreshOk = (): Response =>
+      jsonResponse(202, { queued: 5, stripped: 0, deferred: 0 });
     // After the FIRST patch the GET detail can serve a different chain
     // (detailAfterPatch) — the hook that proves a section re-reads the
     // SERVED chain, not the PATCH body/response.
@@ -2125,6 +2155,21 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
           }),
         );
       }
+      if (url.includes("/api/v1/libraries/1/enrich/preview")) {
+        // GET .../enrich/preview?plugin_id= — the Refresh metadata section's
+        // drift preview (before the includes("/libraries") branch).
+        const pid = decodeURIComponent(/plugin_id=([^&]+)/.exec(url)?.[1] ?? "");
+        previewCalls.push(pid);
+        return Promise.resolve(
+          opts?.preview ? opts.preview(pid) : previewOk(pid),
+        );
+      }
+      if (url.endsWith("/api/v1/libraries/1/refresh")) {
+        // POST /libraries/1/refresh — the section's kickoff (and the per-item
+        // views', elsewhere in this file).
+        refreshes.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return Promise.resolve(opts?.refresh ? opts.refresh() : refreshOk());
+      }
       if (url.includes("/api/v1/libraries")) {
         if (method === "POST") {
           // POST /libraries/1/scan — the Rescan section's save boundary.
@@ -2144,7 +2189,13 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
       }
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     });
-    return { patches, detailGets: () => detailGets, listGets: () => listGets };
+    return {
+      patches,
+      detailGets: () => detailGets,
+      listGets: () => listGets,
+      previewCalls: () => previewCalls,
+      refreshes,
+    };
   }
 
   function manageSection(title: string): HTMLElement {
@@ -2385,5 +2436,124 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     const alert = await within(section).findByRole("alert");
     expect(alert.textContent).toContain("unavailable");
     expect(screen.queryByRole("dialog")).not.toBeNull();
+  });
+
+  it("Refresh metadata fetches the preview on picker selection with a loading line, renders it BEFORE enabling the trigger, and the trigger sweeps the WHOLE library (no row_ids)", async () => {
+    // A gated preview: requests park until the test resolves them, so the
+    // loading line and the disabled trigger are observable deterministically.
+    const resolvers: ((r: Response) => void)[] = [];
+    const seam = saveSeam({
+      preview: () =>
+        new Promise<Response>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    });
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const section = manageSection("Refresh metadata");
+
+    // The served-first parser is preselected — its preview is fetched.
+    await waitFor(() => expect(seam.previewCalls()).toEqual(["tv-parser"]));
+    // No drift picture yet → the loading line shows and the trigger is OFF.
+    expect(within(section).getByText(/Computing preview/)).toBeDefined();
+    const trigger = within(section).getByRole("button", {
+      name: "Refresh metadata",
+    }) as HTMLButtonElement;
+    expect(trigger.disabled).toBe(true);
+
+    // Picking another parser fetches THAT plugin's preview.
+    fireEvent.click(within(section).getByLabelText("frame-grabber"));
+    await waitFor(() =>
+      expect(seam.previewCalls()).toEqual(["tv-parser", "frame-grabber"]),
+    );
+    expect(within(section).getByText(/Computing preview/)).toBeDefined();
+    // Still no preview → still disabled (preview BEFORE trigger enable).
+    expect(
+      (within(section).getByRole("button", { name: "Refresh metadata" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    // The previews land — the drift picture renders and the trigger enables.
+    for (const resolve of resolvers) {
+      resolve(
+        jsonResponse(200, {
+          plugin_id: "frame-grabber",
+          matches: 7,
+          pending: 2,
+          cooling: 1,
+          versions: { "1.4.0": 3 },
+        }),
+      );
+    }
+    expect(
+      await within(section).findByText("matches 7 · pending 2 · cooling 1"),
+    ).toBeDefined();
+    expect(within(section).getByText("versions: 1.4.0 (3)")).toBeDefined();
+    const liveTrigger = within(section).getByRole("button", {
+      name: "Refresh metadata",
+    }) as HTMLButtonElement;
+    expect(liveTrigger.disabled).toBe(false);
+
+    // The kickoff POSTs the picked plugin with NO row_ids — the omitted
+    // field is the whole-library sweep.
+    fireEvent.click(liveTrigger);
+    await waitFor(() => expect(seam.refreshes.length).toBe(1));
+    expect(seam.refreshes[0]).toEqual({ plugin_id: "frame-grabber" });
+    expect(seam.refreshes[0]).not.toHaveProperty("row_ids");
+    expect(
+      await within(section).findByText("5 queued · 0 stripped · 0 deferred"),
+    ).toBeDefined();
+  });
+
+  it("Refresh metadata renders the 409 refresh_in_flight copy", async () => {
+    saveSeam({
+      refresh: () =>
+        jsonResponse(409, {
+          error: {
+            code: "refresh_in_flight",
+            message: "a whole-library refresh is already in flight",
+            retryable: false,
+          },
+        }),
+    });
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const section = manageSection("Refresh metadata");
+
+    const trigger = (await within(section).findByRole("button", {
+      name: "Refresh metadata",
+    })) as HTMLButtonElement;
+    await waitFor(() => expect(trigger.disabled).toBe(false));
+    fireEvent.click(trigger);
+    expect(
+      await within(section).findByText("A refresh is already running"),
+    ).toBeDefined();
+  });
+
+  it("a 503 unwired preview disables the section with explanatory copy", async () => {
+    saveSeam({
+      preview: () =>
+        jsonResponse(503, {
+          error: {
+            code: "unavailable",
+            message: "preview endpoint disabled",
+            retryable: false,
+          },
+        }),
+    });
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const section = manageSection("Refresh metadata");
+
+    // The wiring fact surfaces as the designed disabled state: the
+    // explanatory copy replaces the picker and the trigger — no kickoff
+    // affordance that cannot run.
+    expect(
+      await within(section).findByText(/refresh metadata is disabled/i),
+    ).toBeDefined();
+    expect(
+      within(section).queryByRole("button", { name: "Refresh metadata" }),
+    ).toBeNull();
+    expect(within(section).queryByRole("radiogroup")).toBeNull();
   });
 });

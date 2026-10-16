@@ -289,16 +289,32 @@ export interface ItemParsersResponse {
 // enrich_admin.go libraryRefreshRequest / ReenrichResult — the POST
 // /libraries/{id}/refresh body and 202 body. plugin_id is required (exactly
 // one parser per invocation); row_ids are the opaque row ids (items and
-// series share the row space). Field names match the JSON tags EXACTLY.
+// series share the row space) and OPTIONAL (Go `row_ids,omitempty` —
+// omitted/empty = the whole-library sweep, which the Manage overlay's
+// Refresh metadata section sends; the per-item views scope to one row).
+// Field names match the JSON tags EXACTLY.
 export interface LibraryRefreshRequest {
   plugin_id: string;
-  row_ids: string[];
+  row_ids?: string[];
 }
 
 export interface LibraryRefreshResult {
   queued: number;
   stripped: number;
   deferred: number;
+}
+
+// enrich_admin.go EnrichPreview — the GET /libraries/{id}/enrich/preview
+// 200 body: the per-plugin drift picture for one library (matches = rows
+// carrying the plugin namespace, pending = derivable rows, cooling =
+// ledger-held rows, versions = the `_provenance` plugin-version histogram).
+// Computed on demand — never stored.
+export interface EnrichPreview {
+  plugin_id: string;
+  matches: number;
+  pending: number;
+  cooling: number;
+  versions: Record<string, number>;
 }
 
 // handlers.go itemResponse
@@ -361,6 +377,13 @@ export const ENDPOINTS = {
   // always sends exactly one — per-row refresh; omitted/empty = the
   // whole-library sweep, which the Manage overlay owns).
   libraryRefresh: (id: number): string => `/api/v1/libraries/${id}/refresh`,
+  // enrichPreview — GET /libraries/{id}/enrich/preview?plugin_id=
+  // (enrich_admin.go enrichPreview, ui-management pass 3): the per-plugin
+  // drift preview the Manage overlay's Refresh metadata section shows
+  // BEFORE enabling its trigger; `plugin_id` is a REQUIRED query parameter
+  // (a missing one 400s).
+  enrichPreview: (id: number): string =>
+    `/api/v1/libraries/${id}/enrich/preview`,
   librarySummary: (id: number): string => `/api/v1/libraries/${id}/summary`,
   libraryFolders: (id: number): string => `/api/v1/libraries/${id}/folders`,
   adminStatus: "/api/v1/admin/status",
@@ -644,6 +667,22 @@ export async function postLibraryRefresh(
     method: "POST",
     body: req as unknown as BodyInit,
   });
+}
+
+// getEnrichPreview — GET /api/v1/libraries/{id}/enrich/preview?plugin_id=
+// (enrich_admin.go enrichPreview): the per-plugin drift preview for one
+// library. The composition is slow by design (a whole-library namespace
+// scan), so the caller renders a loading line, never a spinner. 503
+// "unavailable" when the preview endpoint is unwired, 400 without
+// plugin_id, 404 unknown library — all canonical, surfaced by the caller.
+export async function getEnrichPreview(
+  id: number,
+  pluginId: string,
+): Promise<EnrichPreview> {
+  const q = new URLSearchParams({ plugin_id: pluginId });
+  return apiRequest<EnrichPreview>(
+    `${ENDPOINTS.enrichPreview(id)}?${q.toString()}`,
+  );
 }
 
 // getItem — GET /api/v1/items/{id} (handlers.go:266-278). The id is the item's
