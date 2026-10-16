@@ -16,6 +16,7 @@ import type {
   SeriesDTO,
 } from "@/lib/api";
 import type { ItemDocument } from "@/lib/document";
+import { queryClient as sharedQueryClient } from "@/lib/queries";
 
 // Group-5 slice (boxes 5.1–5.4) + ui-management pass 1: the collection page's
 // OWN behavior, asserted at the fetch seam (the same idiom as Home.test.tsx).
@@ -111,10 +112,12 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-function renderCollection(id: string): ReturnType<typeof render> {
-  const client = new QueryClient({
+function renderCollection(
+  id: string,
+  client: QueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
+  }),
+): ReturnType<typeof render> {
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[`/collections/${id}`]}>
@@ -2070,14 +2073,36 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     };
   }
 
-  function saveSeam(): { patches: Record<string, unknown>[] } {
+  function saveSeam(opts?: {
+    patch?: () => Response;
+    scan?: () => Response;
+    detailAfterPatch?: () => ModulePresentation;
+  }): {
+    patches: Record<string, unknown>[];
+    detailGets: () => number;
+    listGets: () => number;
+  } {
     const patches: Record<string, unknown>[] = [];
+    let detailGets = 0;
+    let listGets = 0;
     const patched = {
       ...lib(1, "tv", "films"),
       streams_enabled: true,
       naming_group_style: "",
       naming_element_name: "{title} · S{season}E{episode}",
     };
+    const patchOk = (): Response => jsonResponse(200, patched);
+    const scanOk = (): Response =>
+      jsonResponse(200, { library_id: 1, discovered: 2, persisted: 2 });
+    // After the FIRST patch the GET detail can serve a different chain
+    // (detailAfterPatch) — the hook that proves a section re-reads the
+    // SERVED chain, not the PATCH body/response.
+    let patchedOnce = false;
+    const moduleBlock = (): ModulePresentation => ({
+      identity_fields: [],
+      parsers:
+        patchedOnce && opts?.detailAfterPatch ? opts.detailAfterPatch() : CHAIN,
+    });
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? "GET";
@@ -2088,17 +2113,24 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
       }
       if (url.endsWith("/api/v1/libraries/1")) {
         if (method === "PATCH") {
+          patchedOnce = true;
           patches.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-          return Promise.resolve(jsonResponse(200, patched));
+          return Promise.resolve(opts?.patch ? opts.patch() : patchOk());
         }
+        detailGets += 1;
         return Promise.resolve(
           jsonResponse(200, {
             ...patched,
-            module: { identity_fields: [], parsers: CHAIN },
+            module: moduleBlock(),
           }),
         );
       }
       if (url.includes("/api/v1/libraries")) {
+        if (method === "POST") {
+          // POST /libraries/1/scan — the Rescan section's save boundary.
+          return Promise.resolve(opts?.scan ? opts.scan() : scanOk());
+        }
+        listGets += 1;
         return Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films")] }));
       }
       if (url.includes("/api/v1/items?library=1&limit=1")) {
@@ -2112,7 +2144,7 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
       }
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     });
-    return { patches };
+    return { patches, detailGets: () => detailGets, listGets: () => listGets };
   }
 
   function manageSection(title: string): HTMLElement {
@@ -2122,9 +2154,36 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
       .closest("section") as HTMLElement;
   }
 
-  it("the chain section edits a draft of the served order and each Save PATCHes ONLY parsers", async () => {
-    const { patches } = saveSeam();
-    renderCollection("1");
+  // activeClient — the shared module-level client (same idiom as the admin
+  // suite): useUpdateLibrary's onSuccess invalidates THE MODULE CLIENT
+  // (queries.ts's exported queryClient — the one the app provides), so the
+  // invalidation cases must render the provider over that same instance for
+  // the refetch to be observable at the seam.
+  function activeClient(): QueryClient {
+    sharedQueryClient.clear();
+    sharedQueryClient.setDefaultOptions({
+      queries: { retry: false },
+      mutations: { retry: false },
+    });
+    return sharedQueryClient;
+  }
+
+  it("the chain section edits a draft of the served order and each Save PATCHes ONLY parsers, re-reading the SERVED chain after the invalidation", async () => {
+    // After the first PATCH the GET detail serves a REORDERED chain — one
+    // that matches neither the draft nor the PATCH body — so the display can
+    // only come from the refetched GET module block.
+    const REORDERED: ParserBinding[] = [
+      { id: "image-enricher", display_fields: [] },
+      { id: "tv-parser", display_fields: [] },
+      { id: "frame-grabber", display_fields: [] },
+    ];
+    let reorderedServed = true;
+    const seam = saveSeam({
+      detailAfterPatch: () => (reorderedServed ? REORDERED : CHAIN),
+    });
+    // The invalidation cases render over the shared module client — the one
+    // useUpdateLibrary's onSuccess actually invalidates.
+    renderCollection("1", activeClient());
     fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
     const section = manageSection("Parser chain");
 
@@ -2138,16 +2197,32 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     fireEvent.click(within(section).getByRole("button", { name: "Move tv-parser down" }));
     fireEvent.click(within(section).getByRole("button", { name: "Remove image-enricher" }));
     fireEvent.click(within(section).getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(patches.length).toBe(1));
-    expect(patches[0]).toEqual({ parsers: ["frame-grabber", "tv-parser"] });
+    await waitFor(() => expect(seam.patches.length).toBe(1));
+    expect(seam.patches[0]).toEqual({ parsers: ["frame-grabber", "tv-parser"] });
 
-    // Add it back from the module's declared parsers; the second save is
-    // again its own request, parsers alone.
+    // The save/invalidation contract: BOTH the ["libraries"] list AND the
+    // ["library", id] detail re-fetch (initial page load already counts one
+    // of each).
+    await waitFor(() => expect(seam.listGets()).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(seam.detailGets()).toBeGreaterThanOrEqual(2));
+
+    // The chain re-reads from the refetched GET detail — which carries the
+    // module block — NEVER from the PATCH body/response (both carry only the
+    // drafted parsers; a body-side re-read would silently keep the STALE
+    // chain while looking correct). The reordered SERVED chain is on top.
+    expect(await within(section).findByText("1. image-enricher")).toBeDefined();
+    expect(within(section).getByText("2. tv-parser")).toBeDefined();
+    expect(within(section).getByText("3. frame-grabber")).toBeDefined();
+
+    // The add path on the new served order: remove one, add it back; the
+    // second save is again its own request, parsers alone.
+    reorderedServed = false;
+    fireEvent.click(within(section).getByRole("button", { name: "Remove image-enricher" }));
     fireEvent.click(within(section).getByRole("button", { name: "Add image-enricher" }));
     fireEvent.click(within(section).getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(patches.length).toBe(2));
-    expect(patches[1]).toEqual({
-      parsers: ["frame-grabber", "tv-parser", "image-enricher"],
+    await waitFor(() => expect(seam.patches.length).toBe(2));
+    expect(seam.patches[1]).toEqual({
+      parsers: ["tv-parser", "frame-grabber", "image-enricher"],
     });
   });
 
@@ -2190,5 +2265,125 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
       naming_group_style: "",
       naming_element_name: "{title} — серия {episode}",
     });
+  });
+
+  it("the Edit section reuses the shared form; its save PATCHes ONLY the row fields, invalidates list AND detail, and success closes the sheet", async () => {
+    const seam = saveSeam();
+    renderCollection("1", activeClient());
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+
+    // The Edit library section IS the shared admin form: the same editable
+    // Name / read-only Type + root layout.
+    const edit = manageSection("Edit library");
+    const nameInput = await within(edit).findByLabelText("Name");
+    expect((nameInput as HTMLInputElement).value).toBe("films");
+    fireEvent.change(nameInput, { target: { value: "renamed films" } });
+    fireEvent.click(within(edit).getByRole("button", { name: "Save" }));
+
+    // The PATCH carries ONLY the editable row fields — never parsers, never
+    // the naming fields (each section is its own save boundary).
+    await waitFor(() => expect(seam.patches.length).toBe(1));
+    expect(seam.patches[0]).toEqual({
+      display_name: "renamed films",
+      description: "",
+    });
+
+    // The save/invalidation contract is asserted on the chain test's save
+    // (this section's own success CLOSES the sheet — asserted below — so the
+    // post-save re-read is inspected there, where the sheet stays open).
+
+    // Success closes the WHOLE sheet — the edit landing is this section's
+    // done signal — and focus returns to the gear.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Manage collection" }),
+    );
+  });
+
+  it("a failed edit keeps the sheet open with the canonical error inline", async () => {
+    let fail = true;
+    saveSeam({
+      patch: () =>
+        fail
+          ? jsonResponse(400, {
+              error: { code: "invalid_request", message: "bad row", retryable: false },
+            })
+          : jsonResponse(200, { ...lib(1, "tv", "renamed films"), description: "" }),
+    });
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+
+    const edit = manageSection("Edit library");
+    fireEvent.change(await within(edit).findByLabelText("Name"), {
+      target: { value: "renamed films" },
+    });
+    fireEvent.click(within(edit).getByRole("button", { name: "Save" }));
+
+    // The canonical 400 renders inline in the section and the sheet STAYS
+    // open (no auto-retry, no auto-close on failure).
+    const alert = await within(edit).findByRole("alert");
+    expect(alert.textContent).toContain("invalid_request");
+    expect(alert.textContent).toContain("bad row");
+    expect(screen.queryByRole("dialog")).not.toBeNull();
+
+    // The retry lands — success closes the sheet.
+    fail = false;
+    fireEvent.click(within(edit).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("Rescan renders discovered · persisted inline and omits the warnings list when none are reported", async () => {
+    saveSeam();
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const section = manageSection("Rescan");
+
+    fireEvent.click(within(section).getByRole("button", { name: "Rescan" }));
+    expect(
+      await within(section).findByText("discovered 2 · persisted 2"),
+    ).toBeDefined();
+    // warnings is omitempty on the wire — no warnings means NO list, never
+    // a padded empty one.
+    expect(within(section).queryByRole("list")).toBeNull();
+  });
+
+  it("Rescan renders the warnings list when the scan reports any", async () => {
+    saveSeam({
+      scan: () =>
+        jsonResponse(200, {
+          library_id: 1,
+          discovered: 5,
+          persisted: 4,
+          warnings: ["skipped 1 unreadable file"],
+        }),
+    });
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const section = manageSection("Rescan");
+
+    fireEvent.click(within(section).getByRole("button", { name: "Rescan" }));
+    expect(
+      await within(section).findByText("discovered 5 · persisted 4"),
+    ).toBeDefined();
+    expect(
+      await within(section).findByText("skipped 1 unreadable file"),
+    ).toBeDefined();
+  });
+
+  it("Rescan surfaces the canonical error inline and the sheet stays open", async () => {
+    saveSeam({
+      scan: () =>
+        jsonResponse(503, {
+          error: { code: "unavailable", message: "scan disabled", retryable: false },
+        }),
+    });
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const section = manageSection("Rescan");
+
+    fireEvent.click(within(section).getByRole("button", { name: "Rescan" }));
+    const alert = await within(section).findByRole("alert");
+    expect(alert.textContent).toContain("unavailable");
+    expect(screen.queryByRole("dialog")).not.toBeNull();
   });
 });

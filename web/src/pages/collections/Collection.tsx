@@ -27,6 +27,7 @@ import {
   type ListItemsParams,
   type ParserBinding,
   type ProgressDTO,
+  type ScanResponse,
   type SeriesDTO,
   type TitleOverrideDTO,
 } from "@/lib/api";
@@ -38,10 +39,12 @@ import {
   useLibrary,
   useLibraryFolders,
   useLibrarySummary,
+  useScanLibrary,
   useSeries,
   useSeriesEpisodes,
   useUpdateLibrary,
 } from "@/lib/queries";
+import { EditLibraryForm } from "@/pages/admin/Collections";
 import { composeItemName, episodeFacts, seriesName } from "@/lib/naming";
 import type { ItemDocument } from "@/lib/document";
 import { cn } from "@/lib/utils";
@@ -452,7 +455,9 @@ function ManageOverlay(props: {
             Close
           </button>
         </div>
-        <ManageSection title="Rescan" />
+        <ManageSection title="Rescan">
+          <RescanSection libraryId={props.lib.id} />
+        </ManageSection>
         <ManageSection title="Parser chain">
           <ParserChainSection
             libraryId={props.lib.id}
@@ -467,7 +472,15 @@ function ManageOverlay(props: {
           />
         </ManageSection>
         <ManageSection title="Refresh metadata" />
-        <ManageSection title="Edit library" />
+        <ManageSection title="Edit library">
+          {/* The SHARED form (admin/Collections.tsx). Success closes the whole
+              Manage sheet — the edit landing IS this section's done signal
+              (the box: "closes on success"); a canonical error renders inside
+              the form and the sheet STAYS open. The sheet's own Close button
+              is the cancel path, so the form renders without its inline
+              Cancel (onCancel omitted). */}
+          <EditLibraryForm lib={props.lib} onSaved={props.onClose} />
+        </ManageSection>
       </div>
     </DialogShell>
   );
@@ -758,6 +771,46 @@ function NamingSection(props: {
         </p>
       ) : null}
       {sectionError(save.error)}
+    </div>
+  );
+}
+
+// RescanSection — the Rescan save boundary (ui-management pass 3): one
+// POST /libraries/{id}/scan (retry:0 — the operator re-clicks on failure),
+// the ScanResponse rendered inline on this section: `discovered X ·
+// persisted Y` (role="status") and the warnings list ONLY when the array is
+// present and non-empty (absent/empty warnings are omitted — never a padded
+// line). Unlike the admin table there is no per-row state to derive — the
+// result belongs to THIS section's own mutation. A scan does not change the
+// library row, so nothing is invalidated; the fresh counts follow the
+// summary's own refetch windows.
+function RescanSection(props: { libraryId: number }): ReactElement {
+  const scan = useScanLibrary();
+  const res: ScanResponse | undefined = scan.data;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        className="cardact-row rounded-md border text-xs"
+        disabled={scan.isPending}
+        onClick={() => scan.mutate(props.libraryId)}
+      >
+        {scan.isPending ? "Scanning…" : "Rescan"}
+      </button>
+      {res ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          discovered {res.discovered} · persisted {res.persisted}
+        </p>
+      ) : null}
+      {res && res.warnings && res.warnings.length > 0 ? (
+        <ul className="list-disc pl-4 text-xs text-muted-foreground">
+          {res.warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      ) : null}
+      {sectionError(scan.error)}
     </div>
   );
 }
