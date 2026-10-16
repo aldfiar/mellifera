@@ -22,14 +22,17 @@ import {
   type ItemDTO,
   type LibraryDTO,
   type ListItemsParams,
+  type ParserBinding,
   type ProgressDTO,
   type SeriesDTO,
   type TitleOverrideDTO,
 } from "@/lib/api";
 import {
+  useItem,
   useItemMedia,
   useItems,
   useLibraries,
+  useLibrary,
   useLibraryFolders,
   useLibrarySummary,
   useSeries,
@@ -256,6 +259,13 @@ export default function Collection(): ReactElement {
 
   const libraries = useLibraries();
   const summary = useLibrarySummary(libraryId);
+  // The module block (identity_fields + the ordered parser chain) rides ONLY
+  // on GET /libraries/{id} — the list endpoint never carries it — so the
+  // Identify menu's chain display and its wiring gate read from this
+  // page-level detail query. A missing/failed module block means the module
+  // is not wired, not that the operator is unauthorized: the gate HIDES the
+  // Identify row (designed empty state), it never disables the page.
+  const libraryDetail = useLibrary(libraryId);
 
   const lib: LibraryDTO | undefined = Number.isFinite(libraryId)
     ? libraries.data?.items.find((l) => l.id === libraryId)
@@ -284,7 +294,13 @@ export default function Collection(): ReactElement {
         itemCount={summary.data?.items}
         updatedAt={summary.data?.updated_at}
       />
-      <CollectionBody module_id={lib.module_id} libraryId={lib.id} summaryLoaded={!summary.isLoading} itemCount={summary.data?.items} />
+      <CollectionBody
+        module_id={lib.module_id}
+        libraryId={lib.id}
+        chain={libraryDetail.data?.module?.parsers}
+        summaryLoaded={!summary.isLoading}
+        itemCount={summary.data?.items}
+      />
     </main>
   );
 }
@@ -320,10 +336,14 @@ function CollectionHeader(props: {
 }
 
 // CollectionBody — the module_id-keyed arm (D6). Every type gets its honest
-// layout; unknown module ids keep the generic item grid.
+// layout; unknown module ids keep the generic item grid. `chain` is the
+// module block's declared parser chain (undefined when the block is absent) —
+// threaded only to the menu-bearing card surfaces; the Identify gate consumes
+// it there.
 function CollectionBody(props: {
   module_id: string;
   libraryId: number;
+  chain?: ParserBinding[];
   summaryLoaded: boolean;
   itemCount: number | undefined;
 }): ReactElement {
@@ -334,11 +354,11 @@ function CollectionBody(props: {
   }
   switch (props.module_id) {
     case "tv":
-      return <MoviesBody libraryId={props.libraryId} />;
+      return <MoviesBody libraryId={props.libraryId} chain={props.chain} />;
     case "image":
       return <PhotosBody libraryId={props.libraryId} />;
     case "serial":
-      return <SerialsBody libraryId={props.libraryId} />;
+      return <SerialsBody libraryId={props.libraryId} chain={props.chain} />;
     default:
       return <ItemGrid libraryId={props.libraryId} />;
   }
@@ -410,7 +430,10 @@ function usePagedItems(libraryId: number) {
 // resolution — from the document's source namespaces), the ffprobe duration
 // when known, and the raw filename; cards deep-link into /items/{id}. No
 // paths, no lifecycle pills (D5).
-function MoviesBody(props: { libraryId: number }): ReactElement {
+function MoviesBody(props: {
+  libraryId: number;
+  chain?: ParserBinding[];
+}): ReactElement {
   const { query, items, offset, prev, next } = usePagedItems(props.libraryId);
 
   if (query.isLoading) {
@@ -435,6 +458,7 @@ function MoviesBody(props: { libraryId: number }): ReactElement {
                 index,
                 props.libraryId,
               )}
+              chain={props.chain}
             />
           </li>
         ))}
@@ -455,10 +479,14 @@ function MoviesBody(props: { libraryId: number }): ReactElement {
 // CardActions ⋯ menu (EpisodeCard inherits it by rendering this card); the
 // rename view wires the item title routes with the card's invalidation keys
 // — episodes override them (["series-episodes", seriesId]); the tv grid
-// defaults to the paged items list (["items"] prefix).
+// defaults to the paged items list (["items"] prefix). `chain` gates and
+// feeds the Identify menu row (absent/empty chain → the row is hidden — a
+// wired-module concern, not an authorization one), and an unidentified card
+// promotes Identify… to the menu's first row.
 function MovieCard(props: {
   item: ItemDTO;
   handoff: BrowseHandoff;
+  chain?: ParserBinding[];
   invalidate?: readonly unknown[];
 }): ReactElement {
   const { item, handoff } = props;
@@ -475,6 +503,13 @@ function MovieCard(props: {
   // Mark watched is gated on a KNOWN duration: photos and unprobed rows
   // never see the row — never a guessed duration.
   const duration = durationSeconds(item.document);
+  const chain = props.chain ?? [];
+  const identify =
+    chain.length > 0
+      ? ({ back }: { collapse: () => void; back: () => void }) => (
+          <IdentifyView itemId={item.id} chain={chain} onBack={back} />
+        )
+      : undefined;
 
   return (
     <div className="cardact-host relative flex h-full flex-col gap-2">
@@ -502,6 +537,8 @@ function MovieCard(props: {
       <CardActions
         triggerLabel={`Actions for ${title}`}
         pending={pending}
+        identify={identify}
+        identifyFirst={unidentified}
         rows={
           duration !== null ? (
             <MarkWatchedRow itemId={item.id} duration={duration} />
@@ -697,7 +734,7 @@ function PhotoTile(props: { item: ItemDTO; handoff: BrowseHandoff }): ReactEleme
 // episode documents are NEVER fetched eagerly per series row). The param is
 // real URL state, so an episode view deep-links and /collections/{id} alone
 // still lands on the grid.
-function SerialsBody(props: { libraryId: number }): ReactElement {
+function SerialsBody(props: { libraryId: number; chain?: ParserBinding[] }): ReactElement {
   const [searchParams, setSearchParams] = useSearchParams();
   const seriesId = searchParams.get("series") ?? "";
 
@@ -706,6 +743,7 @@ function SerialsBody(props: { libraryId: number }): ReactElement {
       <EpisodesView
         seriesId={seriesId}
         libraryId={props.libraryId}
+        chain={props.chain}
         onBack={() => setSearchParams({})}
       />
     );
@@ -828,13 +866,13 @@ function useTitleOverride(
 // trigger carries aria-haspopup="dialog" + aria-expanded; the open state
 // persists via data-open because the overlay is portaled (`.scard` is
 // overflow:hidden — in-card positioning would clip) and :focus-within goes
-// false once focus enters the panel. Esc matrix: rename view → menu, menu →
-// close all, IGNORED while a mutation is pending (an unmounted view could
-// never render the canonical inline error). Focus is trapped (two-sentinel
-// Tab loop) and returns to the trigger on close. Overlay state is LOCAL
-// (closed|menu|rename), never URL state: a route change unmounts the card
-// and discards it.
-type OverlayState = "closed" | "menu" | "rename";
+// false once focus enters the panel. Esc matrix: a view (rename, identify) →
+// menu, menu → close all, IGNORED while a mutation is pending (an unmounted
+// view could never render the canonical inline error). Focus is trapped
+// (two-sentinel Tab loop) and returns to the trigger on close. Overlay state
+// is LOCAL (closed|menu|rename|identify), never URL state: a route change
+// unmounts the card and discards it.
+type OverlayState = "closed" | "menu" | "rename" | "identify";
 
 const FOCUSABLE_SEL =
   "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])";
@@ -850,6 +888,8 @@ function CardActions(props: {
   pending: boolean;
   rows?: ReactElement;
   footer?: ReactElement;
+  identify?: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
+  identifyFirst?: boolean;
   rename: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
 }): ReactElement {
   const [overlay, setOverlay] = useState<OverlayState>("closed");
@@ -926,7 +966,7 @@ function CardActions(props: {
               if (e.key !== "Escape" || props.pending) {
                 return;
               }
-              if (overlay === "rename") {
+              if (overlay === "rename" || overlay === "identify") {
                 setOverlay("menu");
               } else {
                 closeAll();
@@ -941,6 +981,19 @@ function CardActions(props: {
             />
             {overlay === "menu" ? (
               <>
+                {/* Identify… rides the module-wired chain (the row is absent
+                    without it) and is promoted to the first row when the card
+                    is unidentified — curing the name is the operator's next
+                    most likely intent there. */}
+                {props.identifyFirst && props.identify ? (
+                  <button
+                    type="button"
+                    className="cardact-row"
+                    onClick={() => setOverlay("identify")}
+                  >
+                    Identify…
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="cardact-row"
@@ -948,15 +1001,29 @@ function CardActions(props: {
                 >
                   Rename…
                 </button>
+                {!props.identifyFirst && props.identify ? (
+                  <button
+                    type="button"
+                    className="cardact-row"
+                    onClick={() => setOverlay("identify")}
+                  >
+                    Identify…
+                  </button>
+                ) : null}
                 {props.rows ?? null}
                 {props.footer ?? null}
               </>
-            ) : (
+            ) : overlay === "rename" ? (
               props.rename({
                 collapse: closeAll,
                 back: () => setOverlay("menu"),
               })
-            )}
+            ) : props.identify ? (
+              props.identify({
+                collapse: closeAll,
+                back: () => setOverlay("menu"),
+              })
+            ) : null}
             <span
               aria-hidden="true"
               tabIndex={0}
@@ -1006,6 +1073,139 @@ function MarkWatchedRow(props: { itemId: string; duration: number }): ReactEleme
           {error.code}: {error.message}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+// IdentifyView — the card menu's identify view (ui-management pass 2, box
+// 2.1). Opening it performs a MANDATORY GET /items/{id} (the `useItem` detail
+// hook): `extra_parsers` — the item's attached parser ids — is populated ONLY
+// by the detail endpoint, so computing the attachable diff from list rows
+// would show attached parsers as attachable and the full-replacement parsers
+// PUT (box 2.2) would silently drop existing attachments. Rendering is gated
+// on that fetch: no parser list until the detail lands (a muted loading line,
+// never a spinner).
+//
+// The three facts the view shows:
+//   - attached — the item's `extra_parsers` in attachment order, up/down
+//     reorderable (keyboard-native; drag is a later refinement). The local
+//     draft order starts as the served order and is what the box-2.2 save
+//     will send as the complete ordered list.
+//   - the parser chain — the library module's declared bindings, served
+//     order, from the page-level module block (read-only here; the library
+//     Manage overlay owns editing it).
+//   - attachable — the declared chain minus the attached parsers (an absent
+//     `extra_parsers` field means empty attachments, so every declared parser
+//     is attachable).
+//
+// A detail error surfaces inline (role="alert"); Back returns to the menu.
+function IdentifyView(props: {
+  itemId: string;
+  chain: ParserBinding[];
+  onBack: () => void;
+}): ReactElement {
+  const detail = useItem(props.itemId);
+  // The attachment draft: null until the operator reorders — i.e. the served
+  // attachment order verbatim; a reorder pins the edited order.
+  const [order, setOrder] = useState<string[] | null>(null);
+  const served = detail.data?.item.extra_parsers ?? [];
+  const attached = order ?? served;
+
+  const move = (index: number, dir: -1 | 1): void => {
+    const target = index + dir;
+    if (target < 0 || target >= attached.length) {
+      return;
+    }
+    const next = [...attached];
+    const [picked] = next.splice(index, 1);
+    next.splice(target, 0, picked);
+    setOrder(next);
+  };
+
+  if (detail.isLoading) {
+    return (
+      <div className="flex flex-col gap-2 p-2">
+        <p className="text-xs text-muted-foreground">Loading parser details…</p>
+        <button
+          type="button"
+          className="cardact-row"
+          onClick={props.onBack}
+        >
+          Back
+        </button>
+      </div>
+    );
+  }
+  if (detail.error !== null || detail.data === undefined) {
+    const err = detail.error as ApiError | null;
+    return (
+      <div className="flex flex-col gap-2 p-2">
+        <p role="alert" className="text-xs text-destructive">
+          {err ? `${err.code}: ${err.message}` : "not_found: item not found"}
+        </p>
+        <button
+          type="button"
+          className="cardact-row"
+          onClick={props.onBack}
+        >
+          Back
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2 p-2">
+      <p className="text-xs font-medium">Attached parsers</p>
+      {attached.length > 0 ? (
+        <ul className="flex flex-col gap-1" aria-label="Attached parsers">
+          {attached.map((id, i) => (
+            <li key={id} className="flex items-center justify-between gap-2">
+              <span className="text-xs">{id}</span>
+              <span className="flex gap-1">
+                <button
+                  type="button"
+                  className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                  aria-label={`Move ${id} up`}
+                  disabled={i === 0}
+                  onClick={() => move(i, -1)}
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                  aria-label={`Move ${id} down`}
+                  disabled={i === attached.length - 1}
+                  onClick={() => move(i, 1)}
+                >
+                  ↓
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-xs text-muted-foreground">Nothing attached.</p>
+      )}
+      <p className="text-xs font-medium">Parser chain</p>
+      <ul className="flex flex-col gap-1" aria-label="Parser chain">
+        {props.chain.map((b) => (
+          <li key={b.id} className="flex items-center gap-2">
+            <span className="text-xs">{b.id}</span>
+            <span className="text-xs text-muted-foreground">
+              {attached.includes(b.id) ? "attached" : "attachable"}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        className="cardact-row"
+        onClick={props.onBack}
+      >
+        Back
+      </button>
     </div>
   );
 }
@@ -1152,6 +1352,7 @@ function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
 function EpisodesView(props: {
   seriesId: string;
   libraryId: number;
+  chain?: ParserBinding[];
   onBack: () => void;
 }): ReactElement {
   const episodes = useSeriesEpisodes(props.seriesId);
@@ -1192,6 +1393,7 @@ function EpisodesView(props: {
                   index,
                   props.libraryId,
                 )}
+                chain={props.chain}
               />
             </li>
           ))}
@@ -1210,11 +1412,13 @@ function EpisodeCard(props: {
   item: ItemDTO;
   seriesId: string;
   handoff: BrowseHandoff;
+  chain?: ParserBinding[];
 }): ReactElement {
   return (
     <MovieCard
       item={props.item}
       handoff={props.handoff}
+      chain={props.chain}
       invalidate={["series-episodes", props.seriesId]}
     />
   );

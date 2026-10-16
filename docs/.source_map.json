@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_from_commit": "a09a268",
-  "source_fingerprint": "9eb6716dc7e49e7eb49f8bc74b893c54271caa5f1dff625623bb04aceda6fc82",
+  "generated_from_commit": "ff6133e",
+  "source_fingerprint": "7b883f53e4ce2a4929402e6f53db2afe9636b137ff475462fd0d32ebc436052f",
   "generated_by": "tools/wf/index.py",
   "workspace_root": "docs/",
   "scope": {
@@ -1559,12 +1559,12 @@
       ]
     },
     "web/src/pages/collections/Collection.test.tsx": {
-      "lines": 1324,
+      "lines": 1563,
       "lang": "typescript",
       "role": "test"
     },
     "web/src/pages/collections/Collection.tsx": {
-      "lines": 1269,
+      "lines": 1473,
       "lang": "typescript",
       "role": "source",
       "exports": [

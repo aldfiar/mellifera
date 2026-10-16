@@ -8,7 +8,13 @@ import Collection, {
   captureDate,
   parsedChips,
 } from "@/pages/collections/Collection";
-import type { ItemDTO, LibraryDTO, SeriesDTO } from "@/lib/api";
+import type {
+  ItemDTO,
+  LibraryDTO,
+  ModulePresentation,
+  ParserBinding,
+  SeriesDTO,
+} from "@/lib/api";
 import type { ItemDocument } from "@/lib/document";
 
 // Group-5 slice (boxes 5.1–5.4) + ui-management pass 1: the collection page's
@@ -1128,6 +1134,239 @@ describe("Collection — INV-no-filenames title floors (ui-management pass 1)", 
     expect(within(g1).queryByText("Some Book.m4b")).toBeNull();
     const g2 = screen.getByRole("link", { name: /Named/ });
     expect(within(g2).getByText("Named")).toBeDefined();
+  });
+});
+
+describe("Collection — Identify view (ui-management pass 2)", () => {
+  // CHAIN — the module block's declared parser chain for the identify cases:
+  // three declared parsers, served order.
+  const CHAIN: ParserBinding[] = [
+    { id: "anitomy", display_fields: [] },
+    { id: "tmdb", display_fields: [] },
+    { id: "tvmaze", display_fields: [] },
+  ];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // identifySeam — a tv library whose library DETAIL (GET /libraries/1) is
+  // the module block's only carrier (the list endpoint never has it), and
+  // whose item detail (GET /items/{detailId}) is DEFERRED until released so
+  // the fetch-before-render contract is observable. Seam order matters: the
+  // summary and the /libraries/1 detail fragments precede the generic
+  // /libraries list (substring matching, earlier wins).
+  function identifySeam(parts: {
+    module?: ModulePresentation;
+    rows: ItemDTO[];
+    detailId: string;
+  }): { releaseDetail: (withExtras?: string[]) => void; detailFetches: () => number } {
+    let fetches = 0;
+    let release: (r: Response) => void = () => {};
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(
+          jsonResponse(200, { library_id: 1, items: parts.rows.length, updated_at: "" }),
+        );
+      }
+      if (url.includes("/api/v1/libraries/1")) {
+        const detail = lib(1, "tv", "films");
+        if (parts.module !== undefined) {
+          detail.module = parts.module;
+        }
+        return Promise.resolve(jsonResponse(200, detail));
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films")] }));
+      }
+      if (url.includes("/api/v1/items?library=1")) {
+        return Promise.resolve(jsonResponse(200, { items: parts.rows }));
+      }
+      if (url.includes(`/api/v1/items/${parts.detailId}`)) {
+        fetches += 1;
+        return new Promise<Response>((res) => {
+          release = res;
+        });
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    const row = parts.rows.find((r) => r.id === parts.detailId) ?? parts.rows[0];
+    return {
+      detailFetches: () => fetches,
+      releaseDetail: (withExtras?: string[]) =>
+        release(
+          jsonResponse(200, {
+            item: {
+              ...row,
+              ...(withExtras !== undefined ? { extra_parsers: withExtras } : {}),
+            },
+          }),
+        ),
+    };
+  }
+
+  it("opens with the MANDATORY detail fetch before rendering the lists; attachable = declared − extra_parsers (present case)", async () => {
+    const { releaseDetail, detailFetches } = identifySeam({
+      module: { identity_fields: ["title"], parsers: CHAIN },
+      rows: [item("itm_1_a", "tv", "Movies/known.mkv", doc({ title: "Known" }), "Known")],
+      detailId: "itm_1_a",
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Known" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Identify…" }),
+    );
+
+    // The detail fetch fires on open and GATES the view: no parser list
+    // renders before the detail endpoint answers.
+    await waitFor(() => expect(detailFetches()).toBe(1));
+    expect(screen.queryByRole("list", { name: "Attached parsers" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Parser chain" })).toBeNull();
+
+    // The detail carries extra_parsers: one attached of three declared.
+    releaseDetail(["anitomy"]);
+    const chainRows = within(
+      await screen.findByRole("list", { name: "Parser chain" }),
+    ).getAllByRole("listitem");
+    expect(chainRows.length).toBe(3);
+    expect(within(chainRows[0]).getByText("anitomy")).toBeDefined();
+    expect(within(chainRows[0]).getByText("attached")).toBeDefined();
+    expect(within(chainRows[1]).getByText("tmdb")).toBeDefined();
+    expect(within(chainRows[1]).getByText("attachable")).toBeDefined();
+    expect(within(chainRows[2]).getByText("tvmaze")).toBeDefined();
+    expect(within(chainRows[2]).getByText("attachable")).toBeDefined();
+
+    // The attached draft renders the attachment, reorder edge-disabled.
+    const attachedRows = within(
+      screen.getByRole("list", { name: "Attached parsers" }),
+    ).getAllByRole("listitem");
+    expect(within(attachedRows[0]).getByText("anitomy")).toBeDefined();
+    expect(
+      within(attachedRows[0]).getByRole("button", { name: "Move anitomy up" }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      within(attachedRows[0]).getByRole("button", { name: "Move anitomy down" }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("absent extra_parsers → nothing attached and every declared parser attachable", async () => {
+    const { releaseDetail } = identifySeam({
+      module: { identity_fields: ["title"], parsers: CHAIN },
+      rows: [item("itm_1_a", "tv", "Movies/known.mkv", doc({ title: "Known" }), "Known")],
+      detailId: "itm_1_a",
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Known" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Identify…" }),
+    );
+    // No extra_parsers field at all → attachments are empty (never guessed).
+    releaseDetail();
+
+    await screen.findByRole("list", { name: "Parser chain" });
+    expect(screen.getByText("Nothing attached.")).toBeDefined();
+    expect(screen.queryByRole("list", { name: "Attached parsers" })).toBeNull();
+    const chainRows = within(
+      screen.getByRole("list", { name: "Parser chain" }),
+    ).getAllByRole("listitem");
+    expect(chainRows.length).toBe(3);
+    for (const row of chainRows) {
+      expect(within(row).getByText("attachable")).toBeDefined();
+    }
+  });
+
+  it("the up/down buttons reorder the attachment draft in place", async () => {
+    const { releaseDetail } = identifySeam({
+      module: { identity_fields: ["title"], parsers: CHAIN },
+      rows: [item("itm_1_a", "tv", "Movies/known.mkv", doc({ title: "Known" }), "Known")],
+      detailId: "itm_1_a",
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Known" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Identify…" }),
+    );
+    releaseDetail(["tmdb", "anitomy"]);
+
+    const attachedList = await screen.findByRole("list", { name: "Attached parsers" });
+    const rows = within(attachedList).getAllByRole("listitem");
+    expect(within(rows[0]).getByText("tmdb")).toBeDefined();
+    expect(within(rows[1]).getByText("anitomy")).toBeDefined();
+    // Edges: the top row cannot go up, the bottom row cannot go down.
+    expect(
+      within(rows[0]).getByRole("button", { name: "Move tmdb up" }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      within(rows[1]).getByRole("button", { name: "Move anitomy down" }).hasAttribute("disabled"),
+    ).toBe(true);
+
+    fireEvent.click(within(rows[0]).getByRole("button", { name: "Move tmdb down" }));
+    const after = within(screen.getByRole("list", { name: "Attached parsers" })).getAllByRole(
+      "listitem",
+    );
+    expect(within(after[0]).getByText("anitomy")).toBeDefined();
+    expect(within(after[1]).getByText("tmdb")).toBeDefined();
+  });
+
+  it("promotes Identify… to the first menu row on an unidentified card; an identified card keeps Rename… first", async () => {
+    identifySeam({
+      module: { identity_fields: ["title"], parsers: CHAIN },
+      rows: [
+        item("itm_1_a", "tv", "Movies/known.mkv", doc({ title: "Known" }), "Known"),
+        // Empty served name → stem title + "Not identified" marker.
+        item("itm_1_b", "tv", "Movies/Unknown.mkv", doc({}), ""),
+      ],
+      detailId: "itm_1_a",
+    });
+    renderCollection("1");
+
+    const identified = await screen.findByRole("button", { name: "Actions for Known" });
+    fireEvent.click(identified);
+    const dialogA = await screen.findByRole("dialog");
+    const identifiedRows = within(dialogA).getAllByRole("button");
+    expect(identifiedRows[0].textContent).toBe("Rename…");
+    expect(identifiedRows[1].textContent).toBe("Identify…");
+    fireEvent.keyDown(dialogA, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Unknown" }));
+    const dialogB = await screen.findByRole("dialog");
+    const unidentifiedRows = within(dialogB).getAllByRole("button");
+    expect(unidentifiedRows[0].textContent).toBe("Identify…");
+    expect(unidentifiedRows[1].textContent).toBe("Rename…");
+  });
+
+  it("hides the Identify row without the module block and with an empty chain — a designed absence, never a spinner", async () => {
+    // Module block ABSENT: the menu carries only Rename…
+    identifySeam({
+      rows: [item("itm_1_a", "tv", "Movies/known.mkv", doc({ title: "Known" }), "Known")],
+      detailId: "itm_1_a",
+    });
+    const { unmount } = renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Known" }));
+    const dialogA = await screen.findByRole("dialog");
+    expect(within(dialogA).queryByRole("button", { name: "Identify…" })).toBeNull();
+    expect(within(dialogA).getByRole("button", { name: "Rename…" })).toBeDefined();
+    unmount();
+
+    // Module block PRESENT but the chain EMPTY: still hidden.
+    vi.restoreAllMocks();
+    identifySeam({
+      module: { identity_fields: [], parsers: [] },
+      rows: [item("itm_1_a", "tv", "Movies/known.mkv", doc({ title: "Known" }), "Known")],
+      detailId: "itm_1_a",
+    });
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Known" }));
+    const dialogB = await screen.findByRole("dialog");
+    expect(within(dialogB).queryByRole("button", { name: "Identify…" })).toBeNull();
   });
 });
 
