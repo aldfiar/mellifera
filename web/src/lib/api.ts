@@ -265,6 +265,21 @@ export interface ItemParsersResponse {
   parsers: string[];
 }
 
+// enrich_admin.go libraryRefreshRequest / ReenrichResult — the POST
+// /libraries/{id}/refresh body and 202 body. plugin_id is required (exactly
+// one parser per invocation); row_ids are the opaque row ids (items and
+// series share the row space). Field names match the JSON tags EXACTLY.
+export interface LibraryRefreshRequest {
+  plugin_id: string;
+  row_ids: string[];
+}
+
+export interface LibraryRefreshResult {
+  queued: number;
+  stripped: number;
+  deferred: number;
+}
+
 // handlers.go itemResponse
 export interface ItemResponse {
   item: ItemDTO;
@@ -319,6 +334,12 @@ export const ENDPOINTS = {
   libraries: "/api/v1/libraries",
   library: (id: number): string => `/api/v1/libraries/${id}`,
   scan: (id: number): string => `/api/v1/libraries/${id}/scan`,
+  // libraryRefresh — POST /api/v1/libraries/{id}/refresh (enrich_admin.go
+  // libraryRefresh, ui-management pass 2): the per-plugin re-enrichment
+  // kickoff; row_ids scopes the sweep to the given opaque row ids (the SPA
+  // always sends exactly one — per-row refresh; omitted/empty = the
+  // whole-library sweep, which the Manage overlay owns).
+  libraryRefresh: (id: number): string => `/api/v1/libraries/${id}/refresh`,
   librarySummary: (id: number): string => `/api/v1/libraries/${id}/summary`,
   libraryFolders: (id: number): string => `/api/v1/libraries/${id}/folders`,
   adminStatus: "/api/v1/admin/status",
@@ -585,6 +606,22 @@ export async function putProgress(
   return apiRequest<ProgressDTO>(ENDPOINTS.progressItem(itemId), {
     method: "PUT",
     body: { position_seconds: positionSeconds } as unknown as BodyInit,
+  });
+}
+
+// postLibraryRefresh — POST /api/v1/libraries/{id}/refresh (enrich_admin.go
+// libraryRefresh): the per-plugin re-enrichment kickoff. 202 with the sweep
+// counts (queued/stripped/deferred); 409 refresh_in_flight for a concurrent
+// whole-library sweep, 503 unavailable when the endpoint is unwired, 400
+// unknown plugin, 404 unknown rows/library — all canonical, surfaced inline
+// by the caller (mutations are retry:0 — no auto-retry).
+export async function postLibraryRefresh(
+  id: number,
+  req: LibraryRefreshRequest,
+): Promise<LibraryRefreshResult> {
+  return apiRequest<LibraryRefreshResult>(ENDPOINTS.libraryRefresh(id), {
+    method: "POST",
+    body: req as unknown as BodyInit,
   });
 }
 

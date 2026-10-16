@@ -15,6 +15,7 @@ import {
   deleteSeriesTitle,
   hasFrameGrabberThumb,
   hasOriginalFile,
+  postLibraryRefresh,
   putItemParsers,
   putProgress,
   setItemTitle,
@@ -23,6 +24,7 @@ import {
   type ItemDTO,
   type ItemParsersResponse,
   type LibraryDTO,
+  type LibraryRefreshResult,
   type ListItemsParams,
   type ParserBinding,
   type ProgressDTO,
@@ -518,6 +520,17 @@ function MovieCard(props: {
           />
         )
       : undefined;
+  const refresh =
+    chain.length > 0
+      ? ({ back }: { collapse: () => void; back: () => void }) => (
+          <RefreshView
+            libraryId={item.library_id}
+            rowId={item.id}
+            chain={chain}
+            onBack={back}
+          />
+        )
+      : undefined;
 
   return (
     <div className="cardact-host relative flex h-full flex-col gap-2">
@@ -547,6 +560,7 @@ function MovieCard(props: {
         pending={pending}
         identify={identify}
         identifyFirst={unidentified}
+        refresh={refresh}
         rows={
           duration !== null ? (
             <MarkWatchedRow itemId={item.id} duration={duration} />
@@ -756,7 +770,7 @@ function SerialsBody(props: { libraryId: number; chain?: ParserBinding[] }): Rea
       />
     );
   }
-  return <SeriesGrid libraryId={props.libraryId} />;
+  return <SeriesGrid libraryId={props.libraryId} chain={props.chain} />;
 }
 
 // seriesTitle — the series card's display title: the SERVED `display_name`
@@ -802,8 +816,12 @@ function seriesBacking(doc: SeriesDTO["document"]): string | null {
 
 // SeriesGrid — one poster card per series row. Deleted rows are skipped (the
 // janitor's tombstones are not a browse surface); an empty list after the
-// fetch is an honest "nothing scanned yet" state.
-function SeriesGrid(props: { libraryId: number }): ReactElement {
+// fetch is an honest "nothing scanned yet" state. `chain` threads through to
+// the series menu's Refresh metadata… row (box 2.3).
+function SeriesGrid(props: {
+  libraryId: number;
+  chain?: ParserBinding[];
+}): ReactElement {
   const series = useSeries(props.libraryId);
 
   if (series.isLoading) {
@@ -822,7 +840,7 @@ function SeriesGrid(props: { libraryId: number }): ReactElement {
     <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
       {rows.map((sr) => (
         <li key={sr.id}>
-          <SeriesCard sr={sr} libraryId={props.libraryId} />
+          <SeriesCard sr={sr} libraryId={props.libraryId} chain={props.chain} />
         </li>
       ))}
     </ul>
@@ -874,13 +892,13 @@ function useTitleOverride(
 // trigger carries aria-haspopup="dialog" + aria-expanded; the open state
 // persists via data-open because the overlay is portaled (`.scard` is
 // overflow:hidden — in-card positioning would clip) and :focus-within goes
-// false once focus enters the panel. Esc matrix: a view (rename, identify) →
-// menu, menu → close all, IGNORED while a mutation is pending (an unmounted
-// view could never render the canonical inline error). Focus is trapped
-// (two-sentinel Tab loop) and returns to the trigger on close. Overlay state
-// is LOCAL (closed|menu|rename|identify), never URL state: a route change
-// unmounts the card and discards it.
-type OverlayState = "closed" | "menu" | "rename" | "identify";
+// false once focus enters the panel. Esc matrix: a view (rename, identify,
+// refresh) → menu, menu → close all, IGNORED while a mutation is pending (an
+// unmounted view could never render the canonical inline error). Focus is
+// trapped (two-sentinel Tab loop) and returns to the trigger on close.
+// Overlay state is LOCAL (closed|menu|rename|identify|refresh), never URL
+// state: a route change unmounts the card and discards it.
+type OverlayState = "closed" | "menu" | "rename" | "identify" | "refresh";
 
 const FOCUSABLE_SEL =
   "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])";
@@ -898,6 +916,7 @@ function CardActions(props: {
   footer?: ReactElement;
   identify?: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
   identifyFirst?: boolean;
+  refresh?: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
   rename: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
 }): ReactElement {
   const [overlay, setOverlay] = useState<OverlayState>("closed");
@@ -974,7 +993,11 @@ function CardActions(props: {
               if (e.key !== "Escape" || props.pending) {
                 return;
               }
-              if (overlay === "rename" || overlay === "identify") {
+              if (
+                overlay === "rename" ||
+                overlay === "identify" ||
+                overlay === "refresh"
+              ) {
                 setOverlay("menu");
               } else {
                 closeAll();
@@ -1018,6 +1041,15 @@ function CardActions(props: {
                     Identify…
                   </button>
                 ) : null}
+                {props.refresh ? (
+                  <button
+                    type="button"
+                    className="cardact-row"
+                    onClick={() => setOverlay("refresh")}
+                  >
+                    Refresh metadata…
+                  </button>
+                ) : null}
                 {props.rows ?? null}
                 {props.footer ?? null}
               </>
@@ -1026,8 +1058,13 @@ function CardActions(props: {
                 collapse: closeAll,
                 back: () => setOverlay("menu"),
               })
-            ) : props.identify ? (
+            ) : overlay === "identify" && props.identify ? (
               props.identify({
+                collapse: closeAll,
+                back: () => setOverlay("menu"),
+              })
+            ) : overlay === "refresh" && props.refresh ? (
+              props.refresh({
                 collapse: closeAll,
                 back: () => setOverlay("menu"),
               })
@@ -1197,7 +1234,18 @@ function IdentifyView(props: {
   }
 
   return (
-    <div className="flex flex-col gap-2 p-2">
+    <div
+      className="flex flex-col gap-2 p-2"
+      onKeyDown={(e) => {
+        // While the save is in flight the panel's Esc walk is suppressed —
+        // an unmounted view could never render the canonical inline error
+        // (the rename view's guard, enforced here because the save mutation
+        // lives in this view).
+        if (e.key === "Escape" && save.isPending) {
+          e.stopPropagation();
+        }
+      }}
+    >
       <p className="text-xs font-medium">Attached parsers</p>
       {attached.length > 0 ? (
         <ul className="flex flex-col gap-1" aria-label="Attached parsers">
@@ -1272,6 +1320,103 @@ function IdentifyView(props: {
         <p role="alert" className="text-xs text-destructive">
           {save.error.code}: {save.error.message}
         </p>
+      ) : null}
+    </div>
+  );
+}
+
+// RefreshView — the per-item metadata refresh view (ui-management pass 2,
+// box 2.3): one radio per declared chain parser — the endpoint requires
+// exactly one plugin_id per invocation, so the view preselects the
+// served-first parser and the radio selection drives the request body — and
+// a confirm that POSTs postLibraryRefresh(libraryId, {plugin_id, row_ids:
+// [rowId]}). rowId is the card's own id in the shared row space: an
+// episode/item id on the item cards, the series id from the series menu.
+// The 202 sweep counts render inline and the view stays open (names follow
+// when the background run lands); a deferred row kept its data — the copy
+// says so; 409 refresh_in_flight renders its own line; every other
+// canonical error (503 unwired, 400 unknown plugin, 404 unknown rows)
+// renders inline as code: message. retry:0 — no auto-retry.
+function RefreshView(props: {
+  libraryId: number;
+  rowId: string;
+  chain: ParserBinding[];
+  onBack: () => void;
+}): ReactElement {
+  const [pluginId, setPluginId] = useState(props.chain[0]?.id ?? "");
+  const refresh = useMutation<LibraryRefreshResult, ApiError, void>({
+    mutationFn: () =>
+      postLibraryRefresh(props.libraryId, {
+        plugin_id: pluginId,
+        row_ids: [props.rowId],
+      }),
+    retry: 0,
+  });
+  const res = refresh.data;
+
+  return (
+    <div
+      className="flex flex-col gap-2 p-2"
+      onKeyDown={(e) => {
+        // While the POST is in flight the panel's Esc walk is suppressed —
+        // an unmounted view could never render the canonical inline error.
+        if (e.key === "Escape" && refresh.isPending) {
+          e.stopPropagation();
+        }
+      }}
+    >
+      <div
+        role="radiogroup"
+        aria-label="Refresh with parser"
+        className="flex flex-col gap-1"
+      >
+        {props.chain.map((b) => (
+          <label key={b.id} className="flex items-center gap-2 text-xs">
+            <input
+              type="radio"
+              name="refresh-plugin"
+              value={b.id}
+              checked={pluginId === b.id}
+              onChange={() => setPluginId(b.id)}
+            />
+            {b.id}
+          </label>
+        ))}
+      </div>
+      <button
+        type="button"
+        className="cardact-row"
+        disabled={refresh.isPending || pluginId === ""}
+        onClick={() => refresh.mutate(undefined)}
+      >
+        Refresh
+      </button>
+      <button type="button" className="cardact-row" onClick={props.onBack}>
+        Back
+      </button>
+      {res ? (
+        <>
+          <p role="status" className="text-xs text-muted-foreground">
+            {String(res.queued)} queued · {String(res.stripped)} stripped ·{" "}
+            {String(res.deferred)} deferred
+          </p>
+          {res.deferred > 0 ? (
+            <p className="text-xs text-muted-foreground">
+              kept its data — try again shortly
+            </p>
+          ) : null}
+        </>
+      ) : null}
+      {refresh.error ? (
+        refresh.error.code === "refresh_in_flight" ? (
+          <p role="alert" className="text-xs text-destructive">
+            A refresh is already running
+          </p>
+        ) : (
+          <p role="alert" className="text-xs text-destructive">
+            {refresh.error.code}: {refresh.error.message}
+          </p>
+        )
       ) : null}
     </div>
   );
@@ -1362,8 +1507,15 @@ function RenameTitle(props: {
 // "file" backing marker are OFF the chip row (ui-management §1: no status
 // pills on user screens; the backing fact re-lands as the series menu
 // footer). Carries the CardActions ⋯ menu with the rename view (4.3) wired
-// to the series title routes. Links into the episode flow.
-function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
+// to the series title routes, and the Refresh metadata… row (box 2.3) when
+// the module chain is wired — the row passes the SERIES id (`row_ids:
+// [sr.id]`; series rows live in the same row space as items). Links into
+// the episode flow.
+function SeriesCard(props: {
+  sr: SeriesDTO;
+  libraryId: number;
+  chain?: ParserBinding[];
+}): ReactElement {
   const { sr } = props;
   const season = seriesSeason(sr.document);
   const backing = seriesBacking(sr.document);
@@ -1372,6 +1524,18 @@ function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
     props.libraryId,
   ]);
   const pending = set.isPending || clear.isPending;
+  const chain = props.chain ?? [];
+  const refresh =
+    chain.length > 0
+      ? ({ back }: { collapse: () => void; back: () => void }) => (
+          <RefreshView
+            libraryId={props.libraryId}
+            rowId={sr.id}
+            chain={chain}
+            onBack={back}
+          />
+        )
+      : undefined;
 
   return (
     <div className="scard cardact-host">
@@ -1393,6 +1557,7 @@ function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
       <CardActions
         triggerLabel={`Actions for ${seriesTitle(sr)}`}
         pending={pending}
+        refresh={refresh}
         footer={
           backing === "file" ? (
             <p className="cardact-foot">File-backed series</p>

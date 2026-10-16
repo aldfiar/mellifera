@@ -1540,6 +1540,213 @@ describe("Collection — Identify save (ui-management pass 2)", () => {
   });
 });
 
+describe("Collection — per-item Refresh view (ui-management pass 2)", () => {
+  const CHAIN: ParserBinding[] = [
+    { id: "anitomy", display_fields: [] },
+    { id: "tmdb", display_fields: [] },
+    { id: "tvmaze", display_fields: [] },
+  ];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // refreshSeamTv — a tv library with a wired chain and one item; the
+  // refresh POST is recorded and answered by `respond`. Seam order matters:
+  // /refresh and /libraries/1 precede the generic fragments (substring
+  // matching, earlier wins).
+  function refreshSeamTv(respond: () => Promise<Response>): {
+    posts: { plugin_id: string; row_ids: string[] }[];
+  } {
+    const posts: { plugin_id: string; row_ids: string[] }[] = [];
+    const row = item("itm_1_a", "tv", "Movies/known.mkv", doc({ title: "Known" }), "Known");
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (
+        url.includes("/api/v1/libraries/1/refresh") &&
+        (init?.method ?? "GET") === "POST"
+      ) {
+        posts.push(JSON.parse(String(init?.body)) as { plugin_id: string; row_ids: string[] });
+        return respond();
+      }
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(
+          jsonResponse(200, { library_id: 1, items: 1, updated_at: "" }),
+        );
+      }
+      if (url.includes("/api/v1/libraries/1")) {
+        const detail = lib(1, "tv", "films");
+        detail.module = { identity_fields: ["title"], parsers: CHAIN };
+        return Promise.resolve(jsonResponse(200, detail));
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films")] }));
+      }
+      if (url.includes("/api/v1/items?library=1")) {
+        return Promise.resolve(jsonResponse(200, { items: [row] }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    return { posts };
+  }
+
+  async function openRefreshTv(): Promise<void> {
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Known" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Refresh metadata…" }),
+    );
+    await screen.findByRole("radiogroup", { name: "Refresh with parser" });
+  }
+
+  it("radio selection drives plugin_id; the POST body row_ids is exactly the one item id; the 202 counts render inline", async () => {
+    const { posts } = refreshSeamTv(() =>
+      Promise.resolve(jsonResponse(202, { queued: 1, stripped: 0, deferred: 0 })),
+    );
+    renderCollection("1");
+    await openRefreshTv();
+
+    // The chain's radios render; the served-first parser is the
+    // preselection (a plain confirm is always well-formed).
+    const group = screen.getByRole("radiogroup", { name: "Refresh with parser" });
+    const radios = within(group).getAllByRole("radio") as HTMLInputElement[];
+    expect(radios.length).toBe(3);
+    expect(radios[0].checked).toBe(true);
+
+    // Selecting tmdb drives the body's plugin_id.
+    fireEvent.click(within(group).getByRole("radio", { name: "tmdb" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await waitFor(() =>
+      expect(posts).toEqual([{ plugin_id: "tmdb", row_ids: ["itm_1_a"] }]),
+    );
+    // The 202 counts render inline; the view stays open.
+    expect(await screen.findByText(/1 queued .* 0 stripped .* 0 deferred/)).toBeDefined();
+    expect(screen.getByRole("dialog")).toBeDefined();
+    expect(screen.getByRole("radiogroup", { name: "Refresh with parser" })).toBeDefined();
+  });
+
+  it("a 202 with deferred rows renders the kept-its-data copy inline", async () => {
+    const { posts } = refreshSeamTv(() =>
+      Promise.resolve(jsonResponse(202, { queued: 0, stripped: 2, deferred: 1 })),
+    );
+    renderCollection("1");
+    await openRefreshTv();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await waitFor(() => expect(posts.length).toBe(1));
+    expect(posts[0].row_ids).toEqual(["itm_1_a"]);
+    expect(await screen.findByText("kept its data — try again shortly")).toBeDefined();
+  });
+
+  it("409 refresh_in_flight renders its copy; 503 unwired renders the canonical inline error — both stay open, no auto-retry", async () => {
+    let respond: () => Promise<Response> = () =>
+      Promise.resolve(jsonResponse(202, { queued: 0, stripped: 0, deferred: 0 }));
+    const { posts } = refreshSeamTv(() => respond());
+    renderCollection("1");
+    await openRefreshTv();
+
+    // 409: the conflict copy renders inline, the view stays open.
+    respond = () =>
+      Promise.resolve(
+        jsonResponse(409, {
+          error: {
+            code: "refresh_in_flight",
+            message: "a whole-library refresh is already in flight",
+            retryable: false,
+          },
+        }),
+      );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByText("A refresh is already running")).toBeDefined();
+    expect(screen.getByRole("dialog")).toBeDefined();
+    await waitFor(() => expect(posts.length).toBe(1));
+
+    // 503 (endpoint unwired): the canonical error renders inline — same
+    // posture, still no auto-retry behind the failures.
+    respond = () =>
+      Promise.resolve(
+        jsonResponse(503, {
+          error: {
+            code: "unavailable",
+            message: "refresh endpoint disabled",
+            retryable: false,
+          },
+        }),
+      );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByText(/unavailable: refresh endpoint disabled/)).toBeDefined();
+    expect(screen.getByRole("dialog")).toBeDefined();
+    await waitFor(() => expect(posts.length).toBe(2));
+  });
+
+  it("the series menu's Refresh metadata… row passes the SERIES id as the single row id", async () => {
+    const posts: { plugin_id: string; row_ids: string[] }[] = [];
+    const d: ItemDocument = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (
+        url.includes("/api/v1/libraries/1/refresh") &&
+        (init?.method ?? "GET") === "POST"
+      ) {
+        posts.push(JSON.parse(String(init?.body)) as { plugin_id: string; row_ids: string[] });
+        return Promise.resolve(
+          jsonResponse(202, { queued: 1, stripped: 1, deferred: 0 }),
+        );
+      }
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(
+          jsonResponse(200, { library_id: 1, items: 1, updated_at: "" }),
+        );
+      }
+      if (url.includes("/api/v1/libraries/1")) {
+        const detail = lib(1, "serial", "shows");
+        detail.module = { identity_fields: ["title"], parsers: CHAIN };
+        return Promise.resolve(jsonResponse(200, detail));
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "serial", "shows")] }));
+      }
+      if (url.includes("/api/v1/series?library=1")) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              {
+                id: "ser_1_show",
+                module_id: "serial",
+                library_id: 1,
+                relative_path: "Show 2019",
+                document: d,
+                schema_version: 1,
+                status: "ready",
+                display_name: "Show 2019",
+              },
+            ],
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Show 2019" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Refresh metadata…" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    // Series rows live in the same row space: the body carries the series
+    // id, exactly one.
+    await waitFor(() =>
+      expect(posts).toEqual([{ plugin_id: "anitomy", row_ids: ["ser_1_show"] }]),
+    );
+    expect(await screen.findByText(/1 queued .* 1 stripped .* 0 deferred/)).toBeDefined();
+  });
+});
+
 describe("Collection — media tiles (media-preview group 2)", () => {
   // stubObjectUrls — jsdom has no createObjectURL/revokeObjectURL; the hook's
   // whole contract is those two calls, so they are observable stubs here.
