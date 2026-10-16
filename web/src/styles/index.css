@@ -390,8 +390,8 @@ body.side-open .app-content {
   );
 }
 
-/* Tile footer: raw filename + capture date (date omitted when the document
-   has none). */
+/* Tile footer: capture date (the footer renders only when the document has
+   one — filenames left user surfaces in ui-management pass 1). */
 .ptile footer {
   display: flex;
   align-items: center;
@@ -401,17 +401,14 @@ body.side-open .app-content {
   font-size: 11px;
   color: hsl(var(--muted-foreground));
 }
-.ptile footer .nm {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
 
 /* ---- Serial series grid (collection page, serial module_id, box 5.4) ------- */
 
 /* One series card: a poster-ratio placeholder (media serving is a deferred
    capability) over the display title + fact chips, token-bordered like the
-   other cards. */
+   other cards. position:relative anchors the CardActions ⋯ trigger. */
 .scard {
+  position: relative;
   display: block;
   overflow: hidden;
   border: 1px solid hsl(var(--border));
@@ -452,6 +449,105 @@ body.side-open .app-content {
   font-size: 12.5px;
   font-weight: 600;
   overflow-wrap: anywhere;
+}
+
+/* ---- CardActions (collection cards, ui-management pass 1) ------------------
+   Quiet ⋯ trigger top-right of a card: hidden until the card is hovered or
+   focused on fine pointers (box 1.4 adds the coarse-pointer persistent
+   reveal). The dialog overlay is PORTALED to document.body (`.scard` is
+   overflow:hidden — in-card positioning would clip), so :focus-within goes
+   false once focus enters the panel; the open state therefore persists on
+   the trigger via [data-open]. */
+
+.cardact-trigger {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.cardact-host:hover .cardact-trigger,
+.cardact-host:focus-within .cardact-trigger,
+.cardact-trigger[data-open] {
+  opacity: 1;
+}
+.cardact-trigger:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+/* Coarse pointers (touch/TV): the ⋯ trigger is ALWAYS visible (muted glyph —
+   no hover to reveal it) with a ≥40px hit target, while fine pointers keep
+   the hidden-until-hover/focus taste above.
+   MANUAL TEST NOTE (box 1.4 — unprobeable): jsdom cannot see media queries,
+   so this block is accepted by inspection at the gate. To verify by hand:
+   open a collection page in a device emulator (or devtools touch emulation)
+   and confirm (a) every ⋯ trigger is visible without hover, (b) the trigger
+   measures at least 40×40 CSS px, (c) on a fine-pointer viewport the trigger
+   still stays hidden until the card is hovered/focused. */
+@media (pointer: coarse) {
+  .cardact-trigger {
+    opacity: 1;
+    width: 40px;
+    height: 40px;
+  }
+}
+
+/* The portaled dialog panel: the menu and the rename view share one shell
+   over the shared .overlay-backdrop scrim (click-away closes). */
+.cardact-panel {
+  width: 100%;
+  max-width: 320px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  padding: 6px;
+  box-shadow: 0 12px 40px hsl(var(--foreground) / 0.18);
+}
+.cardact-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.cardact-row:hover {
+  background: hsl(var(--accent));
+}
+.cardact-foot {
+  margin: 4px 6px 2px;
+  padding-top: 6px;
+  border-top: 1px solid hsl(var(--border));
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.cardact-sentinel {
+  display: block;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
 }
 
 /* ---- Admin collections table + edit overlay (web-ui-phase-3 group 6) ------ */

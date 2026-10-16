@@ -11,13 +11,15 @@ import Collection, {
 import type { ItemDTO, LibraryDTO, SeriesDTO } from "@/lib/api";
 import type { ItemDocument } from "@/lib/document";
 
-// Group-5 slice (boxes 5.1–5.4): the collection page's OWN behavior, asserted
-// at the fetch seam (the same idiom as Home.test.tsx). Covered here: the tv
-// body's parsed chips + raw filename + limit/offset paging, the photos body's
-// folder-chip client-side filter round-trip and masonry date-footers (present
-// and honestly absent), and the serial body's series grid (title precedence,
-// fact chips, the episode-flow round-trip hitting the episodes endpoint once)
-// with its empty and error states. Layout itself is CSS's contract.
+// Group-5 slice (boxes 5.1–5.4) + ui-management pass 1: the collection page's
+// OWN behavior, asserted at the fetch seam (the same idiom as Home.test.tsx).
+// Covered here: the tv body's muted meta line + served-title floor, the
+// photos body's folder-chip client-side filter round-trip and masonry
+// date-footers (present and honestly absent), the serial body's series grid
+// (title precedence, the episode-flow round-trip hitting the episodes
+// endpoint once) with its empty and error states, and the INV-no-filenames
+// surface rules (no raw filename anywhere; floors per surface). Layout itself
+// is CSS's contract.
 //
 // NOTE on fixtures: pages/collections must never carry a filesystem-path
 // literal (D5 — the group probe greps for it), so the fixtures omit the
@@ -64,6 +66,7 @@ function item(
   moduleId: string,
   relativePath: string,
   document: ItemDocument,
+  displayName?: string,
 ): ItemDTO {
   return {
     id,
@@ -75,6 +78,7 @@ function item(
     document,
     schema_version: 1,
     status: "ready",
+    ...(displayName !== undefined ? { display_name: displayName } : {}),
   };
 }
 
@@ -133,10 +137,10 @@ function headerSeam(
 }
 
 describe("Collection — pure chip/date readers", () => {
-  it("parsedChips reads season/episode, year and resolution from the source namespaces", () => {
+  it("parsedChips reads year and resolution from the source namespaces — never the SxxExx token", () => {
     expect(
       parsedChips(doc({ season: 1, episode: 2, year: 2019, resolution: "1080p" })),
-    ).toEqual(["S01E02", "2019", "1080p"]);
+    ).toEqual(["2019", "1080p"]);
     // No parsed facts → no chips, never a guess.
     expect(parsedChips(doc({ title: "plain" }))).toEqual([]);
     // Partial facts render only what exists.
@@ -159,7 +163,7 @@ describe("Collection — tv body (box 5.2)", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders parsed chips, duration, and the raw filename, deep-linking into the item", async () => {
+  it("renders the served title and ONE muted meta line, deep-linking into the item — never the raw filename or an SxxExx chip", async () => {
     fetchWith({
       ...headerSeam("tv", 1),
       "/api/v1/items?library=1": () =>
@@ -177,6 +181,7 @@ describe("Collection — tv body (box 5.2)", () => {
                   year: 2019,
                   resolution: "1080p",
                 }),
+                "The Thing",
               ),
             ],
           }),
@@ -186,14 +191,17 @@ describe("Collection — tv body (box 5.2)", () => {
 
     const card = await screen.findByRole("link", { name: /The Thing/ });
     expect(card.getAttribute("href")).toBe("/items/itm_1_a");
-    // Parsed chips from the document's source namespaces.
-    expect(within(card).getByText("S01E02")).toBeDefined();
-    expect(within(card).getByText("2019")).toBeDefined();
-    expect(within(card).getByText("1080p")).toBeDefined();
-    // The raw filename (relative_path's last segment), verbatim.
-    expect(within(card).getByText("The Thing 2019 1080p.mkv")).toBeDefined();
-    // No duration fact on this document → no duration chip.
+    // The meta line: the parsed facts, dot-separated — no pill chips.
+    expect(within(card).getByText("2019 · 1080p")).toBeDefined();
+    // The SxxExx token is gone (it duplicated the served name's own suffix).
+    expect(within(card).queryByText("S01E02")).toBeNull();
+    // INV-no-filenames: the raw filename never renders.
+    expect(within(card).queryByText("The Thing 2019 1080p.mkv")).toBeNull();
+    expect(within(card).queryByText(/\.mkv/)).toBeNull();
+    // No duration fact on this document → no duration segment.
     expect(within(card).queryByText(/^1:\d{2}:\d{2}$|^\d{2}:\d{2}$/)).toBeNull();
+    // Identified row → no "Not identified" marker.
+    expect(within(card).queryByText("Not identified")).toBeNull();
   });
 
   it("pages with limit/offset: Next enabled on a full page, Previous returns", async () => {
@@ -204,6 +212,7 @@ describe("Collection — tv body (box 5.2)", () => {
           "tv",
           `Movies/film_${offset + i}.mkv`,
           doc({ title: `Film ${offset + i}` }),
+          `Film ${offset + i}`,
         ),
       ),
     });
@@ -272,20 +281,20 @@ describe("Collection — image body (box 5.3)", () => {
     renderCollection("1");
 
     // All three tiles first, each with a capture-date footer (or honestly none).
-    expect(await screen.findByRole("link", { name: "Open beach.jpg" })).toBeDefined();
-    expect(screen.getByRole("link", { name: "Open alps.jpg" })).toBeDefined();
-    expect(screen.getByRole("link", { name: "Open scan.jpg" })).toBeDefined();
+    expect(await screen.findByRole("link", { name: "Open beach" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Open alps" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Open scan" })).toBeDefined();
 
     // Pick the 2026 folder → only its tile remains (client-side prefix filter).
     fireEvent.click(screen.getByRole("button", { name: /2026/ }));
-    expect(screen.getByRole("link", { name: "Open beach.jpg" })).toBeDefined();
-    expect(screen.queryByRole("link", { name: "Open alps.jpg" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Open scan.jpg" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open beach" })).toBeDefined();
+    expect(screen.queryByRole("link", { name: "Open alps" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Open scan" })).toBeNull();
 
     // All resets the filter.
     fireEvent.click(screen.getByRole("button", { name: "All" }));
-    expect(await screen.findByRole("link", { name: "Open alps.jpg" })).toBeDefined();
-    expect(screen.getByRole("link", { name: "Open scan.jpg" })).toBeDefined();
+    expect(await screen.findByRole("link", { name: "Open alps" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Open scan" })).toBeDefined();
   });
 
   it("renders capture-date footers from date_taken and omits them when the document has none", async () => {
@@ -293,13 +302,17 @@ describe("Collection — image body (box 5.3)", () => {
     renderCollection("1");
 
     // RFC3339 stamps show their date part; every dated tile shows its own.
-    const beach = await screen.findByRole("link", { name: "Open beach.jpg" });
+    const beach = await screen.findByRole("link", { name: "Open beach" });
     expect(within(beach).getByText("2026-07-04")).toBeDefined();
-    const alps = screen.getByRole("link", { name: "Open alps.jpg" });
+    const alps = screen.getByRole("link", { name: "Open alps" });
     expect(within(alps).getByText("2025-05-10")).toBeDefined();
-    // No date fact → NO footer date, never a fake one.
-    const scan = screen.getByRole("link", { name: "Open scan.jpg" });
+    // INV-no-filenames: the raw filename never renders in a footer.
+    expect(within(beach).queryByText("beach.jpg")).toBeNull();
+    // No date fact → NO footer at all (the filename that used to anchor it is
+    // gone), never a fake date.
+    const scan = screen.getByRole("link", { name: "Open scan" });
     expect(within(scan).queryByText(/^\d{4}-\d{2}-\d{2}/)).toBeNull();
+    expect(scan.querySelector("footer")).toBeNull();
   });
 });
 
@@ -350,7 +363,7 @@ describe("Collection — serial body (box 5.4)", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders one card per series with the SERVED display_name (document facts never leak), status/season/backing chips, skipping deleted rows", async () => {
+  it("renders one card per series with the SERVED display_name (document facts never leak), the season chip only, skipping deleted rows", async () => {
     fetchWith({
       ...headerSeam("serial", 3),
       "/api/v1/series?library=1": () =>
@@ -393,16 +406,18 @@ describe("Collection — serial body (box 5.4)", () => {
     // The raw-named row renders its served name, verbatim (Cyrillic intact).
     expect(screen.getByRole("link", { name: /Очень Странные Дела/ })).toBeDefined();
 
-    // File-backed stray: "file" marker + its stale status chip.
+    // File-backed stray: its served name renders verbatim; the "file" chip is
+    // OFF the card (the backing fact re-lands as the menu footer) and the
+    // lifecycle status pill is off every card.
     const stray = screen.getByRole("link", { name: /Stray File/ });
-    expect(within(stray).getByText("file")).toBeDefined();
-    expect(within(stray).getByText("stale")).toBeDefined();
+    expect(within(stray).queryByText("file")).toBeNull();
+    expect(within(stray).queryByText("stale")).toBeNull();
 
     // Deleted rows are not a browse surface — no card at all.
     expect(screen.queryByRole("link", { name: /gone/ })).toBeNull();
 
-    // Ready status renders as a plain chip on the default cards.
-    expect(within(enriched).getByText("ready")).toBeDefined();
+    // Ready status renders no chip on the default cards either.
+    expect(within(enriched).queryByText("ready")).toBeNull();
   });
 
   it("navigates a card into the episode flow, fetching the episodes endpoint exactly once", async () => {
@@ -438,12 +453,13 @@ describe("Collection — serial body (box 5.4)", () => {
 
     fireEvent.click(await screen.findByRole("link", { name: /Show 2019/ }));
 
-    // The episode card reuses the movie idiom: the served composed name,
-    // parsed chips + raw filename, deep-linking into /items/{id}.
+    // The episode card reuses the movie idiom: the served composed name, the
+    // muted meta line, deep-linking into /items/{id} — no filename, no
+    // SxxExx chip.
     const ep = await screen.findByRole("link", { name: /Show 2019 · S01E01/ });
     expect(ep.getAttribute("href")).toBe("/items/itm_1_e1");
-    expect(within(ep).getByText("S01E01")).toBeDefined();
-    expect(within(ep).getByText("S01E01.mkv")).toBeDefined();
+    expect(within(ep).queryByText("S01E01")).toBeNull();
+    expect(within(ep).queryByText("S01E01.mkv")).toBeNull();
     expect(episodesFetches).toBe(1);
 
     // Back into the grid — the episodes endpoint is NOT hit again (cached),
@@ -506,13 +522,17 @@ describe("Collection — served display_name (display-naming group 4)", () => {
     dirNameRaw?: string;
     titleOverride?: string;
     displayName?: string;
+    backing?: string;
   }): SeriesDTO {
     const d: ItemDocument = {};
     if (parts.title !== undefined) {
       d.sources = { "serial-parser": { title: parts.title } };
     }
-    if (parts.dirNameRaw !== undefined) {
-      d.parsed = { dir_name_raw: parts.dirNameRaw };
+    const parsed: Record<string, unknown> = {};
+    if (parts.dirNameRaw !== undefined) parsed.dir_name_raw = parts.dirNameRaw;
+    if (parts.backing !== undefined) parsed.backing = parts.backing;
+    if (Object.keys(parsed).length > 0) {
+      d.parsed = parsed;
     }
     return {
       id: parts.id,
@@ -534,9 +554,9 @@ describe("Collection — served display_name (display-naming group 4)", () => {
     vi.restoreAllMocks();
   });
 
-  it("series cards render the SERVED display_name verbatim — override tier included, document facts never leak; floor-empty renders EMPTY", async () => {
+  it("series cards render the SERVED display_name verbatim — override tier included, document facts never leak; a file-backed floor renders the stem, a dir-backed composed name is never flagged", async () => {
     fetchWith({
-      ...headerSeam("serial", 3),
+      ...headerSeam("serial", 4),
       "/api/v1/series?library=1": () =>
         Promise.resolve(
           jsonResponse(200, {
@@ -549,7 +569,20 @@ describe("Collection — served display_name (display-naming group 4)", () => {
                 displayName: "Operator's Name",
               }),
               srow({ id: "ser_1_par", title: "Parser Decoy 2", displayName: "Only Served" }),
-              srow({ id: "ser_1_raw", dirNameRaw: "Сырое Имя", displayName: "" }),
+              srow({
+                id: "ser_1_raw",
+                dirNameRaw: "Сырое Имя",
+                displayName: "",
+                backing: "file",
+              }),
+              // Directory-backed composed name: the served name IS the
+              // directory's own name — the filename floor must NOT fire
+              // ("Show.S01" must never corrupt into "Show").
+              srow({
+                id: "ser_1_dir",
+                dirNameRaw: "Show.S01",
+                displayName: "Show.S01",
+              }),
             ],
           }),
         ),
@@ -564,17 +597,24 @@ describe("Collection — served display_name (display-naming group 4)", () => {
     // A served composed name renders verbatim, not the row's parser title.
     expect(screen.getByRole("link", { name: /Only Served/ })).toBeDefined();
     expect(screen.queryByRole("link", { name: /Parser Decoy 2/ })).toBeNull();
-    // Floor-empty ("") renders VERBATIM EMPTY — strict served-verbatim: the
-    // card's aria-label is "Open " (name "Open" after whitespace trimming)
-    // and the path name never leaks in as a client-side fallback.
-    const raw = screen.getByRole("link", { name: "Open" });
-    expect(within(raw).getByText("ready")).toBeDefined(); // chips still render
-    expect(screen.queryByRole("link", { name: /Сырое Имя/ })).toBeNull();
-    // The rename affordance's label is likewise the empty served name.
-    expect(screen.getByRole("button", { name: "Rename" })).toBeDefined();
+    // File-backed floor: the served name is its own filename → the
+    // extension-less STEM renders, silently (series never wear the "Not
+    // identified" marker — no Identify on series).
+    const raw = screen.getByRole("link", { name: /Сырое Имя/ });
+    expect(within(raw).getByText("Сырое Имя")).toBeDefined();
+    expect(within(raw).queryByText("Not identified")).toBeNull();
+    expect(within(raw).queryByText("file")).toBeNull();
+    // Dir-backed composed name: verbatim, never stemmed, never flagged.
+    const dir = screen.getByRole("link", { name: "Open Show.S01" });
+    expect(within(dir).getByText("Show.S01")).toBeDefined();
+    expect(within(dir).queryByText("Not identified")).toBeNull();
+    // Rename moved behind the card menu: no always-visible Rename button;
+    // the ⋯ trigger's label follows the floored title.
+    expect(screen.queryByRole("button", { name: /^Rename/ })).toBeNull();
+    expect(screen.getAllByRole("button", { name: /^Actions for Сырое Имя$/ }).length).toBe(1);
   });
 
-  it("episode rows render the SERVED display_name verbatim — override tier included; floor-empty renders EMPTY", async () => {
+  it("episode rows render the SERVED display_name verbatim — override tier included; floor-empty floors to the stem with the marker", async () => {
     const overridden = item(
       "itm_1_e0",
       "serial",
@@ -618,16 +658,18 @@ describe("Collection — served display_name (display-naming group 4)", () => {
     // title never leaks.
     expect(screen.getByRole("link", { name: /Show 2019 · S01E01/ })).toBeDefined();
     expect(screen.queryByText("View Decoy")).toBeNull();
-    // Floor-empty → the served name renders VERBATIM EMPTY (strict served-
-    // verbatim): no title fallback, so the file name appears exactly ONCE —
-    // the movie card's own filename span — and the rename affordance's label
-    // is likewise empty ("Rename " → name "Rename").
-    const e2 = screen.getByRole("link", { name: /S01E02\.mkv/ });
-    expect(within(e2).getAllByText("S01E02.mkv").length).toBe(1);
-    expect(screen.getByRole("button", { name: "Rename" })).toBeDefined();
+    // Floor-empty (no display_name at all) → the extension-less STEM renders
+    // in the normal title style plus the muted "Not identified" line; the
+    // raw filename never appears.
+    const e2 = screen.getByRole("link", { name: /Not identified/ });
+    expect(within(e2).getByText("S01E02")).toBeDefined();
+    expect(within(e2).queryByText("S01E02.mkv")).toBeNull();
+    // Item cards render no always-visible Rename affordance (rename lives in
+    // the card menu).
+    expect(screen.queryByRole("button", { name: /^Rename/ })).toBeNull();
   });
 
-  it("rename PUTs and the display follows; clear DELETEs back to the chain; a 400 surfaces inline once", async () => {
+  it("rename PUTs and the display follows; clear DELETEs back to the chain; a 400 surfaces inline once with the overlay open", async () => {
     let override = "";
     const puts: string[] = [];
     let deletes = 0;
@@ -691,8 +733,11 @@ describe("Collection — served display_name (display-naming group 4)", () => {
     });
     renderCollection("1");
 
-    // Rename: the PUT fires once and the card's title follows the override.
-    fireEvent.click(await screen.findByRole("button", { name: "Rename Show 2019" }));
+    // Rename through the card menu: trigger → Rename… row → the form. The
+    // PUT fires once, the awaited collapse closes the overlay, and the card's
+    // title follows the override.
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Show 2019" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rename…" }));
     fireEvent.change(screen.getByLabelText("New title for Show 2019"), {
       target: { value: "Better Name" },
     });
@@ -700,16 +745,22 @@ describe("Collection — served display_name (display-naming group 4)", () => {
     const renamed = await screen.findByRole("link", { name: /Better Name/ });
     expect(within(renamed).queryByText("Show 2019")).toBeNull();
     expect(puts).toEqual(["Better Name"]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
-    // Clear: the DELETE fires and the chain value returns.
-    fireEvent.click(screen.getByRole("button", { name: "Rename Better Name" }));
+    // Clear: the DELETE fires, the overlay collapses, and the chain value
+    // returns.
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Better Name" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rename…" }));
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(await screen.findByRole("link", { name: /Show 2019/ })).toBeDefined();
     expect(deletes).toBe(1);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     // Invalid submission: whitespace-only → the canonical 400 surfaces
-    // inline, exactly once (no auto-retry behind the failure).
-    fireEvent.click(screen.getByRole("button", { name: "Rename Show 2019" }));
+    // inline, exactly once (no auto-retry behind the failure), and the
+    // overlay STAYS OPEN so the operator can correct the value.
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Show 2019" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rename…" }));
     fireEvent.change(screen.getByLabelText("New title for Show 2019"), {
       target: { value: "   " },
     });
@@ -717,6 +768,366 @@ describe("Collection — served display_name (display-naming group 4)", () => {
     expect(await screen.findByRole("alert")).toBeDefined();
     expect(screen.getByText(/bad_request: title is required/)).toBeDefined();
     expect(puts).toEqual(["Better Name", "   "]);
+    expect(screen.getByRole("dialog")).toBeDefined();
+  });
+});
+
+describe("Collection — CardActions shell (ui-management pass 1)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // oneSeriesSeam — a serial library with the given rows; title PUTs follow
+  // the same contract as the rename test (empty title → 400).
+  function oneSeriesSeam(rows: SeriesDTO[]): void {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/title")) {
+        const { title } = JSON.parse(String(init?.body)) as { title: string };
+        if (method === "PUT") {
+          return title.trim() === ""
+            ? Promise.resolve(
+                jsonResponse(400, {
+                  error: { code: "bad_request", message: "title is required and must be a non-empty string", retryable: false },
+                }),
+              )
+            : Promise.resolve(
+                jsonResponse(200, { entity_id: rows[0].id, title, updated_at: "2026-10-16T00:00:00Z" }),
+              );
+        }
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.includes("/api/v1/series?library=1")) {
+        return Promise.resolve(jsonResponse(200, { items: rows }));
+      }
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(jsonResponse(200, { library_id: 1, items: rows.length, updated_at: "" }));
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "serial", "films")] }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+  }
+
+  function srow1(id: string, displayName: string, backing?: string): SeriesDTO {
+    const d: ItemDocument = {};
+    if (backing !== undefined) d.parsed = { backing };
+    return {
+      id,
+      module_id: "serial",
+      library_id: 1,
+      relative_path: displayName,
+      document: d,
+      schema_version: 1,
+      status: "ready",
+      title_override: "",
+      display_name: displayName,
+    };
+  }
+
+  it("the trigger carries the dialog a11y pair; the menu flips to the rename view; Esc walks view→menu→close-all", async () => {
+    oneSeriesSeam([srow1("ser_1_show", "Show 2019")]);
+    renderCollection("1");
+
+    const trigger = await screen.findByRole("button", { name: "Actions for Show 2019" });
+    expect(trigger.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(trigger.hasAttribute("data-open")).toBe(true);
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    // data-open persists the open state (load-bearing: the panel is
+    // portaled, so :focus-within goes false once focus enters it).
+    expect(trigger.hasAttribute("data-open")).toBe(true);
+
+    // menu → rename view
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rename…" }));
+    expect(await screen.findByLabelText("New title for Show 2019")).toBeDefined();
+
+    // Esc in a view → back to the menu (the overlay never closes mid-walk).
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(await screen.findByRole("button", { name: "Rename…" })).toBeDefined();
+
+    // Esc in the menu → close all.
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(trigger.hasAttribute("data-open")).toBe(false);
+  });
+
+  it("Esc is IGNORED while a mutation is pending; the awaited collapse closes afterwards", async () => {
+    let releasePut: (r: Response) => void = () => {};
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/title") && method === "PUT") {
+        return new Promise<Response>((res) => {
+          releasePut = res;
+        });
+      }
+      if (url.includes("/api/v1/series?library=1")) {
+        return Promise.resolve(jsonResponse(200, { items: [srow1("ser_1_show", "Show 2019")] }));
+      }
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(jsonResponse(200, { library_id: 1, items: 1, updated_at: "" }));
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "serial", "films")] }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Show 2019" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rename…" }));
+    fireEvent.change(screen.getByLabelText("New title for Show 2019"), {
+      target: { value: "Better Name" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // In flight: Esc does nothing — an unmounted view could never render the
+    // canonical inline error.
+    expect(await screen.findByRole("dialog")).toBeDefined();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.getByLabelText("New title for Show 2019")).toBeDefined();
+
+    // The awaited mutation completes → its collapse closes the overlay.
+    releasePut(
+      jsonResponse(200, { entity_id: "ser_1_show", title: "Better Name", updated_at: "2026-10-16T00:00:00Z" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("traps focus with the two-sentinel Tab loop and returns focus to the trigger on close", async () => {
+    oneSeriesSeam([srow1("ser_1_show", "Show 2019")]);
+    renderCollection("1");
+
+    const trigger = await screen.findByRole("button", { name: "Actions for Show 2019" });
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog");
+
+    // On open, focus moves into the panel (its first focusable row).
+    const renameRow = within(dialog).getByRole("button", { name: "Rename…" });
+    await waitFor(() => expect(document.activeElement).toBe(renameRow));
+
+    // Sentinel wraps: bottom → first focusable, top → last focusable.
+    const sentinels = dialog.querySelectorAll<HTMLElement>(".cardact-sentinel");
+    expect(sentinels.length).toBe(2);
+    fireEvent.focus(sentinels[sentinels.length - 1]);
+    expect(document.activeElement).toBe(renameRow);
+    fireEvent.focus(sentinels[0]);
+    expect(document.activeElement).toBe(renameRow);
+
+    // Scrim click-away closes all and returns focus to the trigger.
+    const backdrop = document.querySelector(".overlay-backdrop");
+    expect(backdrop).not.toBeNull();
+    fireEvent.click(backdrop as Element);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("the series menu carries the 'File-backed series' footer only for file-backed rows", async () => {
+    oneSeriesSeam([
+      srow1("ser_1_dir", "Dir Show"),
+      srow1("ser_1_file", "File Show", "file"),
+    ]);
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Dir Show" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByText("File-backed series")).toBeNull();
+
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions for File Show" }));
+    expect(await screen.findByText("File-backed series")).toBeDefined();
+  });
+});
+
+describe("Collection — Mark watched row (ui-management pass 1)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // tvSeam — a tv library over the given rows; progress PUTs are recorded.
+  function tvSeam(rows: ItemDTO[]): { puts: { url: string; body: unknown }[] } {
+    const puts: { url: string; body: unknown }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/v1/progress/") && method === "PUT") {
+        puts.push({ url, body: JSON.parse(String(init?.body)) });
+        const itemId = url.split("/").pop() ?? "";
+        return Promise.resolve(
+          jsonResponse(200, {
+            item_id: itemId,
+            position_seconds: 1,
+            updated_at: "2026-10-16T00:00:00Z",
+          }),
+        );
+      }
+      if (url.includes("/api/v1/items?library=1")) {
+        return Promise.resolve(jsonResponse(200, { items: rows }));
+      }
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(jsonResponse(200, { library_id: 1, items: rows.length, updated_at: "" }));
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films")] }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    return { puts };
+  }
+
+  it("shows Mark watched only on a known duration, PUTs position_seconds=durationSeconds, and keeps the menu open on success", async () => {
+    const withDuration = doc({ year: 2019 });
+    withDuration.ffprobe = { format: { duration: "1430.4" } };
+    const { puts } = tvSeam([
+      item("itm_1_wd", "tv", "Movies/wd.mkv", withDuration, "With Duration"),
+      item("itm_1_nd", "tv", "Movies/nd.mkv", doc({}), "No Duration"),
+    ]);
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for With Duration" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Mark watched" }));
+
+    // The PUT carries the item's full whole-second duration (1430.4 → 1430).
+    await waitFor(() => expect(puts.length).toBe(1));
+    expect(puts[0].url).toContain("/api/v1/progress/itm_1_wd");
+    expect(puts[0].body).toEqual({ position_seconds: 1430 });
+
+    // Success keeps the menu open — the row is an action, not a view.
+    expect(screen.getByRole("dialog")).toBeDefined();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Mark watched" })).toBeDefined();
+
+    // The unprobed row never sees the row — never a guessed duration.
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Actions for No Duration" }));
+    const dialogB = await screen.findByRole("dialog");
+    expect(within(dialogB).queryByRole("button", { name: "Mark watched" })).toBeNull();
+  });
+
+  it("renders a row-local transient error on failure and keeps the menu open", async () => {
+    const withDuration = doc({});
+    withDuration.ffprobe = { format: { duration: "600" } };
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.includes("/api/v1/progress/") && (init?.method ?? "GET") === "PUT") {
+        return Promise.resolve(
+          jsonResponse(500, {
+            error: { code: "internal", message: "progress write failed", retryable: false },
+          }),
+        );
+      }
+      if (url.includes("/api/v1/items?library=1")) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            items: [item("itm_1_wd", "tv", "Movies/wd.mkv", withDuration, "With Duration")],
+          }),
+        );
+      }
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(jsonResponse(200, { library_id: 1, items: 1, updated_at: "" }));
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films")] }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for With Duration" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Mark watched" }));
+
+    // The canonical error renders row-locally; the menu stays open.
+    expect(await screen.findByRole("alert")).toBeDefined();
+    expect(screen.getByText(/internal: progress write failed/)).toBeDefined();
+    expect(screen.getByRole("dialog")).toBeDefined();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Mark watched" })).toBeDefined();
+  });
+});
+
+describe("Collection — INV-no-filenames title floors (ui-management pass 1)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("MovieCard floors an empty or filename-equal display_name to the stem + 'Not identified'; a Part.2-style suffix survives; the duration joins the meta line", async () => {
+    const withDuration = doc({ title: "decoy" });
+    withDuration.ffprobe = { format: { duration: "1430.4" } };
+    fetchWith({
+      ...headerSeam("tv", 3),
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              // Empty served name → stem + marker.
+              item("itm_1_f1", "tv", "Movies/Totide 2019 1080p.mkv", doc({ year: 2019, resolution: "1080p" }), ""),
+              // Served name IS the filename → stem + marker.
+              item("itm_1_f2", "tv", "Movies/Untitled Part.2.mkv", doc({}), "Untitled Part.2.mkv"),
+              // Identified name whose stem would lose a "Part.2" suffix →
+              // verbatim, no marker; the ffprobe duration joins the meta line.
+              item("itm_1_f3", "tv", "Movies/Show Part.2.mkv", withDuration, "Show Part.2"),
+            ],
+          }),
+        ),
+    });
+    renderCollection("1");
+
+    const f1 = await screen.findByRole("link", { name: /Totide 2019 1080p/ });
+    expect(within(f1).getByText("Not identified")).toBeDefined();
+    expect(within(f1).getByText("2019 · 1080p")).toBeDefined();
+    const f2 = screen.getByRole("link", { name: /Untitled Part\.2/ });
+    expect(within(f2).getByText("Not identified")).toBeDefined();
+    expect(within(f2).queryByText("Untitled Part.2.mkv")).toBeNull();
+    // The anchored 2–4-char extension regex strips only the real extension.
+    const f3 = screen.getByRole("link", { name: /Show Part\.2/ });
+    expect(within(f3).queryByText("Not identified")).toBeNull();
+    expect(within(f3).getByText("23:50")).toBeDefined();
+    // Exactly two flagged cards — the identified one is untouched.
+    expect(screen.getAllByText("Not identified").length).toBe(2);
+  });
+
+  it("ItemGrid floors an empty display_name to the stem with NO marker and no filename row", async () => {
+    fetchWith({
+      ...headerSeam("audiobook", 2),
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              item("itm_1_g1", "audiobook", "Books/Some Book.m4b", doc({}), ""),
+              item("itm_1_g2", "audiobook", "Books/Named.m4b", doc({}), "Named"),
+            ],
+          }),
+        ),
+    });
+    renderCollection("1");
+
+    const g1 = await screen.findByRole("link", { name: /Some Book/ });
+    expect(within(g1).getByText("Some Book")).toBeDefined();
+    // Markerless surface: no menu here, so no "Not identified" line.
+    expect(within(g1).queryByText("Not identified")).toBeNull();
+    expect(within(g1).queryByText("Some Book.m4b")).toBeNull();
+    const g2 = screen.getByRole("link", { name: /Named/ });
+    expect(within(g2).getByText("Named")).toBeDefined();
   });
 });
 
@@ -820,9 +1231,9 @@ describe("Collection — media tiles (media-preview group 2)", () => {
     const spy = photosSeam(() => Promise.resolve(mediaResponse()));
     renderCollection("1");
 
-    const beach = await screen.findByRole("link", { name: "Open beach.jpg" });
+    const beach = await screen.findByRole("link", { name: "Open beach" });
     await waitFor(() => expect(beach.querySelector("img")).not.toBeNull());
-    const alps = screen.getByRole("link", { name: "Open alps.jpg" });
+    const alps = screen.getByRole("link", { name: "Open alps" });
     await waitFor(() => expect(alps.querySelector("img")).not.toBeNull());
 
     // p1 asked for its thumb; p2 fell back to the original (no variant).
@@ -832,7 +1243,7 @@ describe("Collection — media tiles (media-preview group 2)", () => {
     ]);
 
     // p3 has no media fact — no <img>, no media call, placeholder kept.
-    const scan = screen.getByRole("link", { name: "Open scan.jpg" });
+    const scan = screen.getByRole("link", { name: "Open scan" });
     expect(scan.querySelector("img")).toBeNull();
     // Capture-date footer unchanged (photo p1 still shows its date part).
     expect(within(beach).getByText("2026-07-04")).toBeDefined();
@@ -849,19 +1260,19 @@ describe("Collection — media tiles (media-preview group 2)", () => {
     );
     renderCollection("1");
 
-    await screen.findByRole("link", { name: "Open beach.jpg" });
+    await screen.findByRole("link", { name: "Open beach" });
     // The fetch was attempted for the fact-bearing tiles…
     await waitFor(() => expect(mediaCalls(spy).length).toBe(2));
     // …but a failed load renders the placeholder, not an <img> and not a
     // broken-image icon.
     for (const link of [
-      screen.getByRole("link", { name: "Open beach.jpg" }),
-      screen.getByRole("link", { name: "Open alps.jpg" }),
+      screen.getByRole("link", { name: "Open beach" }),
+      screen.getByRole("link", { name: "Open alps" }),
     ]) {
       expect(link.querySelector("img")).toBeNull();
     }
-    // The tile is still fully itself: filename + date footer.
-    expect(within(screen.getByRole("link", { name: "Open beach.jpg" })).getByText("2026-07-04")).toBeDefined();
+    // The tile is still fully itself: capture-date footer, no filename.
+    expect(within(screen.getByRole("link", { name: "Open beach" })).getByText("2026-07-04")).toBeDefined();
   });
 
   it("renders the movie card's frame-grabber thumb via the media fetch; a card without the fact stays text-only", async () => {
@@ -882,8 +1293,15 @@ describe("Collection — media tiles (media-preview group 2)", () => {
                   season: 1,
                   episode: 2,
                 }),
+                "The Thing",
               ),
-              item("itm_1_b", "tv", "Movies/plain.mkv", { parsed: {}, sources: { "frame-grabber": { thumbnail_path: "/t/b.jpg" } }, _view: { title: { value: "Plain", source: "tv-parser", reason: "priority" } } }),
+              item(
+                "itm_1_b",
+                "tv",
+                "Movies/plain.mkv",
+                { parsed: {}, sources: { "frame-grabber": { thumbnail_path: "/t/b.jpg" } }, _view: { title: { value: "Plain", source: "tv-parser", reason: "priority" } } },
+                "Plain",
+              ),
             ],
           }),
         ),
@@ -899,5 +1317,8 @@ describe("Collection — media tiles (media-preview group 2)", () => {
     // The card without the fact fires no media request and renders no img.
     const plain = screen.getByRole("link", { name: /The Thing/ });
     expect(plain.querySelector("img")).toBeNull();
+    // INV-no-filenames: neither card shows its raw filename.
+    expect(within(withThumb).queryByText("plain.mkv")).toBeNull();
+    expect(within(plain).queryByText(/\.mkv/)).toBeNull();
   });
 });
