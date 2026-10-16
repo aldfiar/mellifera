@@ -1370,6 +1370,176 @@ describe("Collection — Identify view (ui-management pass 2)", () => {
   });
 });
 
+describe("Collection — Identify save (ui-management pass 2)", () => {
+  const CHAIN: ParserBinding[] = [
+    { id: "anitomy", display_fields: [] },
+    { id: "tmdb", display_fields: [] },
+    { id: "tvmaze", display_fields: [] },
+  ];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // saveSeam — a tv library with a wired chain whose item detail answers
+  // immediately with the given extra_parsers; the parsers PUT is recorded
+  // and answered by `respond`. The GET counters expose the invalidation
+  // keys' refetches. Seam order matters: the /parsers and /libraries/1
+  // fragments precede the generic /libraries and /items matches (substring
+  // matching, earlier wins).
+  function saveSeam(parts: {
+    extraParsers?: string[];
+    respond: () => Promise<Response>;
+  }): {
+    puts: { parsers: string[] }[];
+    detailGets: () => number;
+    listGets: () => number;
+  } {
+    const puts: { parsers: string[] }[] = [];
+    let detailGets = 0;
+    let listGets = 0;
+    const row = item("itm_1_a", "tv", "Movies/known.mkv", doc({ title: "Known" }), "Known");
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (
+        url.includes("/api/v1/items/itm_1_a/parsers") &&
+        (init?.method ?? "GET") === "PUT"
+      ) {
+        puts.push({
+          parsers: (JSON.parse(String(init?.body)) as { parsers: string[] }).parsers,
+        });
+        return parts.respond();
+      }
+      if (url.includes("/api/v1/libraries/1/summary")) {
+        return Promise.resolve(
+          jsonResponse(200, { library_id: 1, items: 1, updated_at: "" }),
+        );
+      }
+      if (url.includes("/api/v1/libraries/1")) {
+        const detail = lib(1, "tv", "films");
+        detail.module = { identity_fields: ["title"], parsers: CHAIN };
+        return Promise.resolve(jsonResponse(200, detail));
+      }
+      if (url.includes("/api/v1/libraries")) {
+        return Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films")] }));
+      }
+      if (url.includes("/api/v1/items?library=1")) {
+        listGets += 1;
+        return Promise.resolve(jsonResponse(200, { items: [row] }));
+      }
+      if (url.includes("/api/v1/items/itm_1_a")) {
+        detailGets += 1;
+        return Promise.resolve(
+          jsonResponse(200, {
+            item: {
+              ...row,
+              ...(parts.extraParsers !== undefined
+                ? { extra_parsers: parts.extraParsers }
+                : {}),
+            },
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    return { puts, detailGets: () => detailGets, listGets: () => listGets };
+  }
+
+  async function openIdentify(): Promise<void> {
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Known" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Identify…" }),
+    );
+    await screen.findByRole("list", { name: "Attached parsers" });
+  }
+
+  it("Save PUTs the FULL ordered draft, fires the invalidation keys, and collapses via the awaited success", async () => {
+    const seam = saveSeam({
+      extraParsers: ["tmdb", "anitomy"],
+      respond: () => Promise.resolve(jsonResponse(200, { parsers: ["anitomy", "tmdb"] })),
+    });
+    renderCollection("1");
+    await openIdentify();
+
+    // Reorder the draft: tmdb moves below anitomy.
+    const rows = within(
+      screen.getByRole("list", { name: "Attached parsers" }),
+    ).getAllByRole("listitem");
+    expect(within(rows[0]).getByText("tmdb")).toBeDefined();
+    fireEvent.click(within(rows[0]).getByRole("button", { name: "Move tmdb down" }));
+
+    // The staleness copy renders verbatim (staleness handling is copy-only).
+    expect(
+      screen.getByText(
+        "Enrichment runs in the background; the name updates when it lands. A recently failed row waits out its cooldown before retrying.",
+      ),
+    ).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The PUT body is the COMPLETE ordered list — both ids in draft order,
+    // never a diff.
+    await waitFor(() =>
+      expect(seam.puts).toEqual([{ parsers: ["anitomy", "tmdb"] }]),
+    );
+    // The awaited success collapses the overlay.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The invalidation keys fired: the caller's read (["items"] → the items
+    // list) and the detail read (["item", id]) both refetched.
+    await waitFor(() => expect(seam.listGets()).toBe(2));
+    await waitFor(() => expect(seam.detailGets()).toBe(2));
+  });
+
+  it("removing every attached parser PUTs the emptied list", async () => {
+    const seam = saveSeam({
+      extraParsers: ["tmdb", "anitomy"],
+      respond: () => Promise.resolve(jsonResponse(200, { parsers: [] })),
+    });
+    renderCollection("1");
+    await openIdentify();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove tmdb" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove anitomy" }));
+    expect(screen.getByText("Nothing attached.")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Empty is a legal FULL-replacement body — it clears the attachments.
+    await waitFor(() => expect(seam.puts).toEqual([{ parsers: [] }]));
+  });
+
+  it("a 400 (unknown parser) renders inline once and the overlay stays open on the identify view", async () => {
+    const seam = saveSeam({
+      extraParsers: ["tmdb"],
+      respond: () =>
+        Promise.resolve(
+          jsonResponse(400, {
+            error: {
+              code: "bad_request",
+              message: "unknown parser tmdb",
+              retryable: false,
+            },
+          }),
+        ),
+    });
+    renderCollection("1");
+    await openIdentify();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The canonical error renders inline, exactly once (no auto-retry), and
+    // the overlay STAYS OPEN so the draft survives.
+    expect(await screen.findByRole("alert")).toBeDefined();
+    expect(screen.getByText(/bad_request: unknown parser tmdb/)).toBeDefined();
+    await waitFor(() => expect(seam.puts.length).toBe(1));
+    expect(screen.getByRole("dialog")).toBeDefined();
+    expect(screen.getByRole("list", { name: "Attached parsers" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDefined();
+  });
+});
+
 describe("Collection — media tiles (media-preview group 2)", () => {
   // stubObjectUrls — jsdom has no createObjectURL/revokeObjectURL; the hook's
   // whole contract is those two calls, so they are observable stubs here.

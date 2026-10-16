@@ -15,11 +15,13 @@ import {
   deleteSeriesTitle,
   hasFrameGrabberThumb,
   hasOriginalFile,
+  putItemParsers,
   putProgress,
   setItemTitle,
   setSeriesTitle,
   type ApiError,
   type ItemDTO,
+  type ItemParsersResponse,
   type LibraryDTO,
   type ListItemsParams,
   type ParserBinding,
@@ -506,8 +508,14 @@ function MovieCard(props: {
   const chain = props.chain ?? [];
   const identify =
     chain.length > 0
-      ? ({ back }: { collapse: () => void; back: () => void }) => (
-          <IdentifyView itemId={item.id} chain={chain} onBack={back} />
+      ? ({ collapse, back }: { collapse: () => void; back: () => void }) => (
+          <IdentifyView
+            itemId={item.id}
+            chain={chain}
+            invalidate={props.invalidate ?? ["items"]}
+            onCollapse={collapse}
+            onBack={back}
+          />
         )
       : undefined;
 
@@ -1077,20 +1085,21 @@ function MarkWatchedRow(props: { itemId: string; duration: number }): ReactEleme
   );
 }
 
-// IdentifyView — the card menu's identify view (ui-management pass 2, box
-// 2.1). Opening it performs a MANDATORY GET /items/{id} (the `useItem` detail
-// hook): `extra_parsers` — the item's attached parser ids — is populated ONLY
-// by the detail endpoint, so computing the attachable diff from list rows
-// would show attached parsers as attachable and the full-replacement parsers
-// PUT (box 2.2) would silently drop existing attachments. Rendering is gated
-// on that fetch: no parser list until the detail lands (a muted loading line,
-// never a spinner).
+// IdentifyView — the card menu's identify view (ui-management pass 2, boxes
+// 2.1–2.2). Opening it performs a MANDATORY GET /items/{id} (the `useItem`
+// detail hook): `extra_parsers` — the item's attached parser ids — is
+// populated ONLY by the detail endpoint, so computing the attachable diff
+// from list rows would show attached parsers as attachable and the
+// full-replacement parsers PUT would silently drop existing attachments.
+// Rendering is gated on that fetch: no parser list until the detail lands (a
+// muted loading line, never a spinner).
 //
 // The three facts the view shows:
 //   - attached — the item's `extra_parsers` in attachment order, up/down
-//     reorderable (keyboard-native; drag is a later refinement). The local
-//     draft order starts as the served order and is what the box-2.2 save
-//     will send as the complete ordered list.
+//     reorderable and per-row removable (keyboard-native; drag is a later
+//     refinement). The local draft order starts as the served order and is
+//     what Save sends as the COMPLETE ordered list — the parsers PUT is a
+//     full replacement, so the draft is always sent whole (empty clears).
 //   - the parser chain — the library module's declared bindings, served
 //     order, from the page-level module block (read-only here; the library
 //     Manage overlay owns editing it).
@@ -1098,15 +1107,25 @@ function MarkWatchedRow(props: { itemId: string; duration: number }): ReactEleme
 //     `extra_parsers` field means empty attachments, so every declared parser
 //     is attachable).
 //
-// A detail error surfaces inline (role="alert"); Back returns to the menu.
+// Save PUTs the full draft (retry:0); a canonical 400 (unknown/mismatched
+// parser) surfaces inline and the overlay stays open; the awaited success
+// invalidates the caller's read key (the items page or the episode list) and
+// this detail entry, then collapses the overlay — the name itself updates
+// when the background enrichment lands (staleness is copy-only per the
+// accepted default). A detail error surfaces inline (role="alert"); Back
+// returns to the menu.
 function IdentifyView(props: {
   itemId: string;
   chain: ParserBinding[];
+  invalidate: readonly unknown[];
+  onCollapse: () => void;
   onBack: () => void;
 }): ReactElement {
+  const qc = useQueryClient();
   const detail = useItem(props.itemId);
-  // The attachment draft: null until the operator reorders — i.e. the served
-  // attachment order verbatim; a reorder pins the edited order.
+  // The attachment draft: null until the operator edits — i.e. the served
+  // attachment order verbatim; a reorder or removal pins the edited order
+  // (an EMPTY pinned draft is the emptied-list save, never "unedited").
   const [order, setOrder] = useState<string[] | null>(null);
   const served = detail.data?.item.extra_parsers ?? [];
   const attached = order ?? served;
@@ -1120,6 +1139,29 @@ function IdentifyView(props: {
     const [picked] = next.splice(index, 1);
     next.splice(target, 0, picked);
     setOrder(next);
+  };
+
+  const remove = (id: string): void => {
+    setOrder(attached.filter((a) => a !== id));
+  };
+
+  const save = useMutation<ItemParsersResponse, ApiError, void>({
+    mutationFn: () => putItemParsers(props.itemId, attached),
+    retry: 0,
+    onSuccess: () => {
+      // The write changes what the list rows and the detail read serve
+      // (extra_parsers, recomposed names): invalidate the caller's read key
+      // (the items page or the episode list) and this view's own entry.
+      void qc.invalidateQueries({ queryKey: [...props.invalidate] });
+      void qc.invalidateQueries({ queryKey: ["item", props.itemId] });
+    },
+  });
+
+  const saveDraft = (): void => {
+    save
+      .mutateAsync()
+      .then(props.onCollapse) // awaited collapse — never an isSuccess effect
+      .catch(() => {}); // the canonical error renders inline below
   };
 
   if (detail.isLoading) {
@@ -1181,6 +1223,14 @@ function IdentifyView(props: {
                 >
                   ↓
                 </button>
+                <button
+                  type="button"
+                  className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                  aria-label={`Remove ${id}`}
+                  onClick={() => remove(id)}
+                >
+                  ×
+                </button>
               </span>
             </li>
           ))}
@@ -1202,10 +1252,27 @@ function IdentifyView(props: {
       <button
         type="button"
         className="cardact-row"
+        disabled={save.isPending}
+        onClick={saveDraft}
+      >
+        Save
+      </button>
+      <p className="text-xs text-muted-foreground">
+        Enrichment runs in the background; the name updates when it lands. A
+        recently failed row waits out its cooldown before retrying.
+      </p>
+      <button
+        type="button"
+        className="cardact-row"
         onClick={props.onBack}
       >
         Back
       </button>
+      {save.error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {save.error.code}: {save.error.message}
+        </p>
+      ) : null}
     </div>
   );
 }

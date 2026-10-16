@@ -253,6 +253,18 @@ export interface TitleOverrideDTO {
   updated_at: string;
 }
 
+// parsers.go itemParsersRequest / itemParsersResponse — the PUT
+// /api/v1/items/{id}/parsers body and 200 body: the FULL replacement
+// attachment list in attachment order (an empty array clears — the DELETE
+// verb's equivalent write). Field names match the JSON tags EXACTLY.
+export interface ItemParsersRequest {
+  parsers: string[];
+}
+
+export interface ItemParsersResponse {
+  parsers: string[];
+}
+
 // handlers.go itemResponse
 export interface ItemResponse {
   item: ItemDTO;
@@ -341,6 +353,11 @@ export const ENDPOINTS = {
   // inline by the caller without auto-retry.
   seriesTitle: (id: string): string => `/api/v1/series/${id}/title`,
   itemTitle: (id: string): string => `/api/v1/items/${id}/title`,
+  // itemParsers — PUT /api/v1/items/{id}/parsers (parsers.go putItemParsers,
+  // ui-management pass 2): the FULL replacement attachment write — the body's
+  // ordered parser id list becomes the stored extra_parsers verbatim, an
+  // empty list clears.
+  itemParsers: (id: string): string => `/api/v1/items/${id}/parsers`,
   progress: "/api/v1/progress",
   // Playback verbs (packaged-playback): the read-only descriptor and the
   // single playback mutation (POST /play with {retry:true} re-enqueues a
@@ -511,6 +528,23 @@ export async function deleteSeriesTitle(id: string): Promise<void> {
 // deleteSeriesTitle, same idempotent 204 contract.
 export async function deleteItemTitle(id: string): Promise<void> {
   await apiRequestVoid(ENDPOINTS.itemTitle(id), { method: "DELETE" });
+}
+
+// putItemParsers — PUT /api/v1/items/{id}/parsers (parsers.go putItemParsers,
+// ui-management pass 2): FULL replacement of the item's element-only parser
+// attachments — the stored list becomes exactly `parsers` in order; an empty
+// list clears. 200 with the stored list; 400 bad_request for an unknown or
+// capability-mismatched plugin id, 404 not_found for an unknown item — both
+// canonical, surfaced inline by the caller (mutations are retry:0 — no
+// auto-retry).
+export async function putItemParsers(
+  id: string,
+  parsers: string[],
+): Promise<ItemParsersResponse> {
+  return apiRequest<ItemParsersResponse>(ENDPOINTS.itemParsers(id), {
+    method: "PUT",
+    body: { parsers } as unknown as BodyInit,
+  });
 }
 
 // getPlayback — GET /api/v1/items/{id}/playback (handlers.go itemPlayback,
