@@ -247,9 +247,11 @@ func sweepSeries(ctx context.Context, st *store.Store, libraryID int64, observed
 // the prior status so a settled record is not regressed. Identify/persist
 // failures are soft (AC-6); a cancelled context is returned as an error so
 // runScan stops draining (B6) and takes precedence over any concurrent soft
-// failure. An unchanged re-scan additionally carries the prior document's
-// `streams` namespace forward; a changed one drops it (D-11 — packaging state
-// keys on the parsed+ffprobe base, so a changed base invalidates it).
+// failure. A parsed-unchanged re-scan additionally carries the prior
+// document's derived namespaces forward (two-tier, D-11 — packaging state keys
+// on the parsed+ffprobe base, so a drifted ffprobe drops `streams` alone); a
+// parsed change drops them all (the changed identity invalidates every
+// derived namespace).
 func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, rootPath string, libraryID int64, observed map[string]bool, res *Result) error {
 	identified, err := sc.Identify(ctx, &scannerv1.IdentifyRequest{File: f, ModuleType: mod.MediaType})
 	if err != nil {
@@ -261,9 +263,9 @@ func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.
 		return persistSeries(ctx, st, f, parsed, mod, rootPath, libraryID, observed, res)
 	}
 	base := assembleBaseDoc(f, identified, mod.MediaType, mod.SchemaVersion, rootPath)
-	status, streams := nextScanState(ctx, st, libraryID, f.GetFileId(), base, res)
-	if streams != nil {
-		base["streams"] = streams // D-11 carry-forward: unchanged base, derived state survives
+	status, carry := nextScanState(ctx, st, libraryID, f.GetFileId(), base, res)
+	for k, v := range carry {
+		base[k] = v // carry-forward: derived namespaces survive the document-replacing upsert
 	}
 	if err := st.PutItem(ctx, newItem(f, mod, libraryID, marshalDoc(base), status)); err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("persist %q: %v", f.GetRelativePath(), err))
@@ -282,7 +284,10 @@ func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.
 func persistSeries(ctx context.Context, st *store.Store, f *scannerv1.DiscoveredFile, parsed map[string]any, mod module.Module, rootPath string, libraryID int64, observed map[string]bool, res *Result) error {
 	rel := seriesRelativePath(parsed, f.GetRelativePath())
 	doc := assembleSeriesDoc(f, parsed, rootPath)
-	status := nextSeriesStatus(ctx, st, libraryID, rel, doc, res)
+	status, carry := nextSeriesState(ctx, st, libraryID, rel, doc, res)
+	for k, v := range carry {
+		doc[k] = v // carry-forward: derived namespaces survive the document-replacing upsert
+	}
 	if err := st.PutSeries(ctx, store.Series{
 		ModuleID:      mod.ID,
 		LibraryID:     libraryID,
@@ -340,7 +345,9 @@ func seriesRelativePath(parsed map[string]any, fallback string) string {
 // otherwise (directory-backed). The core-managed namespaces (sources /
 // _provenance / _view / _stages) populate only as metadata plugins enrich the
 // document. The key set is exactly {parsed, ffprobe}: identity/lifecycle live
-// in the series row's columns, not duplicated into the opaque document.
+// in the series row's columns, not duplicated into the opaque document — but
+// the derived state is no longer lost on a re-scan: persistSeries merges the
+// prior document's carry (nextSeriesState) onto this fresh base.
 func assembleSeriesDoc(f *scannerv1.DiscoveredFile, parsed map[string]any, rootPath string) map[string]any {
 	parsedBytes, err := json.Marshal(parsed)
 	if err != nil {
@@ -357,30 +364,36 @@ func assembleSeriesDoc(f *scannerv1.DiscoveredFile, parsed map[string]any, rootP
 	}
 }
 
-// nextSeriesStatus decides the lifecycle status scan persists for one serial
-// record — the series mirror of nextScanState over the same baseChanged /
-// canonical-JSON compare (serials-library box 1.4): "pending" for a first
-// sight, "stale" when the serial facts (parsed + ffprobe) changed, "ready"
-// when the prior row was "deleted" but this pass re-observed it with unchanged
-// facts (the wrongful-tombstone self-heal: a truncated pass no longer sweeps,
+// nextSeriesState decides the lifecycle status scan persists for one serial
+// record AND which derived namespaces survive the re-scan — the series mirror
+// of nextScanState over the same two-tier basis: "pending" for a first sight
+// (or an unreadable prior), "stale" when the parsed serial identity changed
+// (AC-states(c)), and the prior status preserved for any parsed-unchanged
+// re-scan — including the `deleted → ready` self-heal of a re-observed
+// tombstone (fix-truncated-scan-sweep D3: a truncated pass no longer sweeps,
 // and a healthy re-scan lifts the tombstones a historical truncated pass
-// wrote), and the prior status preserved for any other unchanged re-scan (a
-// ready series is not regressed to pending). A "deleted" row the pass does not
-// re-observe keeps "deleted" (sweepSeries's existing skip — no updated_at
-// churn). A lookup error is soft (AC-6): it falls back to "pending" — the
+// wrote). A "deleted" row the pass does not re-observe keeps "deleted"
+// (sweepSeries's existing skip — no updated_at churn). Every parsed-unchanged
+// leg carries the prior derived namespaces forward verbatim via derivedCarry
+// with dropStreams=false: a series record is never packaged, so tier B's
+// streams drop does not apply — ffprobe drift alone keeps both the status and
+// the carry. A lookup error is soft (AC-6): it falls back to "pending" — the
 // queue re-derives either way.
-func nextSeriesStatus(ctx context.Context, st *store.Store, libraryID int64, rel string, refreshed map[string]any, res *Result) string {
+func nextSeriesState(ctx context.Context, st *store.Store, libraryID int64, rel string, refreshed map[string]any, res *Result) (string, map[string]any) {
 	prior, err := st.GetSeriesByPath(ctx, libraryID, rel)
 	if err != nil {
-		return scanStatusPending // first sight (or unreadable prior) -> re-queue
+		return scanStatusPending, nil // first sight (or unreadable prior) -> re-queue
 	}
-	if baseChanged(prior.Document, refreshed) {
-		return scanStatusStale
+	if parsedChanged(prior.Document, refreshed) {
+		return scanStatusStale, nil // parsed identity changed: every derived namespace is invalid
 	}
-	if prior.Status == scanStatusDeleted {
-		return scanStatusReady // re-observed tombstone: self-heal (fix-truncated-scan-sweep D3)
+	// Parsed unchanged: preserve the prior status — a re-observed tombstone
+	// self-heals to ready — and carry the derived namespaces forward.
+	status := prior.Status
+	if status == scanStatusDeleted {
+		status = scanStatusReady // re-observed tombstone: self-heal (fix-truncated-scan-sweep D3)
 	}
-	return prior.Status // unchanged re-scan: preserve (don't regress ready)
+	return status, derivedCarry(prior.Document, refreshed, false)
 }
 
 // scanStatusPending/scanStatusStale/scanStatusReady are the lifecycle values
@@ -388,7 +401,7 @@ func nextSeriesStatus(ctx context.Context, st *store.Store, libraryID int64, rel
 // (state.go INV-status-owner); scan emits the literals it needs rather than
 // importing enrich's unexported consts (exporting them would breach the enrich
 // <=8 exported-symbol budget). The async worker/queue consume these verbatim;
-// scan produces "ready" ONLY as the nextSeriesStatus self-heal of a re-observed
+// scan produces "ready" ONLY as the nextSeriesState self-heal of a re-observed
 // "deleted" row, and never produces the remaining lifecycle values
 // (failed/parsed/enriched) post-B1.
 const (
@@ -398,53 +411,96 @@ const (
 )
 
 // nextScanState decides the lifecycle status scan persists for one file AND
-// which derived namespaces survive the re-scan (packaged-playback D-11):
+// which derived namespaces survive the re-scan (two-tier unchanged test):
 // "pending" for a first scan (no prior row) or an unreadable prior; "stale" for
-// a re-scan whose base identity changed (AC-states(c), minimal B1 basis); and
-// the prior status preserved for an unchanged re-scan (so a settled/ready item
-// is not regressed back to pending). Alongside the status it returns the prior
-// document's `streams` namespace: carried forward verbatim when the base is
-// unchanged (packaging state and artifact pointers key on parsed+ffprobe, so an
-// unchanged base keeps them valid), dropped (nil) when the base changed — the
-// changed media invalidates any packaged artifact — or when there is no prior
-// row to carry from. The prior document is loaded exactly once here and its
-// streams value is returned as-is (lossless: no namespace-shape assumption).
-// A GetItem error is soft (AC-6): it falls back to "pending" — the queue
-// re-derives either way, and a transient read failure must never abort the scan.
-func nextScanState(ctx context.Context, st *store.Store, libraryID int64, fileID string, refreshed map[string]any, res *Result) (string, any) {
+// a re-scan whose parsed identity changed (AC-states(c)); and the prior status
+// preserved for any parsed-unchanged re-scan (so a settled/ready item is not
+// regressed back to pending). The comparison runs in two tiers over the prior
+// document vs the refreshed base: tier A keys on parsed alone (parsedSignature)
+// and carries every prior derived namespace forward verbatim (derivedCarry);
+// tier B — parsed equal but ffprobe drifted (baseChanged) — carries the same
+// namespaces MINUS `streams`, because packaging state and artifact pointers key
+// on parsed+ffprobe and the changed media invalidates any packaged artifact.
+// The prior document is loaded exactly once here. A GetItem error is soft
+// (AC-6): it falls back to "pending" — the queue re-derives either way, and a
+// transient read failure must never abort the scan.
+func nextScanState(ctx context.Context, st *store.Store, libraryID int64, fileID string, refreshed map[string]any, res *Result) (string, map[string]any) {
 	prior, err := st.GetItem(ctx, itemID(libraryID, fileID))
 	if err != nil {
 		return scanStatusPending, nil // no prior row (first scan) or unreadable -> re-queue
 	}
-	if baseChanged(prior.Document, refreshed) {
-		return scanStatusStale, nil // base changed: drop streams (stale packaging state)
+	if parsedChanged(prior.Document, refreshed) {
+		return scanStatusStale, nil // parsed identity changed: every derived namespace is invalid
 	}
-	return prior.Status, docStreams(prior.Document) // unchanged re-scan: preserve (don't regress ready/enriched)
+	// Parsed unchanged: preserve the prior status, carry the derived namespaces
+	// minus `streams` when the ffprobe base also drifted (tier B).
+	return prior.Status, derivedCarry(prior.Document, refreshed, baseChanged(prior.Document, refreshed))
 }
 
-// docStreams reads the `streams` namespace (packaged-playback Interfaces §1)
-// out of a stored document, whatever its JSON shape (the scan core does not
-// interpret it — the streams lane owns the schema). A missing or unparseable
-// document yields nil.
-func docStreams(docRaw json.RawMessage) any {
-	if len(docRaw) == 0 {
-		return nil
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(docRaw, &doc); err != nil {
-		return nil
-	}
-	return doc["streams"]
+// parsedSignature projects a document down to its parsed identity — the tier A
+// basis for the status + enrichment-carry comparison. It is deliberately
+// narrower than baseSignature: ffprobe blobs drift with scanner toolchain noise
+// that leaves the parsed identity untouched, and such drift must not drop
+// enrichment or regress a settled status. An absent parsed encodes as nil, so a
+// field vanishing across a re-scan counts as a change.
+func parsedSignature(doc map[string]any) map[string]any {
+	return map[string]any{"parsed": doc["parsed"]}
 }
 
-// baseChanged is the minimal B1 stale-on-rescan basis (R-stale): it reports
-// whether the identity-bearing base fields (parsed + ffprobe) of a re-scan
-// differ from the previously-persisted document. file_id/module_type/schema_
-// version are stable for a re-scan of the same file in the same module, so they
-// are excluded (including them would only re-detect "same file, same module").
-// Both sides are normalized via canonicalJSON so comparison is byte-stable
-// regardless of JSON key order (a scanner/plugin may emit parsed/ffprobe keys in
-// any order; Go sorts map keys on marshal).
+// parsedChanged is the tier A comparison: it reports whether the parsed
+// identity of a re-scan differs from the previously-persisted document — the
+// same canonicalJSON byte-compare as baseChanged, keyed on parsed alone
+// (parsedSignature). An unparseable prior document counts as changed, matching
+// baseChanged's best-effort rule.
+func parsedChanged(priorRaw json.RawMessage, refreshed map[string]any) bool {
+	var prior map[string]any
+	if len(priorRaw) > 0 {
+		_ = json.Unmarshal(priorRaw, &prior) // best-effort; unparseable -> nil map -> treated as changed
+	}
+	return !bytes.Equal(
+		canonicalJSON(parsedSignature(refreshed)),
+		canonicalJSON(parsedSignature(prior)),
+	)
+}
+
+// derivedCarry returns the prior document's derived namespaces — every key
+// EXCEPT the reserved base set {parsed, ffprobe}, plus `streams` when
+// dropStreams (tier B) — for the caller to merge onto the freshly assembled
+// base. The reserved keys are never carried, so the new scan's facts are the
+// new truth (a stale anchor must never mask a real identity change). The
+// subtraction is key-set-driven, not an enumerated namespace list: any future
+// derived namespace survives a re-scan without a code change. An unreadable
+// prior document yields nil (nothing to carry). refreshed is the same basis
+// both tiers compared; it is not consulted here — the fresh base wins by merge
+// order at the call site.
+func derivedCarry(priorRaw json.RawMessage, refreshed map[string]any, dropStreams bool) map[string]any {
+	var prior map[string]any
+	if len(priorRaw) == 0 || json.Unmarshal(priorRaw, &prior) != nil || prior == nil {
+		return nil
+	}
+	reserved := map[string]bool{"parsed": true, "ffprobe": true}
+	if dropStreams {
+		reserved["streams"] = true
+	}
+	carry := make(map[string]any, len(prior))
+	for k, v := range prior {
+		if !reserved[k] {
+			carry[k] = v
+		}
+	}
+	return carry
+}
+
+// baseChanged is the tier B comparison (packaged-playback D-11, byte-identical
+// to what shipped there): it reports whether the identity-bearing base fields
+// (parsed + ffprobe) of a re-scan differ from the previously-persisted
+// document — the basis for dropping `streams`, since packaging state keys on
+// parsed+ffprobe. file_id/module_type/schema_version are stable for a re-scan
+// of the same file in the same module, so they are excluded (including them
+// would only re-detect "same file, same module"). Both sides are normalized
+// via canonicalJSON so comparison is byte-stable regardless of JSON key order
+// (a scanner/plugin may emit parsed/ffprobe keys in any order; Go sorts map
+// keys on marshal).
 func baseChanged(priorRaw json.RawMessage, refreshed map[string]any) bool {
 	var prior map[string]any
 	if len(priorRaw) > 0 {
@@ -457,8 +513,8 @@ func baseChanged(priorRaw json.RawMessage, refreshed map[string]any) bool {
 }
 
 // baseSignature projects a document down to its identity-bearing base fields
-// (parsed + ffprobe) for the stale comparison. A field absent from the source is
-// encoded as nil, so a field vanishing across a re-scan counts as a change.
+// (parsed + ffprobe) for the tier B comparison. A field absent from the source
+// is encoded as nil, so a field vanishing across a re-scan counts as a change.
 func baseSignature(doc map[string]any) map[string]any {
 	return map[string]any{
 		"parsed":  doc["parsed"],

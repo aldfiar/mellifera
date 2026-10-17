@@ -133,3 +133,27 @@ episode, quality/resolution, source, codec, language**.
   of raw parser keys.
 - /build-ready — enters via a proposal (the arbitration rule for _view when a
   film source and the parser both write title needs a design decision).
+
+## Enrich queue: terminal treatment for contractually namespace-less plugin×row shapes (exposed 2026-10-14)
+
+The derivation predicate has no notion of row shape: `pendingSources`
+(`internal/enrich/queue.go`) queues any queueable source whose namespace is
+absent and not in ledger-cooldown. Plugins that contractually never write a
+namespace for a row shape — frame-grabber on series rows, shikimori on episode
+items (both decline client-side) — end every derive pass `skipped`;
+`applyOutcome` writes NO ledger row for skips, so no cooldown ever blocks
+re-derivation, and `appendStage` appends a truthful `skipped` entry each pass:
+`_stages` grows unboundedly on every queue pass for those rows. Invisible
+pre-rescan-preservation (rescans rebuilt documents); exposed by
+preserve-enrichment-rescan's joint QA. Same family as the seeded tmdb slot's
+per-pass `unavailable` stage (B3).
+
+- **Fix surface** (design decision at propose time): plugin-declared row
+  shapes at the handshake; a terminal-skip ledger row with cooldown; or
+  `_stages` append dedupe (bounds growth, leaves phantom dispatch). The
+  preserve-enrichment-rescan end-to-end scenario compares `_stages` modulo
+  these entries (user-approved amendment 2026-10-14) — this change removes
+  that exemption.
+- **Pairs with** the R-lane lifecycle designs (auto drift re-enrich, deletion
+  grace, fair-rotation queue), which rework the same predicate — consider
+  folding to avoid a second predicate pass.

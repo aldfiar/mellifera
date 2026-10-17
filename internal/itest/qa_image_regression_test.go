@@ -30,13 +30,15 @@ import (
 	"time"
 )
 
-// b2MergeBase is the feature's merge base (main @ e2a7562 — confirmed
-// merge-base(HEAD, main)). All additive diff probes anchor here. Re-pinned to
-// cf9b47c: the original e2a7562 anchor was orphaned by the public-release
-// history rewrite (its object survives but no branch contains it); cf9b47c is
-// the post-scrub tree whose proto/ is byte-identical, so the additive
-// assertion is unchanged in intent.
-const b2MergeBase = "cf9b47c"
+// b2MergeBase is the split-repo baseline (f2dc2e8 — the repo root after the
+// 2026-10-14 subtree split, where proto/ first lives at root level; no
+// sanctioned proto change has landed since). All additive diff probes anchor
+// here. The old pin e2a7562 (the umbrella-era merge base) cannot work in the
+// split repo: its tree predates root-level proto/, so a diff against it reports
+// the directory as all-insertions (13 files, +4057) — vacuously failing on
+// every run. Re-baselining to f2dc2e8 preserves the guard's semantics: empty
+// diff in the no_seam trees = additive holds.
+const b2MergeBase = "f2dc2e8"
 
 // b2Token is the admin bearer for the TV regression server.
 const b2Token = "qa-b2-regression-token"

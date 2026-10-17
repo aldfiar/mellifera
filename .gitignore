@@ -28,6 +28,9 @@ coverage.html
 # Dev-mode artifacts (scripts/dev.sh: the dev server binary + logs)
 /.tmp/
 
+# wf source map — generated per tree by `wf index build`, never merged
+/docs/.source_map.json
+
 # Web/SPA dev (Phase 2+): npm + Vite build output
 node_modules/
 /web/dist/

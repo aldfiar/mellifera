@@ -20,7 +20,7 @@ import (
 // sweep, which advances every series row the TRUNCATED pass never re-observed
 // to "deleted" — 19 of 20 live series rows in the real incident — while the
 // scan itself returns success. The next healthy scan does NOT heal the data:
-// nextSeriesStatus preserves the prior status on an unchanged re-observe, so
+// nextSeriesState preserves the prior status on an unchanged re-observe, so
 // the wrongful tombstones survive indefinitely and the collection page
 // renders one title.
 //
