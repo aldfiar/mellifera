@@ -24,6 +24,21 @@ export interface UpdateLibraryRequest {
   display_name?: string;
   description?: string;
   streams_enabled?: boolean;
+  // parsers (element-pages 3.1, ui-management pass 3) — the ordered
+  // parser-chain replacement: an absent field changes nothing; a PRESENT
+  // list replaces the chain. An explicitly EMPTY list is a server 400 (the
+  // chain edit is a reorder, never a clear) — the UI never sends one. The
+  // Manage overlay's chain section sends this field ALONE: the Go PATCH
+  // writes the row and the chain in two non-atomic store calls, so a section
+  // save = one request, never one giant PATCH.
+  parsers?: string[];
+  // naming_group_style / naming_element_name (display-naming 3.2) — the two
+  // display naming options; a non-nil "" resets the column to the module
+  // default. The server validates both BEFORE any write (group style "" |
+  // "clean" | "raw"; the template's {...} groups exactly {title}/{season}/
+  // {episode}); refusals surface through the canonical inline-error path.
+  naming_group_style?: string;
+  naming_element_name?: string;
 }
 
 // handlers.go parserBinding — one entry of module.parsers (element-pages 3.4):
@@ -57,6 +72,12 @@ export interface LibraryDTO {
   description: string;
   streams_enabled: boolean;
   module?: ModulePresentation;
+  // naming_group_style / naming_element_name — the library's two display
+  // naming options (display-naming 3.2, flat strings on the wire; "" =
+  // module default). Optional in TS like the other additive fields: an
+  // absent field must mean unset, not a type hole.
+  naming_group_style?: string;
+  naming_element_name?: string;
 }
 
 // handlers.go librarySummaryResponse — the constant-time count + last-update
@@ -253,6 +274,49 @@ export interface TitleOverrideDTO {
   updated_at: string;
 }
 
+// parsers.go itemParsersRequest / itemParsersResponse — the PUT
+// /api/v1/items/{id}/parsers body and 200 body: the FULL replacement
+// attachment list in attachment order (an empty array clears — the DELETE
+// verb's equivalent write). Field names match the JSON tags EXACTLY.
+export interface ItemParsersRequest {
+  parsers: string[];
+}
+
+export interface ItemParsersResponse {
+  parsers: string[];
+}
+
+// enrich_admin.go libraryRefreshRequest / ReenrichResult — the POST
+// /libraries/{id}/refresh body and 202 body. plugin_id is required (exactly
+// one parser per invocation); row_ids are the opaque row ids (items and
+// series share the row space) and OPTIONAL (Go `row_ids,omitempty` —
+// omitted/empty = the whole-library sweep, which the Manage overlay's
+// Refresh metadata section sends; the per-item views scope to one row).
+// Field names match the JSON tags EXACTLY.
+export interface LibraryRefreshRequest {
+  plugin_id: string;
+  row_ids?: string[];
+}
+
+export interface LibraryRefreshResult {
+  queued: number;
+  stripped: number;
+  deferred: number;
+}
+
+// enrich_admin.go EnrichPreview — the GET /libraries/{id}/enrich/preview
+// 200 body: the per-plugin drift picture for one library (matches = rows
+// carrying the plugin namespace, pending = derivable rows, cooling =
+// ledger-held rows, versions = the `_provenance` plugin-version histogram).
+// Computed on demand — never stored.
+export interface EnrichPreview {
+  plugin_id: string;
+  matches: number;
+  pending: number;
+  cooling: number;
+  versions: Record<string, number>;
+}
+
 // handlers.go itemResponse
 export interface ItemResponse {
   item: ItemDTO;
@@ -307,6 +371,19 @@ export const ENDPOINTS = {
   libraries: "/api/v1/libraries",
   library: (id: number): string => `/api/v1/libraries/${id}`,
   scan: (id: number): string => `/api/v1/libraries/${id}/scan`,
+  // libraryRefresh — POST /api/v1/libraries/{id}/refresh (enrich_admin.go
+  // libraryRefresh, ui-management pass 2): the per-plugin re-enrichment
+  // kickoff; row_ids scopes the sweep to the given opaque row ids (the SPA
+  // always sends exactly one — per-row refresh; omitted/empty = the
+  // whole-library sweep, which the Manage overlay owns).
+  libraryRefresh: (id: number): string => `/api/v1/libraries/${id}/refresh`,
+  // enrichPreview — GET /libraries/{id}/enrich/preview?plugin_id=
+  // (enrich_admin.go enrichPreview, ui-management pass 3): the per-plugin
+  // drift preview the Manage overlay's Refresh metadata section shows
+  // BEFORE enabling its trigger; `plugin_id` is a REQUIRED query parameter
+  // (a missing one 400s).
+  enrichPreview: (id: number): string =>
+    `/api/v1/libraries/${id}/enrich/preview`,
   librarySummary: (id: number): string => `/api/v1/libraries/${id}/summary`,
   libraryFolders: (id: number): string => `/api/v1/libraries/${id}/folders`,
   adminStatus: "/api/v1/admin/status",
@@ -341,6 +418,11 @@ export const ENDPOINTS = {
   // inline by the caller without auto-retry.
   seriesTitle: (id: string): string => `/api/v1/series/${id}/title`,
   itemTitle: (id: string): string => `/api/v1/items/${id}/title`,
+  // itemParsers — PUT /api/v1/items/{id}/parsers (parsers.go putItemParsers,
+  // ui-management pass 2): the FULL replacement attachment write — the body's
+  // ordered parser id list becomes the stored extra_parsers verbatim, an
+  // empty list clears.
+  itemParsers: (id: string): string => `/api/v1/items/${id}/parsers`,
   progress: "/api/v1/progress",
   // Playback verbs (packaged-playback): the read-only descriptor and the
   // single playback mutation (POST /play with {retry:true} re-enqueues a
@@ -513,6 +595,23 @@ export async function deleteItemTitle(id: string): Promise<void> {
   await apiRequestVoid(ENDPOINTS.itemTitle(id), { method: "DELETE" });
 }
 
+// putItemParsers — PUT /api/v1/items/{id}/parsers (parsers.go putItemParsers,
+// ui-management pass 2): FULL replacement of the item's element-only parser
+// attachments — the stored list becomes exactly `parsers` in order; an empty
+// list clears. 200 with the stored list; 400 bad_request for an unknown or
+// capability-mismatched plugin id, 404 not_found for an unknown item — both
+// canonical, surfaced inline by the caller (mutations are retry:0 — no
+// auto-retry).
+export async function putItemParsers(
+  id: string,
+  parsers: string[],
+): Promise<ItemParsersResponse> {
+  return apiRequest<ItemParsersResponse>(ENDPOINTS.itemParsers(id), {
+    method: "PUT",
+    body: { parsers } as unknown as BodyInit,
+  });
+}
+
 // getPlayback — GET /api/v1/items/{id}/playback (handlers.go itemPlayback,
 // packaged-playback). Read-only descriptor: mode/state/play_url/sections.
 // The handler ALSO sets the cookie-primary media token on the response — the
@@ -552,6 +651,38 @@ export async function putProgress(
     method: "PUT",
     body: { position_seconds: positionSeconds } as unknown as BodyInit,
   });
+}
+
+// postLibraryRefresh — POST /api/v1/libraries/{id}/refresh (enrich_admin.go
+// libraryRefresh): the per-plugin re-enrichment kickoff. 202 with the sweep
+// counts (queued/stripped/deferred); 409 refresh_in_flight for a concurrent
+// whole-library sweep, 503 unavailable when the endpoint is unwired, 400
+// unknown plugin, 404 unknown rows/library — all canonical, surfaced inline
+// by the caller (mutations are retry:0 — no auto-retry).
+export async function postLibraryRefresh(
+  id: number,
+  req: LibraryRefreshRequest,
+): Promise<LibraryRefreshResult> {
+  return apiRequest<LibraryRefreshResult>(ENDPOINTS.libraryRefresh(id), {
+    method: "POST",
+    body: req as unknown as BodyInit,
+  });
+}
+
+// getEnrichPreview — GET /api/v1/libraries/{id}/enrich/preview?plugin_id=
+// (enrich_admin.go enrichPreview): the per-plugin drift preview for one
+// library. The composition is slow by design (a whole-library namespace
+// scan), so the caller renders a loading line, never a spinner. 503
+// "unavailable" when the preview endpoint is unwired, 400 without
+// plugin_id, 404 unknown library — all canonical, surfaced by the caller.
+export async function getEnrichPreview(
+  id: number,
+  pluginId: string,
+): Promise<EnrichPreview> {
+  const q = new URLSearchParams({ plugin_id: pluginId });
+  return apiRequest<EnrichPreview>(
+    `${ENDPOINTS.enrichPreview(id)}?${q.toString()}`,
+  );
 }
 
 // getItem — GET /api/v1/items/{id} (handlers.go:266-278). The id is the item's

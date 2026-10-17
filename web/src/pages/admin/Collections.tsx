@@ -210,17 +210,41 @@ export default function Collections(): ReactElement {
   );
 }
 
-// EditOverlay — the per-row edit dialog. Name/Description are the only
-// editable fields; Type and the root folder render read-only with the
-// identity warning (moving the root re-identifies all items — the PATCH
-// endpoint would 400 a root_path/module_id attempt anyway, and
-// UpdateLibraryRequest cannot carry those fields). Submit PATCHes
-// {display_name, description}; a canonical 400/404 renders inline and the
-// overlay STAYS OPEN (no auto-retry, no auto-close on failure); success
-// closes the overlay — the table re-fetch comes from useUpdateLibrary's
-// ["libraries"] invalidation.
+// EditOverlay — the per-row edit dialog. The form itself is the SHARED
+// EditLibraryForm (ui-management pass 3): the same component the collection
+// Manage overlay's Edit library section embeds. The admin overlay's own
+// contract is unchanged: success closes the overlay (onSaved = onClose — the
+// table re-fetch comes from useUpdateLibrary's invalidations), a canonical
+// error renders inline and the overlay STAYS OPEN.
 function EditOverlay(props: { lib: LibraryDTO; onClose: () => void }): ReactElement {
   const { lib, onClose } = props;
+  return (
+    <div className="overlay-backdrop" role="dialog" aria-modal="true" aria-label={`Edit ${lib.display_name}`}>
+      <div className="overlay-card">
+        <h3 className="mb-4 text-base font-semibold">Edit collection</h3>
+        <EditLibraryForm lib={lib} onSaved={onClose} onCancel={onClose} />
+      </div>
+    </div>
+  );
+}
+
+// EditLibraryForm — the SHARED edit-library form (ui-management pass 3), used
+// by BOTH the admin panel's EditOverlay and the collection Manage overlay's
+// Edit library section. Name/Description are the only editable fields; Type
+// and the root folder render read-only with the identity warning (moving the
+// root re-identifies all items — the PATCH endpoint would 400 a
+// root_path/module_id attempt anyway, and UpdateLibraryRequest cannot carry
+// those fields). Submit PATCHes {display_name, description} ONLY; a canonical
+// 400/404 renders inline and the form STAYS (no auto-retry, no auto-close on
+// failure); success calls onSaved — the admin overlay closes there, the
+// Manage overlay closes its sheet (each save is an independent boundary; the
+// edit landing is the operator's done signal there).
+export function EditLibraryForm(props: {
+  lib: LibraryDTO;
+  onSaved: () => void;
+  onCancel?: () => void;
+}): ReactElement {
+  const { lib, onSaved } = props;
   const update = useUpdateLibrary();
 
   const [displayName, setDisplayName] = useState(lib.display_name);
@@ -232,79 +256,76 @@ function EditOverlay(props: { lib: LibraryDTO; onClose: () => void }): ReactElem
       display_name: displayName.trim(),
       description: description.trim(),
     };
-    update.mutate({ id: lib.id, req }, { onSuccess: onClose });
+    update.mutate({ id: lib.id, req }, { onSuccess: onSaved });
   }
 
   const updateErr: ApiError | null =
     update.error instanceof Error ? (update.error as ApiError) : null;
 
   return (
-    <div className="overlay-backdrop" role="dialog" aria-modal="true" aria-label={`Edit ${lib.display_name}`}>
-      <div className="overlay-card">
-        <h3 className="mb-4 text-base font-semibold">Edit collection</h3>
-        <form className="flex flex-col gap-4" onSubmit={onSubmit}>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="edit-name">Name</Label>
-            <Input
-              id="edit-name"
-              name="edit-name"
-              autoComplete="off"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              required
-            />
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="edit-description">Description</Label>
-            <Input
-              id="edit-description"
-              name="edit-description"
-              autoComplete="off"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <span className="text-sm font-medium">Type</span>
-            <TypeBadge moduleId={lib.module_id} />
-            <p className="text-xs text-muted-foreground">
-              Fixed at creation — cannot be changed.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <span className="text-sm font-medium">Root folder</span>
-            <code className="break-all font-mono text-sm">{lib.root_path}</code>
-            <p className="text-xs text-destructive">
-              Moving the root re-identifies all items.
-            </p>
-          </div>
-
-          {updateErr ? (
-            <Alert variant="destructive">
-              <AlertTitle>{updateErr.code}</AlertTitle>
-              <AlertDescription>{updateErr.message}</AlertDescription>
-            </Alert>
-          ) : null}
-
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={onClose}
-              disabled={update.isPending}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={update.isPending}>
-              {update.isPending ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </form>
+    <form className="flex flex-col gap-4" onSubmit={onSubmit}>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="edit-name">Name</Label>
+        <Input
+          id="edit-name"
+          name="edit-name"
+          autoComplete="off"
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          required
+        />
       </div>
-    </div>
+
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="edit-description">Description</Label>
+        <Input
+          id="edit-description"
+          name="edit-description"
+          autoComplete="off"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <span className="text-sm font-medium">Type</span>
+        <TypeBadge moduleId={lib.module_id} />
+        <p className="text-xs text-muted-foreground">
+          Fixed at creation — cannot be changed.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <span className="text-sm font-medium">Root folder</span>
+        <code className="break-all font-mono text-sm">{lib.root_path}</code>
+        <p className="text-xs text-destructive">
+          Moving the root re-identifies all items.
+        </p>
+      </div>
+
+      {updateErr ? (
+        <Alert variant="destructive">
+          <AlertTitle>{updateErr.code}</AlertTitle>
+          <AlertDescription>{updateErr.message}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      <div className="flex justify-end gap-2">
+        {props.onCancel ? (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={props.onCancel}
+            disabled={update.isPending}
+          >
+            Cancel
+          </Button>
+        ) : null}
+        <Button type="submit" disabled={update.isPending}>
+          {update.isPending ? "Saving…" : "Save"}
+        </Button>
+      </div>
+    </form>
   );
 }
 

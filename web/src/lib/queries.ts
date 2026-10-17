@@ -112,11 +112,18 @@ export function useScanLibrary(): UseMutationResult<
 }
 
 // useUpdateLibrary — PATCH /api/v1/libraries/{id} via updateLibrary
-// (web-ui-phase-3 group 6: the admin edit overlay). Non-idempotent in effect →
+// (web-ui-phase-3 group 6: the admin edit overlay; ui-management pass 3: the
+// Manage overlay's section save boundaries). Non-idempotent in effect →
 // retry:0 (INV-no-mutation-retry) — a 400/404 surfaces inline, no auto-retry.
-// On success invalidates ["libraries"] so the table re-fetches the patched
-// row (spec: "re-fetches the table"); summaries are NOT invalidated because a
-// rename does not change item counts or updated_at.
+//
+// Save/invalidation contract (ui-management pass 3): success invalidates
+// ["libraries"] (the admin table re-fetches the patched row) AND
+// ["library", id] — the Manage overlay's chain re-reads from
+// GET /libraries/{id}'s additive module block. THE TRAP, do not "simplify"
+// this away: the chain must NEVER be re-read from the PATCH body/response —
+// the PATCH response is a libraryDTO that never carries the module block
+// (and the PATCH body is only the section's own fields), so any body-side
+// re-read would silently keep the STALE chain while looking correct.
 export function useUpdateLibrary(): UseMutationResult<
   LibraryDTO,
   ApiError,
@@ -126,8 +133,9 @@ export function useUpdateLibrary(): UseMutationResult<
     mutationFn: ({ id, req }: { id: number; req: UpdateLibraryRequest }) =>
       updateLibrary(id, req),
     retry: 0,
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["libraries"] });
+      queryClient.invalidateQueries({ queryKey: ["library", variables.id] });
     },
   });
 }

@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as apiModule from "@/lib/api";
 import type { LibraryDTO } from "@/lib/api";
 import { queryClient as sharedQueryClient } from "@/lib/queries";
-import Collections from "@/pages/admin/Collections";
+import Collections, { EditLibraryForm } from "@/pages/admin/Collections";
 
 // Group-6 suite: the admin panel as collections management. Consumer joint:
 // Collections.tsx -> useLibraries/useCreateLibrary/useScanLibrary/
@@ -285,5 +285,71 @@ describe("Collections — admin panel (group 6)", () => {
     expect(paths.length).toBeGreaterThan(0);
     expect(paths.every((p) => !p.includes(statusPath))).toBe(true);
     expect(summarySpy.mock.calls.every(([id]) => typeof id === "number")).toBe(true);
+  });
+});
+
+// The SHARED edit form (ui-management pass 3): the admin EditOverlay now wraps
+// EditLibraryForm, and the collection Manage overlay embeds the same exported
+// component. These are the form's own joints — read-only identity, the
+// editable-row-fields-only PATCH, the error-stays/saved-callbacks contract.
+describe("EditLibraryForm — the shared edit form (ui-management pass 3)", () => {
+  beforeEach(() => {
+    sharedQueryClient.clear();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders read-only Type and root with the identity warning and PATCHes ONLY {display_name, description}, calling onSaved on success", async () => {
+    const patched: LibraryDTO = { ...fakeLibs(1)[0], display_name: "Renamed" };
+    const patchSpy = vi.spyOn(apiModule, "updateLibrary").mockResolvedValue(patched);
+    const onSaved = vi.fn();
+    const onCancel = vi.fn();
+
+    render(
+      <EditLibraryForm
+        lib={fakeLibs(1)[0]}
+        onSaved={onSaved}
+        onCancel={onCancel}
+      />,
+      { wrapper: withClient(freshClient()) },
+    );
+
+    // Read-only identity: the root path and the identity warning render; no
+    // input carries them.
+    expect(screen.getByText("/media/lib-1")).toBeDefined();
+    expect(screen.getByText(/moving the root re-identifies all items/i)).toBeDefined();
+    expect(screen.getByText(/fixed at creation/i)).toBeDefined();
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(patchSpy).toHaveBeenCalledWith(1, {
+      display_name: "Renamed",
+      description: "First collection",
+    });
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the canonical error inline and does NOT call onSaved (the host overlay stays open)", async () => {
+    vi.spyOn(apiModule, "updateLibrary").mockRejectedValue(
+      new apiModule.ApiError(400, {
+        code: "bad_request",
+        message: "root_path and module_id are immutable",
+        retryable: false,
+      }),
+    );
+    const onSaved = vi.fn();
+
+    render(<EditLibraryForm lib={fakeLibs(1)[0]} onSaved={onSaved} />, {
+      wrapper: withClient(freshClient()),
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(await screen.findByText("bad_request")).toBeDefined();
+    expect(screen.getByText("root_path and module_id are immutable")).toBeDefined();
+    expect(onSaved).not.toHaveBeenCalled();
   });
 });

@@ -34,3 +34,6 @@ coverage.html
 # Web/SPA dev (Phase 2+): npm + Vite build output
 node_modules/
 /web/dist/
+
+# generated itest fixtures (frame-grabber thumbs root et al.)
+internal/itest/data/

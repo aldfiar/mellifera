@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-import type { ReactElement } from "react";
-import { useEffect, useState } from "react";
+import type { ReactElement, ReactNode, RefObject } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useMutation,
+  useQuery,
   useQueryClient,
   type UseMutationResult,
 } from "@tanstack/react-query";
@@ -12,32 +13,48 @@ import {
   ENDPOINTS,
   deleteItemTitle,
   deleteSeriesTitle,
+  getEnrichPreview,
   hasFrameGrabberThumb,
   hasOriginalFile,
+  postLibraryRefresh,
+  putItemParsers,
+  putProgress,
   setItemTitle,
   setSeriesTitle,
   type ApiError,
+  type EnrichPreview,
   type ItemDTO,
+  type ItemParsersResponse,
   type LibraryDTO,
+  type LibraryRefreshResult,
   type ListItemsParams,
+  type ParserBinding,
+  type ProgressDTO,
+  type ScanResponse,
   type SeriesDTO,
   type TitleOverrideDTO,
 } from "@/lib/api";
 import {
+  useItem,
   useItemMedia,
   useItems,
   useLibraries,
+  useLibrary,
   useLibraryFolders,
   useLibrarySummary,
+  useScanLibrary,
   useSeries,
   useSeriesEpisodes,
+  useUpdateLibrary,
 } from "@/lib/queries";
+import { EditLibraryForm } from "@/pages/admin/Collections";
+import { composeItemName, episodeFacts, seriesName } from "@/lib/naming";
 import type { ItemDocument } from "@/lib/document";
-import { viewEntries } from "@/lib/document";
 import { cn } from "@/lib/utils";
 import { formatPosition } from "@/pages/home/Home";
 import type { BrowseHandoff } from "@/pages/browse/ItemDetail";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
+import { DialogShell } from "@/components/DialogShell";
 
 // Collection — the per-collection page at /collections/:id (web-ui-phase-3
 // group 5, boxes 5.1–5.3). The header comes from GET /api/v1/libraries +
@@ -53,34 +70,46 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 //            its episode flow via the ?series=<ser_id> deep-linkable query
 //            state (box 5.4)
 //
-// Metadata fidelity: every rendered value is read verbatim out of the item
-// document (per-source namespaces, `_view`) — a chip whose fact is absent is
-// omitted, never guessed (INV-no-rounding, arch §3.4).
+// Metadata fidelity: every rendered value is read verbatim out of the served
+// fields (display_name) or the item document's source namespaces — a fact
+// that is absent is omitted, never guessed (INV-no-rounding, arch §3.4).
 //
-// INV-no-rounding: the title comes out of `_view` verbatim via viewEntries;
-// the filename is the relative_path's last segment rendered verbatim.
+// INV-no-filenames: raw filenames never render on this page — the title is
+// the served display_name (floored to the extension-less stem when it is
+// empty or IS the filename), and the filename itself lives only in the item
+// detail's Technical details (ui-management design §1).
 
 const PAGE_SIZE = 50;
 
-// viewTitle — the item's display title: `_view.title.value` verbatim (string
-// or number passthrough; anything else → "—"), found via viewEntries so the
-// accessor contract owns the shape.
-function viewTitle(doc: ItemDocument): string {
-  const title = viewEntries(doc).find((e) => e.fieldPath === "title");
-  const value = title?.entry.value;
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return String(value); // lossless primitive stringify (INV-no-rounding)
-  }
-  return "—";
-}
+// EXT_RE — a filename extension: 2–4 alphanumerics anchored at the end. The
+// bound is what keeps "Part.2"-style suffixes alive (a single-char tail never
+// matches); only a real extension strips.
+const EXT_RE = /\.[A-Za-z0-9]{2,4}$/;
 
-// fileName — the raw file name: the relative_path's final segment, verbatim.
-function fileName(relativePath: string): string {
+// lastSegment — a relative path's final segment (the filename for file rows,
+// the directory name for directory-backed series rows).
+function lastSegment(relativePath: string): string {
   const parts = relativePath.split("/");
   return parts[parts.length - 1] ?? relativePath;
+}
+
+// pathStem — the extension-less final segment: the title floor for
+// unidentified rows.
+function pathStem(relativePath: string): string {
+  return lastSegment(relativePath).replace(EXT_RE, "");
+}
+
+// itemTitle — an item card's title: the SERVED display_name (display-naming —
+// the chain strictly dominates the old `_view`-only read), floored when it is
+// empty or IS the filename to the extension-less stem. The `unidentified`
+// flag marks the floor so menu-bearing surfaces can badge it; markerless
+// surfaces use only the title.
+function itemTitle(item: ItemDTO): { title: string; unidentified: boolean } {
+  const name = item.display_name ?? "";
+  if (name === "" || name === lastSegment(item.relative_path)) {
+    return { title: pathStem(item.relative_path), unidentified: true };
+  }
+  return { title: name, unidentified: false };
 }
 
 // namespaces — the document's sources namespaces as plain records (insertion
@@ -107,24 +136,14 @@ function stringField(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-// episodeLabel — zero-padded "S01E02" display form from the parsed season +
-// episode facts (tv-parser's filename parse).
-function episodeLabel(season: number, episode: number): string {
-  return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
-}
-
-// parsedChips — the parsed-fact chips for a movie file card, read generically
-// across the document's source namespaces: the season/episode token
-// ("S01E02", tv-parser), the release year, and the resolution. Any fact that
-// is absent is omitted — chips never invent a value. Exported pure for tests.
+// parsedChips — the parsed facts for a movie file card's meta line, read
+// generically across the document's source namespaces: the release year and
+// the resolution. (The SxxExx token is deliberately NOT here — it duplicated
+// the served display_name's own suffix.) Any fact that is absent is omitted —
+// never a guess. Exported pure for tests.
 export function parsedChips(doc: ItemDocument): string[] {
   const chips: string[] = [];
   for (const ns of namespaces(doc)) {
-    const season = numberField(ns.season);
-    const episode = numberField(ns.episode);
-    if (season !== null && episode !== null) {
-      chips.push(episodeLabel(season, episode));
-    }
     const year = numberField(ns.year);
     if (year !== null) {
       chips.push(String(year));
@@ -138,6 +157,19 @@ export function parsedChips(doc: ItemDocument): string[] {
     }
   }
   return chips;
+}
+
+// metaLine — the card's ONE muted dot-separated fact line ("2019 · 1080p ·
+// 23:50"): the parsed facts plus the ffprobe duration when known. Empty when
+// no fact exists — the line is omitted, never padded. Exported pure for
+// tests.
+export function metaLine(doc: ItemDocument): string {
+  const facts = [...parsedChips(doc)];
+  const duration = durationSeconds(doc);
+  if (duration !== null) {
+    facts.push(formatPosition(duration));
+  }
+  return facts.join(" · ");
 }
 
 // captureDate — the item's capture date, read from the enricher's `date_taken`
@@ -239,10 +271,23 @@ export default function Collection(): ReactElement {
 
   const libraries = useLibraries();
   const summary = useLibrarySummary(libraryId);
+  // The module block (identity_fields + the ordered parser chain) rides ONLY
+  // on GET /libraries/{id} — the list endpoint never carries it — so the
+  // Identify menu's chain display and its wiring gate read from this
+  // page-level detail query. A missing/failed module block means the module
+  // is not wired, not that the operator is unauthorized: the gate HIDES the
+  // Identify row (designed empty state), it never disables the page.
+  const libraryDetail = useLibrary(libraryId);
 
   const lib: LibraryDTO | undefined = Number.isFinite(libraryId)
     ? libraries.data?.items.find((l) => l.id === libraryId)
     : undefined;
+
+  // The Manage overlay (ui-management pass 3): opened from the header's gear
+  // trigger, closed by its own shell mechanics. Overlay state is LOCAL, never
+  // URL state — a route change unmounts the page and discards it.
+  const gearRef = useRef<HTMLButtonElement>(null);
+  const [manageOpen, setManageOpen] = useState(false);
 
   if (libraries.isLoading) {
     return <LoadingState label="Loading collections…" />;
@@ -266,8 +311,25 @@ export default function Collection(): ReactElement {
         lib={lib}
         itemCount={summary.data?.items}
         updatedAt={summary.data?.updated_at}
+        gearRef={gearRef}
+        manageOpen={manageOpen}
+        onManage={() => setManageOpen(true)}
       />
-      <CollectionBody module_id={lib.module_id} libraryId={lib.id} summaryLoaded={!summary.isLoading} itemCount={summary.data?.items} />
+      <CollectionBody
+        module_id={lib.module_id}
+        libraryId={lib.id}
+        chain={libraryDetail.data?.module?.parsers}
+        summaryLoaded={!summary.isLoading}
+        itemCount={summary.data?.items}
+      />
+      {manageOpen ? (
+        <ManageOverlay
+          lib={lib}
+          detail={libraryDetail.data}
+          gearRef={gearRef}
+          onClose={() => setManageOpen(false)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -275,19 +337,39 @@ export default function Collection(): ReactElement {
 // CollectionHeader — name, pastel type badge (module_id), description, item
 // count and updated stamp from the summary. The count shows once the summary
 // lands; the header itself never waits on it.
+//
+// The quiet gear trigger (ui-management pass 3) opens the ONE Manage overlay:
+// revealed on header hover/focus (the shared .cardact-trigger CSS inside the
+// cardact-host row) and keyboard-reachable (a real button — tab focus reveals
+// it via :focus-within). It carries the dialog a11y pair like every overlay
+// trigger; the gear's ref is the Manage sheet's focus-return target.
 function CollectionHeader(props: {
   lib: LibraryDTO;
   itemCount?: number;
   updatedAt?: string;
+  gearRef: RefObject<HTMLButtonElement>;
+  manageOpen: boolean;
+  onManage: () => void;
 }): ReactElement {
   const { lib } = props;
 
   return (
     <header className="flex flex-col gap-2">
-      <div className="flex items-center gap-3">
+      <div className="cardact-host relative flex items-center gap-3">
         <span className={dotClass(lib.module_id)} aria-hidden="true" />
         <h1 className="text-xl font-semibold">{lib.display_name}</h1>
         <span className="chip">{lib.module_id}</span>
+        <button
+          type="button"
+          ref={props.gearRef}
+          className="cardact-trigger"
+          aria-label="Manage collection"
+          aria-haspopup="dialog"
+          aria-expanded={props.manageOpen}
+          onClick={props.onManage}
+        >
+          ⚙
+        </button>
       </div>
       {lib.description ? (
         <p className="text-sm text-muted-foreground">{lib.description}</p>
@@ -303,10 +385,14 @@ function CollectionHeader(props: {
 }
 
 // CollectionBody — the module_id-keyed arm (D6). Every type gets its honest
-// layout; unknown module ids keep the generic item grid.
+// layout; unknown module ids keep the generic item grid. `chain` is the
+// module block's declared parser chain (undefined when the block is absent) —
+// threaded only to the menu-bearing card surfaces; the Identify gate consumes
+// it there.
 function CollectionBody(props: {
   module_id: string;
   libraryId: number;
+  chain?: ParserBinding[];
   summaryLoaded: boolean;
   itemCount: number | undefined;
 }): ReactElement {
@@ -317,14 +403,559 @@ function CollectionBody(props: {
   }
   switch (props.module_id) {
     case "tv":
-      return <MoviesBody libraryId={props.libraryId} />;
+      return <MoviesBody libraryId={props.libraryId} chain={props.chain} />;
     case "image":
       return <PhotosBody libraryId={props.libraryId} />;
     case "serial":
-      return <SerialsBody libraryId={props.libraryId} />;
+      return <SerialsBody libraryId={props.libraryId} chain={props.chain} />;
     default:
       return <ItemGrid libraryId={props.libraryId} />;
   }
+}
+
+// ---- Manage overlay (ui-management pass 3) -----------------------------------
+
+// ManageOverlay — the collection header gear's ONE wide Manage sheet, rendered
+// through the shared lifted DialogShell (portal/fixed, scrim click-away,
+// Escape, focus-return to the gear, focus trap, aria-modal, wide scrollable
+// sheet). It renders FIVE sections — Rescan, Parser chain, Naming, Refresh
+// metadata, Edit library — each an independent SAVE BOUNDARY: one request per
+// section save, never one giant PATCH (the Go PATCH /libraries/{id} writes
+// the row and the chain in two non-atomic store calls, so a mid-write failure
+// on a combined save would leave row and chain divergent).
+//
+// `detail` is the GET /libraries/{id} DTO — the ONLY response that carries
+// the additive module block (the served parser chain) and the two naming
+// options; the PATCH response never carries the module block, so every
+// section re-reads through this query after a save (the save/invalidation
+// contract in queries.ts).
+//
+// Gate semantics (kept from the Identify row): the module block's ABSENCE
+// signals module wiring, not authorization — sections that read it render
+// their designed empty state, the sheet itself is never gated.
+function ManageOverlay(props: {
+  lib: LibraryDTO;
+  detail?: LibraryDTO;
+  gearRef: RefObject<HTMLButtonElement>;
+  onClose: () => void;
+}): ReactElement {
+  return (
+    <DialogShell
+      open
+      label={`Manage ${props.lib.display_name}`}
+      width="wide"
+      returnFocusRef={props.gearRef}
+      onClose={props.onClose}
+    >
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-base font-semibold">Manage collection</h3>
+          <button
+            type="button"
+            className="rounded-md border px-3 py-1.5 text-sm transition-colors hover:bg-accent"
+            onClick={props.onClose}
+          >
+            Close
+          </button>
+        </div>
+        <ManageSection title="Rescan">
+          <RescanSection libraryId={props.lib.id} />
+        </ManageSection>
+        <ManageSection title="Parser chain">
+          <ParserChainSection
+            libraryId={props.lib.id}
+            chain={props.detail?.module?.parsers}
+          />
+        </ManageSection>
+        <ManageSection title="Naming">
+          <NamingSection
+            libraryId={props.lib.id}
+            groupStyle={props.detail?.naming_group_style}
+            elementName={props.detail?.naming_element_name}
+          />
+        </ManageSection>
+        <ManageSection title="Refresh metadata">
+          <RefreshMetadataSection
+            libraryId={props.lib.id}
+            chain={props.detail?.module?.parsers}
+          />
+        </ManageSection>
+        <ManageSection title="Edit library">
+          {/* The SHARED form (admin/Collections.tsx). Success closes the whole
+              Manage sheet — the edit landing IS this section's done signal
+              (the box: "closes on success"); a canonical error renders inside
+              the form and the sheet STAYS open. The sheet's own Close button
+              is the cancel path, so the form renders without its inline
+              Cancel (onCancel omitted). */}
+          <EditLibraryForm lib={props.lib} onSaved={props.onClose} />
+        </ManageSection>
+      </div>
+    </DialogShell>
+  );
+}
+
+// ManageSection — one Manage sheet section: a bordered block with its
+// heading. The section OWNS its save boundary — its controls and its own
+// save request; a failed save surfaces the canonical error inline and leaves
+// the sheet open.
+function ManageSection(props: { title: string; children?: ReactNode }): ReactElement {
+  return (
+    <section className="flex flex-col gap-2 rounded-md border p-3">
+      <h4 className="text-sm font-semibold">{props.title}</h4>
+      {props.children}
+    </section>
+  );
+}
+
+// sectionSaveButton — the shared Save row of the section save boundaries:
+// canonical errors inline (role="alert"), the awaited success flips the
+// section's own Saved status — the sheet NEVER auto-closes on a section save
+// (each boundary saves independently; closing would discard the others'
+// drafts).
+function sectionError(err: ApiError | null): ReactElement | null {
+  return err ? (
+    <p role="alert" className="text-xs text-destructive">
+      {err.code}: {err.message}
+    </p>
+  ) : null;
+}
+
+// ParserChainSection — the Parser chain save boundary (ui-management pass 3):
+// the SERVED-ORDER chain from the module block, editable as a local draft —
+// up/down reorder, remove, add from the module's declared parsers — saved as
+// ONE PATCH of ONLY `parsers` (a full replacement; order IS the footer group
+// order and the enrichment queue priority). The UI MUST NOT submit an empty
+// list: the Go PATCH 400s a present-and-empty `parsers` (the chain edit is a
+// reorder, never a clear — the module seed chain is the floor), so Save is
+// disabled on an emptied draft.
+//
+// The module block's ABSENCE signals wiring, not authorization: without it
+// the section renders its designed empty state — the sheet is never gated.
+function ParserChainSection(props: {
+  libraryId: number;
+  chain?: ParserBinding[];
+}): ReactElement {
+  const served = (props.chain ?? []).map((b) => b.id);
+  const servedKey = served.join("\n");
+  // The draft: null until the operator edits — i.e. the served order
+  // verbatim; any edit pins the edited order (an EMPTY pinned draft is the
+  // emptied chain — Save is disabled there, never a silent no-op).
+  const [draft, setDraft] = useState<string[] | null>(null);
+  const [saved, setSaved] = useState(false);
+  const save = useUpdateLibrary();
+  const order = draft ?? served;
+
+  // A refetch that changed the served chain (this save's own invalidation,
+  // or another operator's) resets the draft — the draft edits WHAT IS
+  // SERVED, never a stale local fork.
+  useEffect(() => {
+    setDraft(null);
+    setSaved(false);
+  }, [servedKey]);
+
+  const move = (index: number, dir: -1 | 1): void => {
+    const target = index + dir;
+    if (target < 0 || target >= order.length) {
+      return;
+    }
+    const next = [...order];
+    const [picked] = next.splice(index, 1);
+    next.splice(target, 0, picked);
+    setDraft(next);
+  };
+
+  const remove = (id: string): void => {
+    setDraft(order.filter((a) => a !== id));
+  };
+
+  const saveDraft = (): void => {
+    save.mutate(
+      { id: props.libraryId, req: { parsers: order } },
+      { onSuccess: () => setSaved(true) },
+    );
+  };
+
+  if (props.chain === undefined) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        The module block is unavailable — the chain needs a wired module.
+      </p>
+    );
+  }
+
+  const addable = props.chain.filter((b) => !order.includes(b.id));
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ul className="flex flex-col gap-1" aria-label="Parser chain order">
+        {order.map((id, i) => (
+          <li key={id} className="flex items-center justify-between gap-2">
+            <span className="text-xs">
+              {String(i + 1)}. {id}
+            </span>
+            <span className="flex gap-1">
+              <button
+                type="button"
+                className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                aria-label={`Move ${id} up`}
+                disabled={i === 0}
+                onClick={() => move(i, -1)}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                aria-label={`Move ${id} down`}
+                disabled={i === order.length - 1}
+                onClick={() => move(i, 1)}
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                aria-label={`Remove ${id}`}
+                onClick={() => remove(id)}
+              >
+                ×
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {addable.length > 0 ? (
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Add parser">
+          {addable.map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              className="chip"
+              aria-label={`Add ${b.id}`}
+              onClick={() => setDraft([...order, b.id])}
+            >
+              + {b.id}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <p className="text-xs text-muted-foreground">Order is enrichment priority</p>
+      <button
+        type="button"
+        className="cardact-row rounded-md border text-xs"
+        disabled={order.length === 0 || save.isPending}
+        onClick={saveDraft}
+      >
+        Save
+      </button>
+      {order.length === 0 ? (
+        <p className="text-xs text-destructive">
+          The chain cannot be emptied — add a parser before saving.
+        </p>
+      ) : null}
+      {saved ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          Saved.
+        </p>
+      ) : null}
+      {sectionError(save.error)}
+    </div>
+  );
+}
+
+// NamingSection — the Naming save boundary (ui-management pass 3): the two
+// display naming options — naming_group_style ("" = module default | clean |
+// raw) and naming_element_name (the element template; its {...} groups are
+// validated server-side to exactly {title}/{season}/{episode} — a refusal
+// surfaces inline and the sheet stays open) — saved as ONE PATCH of ONLY the
+// two fields. The live preview is composed CLIENT-side through the pinned
+// mirror (lib/naming.ts): the sample row is the library's FIRST episode
+// (GET /items?library={id}&limit=1), its episode facts joined to the series
+// row its parsed anchor names — the same join the Go composer performs.
+// names re-compose on save, no rescan.
+function NamingSection(props: {
+  libraryId: number;
+  groupStyle?: string;
+  elementName?: string;
+}): ReactElement {
+  const servedGroup = props.groupStyle ?? "";
+  const servedTmpl = props.elementName ?? "";
+  const servedKey = `${servedGroup}\n${servedTmpl}`;
+  const [groupDraft, setGroupDraft] = useState<string | null>(null);
+  const [tmplDraft, setTmplDraft] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const save = useUpdateLibrary();
+  const group = groupDraft ?? servedGroup;
+  const tmpl = tmplDraft ?? servedTmpl;
+
+  // A refetch that changed the served options resets the drafts (same
+  // posture as the chain draft — edits track WHAT IS SERVED).
+  useEffect(() => {
+    setGroupDraft(null);
+    setTmplDraft(null);
+    setSaved(false);
+  }, [servedKey]);
+
+  // The sample row: the library's first episode + the series its parsed
+  // anchor names (tombstones skipped, like the Go join).
+  const sample = useItems({ library: props.libraryId, limit: 1 });
+  const series = useSeries(props.libraryId);
+  const ep = sample.data?.items[0];
+  const facts = ep ? episodeFacts(ep.document) : null;
+  const seriesRow = facts
+    ? (series.data?.items ?? []).find(
+        (s) => s.relative_path === facts.path && s.status !== "deleted",
+      )
+    : undefined;
+  const title = seriesRow ? seriesName(seriesRow, group) : null;
+  const preview =
+    facts && title !== null
+      ? composeItemName(tmpl, { title, season: facts.season, episode: facts.episode })
+      : null;
+
+  const saveDraft = (): void => {
+    save.mutate(
+      {
+        id: props.libraryId,
+        req: { naming_group_style: group, naming_element_name: tmpl },
+      },
+      { onSuccess: () => setSaved(true) },
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div role="radiogroup" aria-label="Group style" className="flex flex-wrap gap-3">
+        {(
+          [
+            ["", "Module default"],
+            ["clean", "clean"],
+            ["raw", "raw"],
+          ] as const
+        ).map(([value, label]) => (
+          <label key={value} className="flex items-center gap-1 text-xs">
+            <input
+              type="radio"
+              name="naming-group-style"
+              value={value}
+              checked={group === value}
+              onChange={() => setGroupDraft(value)}
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+      <input
+        aria-label="Element name template"
+        className="w-full rounded-md border bg-transparent px-2 py-1 text-xs"
+        value={tmpl}
+        onChange={(e) => setTmplDraft(e.target.value)}
+      />
+      {sample.isLoading ? (
+        <p className="text-xs text-muted-foreground">Loading sample episode…</p>
+      ) : preview !== null ? (
+        <p aria-label="Name preview" className="text-xs">
+          Preview: <span className="font-medium">{preview}</span>
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          No episodes scanned yet — the preview appears with the first episode.
+        </p>
+      )}
+      <p className="text-xs text-muted-foreground">
+        Names re-compose on save, no rescan.
+      </p>
+      <button
+        type="button"
+        className="cardact-row rounded-md border text-xs"
+        disabled={save.isPending}
+        onClick={saveDraft}
+      >
+        Save
+      </button>
+      {saved ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          Saved.
+        </p>
+      ) : null}
+      {sectionError(save.error)}
+    </div>
+  );
+}
+
+// RescanSection — the Rescan save boundary (ui-management pass 3): one
+// POST /libraries/{id}/scan (retry:0 — the operator re-clicks on failure),
+// the ScanResponse rendered inline on this section: `discovered X ·
+// persisted Y` (role="status") and the warnings list ONLY when the array is
+// present and non-empty (absent/empty warnings are omitted — never a padded
+// line). Unlike the admin table there is no per-row state to derive — the
+// result belongs to THIS section's own mutation. A scan does not change the
+// library row, so nothing is invalidated; the fresh counts follow the
+// summary's own refetch windows.
+function RescanSection(props: { libraryId: number }): ReactElement {
+  const scan = useScanLibrary();
+  const res: ScanResponse | undefined = scan.data;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        className="cardact-row rounded-md border text-xs"
+        disabled={scan.isPending}
+        onClick={() => scan.mutate(props.libraryId)}
+      >
+        {scan.isPending ? "Scanning…" : "Rescan"}
+      </button>
+      {res ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          discovered {res.discovered} · persisted {res.persisted}
+        </p>
+      ) : null}
+      {res && res.warnings && res.warnings.length > 0 ? (
+        <ul className="list-disc pl-4 text-xs text-muted-foreground">
+          {res.warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      ) : null}
+      {sectionError(scan.error)}
+    </div>
+  );
+}
+
+// RefreshMetadataSection — the Refresh metadata save boundary (ui-management
+// pass 3): a chain-parser picker (one radio per declared parser — the refresh
+// endpoint requires exactly one plugin_id per invocation); picking one (or
+// the served-first preselection) fetches GET /libraries/{id}/enrich/preview
+// for that plugin, whose drift picture (matches/pending/cooling + the
+// `_provenance` version histogram) renders BEFORE the trigger enables — the
+// preview IS the consent surface (enrichment D-7): no drift picture, no
+// kickoff. The preview composition is slow by design (a whole-library
+// namespace scan) — a loading line, never a spinner. The trigger POSTs the
+// same postLibraryRefresh client with the picked plugin and NO row_ids —
+// omitted row_ids is the whole-library sweep (Go `row_ids,omitempty`).
+// 409 refresh_in_flight renders its own line; any other canonical error
+// renders inline as code: message (retry:0 — no auto-retry). A 503
+// "unavailable" preview means the endpoint is UNWIRED — the section disables
+// itself with explanatory copy. The module block's ABSENCE still signals
+// wiring, not authorization: without the declared chain the section renders
+// its designed empty state.
+function RefreshMetadataSection(props: {
+  libraryId: number;
+  chain?: ParserBinding[];
+}): ReactElement {
+  const chain = props.chain;
+  const [pluginId, setPluginId] = useState<string | null>(null);
+  const picked = pluginId ?? chain?.[0]?.id ?? "";
+  const preview = useQuery<EnrichPreview, ApiError>({
+    queryKey: ["enrich-preview", props.libraryId, picked],
+    queryFn: () => getEnrichPreview(props.libraryId, picked),
+    enabled: chain !== undefined && picked !== "",
+  });
+  const refresh = useMutation<LibraryRefreshResult, ApiError, void>({
+    mutationFn: () => postLibraryRefresh(props.libraryId, { plugin_id: picked }),
+    retry: 0,
+  });
+  const res = refresh.data;
+
+  if (chain === undefined) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        The module block is unavailable — refresh metadata needs a wired
+        module.
+      </p>
+    );
+  }
+
+  return (
+    <div
+      className="flex flex-col gap-2"
+      onKeyDown={(e) => {
+        // While the POST is in flight the sheet's Esc walk is suppressed —
+        // an unmounted section could never render the canonical inline
+        // error (the per-item views' guard).
+        if (e.key === "Escape" && refresh.isPending) {
+          e.stopPropagation();
+        }
+      }}
+    >
+      {preview.error?.code === "unavailable" ? (
+        // 503 unwired — a wiring fact, not an authorization one: the section
+        // disables itself rather than offering a kickoff that cannot run.
+        <p className="text-xs text-muted-foreground">
+          The enrichment preview is unavailable — refresh metadata is disabled
+          for this collection (the endpoint is not wired).
+        </p>
+      ) : (
+        <>
+          <div
+            role="radiogroup"
+            aria-label="Refresh metadata with parser"
+            className="flex flex-wrap gap-3"
+          >
+            {chain.map((b) => (
+              <label key={b.id} className="flex items-center gap-1 text-xs">
+                <input
+                  type="radio"
+                  name="refresh-metadata-plugin"
+                  value={b.id}
+                  checked={picked === b.id}
+                  onChange={() => setPluginId(b.id)}
+                />
+                {b.id}
+              </label>
+            ))}
+          </div>
+          {preview.isLoading ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              Computing preview… slow by design — a whole-library scan.
+            </p>
+          ) : preview.data ? (
+            <div className="flex flex-col gap-1 text-xs">
+              <p aria-label="Enrichment preview">
+                matches {String(preview.data.matches)} · pending{" "}
+                {String(preview.data.pending)} · cooling{" "}
+                {String(preview.data.cooling)}
+              </p>
+              {Object.keys(preview.data.versions).length > 0 ? (
+                <p className="text-muted-foreground">
+                  versions:{" "}
+                  {Object.entries(preview.data.versions)
+                    .map(([v, n]) => `${v} (${String(n)})`)
+                    .join(", ")}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="cardact-row rounded-md border text-xs"
+            disabled={!preview.data || refresh.isPending}
+            onClick={() => refresh.mutate(undefined)}
+          >
+            {refresh.isPending ? "Refreshing…" : "Refresh metadata"}
+          </button>
+          {res ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              {String(res.queued)} queued · {String(res.stripped)} stripped ·{" "}
+              {String(res.deferred)} deferred
+            </p>
+          ) : null}
+          {refresh.error ? (
+            refresh.error.code === "refresh_in_flight" ? (
+              <p role="alert" className="text-xs text-destructive">
+                A refresh is already running
+              </p>
+            ) : (
+              <p role="alert" className="text-xs text-destructive">
+                {refresh.error.code}: {refresh.error.message}
+              </p>
+            )
+          ) : null}
+        </>
+      )}
+    </div>
+  );
 }
 
 // ---- Shared pagination ------------------------------------------------------
@@ -388,12 +1019,18 @@ function usePagedItems(libraryId: number) {
 // ---- tv (movies) — box 5.2 --------------------------------------------------
 
 // MoviesBody — the movies layout: a paginated card grid over
-// GET /api/v1/items?library={id}. Each card shows the parsed title (verbatim
-// from `_view`), the parsed fact chips (season/episode token, year,
-// resolution — from the document's source namespaces), the ffprobe duration
-// when known, and the raw filename; cards deep-link into /items/{id}. No
-// paths, no lifecycle pills (D5).
-function MoviesBody(props: { libraryId: number }): ReactElement {
+// GET /api/v1/items?library={id}. Each card's title is the SERVED
+// display_name (display-naming: chain-served or composed; the pathStem
+// fallback marks the card "Not identified"), and its meta line joins the
+// parsed fact chips (year/resolution/capture date — from the document's
+// source namespaces) with the ffprobe duration when known; cards deep-link
+// into /items/{id} and carry the CardActions menu (rename/identify/refresh).
+// No raw filename row, no season/episode token (display-naming took both off
+// the card), no paths, no lifecycle pills (D5).
+function MoviesBody(props: {
+  libraryId: number;
+  chain?: ParserBinding[];
+}): ReactElement {
   const { query, items, offset, prev, next } = usePagedItems(props.libraryId);
 
   if (query.isLoading) {
@@ -418,6 +1055,7 @@ function MoviesBody(props: { libraryId: number }): ReactElement {
                 index,
                 props.libraryId,
               )}
+              chain={props.chain}
             />
           </li>
         ))}
@@ -429,28 +1067,66 @@ function MoviesBody(props: { libraryId: number }): ReactElement {
 
 // MovieCard — one movie file card: the frame-grabber thumb (via the
 // authenticated media fetch, D5) over a quiet placeholder box when the
-// document carries the frame-grabber fact, then title, parsed chips +
-// duration, raw filename, deep-link into the item detail. A document without
-// the fact renders exactly the text card — never a broken-image state (D6:
-// the thumb variant is requested only when the fact exists).
-// `displayTitle` lets a caller pass the SERVED display_name (the episode
-// flow does); the default is the document's `_view` title. `rename` renders
-// an affordance row INSIDE the card but OUTSIDE the Link — a form control is
-// never nested in an anchor.
+// document carries the frame-grabber fact, then the served title (floored
+// with a muted "Not identified" line when unidentified), and ONE muted meta
+// line of parsed facts + duration. No filename row — the file lives in the
+// item detail's Technical details (INV-no-filenames). A document without the
+// thumb fact renders exactly the text card — never a broken-image state (D6:
+// the thumb variant is requested only when the fact exists). Carries the
+// CardActions ⋯ menu (EpisodeCard inherits it by rendering this card); the
+// rename view wires the item title routes with the card's invalidation keys
+// — episodes override them (["series-episodes", seriesId]); the tv grid
+// defaults to the paged items list (["items"] prefix). `chain` gates and
+// feeds the Identify menu row (absent/empty chain → the row is hidden — a
+// wired-module concern, not an authorization one), and an unidentified card
+// promotes Identify… to the menu's first row.
 function MovieCard(props: {
   item: ItemDTO;
   handoff: BrowseHandoff;
-  displayTitle?: string;
-  rename?: ReactElement;
+  chain?: ParserBinding[];
+  invalidate?: readonly unknown[];
 }): ReactElement {
   const { item, handoff } = props;
-  const title = props.displayTitle ?? viewTitle(item.document);
-  const duration = durationSeconds(item.document);
+  const { title, unidentified } = itemTitle(item);
+  const meta = metaLine(item.document);
   const hasThumb = hasFrameGrabberThumb(item.document);
   const thumb = useItemMedia(hasThumb ? ENDPOINTS.itemMedia(item.id, "thumb") : null);
+  const { set, clear } = useTitleOverride(
+    "item",
+    item.id,
+    props.invalidate ?? ["items"],
+  );
+  const pending = set.isPending || clear.isPending;
+  // Mark watched is gated on a KNOWN duration: photos and unprobed rows
+  // never see the row — never a guessed duration.
+  const duration = durationSeconds(item.document);
+  const chain = props.chain ?? [];
+  const identify =
+    chain.length > 0
+      ? ({ collapse, back }: { collapse: () => void; back: () => void }) => (
+          <IdentifyView
+            itemId={item.id}
+            chain={chain}
+            invalidate={props.invalidate ?? ["items"]}
+            onCollapse={collapse}
+            onBack={back}
+          />
+        )
+      : undefined;
+  const refresh =
+    chain.length > 0
+      ? ({ back }: { collapse: () => void; back: () => void }) => (
+          <RefreshView
+            libraryId={item.library_id}
+            rowId={item.id}
+            chain={chain}
+            onBack={back}
+          />
+        )
+      : undefined;
 
   return (
-    <div className="flex h-full flex-col gap-2">
+    <div className="cardact-host relative flex h-full flex-col gap-2">
       <Link
         to={`/items/${item.id}`}
         state={handoff}
@@ -465,21 +1141,35 @@ function MovieCard(props: {
           </span>
         ) : null}
         <span className="text-sm font-medium">{title}</span>
-        <span className="flex flex-wrap gap-1">
-          {parsedChips(item.document).map((chip) => (
-            <span key={chip} className="chip">
-              {chip}
-            </span>
-          ))}
-          {duration !== null ? (
-            <span className="chip">{formatPosition(duration)}</span>
-          ) : null}
-        </span>
-        <span className="break-all font-mono text-xs text-muted-foreground">
-          {fileName(item.relative_path)}
-        </span>
+        {unidentified ? (
+          <span className="text-xs text-muted-foreground">Not identified</span>
+        ) : null}
+        {meta !== "" ? (
+          <span className="text-xs text-muted-foreground">{meta}</span>
+        ) : null}
       </Link>
-      {props.rename ?? null}
+      <CardActions
+        triggerLabel={`Actions for ${title}`}
+        pending={pending}
+        identify={identify}
+        identifyFirst={unidentified}
+        refresh={refresh}
+        rows={
+          duration !== null ? (
+            <MarkWatchedRow itemId={item.id} duration={duration} />
+          ) : undefined
+        }
+        rename={({ collapse, back }) => (
+          <RenameTitle
+            entityLabel={title}
+            initial={item.title_override ?? ""}
+            set={set}
+            clear={clear}
+            onCollapse={collapse}
+            onBack={back}
+          />
+        )}
+      />
     </div>
   );
 }
@@ -608,13 +1298,14 @@ function FolderChip(props: {
 // PhotoTile — one masonry tile: the real-ratio block (aspect from the
 // enricher's width/height facts) carrying the item's media — the frame-grabber
 // thumb when the document carries that fact, else the original — over the
-// quiet gradient placeholder, plus the raw filename and the capture-date
-// footer from the document's date_taken fact. A document without a date
-// renders no footer — never a faked one; a document with no resolvable media
-// fact (or whose media fetch 404s — a stale absolute_path after a root move)
-// keeps the pure placeholder — never a broken-image state (D6: the thumb
-// variant is requested only when the fact exists). Deep-links into
-// /items/{id}.
+// quiet gradient placeholder, plus the capture-date footer from the
+// document's date_taken fact. No title row at all — photo identity is the
+// thumbnail (INV-no-filenames: the accessible name comes from the stem, never
+// the raw filename). A document without a date renders no footer — never a
+// faked one; a document with no resolvable media fact (or whose media fetch
+// 404s — a stale absolute_path after a root move) keeps the pure placeholder
+// — never a broken-image state (D6: the thumb variant is requested only when
+// the fact exists). Deep-links into /items/{id}.
 function PhotoTile(props: { item: ItemDTO; handoff: BrowseHandoff }): ReactElement {
   const { item, handoff } = props;
   const ratio = aspectRatio(item.document);
@@ -630,7 +1321,7 @@ function PhotoTile(props: { item: ItemDTO; handoff: BrowseHandoff }): ReactEleme
     <Link
       to={`/items/${item.id}`}
       state={handoff}
-      aria-label={`Open ${fileName(item.relative_path)}`}
+      aria-label={`Open ${pathStem(item.relative_path)}`}
       className="ptile"
     >
       <span
@@ -640,10 +1331,11 @@ function PhotoTile(props: { item: ItemDTO; handoff: BrowseHandoff }): ReactEleme
       >
         <MediaImg src={src} />
       </span>
-      <footer>
-        <span className="nm">{fileName(item.relative_path)}</span>
-        {date !== null ? <span>{formatDatePart(date)}</span> : null}
-      </footer>
+      {date !== null ? (
+        <footer>
+          <span>{formatDatePart(date)}</span>
+        </footer>
+      ) : null}
     </Link>
   );
 }
@@ -657,7 +1349,7 @@ function PhotoTile(props: { item: ItemDTO; handoff: BrowseHandoff }): ReactEleme
 // episode documents are NEVER fetched eagerly per series row). The param is
 // real URL state, so an episode view deep-links and /collections/{id} alone
 // still lands on the grid.
-function SerialsBody(props: { libraryId: number }): ReactElement {
+function SerialsBody(props: { libraryId: number; chain?: ParserBinding[] }): ReactElement {
   const [searchParams, setSearchParams] = useSearchParams();
   const seriesId = searchParams.get("series") ?? "";
 
@@ -666,19 +1358,30 @@ function SerialsBody(props: { libraryId: number }): ReactElement {
       <EpisodesView
         seriesId={seriesId}
         libraryId={props.libraryId}
+        chain={props.chain}
         onBack={() => setSearchParams({})}
       />
     );
   }
-  return <SeriesGrid libraryId={props.libraryId} />;
+  return <SeriesGrid libraryId={props.libraryId} chain={props.chain} />;
 }
 
 // seriesTitle — the series card's display title: the SERVED `display_name`
 // verbatim (display-naming — the server resolves override > composed chain
-// > ""), floored only from undefined to "" for the optional TS field. A
-// floor-empty "" renders EMPTY — the client never invents a name.
+// > ""). Directory-backed rows render verbatim ALWAYS — their served name is
+// naturally the directory's own name, so a filename floor would fire on every
+// card and scene dirs like "Show.S01" would corrupt into "Show". File-backed
+// rows floor an empty or own-filename name to the extension-less stem —
+// silently, no marker (the series menu offers no Identify).
 function seriesTitle(sr: SeriesDTO): string {
-  return sr.display_name ?? "";
+  const name = sr.display_name ?? "";
+  if (seriesBacking(sr.document) !== "file") {
+    return name;
+  }
+  if (name === "" || name === lastSegment(sr.relative_path)) {
+    return pathStem(sr.relative_path);
+  }
+  return name;
 }
 
 // seriesSeason — the series' season number out of the document's source
@@ -706,8 +1409,12 @@ function seriesBacking(doc: SeriesDTO["document"]): string | null {
 
 // SeriesGrid — one poster card per series row. Deleted rows are skipped (the
 // janitor's tombstones are not a browse surface); an empty list after the
-// fetch is an honest "nothing scanned yet" state.
-function SeriesGrid(props: { libraryId: number }): ReactElement {
+// fetch is an honest "nothing scanned yet" state. `chain` threads through to
+// the series menu's Refresh metadata… row (box 2.3).
+function SeriesGrid(props: {
+  libraryId: number;
+  chain?: ParserBinding[];
+}): ReactElement {
   const series = useSeries(props.libraryId);
 
   if (series.isLoading) {
@@ -726,7 +1433,7 @@ function SeriesGrid(props: { libraryId: number }): ReactElement {
     <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
       {rows.map((sr) => (
         <li key={sr.id}>
-          <SeriesCard sr={sr} libraryId={props.libraryId} />
+          <SeriesCard sr={sr} libraryId={props.libraryId} chain={props.chain} />
         </li>
       ))}
     </ul>
@@ -771,50 +1478,519 @@ function useTitleOverride(
   return { set, clear };
 }
 
-// RenameTitle — the inline rename affordance (serial-watch-flow 4.3): a
-// "Rename" toggle revealing a prefilled input with Save (PUT the override)
-// and Clear (DELETE it) actions. Canonical errors surface INLINE from the
-// mutation state — no auto-retry, no navigation; the form stays open so the
-// operator can correct the value. A landed set or clear collapses the form —
-// awaited on the exact mutation the operator just ran (NOT an isSuccess
-// effect: a stale success from the other mutation would flip when the next
-// mutate starts and slam the form shut mid-submission); the display behind it
-// follows the invalidated read (the override on set, the chain value on
-// clear).
+// CardActions — the per-card management unit (ui-management §2): a quiet ⋯
+// trigger top-right of the card, revealed on card hover/focus on fine
+// pointers (the coarse-pointer persistent reveal is box 1.4's CSS), opening
+// ONE dialog overlay whose views are `menu`, `rename`, `identify` and
+// `refresh`. The trigger carries aria-haspopup="dialog" + aria-expanded; the
+// open state persists via data-open because the overlay is portaled (`.scard`
+// is overflow:hidden — in-card positioning would clip) and :focus-within goes
+// false once focus enters the panel. The shell mechanics (portal, scrim
+// click-away, Esc, focus trap, focus-return, aria-modal) live in the shared
+// DialogShell (pass 3 lift) — this component keeps the POLICY: the view state
+// machine and the Esc matrix (a view → menu, menu → close all, IGNORED while
+// a mutation is pending — an unmounted view could never render the canonical
+// inline error). Overlay state is LOCAL
+// (closed|menu|rename|identify|refresh), never URL state: a route change
+// unmounts the card and discards it.
+type OverlayState = "closed" | "menu" | "rename" | "identify" | "refresh";
+
+function CardActions(props: {
+  triggerLabel: string;
+  pending: boolean;
+  rows?: ReactElement;
+  footer?: ReactElement;
+  identify?: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
+  identifyFirst?: boolean;
+  refresh?: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
+  rename: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
+}): ReactElement {
+  const [overlay, setOverlay] = useState<OverlayState>("closed");
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const closeAll = (): void => setOverlay("closed");
+  const open = overlay !== "closed";
+
+  const trigger = (
+    <button
+      type="button"
+      ref={triggerRef}
+      className="cardact-trigger"
+      aria-label={props.triggerLabel}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      data-open={open ? "" : undefined}
+      onClick={() => setOverlay(open ? "closed" : "menu")}
+    >
+      ⋯
+    </button>
+  );
+
+  return (
+    <>
+      {trigger}
+      <DialogShell
+        open={open}
+        label={props.triggerLabel}
+        returnFocusRef={triggerRef}
+        focusKey={overlay}
+        onClose={closeAll}
+        onEscape={() => {
+          if (props.pending) {
+            return;
+          }
+          if (overlay === "menu") {
+            closeAll();
+          } else {
+            setOverlay("menu");
+          }
+        }}
+      >
+        {overlay === "menu" ? (
+          <>
+            {/* Identify… rides the module-wired chain (the row is absent
+                without it) and is promoted to the first row when the card
+                is unidentified — curing the name is the operator's next
+                most likely intent there. */}
+            {props.identifyFirst && props.identify ? (
+              <button
+                type="button"
+                className="cardact-row"
+                onClick={() => setOverlay("identify")}
+              >
+                Identify…
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="cardact-row"
+              onClick={() => setOverlay("rename")}
+            >
+              Rename…
+            </button>
+            {!props.identifyFirst && props.identify ? (
+              <button
+                type="button"
+                className="cardact-row"
+                onClick={() => setOverlay("identify")}
+              >
+                Identify…
+              </button>
+            ) : null}
+            {props.refresh ? (
+              <button
+                type="button"
+                className="cardact-row"
+                onClick={() => setOverlay("refresh")}
+              >
+                Refresh metadata…
+              </button>
+            ) : null}
+            {props.rows ?? null}
+            {props.footer ?? null}
+          </>
+        ) : overlay === "rename" ? (
+          props.rename({
+            collapse: closeAll,
+            back: () => setOverlay("menu"),
+          })
+        ) : overlay === "identify" && props.identify ? (
+          props.identify({
+            collapse: closeAll,
+            back: () => setOverlay("menu"),
+          })
+        ) : overlay === "refresh" && props.refresh ? (
+          props.refresh({
+            collapse: closeAll,
+            back: () => setOverlay("menu"),
+          })
+        ) : null}
+      </DialogShell>
+    </>
+  );
+}
+
+// MarkWatchedRow — the item menu's "Mark watched" action row (ui-management
+// §2): PUTs the item's FULL duration as the playback position through the
+// player's existing putProgress channel (retry:0 — a failure surfaces, never
+// auto-retries). No view flip — the row is an ACTION, not a view: the menu
+// stays open on success (no collapse) and on failure (a row-local transient
+// error line renders under the row, cleared on the next attempt).
+// Known semantics, accepted default (design open question 1): the server has
+// no watched concept — position=duration does NOT leave the item on the
+// Continue rail (GET /progress is newest-first positive positions); for a
+// series it genuinely advances Next-up. Backlog: "watched flag /
+// Continue-rail filtering (Go)".
+function MarkWatchedRow(props: { itemId: string; duration: number }): ReactElement {
+  const [error, setError] = useState<ApiError | null>(null);
+  const mark = useMutation<ProgressDTO, ApiError, void>({
+    mutationFn: () => putProgress(props.itemId, props.duration),
+    retry: 0,
+  });
+
+  return (
+    <div>
+      <button
+        type="button"
+        className="cardact-row"
+        onClick={() => {
+          setError(null);
+          mark.mutate(undefined, { onError: setError });
+        }}
+      >
+        Mark watched
+      </button>
+      {error ? (
+        <p role="alert" className="cardact-foot text-destructive">
+          {error.code}: {error.message}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// IdentifyView — the card menu's identify view (ui-management pass 2, boxes
+// 2.1–2.2). Opening it performs a MANDATORY GET /items/{id} (the `useItem`
+// detail hook): `extra_parsers` — the item's attached parser ids — is
+// populated ONLY by the detail endpoint, so computing the attachable diff
+// from list rows would show attached parsers as attachable and the
+// full-replacement parsers PUT would silently drop existing attachments.
+// Rendering is gated on that fetch: no parser list until the detail lands (a
+// muted loading line, never a spinner).
+//
+// The three facts the view shows:
+//   - attached — the item's `extra_parsers` in attachment order, up/down
+//     reorderable and per-row removable (keyboard-native; drag is a later
+//     refinement). The local draft order starts as the served order and is
+//     what Save sends as the COMPLETE ordered list — the parsers PUT is a
+//     full replacement, so the draft is always sent whole (empty clears).
+//   - the parser chain — the library module's declared bindings, served
+//     order, from the page-level module block (read-only here; the library
+//     Manage overlay owns editing it). Attached entries carry a status label;
+//     the attachable ones — declared minus attached (an absent `extra_parsers`
+//     field means empty attachments, so every declared parser is attachable) —
+//     render as add chips (ParserChainSection's pattern, box 2.4): tapping one
+//     appends that id to the END of the draft and the chip disappears; the
+//     row's remove affordance returns the parser to the chips.
+//
+// Save PUTs the full draft (retry:0); a canonical 400 (unknown/mismatched
+// parser) surfaces inline and the overlay stays open; the awaited success
+// invalidates the caller's read key (the items page or the episode list) and
+// this detail entry, then collapses the overlay — the name itself updates
+// when the background enrichment lands (staleness is copy-only per the
+// accepted default). A detail error surfaces inline (role="alert"); Back
+// returns to the menu.
+function IdentifyView(props: {
+  itemId: string;
+  chain: ParserBinding[];
+  invalidate: readonly unknown[];
+  onCollapse: () => void;
+  onBack: () => void;
+}): ReactElement {
+  const qc = useQueryClient();
+  const detail = useItem(props.itemId);
+  // The attachment draft: null until the operator edits — i.e. the served
+  // attachment order verbatim; a reorder or removal pins the edited order
+  // (an EMPTY pinned draft is the emptied-list save, never "unedited").
+  const [order, setOrder] = useState<string[] | null>(null);
+  const served = detail.data?.item.extra_parsers ?? [];
+  const attached = order ?? served;
+
+  const move = (index: number, dir: -1 | 1): void => {
+    const target = index + dir;
+    if (target < 0 || target >= attached.length) {
+      return;
+    }
+    const next = [...attached];
+    const [picked] = next.splice(index, 1);
+    next.splice(target, 0, picked);
+    setOrder(next);
+  };
+
+  const remove = (id: string): void => {
+    setOrder(attached.filter((a) => a !== id));
+  };
+
+  const save = useMutation<ItemParsersResponse, ApiError, void>({
+    mutationFn: () => putItemParsers(props.itemId, attached),
+    retry: 0,
+    onSuccess: () => {
+      // The write changes what the list rows and the detail read serve
+      // (extra_parsers, recomposed names): invalidate the caller's read key
+      // (the items page or the episode list) and this view's own entry.
+      void qc.invalidateQueries({ queryKey: [...props.invalidate] });
+      void qc.invalidateQueries({ queryKey: ["item", props.itemId] });
+    },
+  });
+
+  const saveDraft = (): void => {
+    save
+      .mutateAsync()
+      .then(props.onCollapse) // awaited collapse — never an isSuccess effect
+      .catch(() => {}); // the canonical error renders inline below
+  };
+
+  if (detail.isLoading) {
+    return (
+      <div className="flex flex-col gap-2 p-2">
+        <p className="text-xs text-muted-foreground">Loading parser details…</p>
+        <button
+          type="button"
+          className="cardact-row"
+          onClick={props.onBack}
+        >
+          Back
+        </button>
+      </div>
+    );
+  }
+  if (detail.error !== null || detail.data === undefined) {
+    const err = detail.error as ApiError | null;
+    return (
+      <div className="flex flex-col gap-2 p-2">
+        <p role="alert" className="text-xs text-destructive">
+          {err ? `${err.code}: ${err.message}` : "not_found: item not found"}
+        </p>
+        <button
+          type="button"
+          className="cardact-row"
+          onClick={props.onBack}
+        >
+          Back
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex flex-col gap-2 p-2"
+      onKeyDown={(e) => {
+        // While the save is in flight the panel's Esc walk is suppressed —
+        // an unmounted view could never render the canonical inline error
+        // (the rename view's guard, enforced here because the save mutation
+        // lives in this view).
+        if (e.key === "Escape" && save.isPending) {
+          e.stopPropagation();
+        }
+      }}
+    >
+      <p className="text-xs font-medium">Attached parsers</p>
+      {attached.length > 0 ? (
+        <ul className="flex flex-col gap-1" aria-label="Attached parsers">
+          {attached.map((id, i) => (
+            <li key={id} className="flex items-center justify-between gap-2">
+              <span className="text-xs">{id}</span>
+              <span className="flex gap-1">
+                <button
+                  type="button"
+                  className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                  aria-label={`Move ${id} up`}
+                  disabled={i === 0}
+                  onClick={() => move(i, -1)}
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                  aria-label={`Move ${id} down`}
+                  disabled={i === attached.length - 1}
+                  onClick={() => move(i, 1)}
+                >
+                  ↓
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                  aria-label={`Remove ${id}`}
+                  onClick={() => remove(id)}
+                >
+                  ×
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-xs text-muted-foreground">Nothing attached.</p>
+      )}
+      <p className="text-xs font-medium">Parser chain</p>
+      <ul className="flex flex-col gap-1" aria-label="Parser chain">
+        {props.chain.map((b) => (
+          <li key={b.id} className="flex items-center justify-between gap-2">
+            <span className="text-xs">{b.id}</span>
+            {attached.includes(b.id) ? (
+              <span className="text-xs text-muted-foreground">attached</span>
+            ) : (
+              <button
+                type="button"
+                className="chip"
+                aria-label={`Add ${b.id}`}
+                onClick={() => setOrder([...attached, b.id])}
+              >
+                + {b.id}
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        className="cardact-row"
+        disabled={save.isPending}
+        onClick={saveDraft}
+      >
+        Save
+      </button>
+      <p className="text-xs text-muted-foreground">
+        Enrichment runs in the background; the name updates when it lands. A
+        recently failed row waits out its cooldown before retrying.
+      </p>
+      <button
+        type="button"
+        className="cardact-row"
+        onClick={props.onBack}
+      >
+        Back
+      </button>
+      {save.error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {save.error.code}: {save.error.message}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// RefreshView — the per-item metadata refresh view (ui-management pass 2,
+// box 2.3): one radio per declared chain parser — the endpoint requires
+// exactly one plugin_id per invocation, so the view preselects the
+// served-first parser and the radio selection drives the request body — and
+// a confirm that POSTs postLibraryRefresh(libraryId, {plugin_id, row_ids:
+// [rowId]}). rowId is the card's own id in the shared row space: an
+// episode/item id on the item cards, the series id from the series menu.
+// The 202 sweep counts render inline and the view stays open (names follow
+// when the background run lands); a deferred row kept its data — the copy
+// says so; 409 refresh_in_flight renders its own line; every other
+// canonical error (503 unwired, 400 unknown plugin, 404 unknown rows)
+// renders inline as code: message. retry:0 — no auto-retry.
+function RefreshView(props: {
+  libraryId: number;
+  rowId: string;
+  chain: ParserBinding[];
+  onBack: () => void;
+}): ReactElement {
+  const [pluginId, setPluginId] = useState(props.chain[0]?.id ?? "");
+  const refresh = useMutation<LibraryRefreshResult, ApiError, void>({
+    mutationFn: () =>
+      postLibraryRefresh(props.libraryId, {
+        plugin_id: pluginId,
+        row_ids: [props.rowId],
+      }),
+    retry: 0,
+  });
+  const res = refresh.data;
+
+  return (
+    <div
+      className="flex flex-col gap-2 p-2"
+      onKeyDown={(e) => {
+        // While the POST is in flight the panel's Esc walk is suppressed —
+        // an unmounted view could never render the canonical inline error.
+        if (e.key === "Escape" && refresh.isPending) {
+          e.stopPropagation();
+        }
+      }}
+    >
+      <div
+        role="radiogroup"
+        aria-label="Refresh with parser"
+        className="flex flex-col gap-1"
+      >
+        {props.chain.map((b) => (
+          <label key={b.id} className="flex items-center gap-2 text-xs">
+            <input
+              type="radio"
+              name="refresh-plugin"
+              value={b.id}
+              checked={pluginId === b.id}
+              onChange={() => setPluginId(b.id)}
+            />
+            {b.id}
+          </label>
+        ))}
+      </div>
+      <button
+        type="button"
+        className="cardact-row"
+        disabled={refresh.isPending || pluginId === ""}
+        onClick={() => refresh.mutate(undefined)}
+      >
+        Refresh
+      </button>
+      <button type="button" className="cardact-row" onClick={props.onBack}>
+        Back
+      </button>
+      {res ? (
+        <>
+          <p role="status" className="text-xs text-muted-foreground">
+            {String(res.queued)} queued · {String(res.stripped)} stripped ·{" "}
+            {String(res.deferred)} deferred
+          </p>
+          {res.deferred > 0 ? (
+            <p className="text-xs text-muted-foreground">
+              kept its data — try again shortly
+            </p>
+          ) : null}
+        </>
+      ) : null}
+      {refresh.error ? (
+        refresh.error.code === "refresh_in_flight" ? (
+          <p role="alert" className="text-xs text-destructive">
+            A refresh is already running
+          </p>
+        ) : (
+          <p role="alert" className="text-xs text-destructive">
+            {refresh.error.code}: {refresh.error.message}
+          </p>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+// RenameTitle — the rename form (serial-watch-flow 4.3), hosted as the
+// CardActions rename view: a prefilled input with Save (PUT the override) and
+// Clear (DELETE it). The old always-visible toggle is gone — the view only
+// exists inside the overlay. Canonical errors surface INLINE from the
+// mutation state — no auto-retry, no navigation; the overlay stays open so
+// the operator can correct the value. A landed set or clear collapses the
+// overlay — awaited on the exact mutation the operator just ran (NOT an
+// isSuccess effect: a stale success from the other mutation would flip when
+// the next mutate starts and slam the view shut mid-submission); the display
+// behind it follows the invalidated read (the override on set, the chain
+// value on clear).
 function RenameTitle(props: {
   entityLabel: string;
   initial: string;
   set: UseMutationResult<TitleOverrideDTO, ApiError, string>;
   clear: UseMutationResult<void, ApiError, void>;
+  onCollapse: () => void;
+  onBack: () => void;
 }): ReactElement {
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(props.initial);
   const error = props.set.error ?? props.clear.error;
   const busy = props.set.isPending || props.clear.isPending;
 
-  if (!open) {
-    return (
-      <button
-        type="button"
-        className="w-fit rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent"
-        aria-label={`Rename ${props.entityLabel}`}
-        onClick={() => {
-          setDraft(props.initial);
-          setOpen(true);
-        }}
-      >
-        Rename
-      </button>
-    );
-  }
   return (
     <form
-      className="flex flex-col gap-1"
+      className="flex flex-col gap-2 p-2"
       onSubmit={(e) => {
         e.preventDefault();
         props.set
           .mutateAsync(draft)
-          .then(() => setOpen(false))
+          .then(props.onCollapse)
           .catch(() => {}); // the canonical error renders inline below
       }}
     >
@@ -839,7 +2015,7 @@ function RenameTitle(props: {
           onClick={() => {
             props.clear
               .mutateAsync()
-              .then(() => setOpen(false))
+              .then(props.onCollapse)
               .catch(() => {}); // the canonical error renders inline below
           }}
         >
@@ -848,9 +2024,9 @@ function RenameTitle(props: {
         <button
           type="button"
           className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent"
-          onClick={() => setOpen(false)}
+          onClick={props.onBack}
         >
-          Close
+          Back
         </button>
       </div>
       {error ? (
@@ -864,14 +2040,20 @@ function RenameTitle(props: {
 
 // SeriesCard — one series card: poster-ratio placeholder (media serving is a
 // deferred capability), display title (the SERVED display_name, display-
-// naming — title_override already rides inside it), and the fact chips — the
-// lifecycle status (ready/stale/pending), the season when the document
-// carries one, and the "file" backing marker (directory-backed series are
-// the default and stay unmarked). The rename affordance (4.3) lives inside
-// the card but OUTSIDE the Link — a form control is never nested in an
-// anchor; its initial value is still the raw title_override. Links into the
-// episode flow.
-function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
+// naming — title_override already rides inside it), and the fact chip — the
+// season when the document carries one. The lifecycle status pill and the
+// "file" backing marker are OFF the chip row (ui-management §1: no status
+// pills on user screens; the backing fact re-lands as the series menu
+// footer). Carries the CardActions ⋯ menu with the rename view (4.3) wired
+// to the series title routes, and the Refresh metadata… row (box 2.3) when
+// the module chain is wired — the row passes the SERIES id (`row_ids:
+// [sr.id]`; series rows live in the same row space as items). Links into
+// the episode flow.
+function SeriesCard(props: {
+  sr: SeriesDTO;
+  libraryId: number;
+  chain?: ParserBinding[];
+}): ReactElement {
   const { sr } = props;
   const season = seriesSeason(sr.document);
   const backing = seriesBacking(sr.document);
@@ -879,10 +2061,22 @@ function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
     "series",
     props.libraryId,
   ]);
-  const titleOverride = sr.title_override ?? "";
+  const pending = set.isPending || clear.isPending;
+  const chain = props.chain ?? [];
+  const refresh =
+    chain.length > 0
+      ? ({ back }: { collapse: () => void; back: () => void }) => (
+          <RefreshView
+            libraryId={props.libraryId}
+            rowId={sr.id}
+            chain={chain}
+            onBack={back}
+          />
+        )
+      : undefined;
 
   return (
-    <div className="scard">
+    <div className="scard cardact-host">
       <Link
         to={`?series=${encodeURIComponent(sr.id)}`}
         className="block"
@@ -891,33 +2085,44 @@ function SeriesCard(props: { sr: SeriesDTO; libraryId: number }): ReactElement {
         <span className="scard-poster" aria-hidden="true" />
         <span className="scard-body">
           <span className="scard-title">{seriesTitle(sr)}</span>
-          <span className="flex flex-wrap gap-1">
-            <span className="chip">{sr.status}</span>
-            {season !== null ? (
+          {season !== null ? (
+            <span className="flex flex-wrap gap-1">
               <span className="chip">Season {String(season)}</span>
-            ) : null}
-            {backing === "file" ? <span className="chip">file</span> : null}
-          </span>
+            </span>
+          ) : null}
         </span>
       </Link>
-      <div className="px-2 pb-2">
-        <RenameTitle
-          entityLabel={seriesTitle(sr)}
-          initial={titleOverride}
-          set={set}
-          clear={clear}
-        />
-      </div>
+      <CardActions
+        triggerLabel={`Actions for ${seriesTitle(sr)}`}
+        pending={pending}
+        refresh={refresh}
+        footer={
+          backing === "file" ? (
+            <p className="cardact-foot">File-backed series</p>
+          ) : undefined
+        }
+        rename={({ collapse, back }) => (
+          <RenameTitle
+            entityLabel={seriesTitle(sr)}
+            initial={sr.title_override ?? ""}
+            set={set}
+            clear={clear}
+            onCollapse={collapse}
+            onBack={back}
+          />
+        )}
+      />
     </div>
   );
 }
 
 // EpisodesView — one series' episode flow: the back affordance into the grid,
-// then the episodes as movie-idiom cards (parsed chips + raw filename,
-// deep-linking into /items/{id}), fetched once per series.
+// then the episodes as movie-idiom cards (served title + muted meta line +
+// the ⋯ menu, deep-linking into /items/{id}), fetched once per series.
 function EpisodesView(props: {
   seriesId: string;
   libraryId: number;
+  chain?: ParserBinding[];
   onBack: () => void;
 }): ReactElement {
   const episodes = useSeriesEpisodes(props.seriesId);
@@ -958,6 +2163,7 @@ function EpisodesView(props: {
                   index,
                   props.libraryId,
                 )}
+                chain={props.chain}
               />
             </li>
           ))}
@@ -967,38 +2173,23 @@ function EpisodesView(props: {
   );
 }
 
-// EpisodeCard — one episode flow row: the movie card idiom with the SERVED
-// display_name as its title VERBATIM (display-naming — the server composes
-// `{serial} · SxxEyy`; a floor-empty "" renders empty, never a client-side
-// fallback) and the row's rename affordance (box 4.3) wired to the item title
-// routes; a set or clear invalidates the episode list so the display follows
-// the stored row.
+// EpisodeCard — one episode flow row: the movie card idiom with the rename
+// view's invalidation keys overridden to the EPISODE list (["series-
+// episodes", seriesId]) — a set or clear invalidates the episode list so the
+// display follows the stored row. Everything else (title floor, meta line,
+// the ⋯ menu shell) is inherited from MovieCard.
 function EpisodeCard(props: {
   item: ItemDTO;
   seriesId: string;
   handoff: BrowseHandoff;
+  chain?: ParserBinding[];
 }): ReactElement {
-  const { set, clear } = useTitleOverride(
-    "item",
-    props.item.id,
-    ["series-episodes", props.seriesId],
-  );
-  const titleOverride = props.item.title_override ?? "";
-  const title = props.item.display_name ?? "";
-
   return (
     <MovieCard
       item={props.item}
       handoff={props.handoff}
-      displayTitle={title}
-      rename={
-        <RenameTitle
-          entityLabel={title}
-          initial={titleOverride}
-          set={set}
-          clear={clear}
-        />
-      }
+      chain={props.chain}
+      invalidate={["series-episodes", props.seriesId]}
     />
   );
 }
@@ -1006,9 +2197,10 @@ function EpisodeCard(props: {
 // ---- unknown module_id — the generic fallthrough -----------------------------
 
 // ItemGrid — the generic paginated body: one card per item with its title
-// (verbatim from `_view`), type/status chips, and the raw filename,
-// deep-linking into the item detail. Unknown module ids land here; serial
-// collections now use the series grid above.
+// (the served display_name floored to the extension-less stem — no marker:
+// this surface has no menu) and type/status chips, deep-linking into the
+// item detail. No filename row (INV-no-filenames). Unknown module ids land
+// here; serial collections now use the series grid above.
 function ItemGrid(props: { libraryId: number }): ReactElement {
   const { query, items, offset, prev, next } = usePagedItems(props.libraryId);
 
@@ -1036,13 +2228,10 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
               )}
               className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
             >
-              <span className="text-sm font-medium">{viewTitle(item.document)}</span>
+              <span className="text-sm font-medium">{itemTitle(item).title}</span>
               <span className="flex gap-1">
                 <span className="chip">{item.media_type}</span>
                 <span className="chip">{item.status}</span>
-              </span>
-              <span className="break-all font-mono text-xs text-muted-foreground">
-                {fileName(item.relative_path)}
               </span>
             </Link>
           </li>
