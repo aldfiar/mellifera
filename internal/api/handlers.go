@@ -136,6 +136,16 @@ type ModulePresentation struct {
 	// LanguagePreference is the module's display.language_preference order —
 	// the pick order the composer applies over object-shaped source titles.
 	LanguagePreference []string `json:"language_preference,omitempty"`
+	// RefreshSources is the module's refreshable-source list (plugin-admin-
+	// surfaces, additive): the title_source_priority entries that carry a
+	// modeled metadata-source binding, whose plugin is loaded, and whose
+	// effective gate resolution is enabled, in config order — the refresh
+	// pickers' option list (chain parsers and scanners never appear). The
+	// display composition walk ignores the list — title behavior is
+	// byte-identical with and without it. Pairs are appended through
+	// AddRefreshSource, reusing the titleSourceBinding element type so the
+	// package-level export count stays at the complexity budget's cap of 12.
+	RefreshSources []titleSourceBinding `json:"refresh_sources,omitempty"`
 }
 
 // titleSourceBinding is one title-walk entry (plugin-title-enrichment D3/D5):
@@ -159,6 +169,18 @@ type titleSourceBinding struct {
 // stays at the complexity budget's cap of 12.
 func (p *ModulePresentation) AddTitleSource(id string, enabled bool) {
 	p.TitleSources = append(p.TitleSources, titleSourceBinding{ID: id, Enabled: enabled})
+}
+
+// AddRefreshSource appends one refreshable source to the presentation's
+// RefreshSources (plugin-admin-surfaces): the cmd-side closure's construction
+// path — one call per title_source_priority entry that carries a modeled,
+// loaded, gate-enabled metadata-source binding (a disabled flag is carried
+// for shape parity with AddTitleSource; the served list only carries
+// effectively-enabled entries). Reuses titleSourceBinding and lives on the
+// method set (not the package surface) so the package-level export count
+// stays at the complexity budget's cap of 12.
+func (p *ModulePresentation) AddRefreshSource(id string, enabled bool) {
+	p.RefreshSources = append(p.RefreshSources, titleSourceBinding{ID: id, Enabled: enabled})
 }
 
 // librariesResponse is the wire shape for GET /libraries.

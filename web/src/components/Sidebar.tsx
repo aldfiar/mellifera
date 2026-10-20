@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, House, Menu, Settings2 } from "lucide-react";
+import { ChevronLeft, House, Menu, Puzzle, Settings2 } from "lucide-react";
 
 import type { AdminStatus, LibraryDTO } from "@/lib/api";
 import { apiRequest, getItem } from "@/lib/api";
@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 // the reserved FAB zone) exactly like the theme owns the `dark` class.
 //
 // Panel anatomy, top to bottom (INV from the mockup):
-//   brand + chevron · Home/Admin icon nav · the side-colls list (ALL
+//   brand + chevron · Home/Admin/Plugins icon nav · the side-colls list (ALL
 //   collections, pastel type dot + item count, INDEPENDENTLY scrollable via
 //   min-height: 0) · the pinned profile block (side-foot, margin-top: auto)
 //   with the probed role and the theme toggle.
@@ -220,6 +220,11 @@ function SideNav(): ReactElement {
       <NavLink to="/admin" className={sideLinkClass}>
         <Settings2 aria-hidden="true" />
         <span className="lbl">Admin</span>
+      </NavLink>
+
+      <NavLink to="/admin/plugins" className={sideLinkClass}>
+        <Puzzle aria-hidden="true" />
+        <span className="lbl">Plugins</span>
       </NavLink>
     </nav>
   );

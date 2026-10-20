@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import * as apiModule from "@/lib/api";
@@ -25,8 +26,12 @@ import Collections, { EditLibraryForm } from "@/pages/admin/Collections";
 // .collections-scroll) plus the 20+-row render, not a pixel check.
 
 function withClient(client: QueryClient): ({ children }: { children: ReactNode }) => ReactNode {
+  // MemoryRouter — the page now renders the shared AdminTabs row (NavLinks),
+  // which requires a router context.
   return ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <QueryClientProvider client={client}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
   );
 }
 

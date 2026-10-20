@@ -301,6 +301,86 @@ func TestManager_RestartFailedAfterThree(t *testing.T) {
 	}
 }
 
+// TestManagerLogs proves the plugin-admin-surfaces restart-surviving capture
+// (scenario f70ed77f86ce96c6): the entry's ring is allocated at Load, is the
+// go-plugin Stderr sink of every launch, and is never cleared — after a
+// crash-restart the new subprocess's lines follow the earlier ones in one
+// oldest-first tail. The launch fake drives the restart (a real-subprocess
+// crash test would be flaky, the TestManager_RestartFailedAfterThree rule);
+// the real Stderr wiring through defaultLaunch is covered by the QA joint
+// test through the production harness.
+func TestManagerLogs(t *testing.T) {
+	m := Open(testDeps())
+	if err := m.Load("p", "/bin/true", scannerCap("default")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Stop(context.Background(), "p") })
+
+	if _, err := m.Logs("nope"); err == nil {
+		t.Fatal("Logs(unknown plugin): expected an error, got none")
+	}
+
+	e := m.plugins["p"] // same-package seam: the entry's ring IS the Stderr sink
+	if e.logs == nil {
+		t.Fatal("Load did not allocate the entry log ring")
+	}
+
+	var launches atomic.Int32
+	var crashed atomic.Bool
+	m.launchFn = func(context.Context, *pluginEntry) (*runningPlugin, error) {
+		if launches.Add(1) == 1 { // initial Start succeeds, then "crashes"
+			return &runningPlugin{
+				scanner: mockScanner{},
+				pconn:   fakePluginClient{},
+				exited:  func() bool { return crashed.Load() },
+				kill:    func() {},
+			}, nil
+		}
+		return &runningPlugin{
+			scanner: mockScanner{},
+			pconn:   fakePluginClient{},
+			exited:  func() bool { return false },
+			kill:    func() {},
+		}, nil
+	}
+	m.backoff = func(int) time.Duration { return time.Millisecond }
+	m.pollInterval = time.Millisecond
+
+	if err := m.Start(context.Background(), "p"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// First subprocess stderr, split mid-line like the go-plugin copier's
+	// arbitrary chunks.
+	if _, err := e.logs.Write([]byte("line-one\nline-")); err != nil {
+		t.Fatalf("write pre-restart stderr: %v", err)
+	}
+	if _, err := e.logs.Write([]byte("two\n")); err != nil {
+		t.Fatalf("write pre-restart stderr: %v", err)
+	}
+
+	crashed.Store(true) // unexpected exit -> the monitor relaunches
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		h, _ := m.Status("p")
+		if launches.Load() >= 2 && h.State == stateServing {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if h, _ := m.Status("p"); h.State != stateServing || launches.Load() < 2 {
+		t.Fatalf("relaunch did not land: state=%s launches=%d", h.State, launches.Load())
+	}
+	if _, err := e.logs.Write([]byte("line-three\n")); err != nil {
+		t.Fatalf("write post-restart stderr: %v", err)
+	}
+
+	got, err := m.Logs("p")
+	if err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+	wantLines(t, got, []string{"line-one", "line-two", "line-three"})
+}
+
 func TestExponentialBackoff(t *testing.T) {
 	tests := []struct {
 		attempt int

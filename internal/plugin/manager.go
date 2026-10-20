@@ -93,6 +93,9 @@ type Manager struct {
 type pluginEntry struct {
 	binaryPath string
 	caps       []sdk.Capability
+	// logs is the plugin's stderr capture (plugin-admin-surfaces D3),
+	// allocated once at Load and never cleared — the tail spans restarts.
+	logs *logRing
 
 	// runtime state
 	state       string
@@ -166,6 +169,7 @@ func (m *Manager) Load(pluginID, binaryPath string, caps []sdk.Capability) error
 	m.plugins[pluginID] = &pluginEntry{
 		binaryPath:  binaryPath,
 		caps:        caps,
+		logs:        &logRing{},
 		state:       stateNotServing,
 		lastChecked: m.now(),
 	}

@@ -115,6 +115,21 @@ func (m *Manager) Status(pluginID string) (Health, error) {
 	}, nil
 }
 
+// Logs returns the plugin's captured stderr tail (plugin-admin-surfaces D3),
+// oldest line first, as a detached copy the caller may mutate freely. The ring
+// is per plugin entry — allocated at Load, never cleared — so the tail carries
+// the union of every launch of the same plugin. An unknown plugin id errors
+// (notLoadedErr, the Status/Stop rule); a known one never does.
+func (m *Manager) Logs(pluginID string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.plugins[pluginID]
+	if !ok {
+		return nil, notLoadedErr(pluginID)
+	}
+	return e.logs.lines(), nil
+}
+
 // doLaunch starts the subprocess (via launchFn), runs the domain Handshake, and
 // records the live handles + serving state. On any failure it kills the partial
 // process and returns the error without changing state to serving.
@@ -242,6 +257,11 @@ func (m *Manager) clearRestarting(e *pluginEntry) {
 // {scanner: sdk.ScannerPlugin{}} set it always did (INV-ac3-base-scanner); a
 // metadata_source plugin yields {metadata_source: sdk.MetadataSourcePlugin{}}.
 // The command is built with an arg slice and never a shell (golang-security).
+// Stderr is the entry's log ring (plugin-admin-surfaces D3): go-plugin copies
+// the subprocess stderr into it in arbitrary chunks the ring reassembles into
+// lines. The ring is per entry and never cleared, so a crash-restart's
+// history survives (host-side observation only — the plugin contract is
+// untouched).
 func defaultLaunch(deps Deps) launchFunc {
 	return func(_ context.Context, e *pluginEntry) (*runningPlugin, error) {
 		cmd := exec.Command(e.binaryPath) // arg-slice only; go-plugin owns the process
@@ -253,6 +273,7 @@ func defaultLaunch(deps Deps) launchFunc {
 			},
 			Plugins:          clientPluginSet(e.caps),
 			Cmd:              cmd,
+			Stderr:           e.logs,
 			AllowedProtocols: []goplugin.Protocol{goplugin.ProtocolGRPC},
 			StartTimeout:     handshakeTimeout,
 		})

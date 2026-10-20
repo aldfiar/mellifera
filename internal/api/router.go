@@ -120,6 +120,25 @@ type Deps struct {
 	// a no-op), mirroring OnParsersChanged. Keeps api free of enrich imports
 	// (INV2).
 	OnSourceGateChanged func(ctx context.Context, libraryID int64)
+	// PluginConfigs resolves ONE plugin's config bindings across the module
+	// registry (plugin-admin-surfaces D4): one row per module whose config
+	// binds the plugin — as its scanner or as a metadata source — as parallel
+	// slices, the sourceResolution precedent (the export budget keeps the
+	// wire DTOs unexported, so cmd returns primitives). Slice i is one
+	// binding: moduleIDs[i] binds kinds[i] ("scanner" | "metadata"); metadata
+	// rows carry priorities[i] (the chain position), enabled[i] (the CONFIG
+	// flag, pre-gate) and authModes[i]; displayFields[i] and options[i] are
+	// the binding's raw JSON ("" when undeclared), embedded verbatim by the
+	// handler — api never parses config semantics (INV4). An unknown plugin
+	// errors (wrapping ErrUnknownPlugin); a loaded plugin with no bindings
+	// returns empty slices. Built in cmd/mellifera; nil-safe (503 when nil).
+	PluginConfigs func(ctx context.Context, pluginID string) (moduleIDs []string, kinds []string, priorities []int, enabled []bool, authModes []string, displayFields []string, options []string, err error)
+	// PluginLogs serves ONE plugin's host-captured stderr tail (plugin-admin-
+	// surfaces D3), oldest line first — built in cmd/mellifera over
+	// plugin.Manager.Logs. An unknown plugin errors (wrapping
+	// ErrUnknownPlugin → 400 at the handler); any other error is a real
+	// failure (→ 500). Nil-safe (503 when nil), mirroring PluginConfigs.
+	PluginLogs func(ctx context.Context, pluginID string) ([]string, error)
 }
 
 // Role is the authorization role resolved from the credential. MVP issues
@@ -275,6 +294,14 @@ func mountV1Routes(r chi.Router, h *app) {
 		// nothing is written, no derivation wakes. Operator observability, so
 		// the admin group beside the gate writes it previews.
 		r.Post("/admin/sources/preview", h.adminSourcePreview)
+		// Plugin admin surfaces (plugin-admin-surfaces): the read-only
+		// loaded-plugin aggregate — boot inventory, health snapshot,
+		// capability chips, module-scope effective verdicts, config bindings —
+		// and the per-plugin host-captured stderr tail. Operator
+		// observability (nothing written), so the admin group beside
+		// /admin/sources.
+		r.Get("/admin/plugins", h.adminPlugins)
+		r.Get("/admin/plugins/{plugin_id}/logs", h.adminPluginLogs)
 		r.Get("/admin/status", h.adminStatus)
 	})
 }

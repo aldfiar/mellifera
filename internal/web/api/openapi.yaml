@@ -50,6 +50,20 @@ definitions:
         items:
           $ref: '#/definitions/api.ParserBinding'
         type: array
+      refresh_sources:
+        description: |-
+          RefreshSources is the module's refreshable-source list (plugin-admin-
+          surfaces, additive): the title_source_priority entries that carry a
+          modeled metadata-source binding, whose plugin is loaded, and whose
+          effective gate resolution is enabled, in config order — the refresh
+          pickers' option list (chain parsers and scanners never appear). The
+          display composition walk ignores the list — title behavior is
+          byte-identical with and without it. Pairs are appended through
+          AddRefreshSource, reusing the titleSourceBinding element type so the
+          package-level export count stays at the complexity budget's cap of 12.
+        items:
+          $ref: '#/definitions/api.titleSourceBinding'
+        type: array
       title_sources:
         description: |-
           TitleSources is the module's resolved title-walk input (plugin-title-
@@ -303,6 +317,71 @@ definitions:
           type: object
         type: array
     type: object
+  api.pluginAdminBinding:
+    properties:
+      auth_mode:
+        type: string
+      display_fields:
+        items:
+          type: integer
+        type: array
+      enabled:
+        type: boolean
+      kind:
+        type: string
+      module_id:
+        type: string
+      options:
+        items:
+          type: integer
+        type: array
+      priority:
+        type: integer
+    type: object
+  api.pluginAdminEffective:
+    properties:
+      modules:
+        additionalProperties:
+          type: boolean
+        type: object
+    type: object
+  api.pluginAdminPlugin:
+    properties:
+      capabilities:
+        items:
+          type: string
+        type: array
+      config:
+        items:
+          $ref: '#/definitions/api.pluginAdminBinding'
+        type: array
+      description:
+        type: string
+      effective:
+        $ref: '#/definitions/api.pluginAdminEffective'
+      health:
+        $ref: '#/definitions/api.PluginHealth'
+      name:
+        type: string
+      plugin_id:
+        type: string
+    type: object
+  api.pluginAdminResponse:
+    properties:
+      plugins:
+        items:
+          $ref: '#/definitions/api.pluginAdminPlugin'
+        type: array
+    type: object
+  api.pluginLogsResponse:
+    properties:
+      lines:
+        items:
+          type: string
+        type: array
+      plugin_id:
+        type: string
+    type: object
   api.progressDTO:
     properties:
       item_id:
@@ -528,6 +607,54 @@ info:
   title: Mellifera API
   version: "1.0"
 paths:
+  /admin/plugins:
+    get:
+      operationId: admin-plugins
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.pluginAdminResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List every loaded plugin with its config and health
+      tags:
+      - admin
+  /admin/plugins/{plugin_id}/logs:
+    get:
+      operationId: admin-plugin-logs
+      parameters:
+      - description: plugin id
+        in: path
+        name: plugin_id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.pluginLogsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Serve a plugin's captured last logs
+      tags:
+      - admin
   /admin/sources:
     get:
       operationId: admin-sources

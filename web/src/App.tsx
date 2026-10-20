@@ -9,6 +9,7 @@ import Home from "@/pages/home/Home";
 import Collection from "@/pages/collections/Collection";
 import Collections from "@/pages/admin/Collections";
 import Sources from "@/pages/admin/Sources";
+import Plugins from "@/pages/admin/Plugins";
 import ItemDetail from "@/pages/browse/ItemDetail";
 
 // Client-side route table (web-ui-phase-3 group 3). Routing is purely
@@ -77,6 +78,16 @@ export default function App(): ReactElement {
           <RequireAuth>
             <Shell>
               <Sources />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/admin/plugins"
+        element={
+          <RequireAuth>
+            <Shell>
+              <Plugins />
             </Shell>
           </RequireAuth>
         }

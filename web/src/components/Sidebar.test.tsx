@@ -146,6 +146,19 @@ describe("Sidebar — open/close mechanics + persistence", () => {
     expect(urls.some((u) => u.includes("/api/v1/libraries"))).toBe(true);
   });
 
+  it("renders the Plugins row linking /admin/plugins with the active highlight", async () => {
+    // plugin-admin-surfaces: the nav is Home/Admin/Plugins — the Plugins row
+    // links /admin/plugins and highlights while that page is open.
+    fetchWith(freshLibraries());
+
+    renderSidebar("/admin/plugins");
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+
+    const plugins = await screen.findByRole("link", { name: /Plugins/ });
+    expect(plugins.getAttribute("href")).toBe("/admin/plugins");
+    expect(plugins.className).toContain("slink-active");
+  });
+
   it("closes on Escape and persists closed", async () => {
     fetchWith(freshLibraries());
     renderSidebar();
