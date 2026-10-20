@@ -601,6 +601,58 @@ func TestLibraryDetailPresentation(t *testing.T) {
 		if lr.Module.Parsers[1].ID != "kinopoisk" || lr.Module.Parsers[1].Capability != "" {
 			t.Fatalf("parsers[1] = %+v, want kinopoisk with capability omitted", lr.Module.Parsers[1])
 		}
+		// refresh_sources is additive AND omitempty: a block built without
+		// the field (the cmd-side filter is group 2's wiring) serves the
+		// empty list as an absent wire key.
+		if len(lr.Module.RefreshSources) != 0 {
+			t.Fatalf("refresh_sources = %+v, want absent when no source is appended", lr.Module.RefreshSources)
+		}
+	})
+
+	t.Run("carries_refresh_sources_additive", func(t *testing.T) {
+		// plugin-admin-surfaces 1.1 (the serial scenario): the module block's
+		// refresh_sources list is built through AddRefreshSource — exactly
+		// the modeled, loaded, gate-enabled title sources in config order.
+		// The chain parser and frame grabber render in `parsers` as before
+		// but never in refresh_sources, and an unloaded title source is
+		// omitted from the list (the fake closure simply never appends it).
+		st := openAPIStore(t)
+		id, err := st.CreateLibrary(ctx, "serial", "/media/refresh", "Serial")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		refreshed := ModulePresentation{
+			IdentityFields: []string{"title"},
+			Parsers: []ParserBinding{
+				{ID: "serial-parser", Capability: "default", DisplayFields: []string{"title"}},
+				{ID: "frame-grabber", DisplayFields: nil},
+			},
+		}
+		// Only shikimori is modeled + loaded + gate-enabled; kinopoisk is
+		// named by the module's title sources but unloaded — never appended.
+		refreshed.AddRefreshSource("shikimori", true)
+		h := New(Deps{AdminToken: adminToken, Store: st, ModulePresentation: fakeModulePresentation(refreshed)})
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/libraries/"+itoa64(id), "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var lr libraryDTO
+		if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+			t.Fatalf("decode libraryDTO: %v", err)
+		}
+		if lr.Module == nil {
+			t.Fatalf("module block missing, want %d parsers + refresh_sources", len(refreshed.Parsers))
+		}
+		if len(lr.Module.Parsers) != 2 {
+			t.Fatalf("parsers = %+v, want the chain untouched by refresh_sources", lr.Module.Parsers)
+		}
+		if len(lr.Module.RefreshSources) != 1 {
+			t.Fatalf("refresh_sources = %+v, want exactly the one enabled source", lr.Module.RefreshSources)
+		}
+		if got := lr.Module.RefreshSources[0]; got.ID != "shikimori" || !got.Enabled {
+			t.Fatalf("refresh_sources[0] = %+v, want {shikimori enabled}", got)
+		}
 	})
 
 	t.Run("nil_closure_omits_block_row_still_served", func(t *testing.T) {

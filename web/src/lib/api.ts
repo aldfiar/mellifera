@@ -51,12 +51,27 @@ export interface ParserBinding {
   display_fields: string[];
 }
 
+// handlers.go titleSourceBinding — one entry of module.refresh_sources
+// (plugin-admin-surfaces): the source's plugin id and its effective
+// enablement. The served list only carries effectively-enabled entries, so
+// enabled is true in practice — the field mirrors the wire pair verbatim.
+export interface RefreshSourceBinding {
+  id: string;
+  enabled: boolean;
+}
+
 // handlers.go modulePresentation — the additive module block on libraryDTO
 // (element-pages 3.4): the module's mandatory identity fields (the element
 // page's identity badges) and the collection's ordered parser chain.
+// refresh_sources (plugin-admin-surfaces) is the module's refreshable-source
+// list — the loaded, effectively-enabled title sources the refresh pickers
+// offer (chain parsers and scanners never appear); omitempty on the wire, so
+// an empty list arrives as an absent field (optional in TS like every
+// additive field).
 export interface ModulePresentation {
   identity_fields: string[];
   parsers: ParserBinding[];
+  refresh_sources?: RefreshSourceBinding[];
 }
 
 // handlers.go libraryDTO — description is always present in responses (""
@@ -116,12 +131,16 @@ export interface ScanResponse {
   warnings?: string[];
 }
 
-// handlers.go:86-91 (PluginHealth) — checked_at is RFC3339, "" when zero
+// handlers.go:86-91 (PluginHealth) — checked_at is RFC3339, "" when zero.
+// message (plugin-admin-surfaces, additive) — the plugin's own liveness word
+// from the last status probe; the failure reason when not serving. Omitted on
+// the wire while "" (omitempty), optional in TS like every additive field.
 export interface PluginHealth {
   id: string;
   state: string; // "serving" | "degraded" | "not_serving" | "failed"
   restarts: number;
   checked_at: string;
+  message?: string;
 }
 
 // handlers.go:97-102 (EnrichStats)
@@ -403,6 +422,61 @@ export interface SourcePreviewResponse {
   after: SourcePreviewRow[];
 }
 
+// plugin_admin.go pluginAdminBinding — one module binding row of one plugin's
+// config block (plugin-admin-surfaces): module_id binds kind ("scanner" |
+// "metadata"). Metadata rows additionally carry the chain priority, the
+// config-enabled flag (pre-gate), the auth mode, and the declared display
+// fields; every row carries its options. display_fields / options travel as
+// raw JSON on the Go side (json.RawMessage — embedded, never re-marshaled), so
+// after the verbatim parse they arrive as plain JSON values: typed `unknown`
+// because the SPA renders them verbatim (pretty-printed) and NEVER interprets
+// config semantics. Optional in TS like every omitempty field.
+export interface PluginAdminBinding {
+  module_id: string;
+  kind: string; // "scanner" | "metadata"
+  priority?: number;
+  enabled?: boolean;
+  auth_mode?: string;
+  display_fields?: unknown;
+  options?: unknown;
+}
+
+// plugin_admin.go pluginAdminEffective — one plugin's module-scope
+// enabled verdicts (the same gate resolution /admin/sources serves, keyed by
+// module id). Absent from the wire when no module's metadata chain binds the
+// plugin (a scanner-only plugin carries no verdicts) — optional in TS.
+// Rendered verbatim: the SPA never resolves gates client-side.
+export interface PluginAdminEffective {
+  modules: Record<string, boolean>;
+}
+
+// plugin_admin.go pluginAdminPlugin — one loaded plugin's row: boot-literal
+// identity, the health snapshot when the plugin reported, capability chips,
+// module-scope effective verdicts, and config bindings. Optional
+// health/effective in TS like every additive field — absence is "not
+// reported / no verdicts", never a type hole.
+export interface PluginAdminPlugin {
+  plugin_id: string;
+  name: string;
+  description: string;
+  capabilities: string[];
+  health?: PluginHealth;
+  effective?: PluginAdminEffective;
+  config: PluginAdminBinding[];
+}
+
+// plugin_admin.go pluginAdminResponse — empty array, never null
+export interface PluginsResponse {
+  plugins: PluginAdminPlugin[];
+}
+
+// plugin_admin.go pluginLogsResponse — the plugin's host-captured bounded
+// stderr tail, oldest line first (in-memory: a server restart empties it).
+export interface PluginLogsResponse {
+  plugin_id: string;
+  lines: string[];
+}
+
 // handlers.go itemResponse
 export interface ItemResponse {
   item: ItemDTO;
@@ -487,6 +561,18 @@ export const ENDPOINTS = {
   sourcePreview: "/api/v1/admin/sources/preview",
   librarySource: (id: number, pluginId: string): string =>
     `/api/v1/libraries/${id}/sources/${pluginId}`,
+  // adminPlugins / adminPluginLogs — the Plugins admin surface
+  // (plugin-admin-surfaces, plugin_admin.go). GET /admin/plugins lists every
+  // loaded plugin with its health snapshot, capability chips, module-scope
+  // effective verdicts, and config bindings — READ-ONLY (the Sources surface
+  // owns the gate writes); GET /admin/plugins/{plugin_id}/logs serves the
+  // plugin's host-captured last logs on demand (oldest-first tail). 503
+  // "unavailable" when a closure is unwired, 400 bad_request for an unknown
+  // plugin id, 500 closure error — all canonical, surfaced inline by the
+  // caller without auto-retry.
+  adminPlugins: "/api/v1/admin/plugins",
+  adminPluginLogs: (pluginId: string): string =>
+    `/api/v1/admin/plugins/${pluginId}/logs`,
   items: "/api/v1/items",
   item: (id: string): string => `/api/v1/items/${id}`,
   // itemMedia — GET /api/v1/items/{id}/media (handlers.go itemMedia,
@@ -865,6 +951,28 @@ export async function postSourcePreview(
     method: "POST",
     body: req as unknown as BodyInit,
   });
+}
+
+// getAdminPlugins — GET /api/v1/admin/plugins (plugin_admin.go adminPlugins):
+// the read-only loaded-plugin aggregate — boot identity + health + capability
+// chips + module-scope effective verdicts + config bindings, one row per
+// loaded plugin in boot order. WRITES NOTHING. 503 "unavailable" when the
+// endpoint is unwired, 500 closure/store error — canonical, surfaced by the
+// caller (reads are retry:0 like every admin surface).
+export async function getAdminPlugins(): Promise<PluginsResponse> {
+  return apiRequest<PluginsResponse>(ENDPOINTS.adminPlugins);
+}
+
+// getAdminPluginLogs — GET /api/v1/admin/plugins/{plugin_id}/logs
+// (plugin_admin.go adminPluginLogs): the plugin's captured last logs,
+// oldest line first. ON DEMAND only — the caller fetches per plugin when its
+// log view opens, never eagerly for every plugin. 400 bad_request for an
+// unknown plugin, 503 unwired, 500 closure error — canonical, surfaced inline
+// without auto-retry.
+export async function getAdminPluginLogs(
+  pluginId: string,
+): Promise<PluginLogsResponse> {
+  return apiRequest<PluginLogsResponse>(ENDPOINTS.adminPluginLogs(pluginId));
 }
 
 // getItem — GET /api/v1/items/{id} (handlers.go:266-278). The id is the item's

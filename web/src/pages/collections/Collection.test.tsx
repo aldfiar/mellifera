@@ -13,6 +13,7 @@ import type {
   LibraryDTO,
   ModulePresentation,
   ParserBinding,
+  RefreshSourceBinding,
   SeriesDTO,
 } from "@/lib/api";
 import type { ItemDocument } from "@/lib/document";
@@ -1610,6 +1611,13 @@ describe("Collection — per-item Refresh view (ui-management pass 2)", () => {
     { id: "tmdb", display_fields: [] },
     { id: "tvmaze", display_fields: [] },
   ];
+  // The served refresh_sources — the loaded, enabled title sources; chain
+  // parsers never appear (plugin-admin-surfaces).
+  const SOURCES: RefreshSourceBinding[] = [
+    { id: "kinopoisk", enabled: true },
+    { id: "shikimori", enabled: true },
+    { id: "tmdb", enabled: true },
+  ];
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -1619,10 +1627,14 @@ describe("Collection — per-item Refresh view (ui-management pass 2)", () => {
   });
 
   // refreshSeamTv — a tv library with a wired chain and one item; the
-  // refresh POST is recorded and answered by `respond`. Seam order matters:
-  // /refresh and /libraries/1 precede the generic fragments (substring
-  // matching, earlier wins).
-  function refreshSeamTv(respond: () => Promise<Response>): {
+  // refresh POST is recorded and answered by `respond`. `refreshSources` is
+  // the served refresh_sources list (default: three enabled sources). Seam
+  // order matters: /refresh and /libraries/1 precede the generic fragments
+  // (substring matching, earlier wins).
+  function refreshSeamTv(
+    respond: () => Promise<Response>,
+    refreshSources?: RefreshSourceBinding[],
+  ): {
     posts: { plugin_id: string; row_ids: string[] }[];
   } {
     const posts: { plugin_id: string; row_ids: string[] }[] = [];
@@ -1643,7 +1655,11 @@ describe("Collection — per-item Refresh view (ui-management pass 2)", () => {
       }
       if (url.includes("/api/v1/libraries/1")) {
         const detail = lib(1, "tv", "films");
-        detail.module = { identity_fields: ["title"], parsers: CHAIN };
+        detail.module = {
+          identity_fields: ["title"],
+          parsers: CHAIN,
+          refresh_sources: refreshSources ?? SOURCES,
+        };
         return Promise.resolve(jsonResponse(200, detail));
       }
       if (url.includes("/api/v1/libraries")) {
@@ -1662,34 +1678,55 @@ describe("Collection — per-item Refresh view (ui-management pass 2)", () => {
     fireEvent.click(
       within(await screen.findByRole("dialog")).getByRole("button", { name: "Refresh metadata…" }),
     );
-    await screen.findByRole("radiogroup", { name: "Refresh with parser" });
+    await screen.findByRole("combobox", { name: "Refresh source" });
   }
 
-  it("radio selection drives plugin_id; the POST body row_ids is exactly the one item id; the 202 counts render inline", async () => {
+  it("dropdown selection drives plugin_id; the POST body row_ids is exactly the one item id; the 202 counts render inline", async () => {
     const { posts } = refreshSeamTv(() =>
       Promise.resolve(jsonResponse(202, { queued: 1, stripped: 0, deferred: 0 })),
     );
     renderCollection("1");
     await openRefreshTv();
 
-    // The chain's radios render; the served-first parser is the
-    // preselection (a plain confirm is always well-formed).
-    const group = screen.getByRole("radiogroup", { name: "Refresh with parser" });
-    const radios = within(group).getAllByRole("radio") as HTMLInputElement[];
-    expect(radios.length).toBe(3);
-    expect(radios[0].checked).toBe(true);
+    // The served sources render as one option each; the served-first source
+    // is the preselection (a plain confirm is always well-formed).
+    const picker = screen.getByRole("combobox", { name: "Refresh source" }) as HTMLSelectElement;
+    expect(picker.options.length).toBe(3);
+    expect(picker.value).toBe("kinopoisk");
 
-    // Selecting tmdb drives the body's plugin_id.
-    fireEvent.click(within(group).getByRole("radio", { name: "tmdb" }));
+    // Selecting shikimori drives the body's plugin_id.
+    fireEvent.change(picker, { target: { value: "shikimori" } });
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 
     await waitFor(() =>
-      expect(posts).toEqual([{ plugin_id: "tmdb", row_ids: ["itm_1_a"] }]),
+      expect(posts).toEqual([{ plugin_id: "shikimori", row_ids: ["itm_1_a"] }]),
     );
     // The 202 counts render inline; the view stays open.
     expect(await screen.findByText(/1 queued .* 0 stripped .* 0 deferred/)).toBeDefined();
     expect(screen.getByRole("dialog")).toBeDefined();
-    expect(screen.getByRole("radiogroup", { name: "Refresh with parser" })).toBeDefined();
+    expect(screen.getByRole("combobox", { name: "Refresh source" })).toBeDefined();
+  });
+
+  it("an empty served refresh_sources list renders the view's empty state with a disabled trigger", async () => {
+    refreshSeamTv(
+      () => Promise.resolve(jsonResponse(202, { queued: 0, stripped: 0, deferred: 0 })),
+      [],
+    );
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Known" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Refresh metadata…" }),
+    );
+
+    // No refreshable source: the explanatory copy, NO dropdown, and the
+    // trigger disabled — no kickoff affordance that cannot run.
+    expect(
+      await screen.findByText(/No refreshable sources/),
+    ).toBeDefined();
+    expect(screen.queryByRole("combobox", { name: "Refresh source" })).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it("a 202 with deferred rows renders the kept-its-data copy inline", async () => {
@@ -1768,7 +1805,11 @@ describe("Collection — per-item Refresh view (ui-management pass 2)", () => {
       }
       if (url.includes("/api/v1/libraries/1")) {
         const detail = lib(1, "serial", "shows");
-        detail.module = { identity_fields: ["title"], parsers: CHAIN };
+        detail.module = {
+          identity_fields: ["title"],
+          parsers: CHAIN,
+          refresh_sources: [{ id: "shikimori", enabled: true }],
+        };
         return Promise.resolve(jsonResponse(200, detail));
       }
       if (url.includes("/api/v1/libraries")) {
@@ -1803,9 +1844,9 @@ describe("Collection — per-item Refresh view (ui-management pass 2)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 
     // Series rows live in the same row space: the body carries the series
-    // id, exactly one.
+    // id, exactly one — the served-first refresh source preselected.
     await waitFor(() =>
-      expect(posts).toEqual([{ plugin_id: "anitomy", row_ids: ["ser_1_show"] }]),
+      expect(posts).toEqual([{ plugin_id: "shikimori", row_ids: ["ser_1_show"] }]),
     );
     expect(await screen.findByText(/1 queued .* 1 stripped .* 0 deferred/)).toBeDefined();
   });
@@ -2128,6 +2169,12 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     { id: "frame-grabber", display_fields: [] },
     { id: "image-enricher", display_fields: [] },
   ];
+  // The served refresh_sources — the loaded, enabled title sources; the
+  // chain parsers above never appear in it (plugin-admin-surfaces).
+  const SOURCES: RefreshSourceBinding[] = [
+    { id: "kinopoisk", enabled: true },
+    { id: "shikimori", enabled: true },
+  ];
 
   function episodeRow(): ItemDTO {
     return item("itm_1_ep1", "serial", "Show (2019)/S01E05.mkv", {
@@ -2152,6 +2199,7 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     patch?: () => Response;
     scan?: () => Response;
     detailAfterPatch?: () => ParserBinding[];
+    refreshSources?: RefreshSourceBinding[];
     preview?: (pluginId: string) => Response | Promise<Response>;
     refresh?: () => Response;
   }): {
@@ -2193,6 +2241,7 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
       identity_fields: [],
       parsers:
         patchedOnce && opts?.detailAfterPatch ? opts.detailAfterPatch() : CHAIN,
+      refresh_sources: opts?.refreshSources ?? SOURCES,
     });
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
@@ -2499,7 +2548,7 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     expect(screen.queryByRole("dialog")).not.toBeNull();
   });
 
-  it("Refresh metadata fetches the preview on picker selection with a loading line, renders it BEFORE enabling the trigger, and the trigger sweeps the WHOLE library (no row_ids)", async () => {
+  it("Refresh metadata fetches the preview on dropdown selection with a loading line, renders it BEFORE enabling the trigger, and the trigger sweeps the WHOLE library (no row_ids)", async () => {
     // A gated preview: requests park until the test resolves them, so the
     // loading line and the disabled trigger are observable deterministically.
     const resolvers: ((r: Response) => void)[] = [];
@@ -2513,8 +2562,8 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
     const section = manageSection("Refresh metadata");
 
-    // The served-first parser is preselected — its preview is fetched.
-    await waitFor(() => expect(seam.previewCalls()).toEqual(["tv-parser"]));
+    // The served-first source is preselected — its preview is fetched.
+    await waitFor(() => expect(seam.previewCalls()).toEqual(["kinopoisk"]));
     // No drift picture yet → the loading line shows and the trigger is OFF.
     expect(within(section).getByText(/Computing preview/)).toBeDefined();
     const trigger = within(section).getByRole("button", {
@@ -2522,10 +2571,13 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     }) as HTMLButtonElement;
     expect(trigger.disabled).toBe(true);
 
-    // Picking another parser fetches THAT plugin's preview.
-    fireEvent.click(within(section).getByLabelText("frame-grabber"));
+    // Picking another source fetches THAT plugin's preview.
+    fireEvent.change(
+      within(section).getByRole("combobox", { name: "Refresh metadata source" }),
+      { target: { value: "shikimori" } },
+    );
     await waitFor(() =>
-      expect(seam.previewCalls()).toEqual(["tv-parser", "frame-grabber"]),
+      expect(seam.previewCalls()).toEqual(["kinopoisk", "shikimori"]),
     );
     expect(within(section).getByText(/Computing preview/)).toBeDefined();
     // Still no preview → still disabled (preview BEFORE trigger enable).
@@ -2538,7 +2590,7 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     for (const resolve of resolvers) {
       resolve(
         jsonResponse(200, {
-          plugin_id: "frame-grabber",
+          plugin_id: "shikimori",
           matches: 7,
           pending: 2,
           cooling: 1,
@@ -2559,11 +2611,31 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     // field is the whole-library sweep.
     fireEvent.click(liveTrigger);
     await waitFor(() => expect(seam.refreshes.length).toBe(1));
-    expect(seam.refreshes[0]).toEqual({ plugin_id: "frame-grabber" });
+    expect(seam.refreshes[0]).toEqual({ plugin_id: "shikimori" });
     expect(seam.refreshes[0]).not.toHaveProperty("row_ids");
     expect(
       await within(section).findByText("5 queued · 0 stripped · 0 deferred"),
     ).toBeDefined();
+  });
+
+  it("a module with no refreshable sources renders the section's empty state with explanatory copy and a disabled trigger", async () => {
+    // The module block IS served (wired) — the refresh_sources list is just
+    // empty (omitempty on the wire → absent field).
+    saveSeam({ refreshSources: [] });
+    renderCollection("1");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage collection" }));
+    const section = manageSection("Refresh metadata");
+
+    expect(
+      await within(section).findByText(/No refreshable sources/),
+    ).toBeDefined();
+    expect(
+      within(section).queryByRole("combobox", { name: "Refresh metadata source" }),
+    ).toBeNull();
+    const trigger = within(section).getByRole("button", {
+      name: "Refresh metadata",
+    }) as HTMLButtonElement;
+    expect(trigger.disabled).toBe(true);
   });
 
   it("Refresh metadata renders the 409 refresh_in_flight copy", async () => {
@@ -2615,6 +2687,6 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
     expect(
       within(section).queryByRole("button", { name: "Refresh metadata" }),
     ).toBeNull();
-    expect(within(section).queryByRole("radiogroup")).toBeNull();
+    expect(within(section).queryByRole("combobox")).toBeNull();
   });
 });

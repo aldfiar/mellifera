@@ -30,6 +30,7 @@ import {
   type ListItemsParams,
   type ParserBinding,
   type ProgressDTO,
+  type RefreshSourceBinding,
   type ScanResponse,
   type SeriesDTO,
   type TitleOverrideDTO,
@@ -80,6 +81,23 @@ import { DialogShell } from "@/components/DialogShell";
 // detail's Technical details (ui-management design §1).
 
 const PAGE_SIZE = 50;
+
+// NO_REFRESH_SOURCES — the shared empty-state copy of the two refresh
+// pickers (the Manage section and the per-item view): the served
+// refresh_sources list is empty — no loaded, effectively-enabled title
+// source, no kickoff.
+const NO_REFRESH_SOURCES =
+  "No refreshable sources — this module has no loaded, enabled title source to refresh with.";
+
+// refreshSourcesOf — the detail DTO's module block as the refresh pickers'
+// tri-state input: undefined = the module block is absent (unwired — the
+// pickers are hidden/empty-stated, a wiring fact, never authorization); the
+// array (possibly empty) = wired. `refresh_sources` is omitempty on the wire,
+// so a wired module with no refreshable source serves an ABSENT field — the
+// ?? [] restores the empty list.
+function refreshSourcesOf(detail?: LibraryDTO): RefreshSourceBinding[] | undefined {
+  return detail?.module ? (detail.module.refresh_sources ?? []) : undefined;
+}
 
 // EXT_RE — a filename extension: 2–4 alphanumerics anchored at the end. The
 // bound is what keeps "Part.2"-style suffixes alive (a single-char tail never
@@ -319,6 +337,7 @@ export default function Collection(): ReactElement {
         module_id={lib.module_id}
         libraryId={lib.id}
         chain={libraryDetail.data?.module?.parsers}
+        refreshSources={refreshSourcesOf(libraryDetail.data)}
         summaryLoaded={!summary.isLoading}
         itemCount={summary.data?.items}
       />
@@ -388,11 +407,14 @@ function CollectionHeader(props: {
 // layout; unknown module ids keep the generic item grid. `chain` is the
 // module block's declared parser chain (undefined when the block is absent) —
 // threaded only to the menu-bearing card surfaces; the Identify gate consumes
-// it there.
+// it there. `refreshSources` is the block's served refresh_sources list
+// (refreshSourcesOf's tri-state) — threaded to the same surfaces for the
+// per-item Refresh view.
 function CollectionBody(props: {
   module_id: string;
   libraryId: number;
   chain?: ParserBinding[];
+  refreshSources?: RefreshSourceBinding[];
   summaryLoaded: boolean;
   itemCount: number | undefined;
 }): ReactElement {
@@ -403,11 +425,23 @@ function CollectionBody(props: {
   }
   switch (props.module_id) {
     case "tv":
-      return <MoviesBody libraryId={props.libraryId} chain={props.chain} />;
+      return (
+        <MoviesBody
+          libraryId={props.libraryId}
+          chain={props.chain}
+          refreshSources={props.refreshSources}
+        />
+      );
     case "image":
       return <PhotosBody libraryId={props.libraryId} />;
     case "serial":
-      return <SerialsBody libraryId={props.libraryId} chain={props.chain} />;
+      return (
+        <SerialsBody
+          libraryId={props.libraryId}
+          chain={props.chain}
+          refreshSources={props.refreshSources}
+        />
+      );
     default:
       return <ItemGrid libraryId={props.libraryId} />;
   }
@@ -477,7 +511,7 @@ function ManageOverlay(props: {
         <ManageSection title="Refresh metadata">
           <RefreshMetadataSection
             libraryId={props.lib.id}
-            chain={props.detail?.module?.parsers}
+            refreshSources={refreshSourcesOf(props.detail)}
           />
         </ManageSection>
         <ManageSection title="Edit library">
@@ -824,33 +858,36 @@ function RescanSection(props: { libraryId: number }): ReactElement {
 }
 
 // RefreshMetadataSection — the Refresh metadata save boundary (ui-management
-// pass 3): a chain-parser picker (one radio per declared parser — the refresh
-// endpoint requires exactly one plugin_id per invocation); picking one (or
-// the served-first preselection) fetches GET /libraries/{id}/enrich/preview
-// for that plugin, whose drift picture (matches/pending/cooling + the
-// `_provenance` version histogram) renders BEFORE the trigger enables — the
-// preview IS the consent surface (enrichment D-7): no drift picture, no
-// kickoff. The preview composition is slow by design (a whole-library
-// namespace scan) — a loading line, never a spinner. The trigger POSTs the
-// same postLibraryRefresh client with the picked plugin and NO row_ids —
-// omitted row_ids is the whole-library sweep (Go `row_ids,omitempty`).
-// 409 refresh_in_flight renders its own line; any other canonical error
-// renders inline as code: message (retry:0 — no auto-retry). A 503
-// "unavailable" preview means the endpoint is UNWIRED — the section disables
-// itself with explanatory copy. The module block's ABSENCE still signals
-// wiring, not authorization: without the declared chain the section renders
-// its designed empty state.
+// pass 3, plugin-admin-surfaces): a dropdown of the served refresh_sources
+// (the loaded, effectively-enabled title sources — chain parsers and
+// scanners never appear; the refresh endpoint requires exactly one plugin_id
+// per invocation); picking one (or the served-first preselection) fetches
+// GET /libraries/{id}/enrich/preview for that plugin, whose drift picture
+// (matches/pending/cooling + the `_provenance` version histogram) renders
+// BEFORE the trigger enables — the preview IS the consent surface
+// (enrichment D-7): no drift picture, no kickoff. The preview composition is
+// slow by design (a whole-library namespace scan) — a loading line, never a
+// spinner. The trigger POSTs the same postLibraryRefresh client with the
+// picked plugin and NO row_ids — omitted row_ids is the whole-library sweep
+// (Go `row_ids,omitempty`). 409 refresh_in_flight renders its own line; any
+// other canonical error renders inline as code: message (retry:0 — no
+// auto-retry). A 503 "unavailable" preview means the endpoint is UNWIRED —
+// the section disables itself with explanatory copy. The module block's
+// ABSENCE still signals wiring, not authorization: without it the section
+// renders its designed empty state; a WIRED module with an empty
+// refresh_sources list renders the empty state with explanatory copy and a
+// disabled trigger — no refreshable source, no kickoff.
 function RefreshMetadataSection(props: {
   libraryId: number;
-  chain?: ParserBinding[];
+  refreshSources?: RefreshSourceBinding[];
 }): ReactElement {
-  const chain = props.chain;
+  const sources = props.refreshSources;
   const [pluginId, setPluginId] = useState<string | null>(null);
-  const picked = pluginId ?? chain?.[0]?.id ?? "";
+  const picked = pluginId ?? sources?.[0]?.id ?? "";
   const preview = useQuery<EnrichPreview, ApiError>({
     queryKey: ["enrich-preview", props.libraryId, picked],
     queryFn: () => getEnrichPreview(props.libraryId, picked),
-    enabled: chain !== undefined && picked !== "",
+    enabled: sources !== undefined && picked !== "",
   });
   const refresh = useMutation<LibraryRefreshResult, ApiError, void>({
     mutationFn: () => postLibraryRefresh(props.libraryId, { plugin_id: picked }),
@@ -858,7 +895,7 @@ function RefreshMetadataSection(props: {
   });
   const res = refresh.data;
 
-  if (chain === undefined) {
+  if (sources === undefined) {
     return (
       <p className="text-xs text-muted-foreground">
         The module block is unavailable — refresh metadata needs a wired
@@ -886,26 +923,33 @@ function RefreshMetadataSection(props: {
           The enrichment preview is unavailable — refresh metadata is disabled
           for this collection (the endpoint is not wired).
         </p>
+      ) : sources.length === 0 ? (
+        // Empty served list — the designed empty state: explanatory copy and
+        // a disabled trigger (no refreshable source, no kickoff).
+        <>
+          <p className="text-xs text-muted-foreground">{NO_REFRESH_SOURCES}</p>
+          <button
+            type="button"
+            className="cardact-row rounded-md border text-xs"
+            disabled
+          >
+            Refresh metadata
+          </button>
+        </>
       ) : (
         <>
-          <div
-            role="radiogroup"
-            aria-label="Refresh metadata with parser"
-            className="flex flex-wrap gap-3"
+          <select
+            aria-label="Refresh metadata source"
+            className="rounded-md border bg-card px-2 py-1 text-xs"
+            value={picked}
+            onChange={(e) => setPluginId(e.target.value)}
           >
-            {chain.map((b) => (
-              <label key={b.id} className="flex items-center gap-1 text-xs">
-                <input
-                  type="radio"
-                  name="refresh-metadata-plugin"
-                  value={b.id}
-                  checked={picked === b.id}
-                  onChange={() => setPluginId(b.id)}
-                />
-                {b.id}
-              </label>
+            {sources.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.id}
+              </option>
             ))}
-          </div>
+          </select>
           {preview.isLoading ? (
             <p role="status" className="text-xs text-muted-foreground">
               Computing preview… slow by design — a whole-library scan.
@@ -1030,6 +1074,7 @@ function usePagedItems(libraryId: number) {
 function MoviesBody(props: {
   libraryId: number;
   chain?: ParserBinding[];
+  refreshSources?: RefreshSourceBinding[];
 }): ReactElement {
   const { query, items, offset, prev, next } = usePagedItems(props.libraryId);
 
@@ -1056,6 +1101,7 @@ function MoviesBody(props: {
                 props.libraryId,
               )}
               chain={props.chain}
+              refreshSources={props.refreshSources}
             />
           </li>
         ))}
@@ -1079,11 +1125,15 @@ function MoviesBody(props: {
 // defaults to the paged items list (["items"] prefix). `chain` gates and
 // feeds the Identify menu row (absent/empty chain → the row is hidden — a
 // wired-module concern, not an authorization one), and an unidentified card
-// promotes Identify… to the menu's first row.
+// promotes Identify… to the menu's first row. `refreshSources` (the module
+// block's served refresh_sources, refreshSourcesOf's tri-state) gates and
+// feeds the Refresh view the same way: undefined = unwired → no row; a wired
+// module always offers the row, the view carrying its own empty state.
 function MovieCard(props: {
   item: ItemDTO;
   handoff: BrowseHandoff;
   chain?: ParserBinding[];
+  refreshSources?: RefreshSourceBinding[];
   invalidate?: readonly unknown[];
 }): ReactElement {
   const { item, handoff } = props;
@@ -1114,12 +1164,12 @@ function MovieCard(props: {
         )
       : undefined;
   const refresh =
-    chain.length > 0
+    props.refreshSources !== undefined
       ? ({ back }: { collapse: () => void; back: () => void }) => (
           <RefreshView
             libraryId={item.library_id}
             rowId={item.id}
-            chain={chain}
+            sources={props.refreshSources ?? []}
             onBack={back}
           />
         )
@@ -1349,7 +1399,11 @@ function PhotoTile(props: { item: ItemDTO; handoff: BrowseHandoff }): ReactEleme
 // episode documents are NEVER fetched eagerly per series row). The param is
 // real URL state, so an episode view deep-links and /collections/{id} alone
 // still lands on the grid.
-function SerialsBody(props: { libraryId: number; chain?: ParserBinding[] }): ReactElement {
+function SerialsBody(props: {
+  libraryId: number;
+  chain?: ParserBinding[];
+  refreshSources?: RefreshSourceBinding[];
+}): ReactElement {
   const [searchParams, setSearchParams] = useSearchParams();
   const seriesId = searchParams.get("series") ?? "";
 
@@ -1359,11 +1413,18 @@ function SerialsBody(props: { libraryId: number; chain?: ParserBinding[] }): Rea
         seriesId={seriesId}
         libraryId={props.libraryId}
         chain={props.chain}
+        refreshSources={props.refreshSources}
         onBack={() => setSearchParams({})}
       />
     );
   }
-  return <SeriesGrid libraryId={props.libraryId} chain={props.chain} />;
+  return (
+    <SeriesGrid
+      libraryId={props.libraryId}
+      chain={props.chain}
+      refreshSources={props.refreshSources}
+    />
+  );
 }
 
 // seriesTitle — the series card's display title: the SERVED `display_name`
@@ -1414,6 +1475,7 @@ function seriesBacking(doc: SeriesDTO["document"]): string | null {
 function SeriesGrid(props: {
   libraryId: number;
   chain?: ParserBinding[];
+  refreshSources?: RefreshSourceBinding[];
 }): ReactElement {
   const series = useSeries(props.libraryId);
 
@@ -1433,7 +1495,12 @@ function SeriesGrid(props: {
     <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
       {rows.map((sr) => (
         <li key={sr.id}>
-          <SeriesCard sr={sr} libraryId={props.libraryId} chain={props.chain} />
+          <SeriesCard
+            sr={sr}
+            libraryId={props.libraryId}
+            chain={props.chain}
+            refreshSources={props.refreshSources}
+          />
         </li>
       ))}
     </ul>
@@ -1864,13 +1931,16 @@ function IdentifyView(props: {
 }
 
 // RefreshView — the per-item metadata refresh view (ui-management pass 2,
-// box 2.3): one radio per declared chain parser — the endpoint requires
-// exactly one plugin_id per invocation, so the view preselects the
-// served-first parser and the radio selection drives the request body — and
-// a confirm that POSTs postLibraryRefresh(libraryId, {plugin_id, row_ids:
-// [rowId]}). rowId is the card's own id in the shared row space: an
+// box 2.3; plugin-admin-surfaces): a dropdown of the module block's served
+// refresh_sources — the loaded, effectively-enabled title sources (the
+// endpoint requires exactly one plugin_id per invocation), so the view
+// preselects the served-first source and the selection drives the request
+// body — and a confirm that POSTs postLibraryRefresh(libraryId, {plugin_id,
+// row_ids: [rowId]}). rowId is the card's own id in the shared row space: an
 // episode/item id on the item cards, the series id from the series menu.
-// The 202 sweep counts render inline and the view stays open (names follow
+// An empty served list renders the view's empty state with explanatory copy
+// and a disabled trigger — no refreshable source, no kickoff. The 202 sweep
+// counts render inline and the view stays open (names follow
 // when the background run lands); a deferred row kept its data — the copy
 // says so; 409 refresh_in_flight renders its own line; every other
 // canonical error (503 unwired, 400 unknown plugin, 404 unknown rows)
@@ -1878,10 +1948,10 @@ function IdentifyView(props: {
 function RefreshView(props: {
   libraryId: number;
   rowId: string;
-  chain: ParserBinding[];
+  sources: RefreshSourceBinding[];
   onBack: () => void;
 }): ReactElement {
-  const [pluginId, setPluginId] = useState(props.chain[0]?.id ?? "");
+  const [pluginId, setPluginId] = useState(props.sources[0]?.id ?? "");
   const refresh = useMutation<LibraryRefreshResult, ApiError, void>({
     mutationFn: () =>
       postLibraryRefresh(props.libraryId, {
@@ -1903,24 +1973,24 @@ function RefreshView(props: {
         }
       }}
     >
-      <div
-        role="radiogroup"
-        aria-label="Refresh with parser"
-        className="flex flex-col gap-1"
-      >
-        {props.chain.map((b) => (
-          <label key={b.id} className="flex items-center gap-2 text-xs">
-            <input
-              type="radio"
-              name="refresh-plugin"
-              value={b.id}
-              checked={pluginId === b.id}
-              onChange={() => setPluginId(b.id)}
-            />
-            {b.id}
-          </label>
-        ))}
-      </div>
+      {props.sources.length === 0 ? (
+        // Empty served list — the view's empty state: explanatory copy, the
+        // trigger disabled (no refreshable source, no kickoff).
+        <p className="text-xs text-muted-foreground">{NO_REFRESH_SOURCES}</p>
+      ) : (
+        <select
+          aria-label="Refresh source"
+          className="rounded-md border bg-card px-2 py-1 text-xs"
+          value={pluginId}
+          onChange={(e) => setPluginId(e.target.value)}
+        >
+          {props.sources.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.id}
+            </option>
+          ))}
+        </select>
+      )}
       <button
         type="button"
         className="cardact-row"
@@ -2046,13 +2116,14 @@ function RenameTitle(props: {
 // pills on user screens; the backing fact re-lands as the series menu
 // footer). Carries the CardActions ⋯ menu with the rename view (4.3) wired
 // to the series title routes, and the Refresh metadata… row (box 2.3) when
-// the module chain is wired — the row passes the SERIES id (`row_ids:
+// the module block is wired — the row passes the SERIES id (`row_ids:
 // [sr.id]`; series rows live in the same row space as items). Links into
 // the episode flow.
 function SeriesCard(props: {
   sr: SeriesDTO;
   libraryId: number;
   chain?: ParserBinding[];
+  refreshSources?: RefreshSourceBinding[];
 }): ReactElement {
   const { sr } = props;
   const season = seriesSeason(sr.document);
@@ -2062,14 +2133,13 @@ function SeriesCard(props: {
     props.libraryId,
   ]);
   const pending = set.isPending || clear.isPending;
-  const chain = props.chain ?? [];
   const refresh =
-    chain.length > 0
+    props.refreshSources !== undefined
       ? ({ back }: { collapse: () => void; back: () => void }) => (
           <RefreshView
             libraryId={props.libraryId}
             rowId={sr.id}
-            chain={chain}
+            sources={props.refreshSources ?? []}
             onBack={back}
           />
         )
@@ -2123,6 +2193,7 @@ function EpisodesView(props: {
   seriesId: string;
   libraryId: number;
   chain?: ParserBinding[];
+  refreshSources?: RefreshSourceBinding[];
   onBack: () => void;
 }): ReactElement {
   const episodes = useSeriesEpisodes(props.seriesId);
@@ -2164,6 +2235,7 @@ function EpisodesView(props: {
                   props.libraryId,
                 )}
                 chain={props.chain}
+                refreshSources={props.refreshSources}
               />
             </li>
           ))}
@@ -2183,12 +2255,14 @@ function EpisodeCard(props: {
   seriesId: string;
   handoff: BrowseHandoff;
   chain?: ParserBinding[];
+  refreshSources?: RefreshSourceBinding[];
 }): ReactElement {
   return (
     <MovieCard
       item={props.item}
       handoff={props.handoff}
       chain={props.chain}
+      refreshSources={props.refreshSources}
       invalidate={["series-episodes", props.seriesId]}
     />
   );

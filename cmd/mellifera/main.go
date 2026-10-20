@@ -398,6 +398,16 @@ func main() {
 					continue // a priority id with no modeled binding is config drift — skip it silently
 				}
 				pres.AddTitleSource(id, src.Enabled)
+				// refresh_sources (plugin-admin-surfaces D1): the same walk,
+				// filtered to modeled bindings whose plugin is loaded
+				// (loadedCaps) and whose effective gate resolution is enabled
+				// — config order, the refresh pickers' option list. A muted
+				// source is never revived here: Enabled is the ResolveGates
+				// verdict (a gate mutes, never revives), so the served list
+				// carries only effectively-enabled entries.
+				if _, loaded := loadedCaps[id]; loaded && src.Enabled {
+					pres.AddRefreshSource(id, src.Enabled)
+				}
 			}
 			return pres, nil
 		},
@@ -469,6 +479,13 @@ func main() {
 		// plugin (INV2) — the same anti-corruption seam as Status above.
 		Reenrich:      newReenrichClosure(st, reg, enrichQueue, loadedCaps, sweeps),
 		EnrichPreview: newEnrichPreviewClosure(st, reg),
+		// Plugin admin surfaces (plugin-admin-surfaces): the config-binding
+		// flatten over the module registry (options verbatim as raw JSON —
+		// api never parses config semantics, INV4) and the log tail
+		// delegating to Manager.Logs — both keyed against loadedCaps, the
+		// canonical loaded set, for the unknown-plugin verdict.
+		PluginConfigs: newPluginConfigsClosure(reg, loadedCaps),
+		PluginLogs:    newPluginLogsClosure(mgr, loadedCaps),
 		// Parser wake (enrichment D-6): a successful parser attach/clear fires
 		// the queue's Notify so the changed parsers re-derive at once. The
 		// request-scoped ctx is substituted with the PROCESS ctx — the same
@@ -930,6 +947,104 @@ func queueableBinding(reg *module.Registry, moduleID, pluginID string) bool {
 		}
 	}
 	return false
+}
+
+// Binding-kind literals of the plugin-config rows (plugin-admin-surfaces):
+// module.Registry's two binding slots, flattened to the wire vocabulary the
+// api handler renders. Restated here because the wire DTOs are api-unexported
+// (the export budget) — INV4 keeps them from sharing a type.
+const (
+	bindingKindScanner  = "scanner"
+	bindingKindMetadata = "metadata"
+)
+
+// pluginConfigRows accumulates one plugin's binding rows as parallel slices —
+// the Deps.PluginConfigs closure's primitive return shape (the
+// sourceResolution precedent; the api export budget keeps the wire DTOs
+// unexported, so no struct crosses the seam).
+type pluginConfigRows struct {
+	moduleIDs, kinds, authModes, displayFields, options []string
+	priorities                                          []int
+	enabled                                             []bool
+}
+
+func (r *pluginConfigRows) add(moduleID, kind string, priority int, enabled bool, authMode, displayFields, options string) {
+	r.moduleIDs = append(r.moduleIDs, moduleID)
+	r.kinds = append(r.kinds, kind)
+	r.priorities = append(r.priorities, priority)
+	r.enabled = append(r.enabled, enabled)
+	r.authModes = append(r.authModes, authMode)
+	r.displayFields = append(r.displayFields, displayFields)
+	r.options = append(r.options, options)
+}
+
+// newPluginConfigsClosure builds the api Deps.PluginConfigs seam
+// (plugin-admin-surfaces D4): one row per module binding of pluginID across
+// the registry — the scanner slot (kind "scanner"), then each metadata source
+// (kind "metadata") in config order. Options and display_fields ride as RAW
+// JSON strings embedded verbatim by the handler — api never parses config
+// semantics (INV4). An id outside loadedPlugins is unknown (wrapping
+// api.ErrUnknownPlugin, the refresh rule); a loaded plugin with no bindings
+// returns empty rows.
+func newPluginConfigsClosure(reg *module.Registry, loadedPlugins map[string][]string) func(context.Context, string) ([]string, []string, []int, []bool, []string, []string, []string, error) {
+	return func(_ context.Context, pluginID string) ([]string, []string, []int, []bool, []string, []string, []string, error) {
+		if _, loaded := loadedPlugins[pluginID]; !loaded {
+			return nil, nil, nil, nil, nil, nil, nil,
+				fmt.Errorf("plugin configs %q: %w", pluginID, api.ErrUnknownPlugin)
+		}
+		mods, err := reg.List()
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, nil, err
+		}
+		rows := &pluginConfigRows{}
+		for _, m := range mods {
+			if m.Scanner.PluginID == pluginID {
+				rows.add(m.ID, bindingKindScanner, 0, false, "", "",
+					string(m.Scanner.Options))
+			}
+			for _, src := range m.MetadataSources {
+				if src.PluginID != pluginID {
+					continue
+				}
+				rows.add(m.ID, bindingKindMetadata, src.Priority, src.Enabled,
+					src.AuthMode, rawStringsJSON(src.DisplayFields), string(src.Options))
+			}
+		}
+		return rows.moduleIDs, rows.kinds, rows.priorities, rows.enabled,
+			rows.authModes, rows.displayFields, rows.options, nil
+	}
+}
+
+// rawStringsJSON flattens a binding's display_fields declaration to a raw
+// JSON string for the verbatim-embedding seam; undeclared fields ride as ""
+// (omitted on the wire). json.Marshal of a []string cannot fail.
+func rawStringsJSON(fields []string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(fields)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// newPluginLogsClosure builds the api Deps.PluginLogs seam (plugin-admin-
+// surfaces D3): pure delegation over Manager.Logs — the host-captured stderr
+// tail, oldest line first. loadedPlugins is the unknown-plugin gate (the
+// canonical loaded set): an id outside it wraps api.ErrUnknownPlugin (→ 400
+// at the handler); a Manager error on a known id is a real failure (→ 500).
+func newPluginLogsClosure(mgr *plugin.Manager, loadedPlugins map[string][]string) func(context.Context, string) ([]string, error) {
+	return func(_ context.Context, pluginID string) ([]string, error) {
+		if _, loaded := loadedPlugins[pluginID]; !loaded {
+			return nil, fmt.Errorf("plugin logs %q: %w", pluginID, api.ErrUnknownPlugin)
+		}
+		lines, err := mgr.Logs(pluginID)
+		if err != nil {
+			return nil, fmt.Errorf("plugin logs %q: %w", pluginID, err)
+		}
+		return lines, nil
+	}
 }
 
 // envBool reads a boolean env var (1/t/T/true/TRUE/True → true; everything else

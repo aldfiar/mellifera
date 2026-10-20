@@ -11,7 +11,11 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"os"
 
+	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 
@@ -21,13 +25,26 @@ import (
 )
 
 // The cookie pair MUST match the test's Manager Deps. go-plugin's client sets
-// the key env var to the value when launching; the server validates it.
+// the key env var to the value when launching; the server validates it. (The
+// itest joint harness boots THIS binary under cmd/mellifera's production
+// Manager by putting the pair itself into the server subprocess's environment
+// — go-plugin clients always append the parent's environment, so the pair
+// reaches this process unchanged.)
 const (
 	cookieKey   = "MELLIFERA_TEST_COOKIE"
 	cookieValue = "test-secret"
 )
 
+// stderrPayloadEnv is the scripted-stderr knob (the itest plugin-logs joint
+// only; every other consumer leaves it unset and this main behaves exactly as
+// before): when set, these exact bytes are written to this process's stderr
+// in ONE Write BEFORE the go-plugin handshake begins, then serving proceeds
+// normally. Test infrastructure only — the plugin contract (proto, SDK) is
+// untouched.
+const stderrPayloadEnv = "MELLIFERA_TEST_STDERR"
+
 func main() {
+	writeScriptedStderr()
 	goplugin.Serve(&goplugin.ServeConfig{
 		HandshakeConfig: goplugin.HandshakeConfig{
 			ProtocolVersion:  1,
@@ -44,7 +61,28 @@ func main() {
 			"plugin":  &pluginSvcPlugin{},
 		},
 		GRPCServer: goplugin.DefaultGRPCServer,
+		// Silent server-side logger: go-plugin's default logs handshake
+		// progress as JSON to this process's stderr, which the host pipes
+		// into its per-plugin capture ring — the itest joint asserts the ring
+		// carries ONLY the scripted payload bytes, so the logger is turned
+		// off. Cosmetic for every other consumer: internal/plugin's tests
+		// never read this process's stderr.
+		Logger: hclog.New(&hclog.LoggerOptions{Level: hclog.Off, Output: io.Discard}),
 	})
+}
+
+// writeScriptedStderr emits the MELLIFERA_TEST_STDERR payload (exact bytes,
+// one Write) before the handshake. Failure aborts loudly — a half-written
+// payload would silently break the joint's byte-identity assertion.
+func writeScriptedStderr() {
+	payload := os.Getenv(stderrPayloadEnv)
+	if payload == "" {
+		return
+	}
+	if _, err := os.Stderr.WriteString(payload); err != nil {
+		fmt.Fprintf(os.Stderr, "fakeplugin: scripted stderr write failed: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // fakeScanner is the sdk.Scanner test implementation: Scan emits a fixed pair

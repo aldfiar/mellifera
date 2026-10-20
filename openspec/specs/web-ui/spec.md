@@ -212,8 +212,9 @@ The SPA SHALL be a pure HTTP client over the versioned API — calling only
 /api/v1/series/{id}/title`, `PUT /api/v1/items/{id}/title`, `DELETE
 /api/v1/items/{id}/title`, `GET /api/v1/admin/sources`, `PATCH
 /api/v1/admin/sources/{plugin_id}`, `POST /api/v1/admin/sources/preview`, `PUT
-/api/v1/libraries/{id}/sources/{plugin_id}`, and `DELETE
-/api/v1/libraries/{id}/sources/{plugin_id}` — with wire shapes mirrored
+/api/v1/libraries/{id}/sources/{plugin_id}`, `DELETE
+/api/v1/libraries/{id}/sources/{plugin_id}`, `GET /api/v1/admin/plugins`, and
+`GET /api/v1/admin/plugins/{plugin_id}/logs` — with wire shapes mirrored
 verbatim. Media loads (originals, thumbs, and `?variant=sidecar` subtitle
 bytes) SHALL go through the authenticated fetch wrapper into object URLs (an
 `<img>`/`<track>` channel cannot carry the bearer header), keeping the media
@@ -232,7 +233,7 @@ set -e
 go build ./...
 violations=$(grep -rnE "fetch\(|['\"]/api/" web/src --include="*.ts" --include="*.tsx" \
   | grep -v "\.test\." \
-  | grep -vE "/(items|libraries|series|progress|admin/(status|sources))" \
+  | grep -vE "/(items|libraries|series|progress|admin/(status|sources|plugins))" \
   | grep -vE "fetch\(path") || true
 test -z "$violations"
 cd web && npx vitest run && npx tsc --noEmit
@@ -555,8 +556,9 @@ UNPROBEABLE
 
 ### Requirement: Sidebar shell
 
-The SPA SHALL render a left sidebar panel (brand, Home/Admin navigation with
-icons, a pinned profile block showing the operator identity and role, and the
+The SPA SHALL render a left sidebar panel (brand, Home/Admin/Plugins
+navigation with icons — Plugins linking `/admin/plugins` —, a pinned profile
+block showing the operator identity and role, and the
 theme toggle) that is **hidden by default**: a floating menu button (fixed
 top-left) opens it, the panel's chevron and the Escape key close it, and the
 open/hidden choice persists in localStorage (`mellifera.side`). While hidden,
@@ -571,14 +573,15 @@ photo → Photos).
 #### Scenario: Hidden by default, opened from the floating button
 
 - **WHEN** an authenticated operator loads the SPA and clicks the floating menu button
-- **THEN** the content initially spans the full width with no sidebar, the button opens the 224px panel (brand, nav, profile, theme toggle) without overlapping headings, and the choice persists across reloads
+- **THEN** the content initially spans the full width with no sidebar, the button opens the 224px panel (brand, the Home/Admin/Plugins nav, profile, theme toggle) without overlapping headings, and the choice persists across reloads
 
-<!-- wf:probe id=024d433d9435672e -->
+<!-- wf:probe id=256315bd3250806b -->
 ```bash
 set -e
 grep -q 'menu-fab' web/src/components/Sidebar.tsx
 grep -q 'side-open' web/src/components/Sidebar.tsx
 grep -q 'mellifera.side' web/src/components/Sidebar.tsx
+grep -q '/admin/plugins' web/src/components/Sidebar.tsx
 grep -qi 'translateX' web/src/styles/index.css
 ```
 <!-- /wf:probe -->
@@ -1438,23 +1441,25 @@ cd web && npx vitest run src/pages/collections/Collection.test.tsx
 
 ### Requirement: Per-item metadata refresh
 
-The Refresh view SHALL offer one radio per parser in the library's chain (the
-endpoint requires exactly one `plugin_id` per invocation) and POST
-`/libraries/{id}/refresh` with `{plugin_id, row_ids: [id]}` — the item's own
-row for an item card, the series id for a series card (series rows live in
+The Refresh view SHALL offer a dropdown of the module block's served
+`refresh_sources` — the loaded, effectively-enabled title sources (one option
+per entry; the endpoint requires exactly one `plugin_id` per invocation) — and
+POST `/libraries/{id}/refresh` with `{plugin_id, row_ids: [id]}` — the item's
+own row for an item card, the series id for a series card (series rows live in
 the same refresh row space); the per-row call bypasses the whole-library 409
-guard. A 202 SHALL render the response inline — the queued/stripped counts
-(the synchronous strip pass makes them real) and, for a deferred row, the
-copy "kept its data — try again shortly" (the row is busy). A 409 SHALL
-render "A refresh is already running" inline. Canonical errors surface inline
-without auto-retry.
+guard. An empty list SHALL render the view's empty state with explanatory copy
+and a disabled trigger — no refreshable source, no kickoff. A 202 SHALL render
+the response inline — the queued/stripped counts (the synchronous strip pass
+makes them real) and, for a deferred row, the copy "kept its data — try again
+shortly" (the row is busy). A 409 SHALL render "A refresh is already running"
+inline. Canonical errors surface inline without auto-retry.
 
 #### Scenario: Refresh posts one parser per invocation and renders the counts inline
 
-- **WHEN** the operator picks a chain parser and triggers the refresh on one item row
+- **WHEN** the operator picks a refresh source in the view's dropdown and triggers the refresh on one item row
 - **THEN** the SPA POSTs `/libraries/{id}/refresh` with that `plugin_id` and `row_ids` of exactly the one id, and the 202 body renders inline including the deferred copy when the row was deferred
 
-<!-- wf:probe id=b16291d041f36f74 -->
+<!-- wf:probe id=d9b16926fa78011a -->
 ```bash
 set -e
 cd web && npx vitest run src/pages/collections/Collection.test.tsx
@@ -1498,12 +1503,15 @@ calls).
   (including `{episode}` inside the title, 3-digit episodes rendered in full,
   an absent token rendering as empty, Cyrillic verbatim); the sample row is
   the library's first episode; copy "names re-compose on save, no rescan".
-- **Refresh metadata**: a chain-parser picker fetching
-  `GET /libraries/{id}/enrich/preview?plugin_id=` on selection with a loading
-  line (the preview is per-plugin and slow — a whole-library computation on
-  demand); the preview renders BEFORE the trigger; a 409 renders "A refresh
-  is already running"; an unwired endpoint (503) renders the section disabled
-  with explanatory copy.
+- **Refresh metadata**: a dropdown of the served `refresh_sources` (the
+  loaded, effectively-enabled title sources — chain parsers and scanners never
+  appear) fetching `GET /libraries/{id}/enrich/preview?plugin_id=` on
+  selection with a loading line (the preview is per-plugin and slow — a
+  whole-library computation on demand); the preview renders BEFORE the
+  trigger; a module with no refreshable source renders the section's empty
+  state with explanatory copy; a 409 renders "A refresh is already running";
+  an unwired endpoint (503) renders the section disabled with explanatory
+  copy.
 - **Edit library**: the admin EditOverlay's form extracted and shared (name
   and description editable; type and root folder read-only) — the overlay
   stays open on error and closes on success.
@@ -1566,10 +1574,10 @@ cd web && npx vitest run src/lib/naming.test.ts
 
 #### Scenario: Refresh metadata previews per plugin before triggering
 
-- **WHEN** the operator picks a chain parser in the refresh metadata section
-- **THEN** the preview loads for that plugin with a loading line and renders before the trigger, a 409 renders "A refresh is already running", and an unwired endpoint renders the section disabled with explanatory copy
+- **WHEN** the operator picks a refresh source in the section's dropdown
+- **THEN** the preview loads for that plugin with a loading line and renders before the trigger, a module without refreshable sources renders the section's empty state with explanatory copy, a 409 renders "A refresh is already running", and an unwired endpoint renders the section disabled with explanatory copy
 
-<!-- wf:probe id=6ce396cbbc0e19e2 -->
+<!-- wf:probe id=8731478ff8246028 -->
 ```bash
 set -e
 cd web && npx vitest run src/pages/collections/Collection.test.tsx
@@ -1667,5 +1675,45 @@ and web dist regenerate at LANDING, never in a probe).
 <!-- wf:probe id=ebd254ceacffd32c -->
 ```bash
 make build check test lint
+```
+<!-- /wf:probe -->
+
+### Requirement: Plugins admin surface
+
+The SPA SHALL offer a Plugins admin surface beside Collections and Sources
+(route `/admin/plugins`, reachable from the sidebar and from the admin pages'
+tab row): one row per loaded plugin with its display name and description,
+capability chips, state chips — the served health state rendered working for
+`serving`, errored for `failed`/`not_serving` with the served message inline,
+the served word otherwise, plus a disabled chip per module whose served
+effective verdict mutes the plugin — and its config bindings rendered
+read-only (module, kind, priority, enabled, auth mode, display fields, options
+JSON verbatim). Per plugin the surface SHALL offer a last-logs view fetching
+`GET /admin/plugins/{plugin_id}/logs` on demand and rendering the bounded tail
+oldest-first. The surface consumes the SERVED verdicts and never resolves
+gates client-side; it writes nothing; canonical errors surface inline without
+auto-retry.
+
+#### Scenario: The surface renders state and config per plugin
+
+- **WHEN** the operator opens `/admin/plugins` with the aggregate answering
+- **THEN** each loaded plugin renders its name, state chips (the served health state; a disabled chip per served module verdict muting it), capability chips, and its config bindings with the options JSON verbatim, and the page issues no write
+
+<!-- wf:probe id=85b1963591d79139 -->
+```bash
+set -e
+cd web && npx vitest run src/pages/admin/Plugins.test.tsx && npx tsc --noEmit
+```
+<!-- /wf:probe -->
+
+#### Scenario: Last logs render on demand
+
+- **WHEN** the operator opens a plugin's last-logs view and the endpoint answers with the plugin's captured tail
+- **THEN** the lines render oldest-first inline and a canonical error renders inline without auto-retry
+
+<!-- wf:probe id=254e34ec3a058ca6 -->
+```bash
+set -e
+cd web && npx vitest run src/pages/admin/Plugins.test.tsx && npx tsc --noEmit
 ```
 <!-- /wf:probe -->

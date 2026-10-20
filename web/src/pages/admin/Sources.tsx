@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState } from "react";
 import type { ReactElement } from "react";
-import { NavLink } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type {
@@ -20,6 +19,7 @@ import {
   putLibrarySource,
 } from "@/lib/api";
 import { useLibraries } from "@/lib/queries";
+import AdminTabs from "@/pages/admin/AdminTabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -77,10 +77,7 @@ export default function Sources(): ReactElement {
 
   return (
     <div className="flex flex-col gap-6">
-      <nav className="flex gap-4" aria-label="Admin">
-        <AdminTab to="/admin" label="Collections" />
-        <AdminTab to="/admin/sources" label="Sources" />
-      </nav>
+      <AdminTabs />
 
       <section>
         <h2 className="mb-3 text-base font-semibold">Metadata sources</h2>
@@ -99,26 +96,6 @@ export default function Sources(): ReactElement {
         )}
       </section>
     </div>
-  );
-}
-
-// AdminTab — the two admin surfaces side by side; the active one highlighted.
-function AdminTab(props: { to: string; label: string }): ReactElement {
-  return (
-    <NavLink
-      to={props.to}
-      end={props.to === "/admin"}
-      className={({ isActive }) =>
-        cn(
-          "text-sm",
-          isActive
-            ? "font-semibold underline underline-offset-4"
-            : "text-muted-foreground hover:text-foreground",
-        )
-      }
-    >
-      {props.label}
-    </NavLink>
   );
 }
 

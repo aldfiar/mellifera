@@ -16,6 +16,7 @@ import {
   useScanLibrary,
   useUpdateLibrary,
 } from "@/lib/queries";
+import AdminTabs from "@/pages/admin/AdminTabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -109,6 +110,8 @@ export default function Collections(): ReactElement {
 
   return (
     <div className="flex flex-col gap-6">
+      <AdminTabs />
+
       <section>
         <h2 className="mb-3 text-base font-semibold">Collections</h2>
         <CollectionsTable

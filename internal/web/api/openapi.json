@@ -12,6 +12,79 @@
     "host": "localhost:8080",
     "basePath": "/api/v1",
     "paths": {
+        "/admin/plugins": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List every loaded plugin with its config and health",
+                "operationId": "admin-plugins",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.pluginAdminResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/plugins/{plugin_id}/logs": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Serve a plugin's captured last logs",
+                "operationId": "admin-plugin-logs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "plugin id",
+                        "name": "plugin_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.pluginLogsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/admin/sources": {
             "get": {
                 "tags": [
@@ -1534,6 +1607,13 @@
                         "$ref": "#/definitions/api.ParserBinding"
                     }
                 },
+                "refresh_sources": {
+                    "description": "RefreshSources is the module's refreshable-source list (plugin-admin-\nsurfaces, additive): the title_source_priority entries that carry a\nmodeled metadata-source binding, whose plugin is loaded, and whose\neffective gate resolution is enabled, in config order — the refresh\npickers' option list (chain parsers and scanners never appear). The\ndisplay composition walk ignores the list — title behavior is\nbyte-identical with and without it. Pairs are appended through\nAddRefreshSource, reusing the titleSourceBinding element type so the\npackage-level export count stays at the complexity budget's cap of 12.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.titleSourceBinding"
+                    }
+                },
                 "title_sources": {
                     "description": "TitleSources is the module's resolved title-walk input (plugin-title-\nenrichment D5, additive): display.title_source_priority in config order,\neach binding carrying its effective enabled flag AFTER gate resolution.\nThe gate resolution lives upstream (cmd-side, via enrich.ResolveGates per\nlibrary) — this shape is the pure seam-input; an empty/absent list means\nthe composer skips the walk entirely. Pairs are appended through\nAddTitleSource — the element type is unexported (complexity budget:\npackage-level exports capped at 12; see titleSourceBinding).",
                     "type": "array",
@@ -1902,6 +1982,106 @@
                         "type": "object",
                         "additionalProperties": {}
                     }
+                }
+            }
+        },
+        "api.pluginAdminBinding": {
+            "type": "object",
+            "properties": {
+                "auth_mode": {
+                    "type": "string"
+                },
+                "display_fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "module_id": {
+                    "type": "string"
+                },
+                "options": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "priority": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.pluginAdminEffective": {
+            "type": "object",
+            "properties": {
+                "modules": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
+                }
+            }
+        },
+        "api.pluginAdminPlugin": {
+            "type": "object",
+            "properties": {
+                "capabilities": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "config": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.pluginAdminBinding"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "effective": {
+                    "$ref": "#/definitions/api.pluginAdminEffective"
+                },
+                "health": {
+                    "$ref": "#/definitions/api.PluginHealth"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "plugin_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.pluginAdminResponse": {
+            "type": "object",
+            "properties": {
+                "plugins": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.pluginAdminPlugin"
+                    }
+                }
+            }
+        },
+        "api.pluginLogsResponse": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "plugin_id": {
+                    "type": "string"
                 }
             }
         },
