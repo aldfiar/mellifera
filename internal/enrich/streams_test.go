@@ -264,6 +264,13 @@ func TestStreamsLane(t *testing.T) {
 
 		rec := &packRecord{}
 		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, PackOutcome{Playlist: "/media/i_pack_q/n0/index.m3u8", Nonce: "n0"}, nil)}, QueueConfig{})
+		// The fixture item still owes tmdb/frame-grabber metadata work, and the
+		// Start sweep derives it; without a resolver the metadata drain would
+		// nil-deref at chain.go:61 (races the lane drain, flaking the package).
+		// An empty mapResolver marks every metadata source unavailable — the
+		// soft, settle-terminal outcome (settle_gate_parity) — leaving the lane
+		// drain this subtest exists for.
+		q.resolve = mapResolver{}.resolver()
 		if err := q.Start(ctx); err != nil {
 			t.Fatalf("Start: %v", err)
 		}

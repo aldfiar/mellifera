@@ -177,12 +177,14 @@ const imageConfigJSON = `{
 // RU-first namespace footer. Schema v3 (display-naming) adds the display
 // block's item_name — the per-episode element naming template
 // "{title} · S{season}E{episode}" (U+00B7 separator, byte-matching the SPA
-// compose) — the ONE display key parseModule models (decoded verbatim into
+// compose) — the first display key parseModule modeled (decoded verbatim into
 // Module.ItemName). display_name carries Russian first-class (arch §1.2).
 // The display block is the module's first (mirroring the tv keys):
 // language_preference is RU-first, and shikimori is the only external
-// title/rating source, so it solely names both priority lists — those
-// remaining display keys are SPA-consumed config, never Go logic
+// title/rating source, so it solely names both priority lists — since
+// plugin-title-enrichment language_preference and title_source_priority are
+// Go-consumed view inputs (Module.LanguagePreference / Module.TitleSourcePriority);
+// the remaining display keys stay SPA-consumed config
 // (element-pages D-1, AC-4: presentation declarations are CONFIG, not code).
 // The per-binding display_fields stay the footer render orders (serial-parser
 // declares the title literal it actually writes — its season_episode is the
@@ -242,13 +244,15 @@ type Registry struct {
 // declaration (element-pages D-1): the mandatory identity-block fields, in
 // declared order — config data the SPA serves and renders, never core logic.
 type Module struct {
-	ID              string
-	MediaType       string
-	SchemaVersion   int
-	IdentityFields  []string                // mandatory identity block, declared order
-	ItemName        string                  // display.item_name element-naming template (display-naming), decoded verbatim — config data, never core logic
-	Scanner         ScannerBinding          // scan-side capability slot
-	MetadataSources []MetadataSourceBinding // enrichment chain, config order
+	ID                  string
+	MediaType           string
+	SchemaVersion       int
+	IdentityFields      []string                // mandatory identity block, declared order
+	ItemName            string                  // display.item_name element-naming template (display-naming), decoded verbatim — config data, never core logic
+	TitleSourcePriority []string                // display.title_source_priority (plugin-title-enrichment): the config-ordered title walk — Go-consumed view input
+	LanguagePreference  []string                // display.language_preference: the display-language pick order — Go-consumed view input
+	Scanner             ScannerBinding          // scan-side capability slot
+	MetadataSources     []MetadataSourceBinding // enrichment chain, config order
 }
 
 // ScannerBinding is the scanner capability slot a module binds: which plugin
@@ -420,9 +424,12 @@ func copyFields(src []string) []string {
 // declarations (identity_fields per module, display_fields per binding —
 // element-pages D-1). The remaining config is intentionally not modeled in Go
 // (arch §2.4.2: options are opaque pass-through; module is a config entity,
-// not a typed schema) — with ONE display exception: item_name (display-naming)
-// is decoded verbatim into Module.ItemName; every other display key
-// (language_preference, the title/rating source priorities) stays
+// not a typed schema) — with THREE display exceptions, the Go-consumed view
+// inputs (plugin-title-enrichment): item_name (display-naming) decoded
+// verbatim into Module.ItemName, title_source_priority (the config-ordered
+// title walk) into Module.TitleSourcePriority, and language_preference (the
+// display-language pick order) into Module.LanguagePreference; every other
+// display key (rating_source_priority, default_image_source) stays
 // SPA-consumed config.
 //
 // The metadata_sources are modeled verbatim in CONFIG order: Enabled is carried
@@ -433,7 +440,9 @@ func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (M
 	var cfg struct {
 		IdentityFields []string `json:"identity_fields"`
 		Display        struct {
-			ItemName string `json:"item_name"`
+			ItemName            string   `json:"item_name"`
+			TitleSourcePriority []string `json:"title_source_priority"`
+			LanguagePreference  []string `json:"language_preference"`
 		} `json:"display"`
 		Scanner struct {
 			PluginID      string          `json:"plugin_id"`
@@ -455,11 +464,13 @@ func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (M
 		return Module{}, fmt.Errorf("module %q: parse config_json: %w", id, err)
 	}
 	m := Module{
-		ID:             id,
-		MediaType:      mediaType,
-		SchemaVersion:  schemaVersion,
-		IdentityFields: cfg.IdentityFields,
-		ItemName:       cfg.Display.ItemName,
+		ID:                  id,
+		MediaType:           mediaType,
+		SchemaVersion:       schemaVersion,
+		IdentityFields:      cfg.IdentityFields,
+		ItemName:            cfg.Display.ItemName,
+		TitleSourcePriority: cfg.Display.TitleSourcePriority,
+		LanguagePreference:  cfg.Display.LanguagePreference,
 		Scanner: ScannerBinding{
 			PluginID:      cfg.Scanner.PluginID,
 			CapabilityID:  cfg.Scanner.CapabilityID,

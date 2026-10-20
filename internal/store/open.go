@@ -181,6 +181,25 @@ var schemaSQL = []string{
   title      TEXT NOT NULL,
   updated_at TEXT NOT NULL
 )`,
+	// metadata_source_prefs is the operator gate control table (plugin-title-
+	// enrichment D2): ONE sparse row per gated (module, library, plugin)
+	// triple — an ABSENT row means inherit, so the table only ever holds
+	// explicit overrides. library_id 0 is the module scope (it applies to
+	// every library of the module that carries no library-scope row of its
+	// own); the PK enforces at most one row per triple. It is control state
+	// BESIDE the module config blob on purpose: the schema-guarded config
+	// migrations rewrite config_json WHOLESALE (internal/module), so operator
+	// gates inside the blob would be stomped on every schema bump. enabled is
+	// 0/1 INTEGER. Purely additive and idempotent like every schemaSQL entry:
+	// the table is inert when unread.
+	`CREATE TABLE IF NOT EXISTS metadata_source_prefs (
+  module_id  TEXT NOT NULL,
+  library_id INTEGER NOT NULL DEFAULT 0,
+  plugin_id  TEXT NOT NULL,
+  enabled    INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (module_id, library_id, plugin_id)
+)`,
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
 	// series_library backs the per-library series listing/sweep paths

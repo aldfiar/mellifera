@@ -12,6 +12,154 @@
     "host": "localhost:8080",
     "basePath": "/api/v1",
     "paths": {
+        "/admin/sources": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List every loaded metadata-source plugin with its gates",
+                "operationId": "admin-sources",
+                "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "compute per-plugin title counts from the stored documents (O(all-rows))",
+                        "name": "title_counts",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.sourceAdminResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/sources/preview": {
+            "post": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Preview composition under a hypothetical gate vector",
+                "operationId": "admin-source-preview",
+                "parameters": [
+                    {
+                        "description": "library and hypothetical gates",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.sourcePreviewRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.sourcePreviewResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/sources/{plugin_id}": {
+            "patch": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Enable or disable a metadata source module-wide",
+                "operationId": "admin-source-patch",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "plugin id",
+                        "name": "plugin_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "gate to write",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.sourcePatchRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.sourcePatchResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/admin/status": {
             "get": {
                 "tags": [
@@ -839,6 +987,121 @@
                 }
             }
         },
+        "/libraries/{id}/sources/{plugin_id}": {
+            "put": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Set a library's metadata-source gate",
+                "operationId": "put-library-source-gate",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "plugin id",
+                        "name": "plugin_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "gate to write",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.sourcePatchRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "gate written"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Clear a library's metadata-source gate",
+                "operationId": "delete-library-source-gate",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "plugin id",
+                        "name": "plugin_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "gate cleared (absent row: still 204, idempotent)"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/libraries/{id}/summary": {
             "get": {
                 "tags": [
@@ -1258,10 +1521,24 @@
                     "description": "ItemName is the module's default display.item_name element template\n(display-naming 3.2/3.3): the composition floor under the library's\nown naming_element_name option — namerFor uses the library option when\nset, else this default, else no composition.",
                     "type": "string"
                 },
+                "language_preference": {
+                    "description": "LanguagePreference is the module's display.language_preference order —\nthe pick order the composer applies over object-shaped source titles.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "parsers": {
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/api.ParserBinding"
+                    }
+                },
+                "title_sources": {
+                    "description": "TitleSources is the module's resolved title-walk input (plugin-title-\nenrichment D5, additive): display.title_source_priority in config order,\neach binding carrying its effective enabled flag AFTER gate resolution.\nThe gate resolution lives upstream (cmd-side, via enrich.ResolveGates per\nlibrary) — this shape is the pure seam-input; an empty/absent list means\nthe composer skips the walk entirely. Pairs are appended through\nAddTitleSource — the element type is unexported (complexity budget:\npackage-level exports capped at 12; see titleSourceBinding).",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.titleSourceBinding"
                     }
                 }
             }
@@ -1290,6 +1567,10 @@
                     "type": "string"
                 },
                 "id": {
+                    "type": "string"
+                },
+                "message": {
+                    "description": "Message is the plugin's own liveness word from the last status probe\n(plugin.Health.Message — the failure reason when not serving).\nADDITIVE on both health surfaces (/admin/status and /admin/sources,\nplugin-title-enrichment): omitted on the wire while \"\".",
                     "type": "string"
                 },
                 "restarts": {
@@ -1731,6 +2012,152 @@
                 }
             }
         },
+        "api.sourceAdminChain": {
+            "type": "object",
+            "properties": {
+                "module_id": {
+                    "type": "string"
+                },
+                "position": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.sourceAdminEffective": {
+            "type": "object",
+            "properties": {
+                "libraries": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
+                },
+                "modules": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
+                }
+            }
+        },
+        "api.sourceAdminResponse": {
+            "type": "object",
+            "properties": {
+                "sources": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.sourceAdminSource"
+                    }
+                }
+            }
+        },
+        "api.sourceAdminSource": {
+            "type": "object",
+            "properties": {
+                "capabilities": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "chains": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.sourceAdminChain"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "effective": {
+                    "$ref": "#/definitions/api.sourceAdminEffective"
+                },
+                "health": {
+                    "$ref": "#/definitions/api.PluginHealth"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "plugin_id": {
+                    "type": "string"
+                },
+                "title_counts": {
+                    "$ref": "#/definitions/api.sourceTitleCounts"
+                }
+            }
+        },
+        "api.sourcePatchRequest": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.sourcePatchResponse": {
+            "type": "object",
+            "properties": {
+                "queued": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.sourcePreviewRequest": {
+            "type": "object",
+            "properties": {
+                "gates": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
+                },
+                "library_id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.sourcePreviewResponse": {
+            "type": "object",
+            "properties": {
+                "after": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.sourcePreviewRow"
+                    }
+                },
+                "before": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.sourcePreviewRow"
+                    }
+                }
+            }
+        },
+        "api.sourcePreviewRow": {
+            "type": "object",
+            "properties": {
+                "item_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "no_data": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.sourceTitleCounts": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "integer"
+                },
+                "series": {
+                    "type": "integer"
+                }
+            }
+        },
         "api.statusResponse": {
             "type": "object",
             "properties": {
@@ -1763,6 +2190,17 @@
             "type": "object",
             "properties": {
                 "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.titleSourceBinding": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "id": {
                     "type": "string"
                 }
             }

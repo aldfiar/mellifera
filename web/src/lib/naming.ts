@@ -2,12 +2,17 @@
 import type { ItemDocument } from "@/lib/document";
 
 // Client mirror of the server-side display-name composer
-// (internal/api/display.go — READ-ONLY grounding, display-naming D-1/D-6).
-// The Naming section's live preview composes CLIENT-side, so this mirror must
-// match the Go composer BYTE-FOR-BYTE; web/src/lib/naming.test.ts pins it with
-// golden vectors ({episode} inside the title, 3-digit episodes, an absent
-// token rendering as the empty string, Cyrillic verbatim). A composer change
-// in display.go without updating the vectors fails naming.test.ts.
+// (internal/api/display.go — READ-ONLY grounding, display-naming D-1/D-6 and
+// plugin-title-enrichment's title walk). The Naming section's live preview
+// composes CLIENT-side, so this mirror must match the Go composer
+// BYTE-FOR-BYTE; web/src/lib/naming.test.ts pins it with golden vectors
+// ({episode} inside the title, 3-digit episodes, an absent token rendering as
+// the empty string, Cyrillic verbatim) AND with the shared composer–SPA
+// fixture internal/api/testdata/golden/title_vectors.json (the ONE file both
+// suites consume — mutating a vector on either side alone fails that side).
+// The walk mirror consumes SERVED inputs only: the title_sources pairs (the
+// EFFECTIVE module∧library gate resolution, gate-resolved upstream) and
+// language_preference — this mirror NEVER resolves gates.
 //
 // Cyrillic — and any non-ASCII text — passes through everything here
 // VERBATIM: no normalization, no transliteration, no reformatting (the Go
@@ -131,27 +136,125 @@ export function episodeFacts(doc: ItemDocument): EpisodeFacts | null {
 }
 
 // SeriesNameSource — the structural slice of a series row the seriesName
-// mirror reads (a SeriesDTO satisfies it).
+// mirror reads (a SeriesDTO satisfies it). status carries the row's lifecycle
+// ("deleted" = tombstone — the item join skips it, never a floor input).
 export interface SeriesNameSource {
   relative_path: string;
   title_override?: string;
+  status?: string;
   document: ItemDocument;
 }
 
-// seriesName — a series row's display title, precedence-ordered (display.go
-// namer.seriesName): the stored manual override first (the operator's name
-// beats every document fact), then the cleaned display title serial-parser
-// writes into its source namespace, then the raw directory name
-// (parsed.dir_name_raw verbatim), else the relative path's last segment.
-// groupStyle "raw" switches to override > dir_name_raw > last segment
-// ("clean" is the default; "" is the module default, i.e. clean).
-export function seriesName(sr: SeriesNameSource, groupStyle: string): string {
-  const override = sr.title_override ?? "";
+// TitleSourcePair — one SERVED title_sources entry (display.go
+// titleSourceBinding): the source's plugin id and its EFFECTIVE enablement
+// after the module∧library gate resolution (resolved upstream — this mirror
+// never resolves gates).
+export interface TitleSourcePair {
+  id: string;
+  enabled: boolean;
+}
+
+// pickLanguage — the language-pick policy (display.go pickLanguage): pref
+// "ru" reads the `russian` key, pref "en" reads the `romaji` key, an unknown
+// pref code floors to the next pref, and no usable pick floors to "" (the
+// caller moves on to the next source).
+function pickLanguage(ns: Record<string, unknown>, prefs: string[]): string {
+  for (const pref of prefs) {
+    const key = pref === "ru" ? "russian" : pref === "en" ? "romaji" : "";
+    if (key === "") {
+      continue;
+    }
+    const s = ns[key];
+    if (typeof s === "string" && s !== "") {
+      return s;
+    }
+  }
+  return "";
+}
+
+// sourceTitle — the config-ordered title walk (display.go namer.sourceTitle):
+// per binding, in order, a disabled entry, a missing namespace, an empty
+// string title, a mistyped title (neither string nor object), or an empty
+// language pick all floor to the NEXT source; a string title passes through
+// verbatim; an object title is picked by language_preference. Returns "" when
+// nothing resolves — the caller floors to its next leg. An empty binding list
+// skips the walk entirely.
+export function sourceTitle(
+  doc: ItemDocument,
+  titleSources: TitleSourcePair[],
+  langPrefs: string[],
+): string {
+  if (titleSources.length === 0) {
+    return "";
+  }
+  const sources = doc.sources;
+  if (!sources || typeof sources !== "object") {
+    return "";
+  }
+  for (const ts of titleSources) {
+    if (!ts.enabled) {
+      continue;
+    }
+    const ns: unknown = (sources as Record<string, unknown>)[ts.id];
+    if (!ns || typeof ns !== "object") {
+      continue;
+    }
+    const title = (ns as Record<string, unknown>).title;
+    if (typeof title === "string") {
+      if (title !== "") {
+        return title;
+      }
+    } else if (title !== null && title !== undefined && typeof title === "object") {
+      const picked = pickLanguage(title as Record<string, unknown>, langPrefs);
+      if (picked !== "") {
+        return picked;
+      }
+    }
+  }
+  return "";
+}
+
+// viewTitle — the item document's own _view.title.value floor, verbatim
+// (display.go viewTitle): a string passes through as-is; a number renders as
+// its literal bytes (String(value)); anything else floors to "".
+function viewTitle(doc: ItemDocument): string {
+  const view = doc._view;
+  if (!view || typeof view !== "object") {
+    return "";
+  }
+  const title: unknown = (view as Record<string, unknown>)["title"];
+  if (!title || typeof title !== "object") {
+    return "";
+  }
+  const v = (title as Record<string, unknown>).value;
+  if (typeof v === "string") {
+    return v;
+  }
+  if (typeof v === "number") {
+    return String(v);
+  }
+  return "";
+}
+
+// seriesNameFrom — the precedence chain with the override as an explicit
+// parameter (display.go namer.seriesName(sr, override)): the item join feeds
+// the point-read series override, the row surface feeds the row's own.
+function seriesNameFrom(
+  sr: SeriesNameSource,
+  override: string,
+  groupStyle: string,
+  titleSources: TitleSourcePair[],
+  langPrefs: string[],
+): string {
   if (override !== "") {
     return override;
   }
   const doc = sr.document;
   if (groupStyle !== "raw") {
+    const walked = sourceTitle(doc, titleSources, langPrefs);
+    if (walked !== "") {
+      return walked;
+    }
     const title = strField(doc.sources?.["serial-parser"], "title");
     if (title !== "") {
       return title;
@@ -162,6 +265,76 @@ export function seriesName(sr: SeriesNameSource, groupStyle: string): string {
     return raw;
   }
   return lastSegment(sr.relative_path);
+}
+
+// seriesName — a series row's display title, precedence-ordered (display.go
+// namer.seriesName): the stored manual override first (the operator's name
+// beats every document fact), then the config-driven title walk over the
+// plugin namespaces (plugin-title-enrichment), then the cleaned display title
+// serial-parser writes into its source namespace, then the raw directory
+// name (parsed.dir_name_raw verbatim), else the relative path's last segment.
+// groupStyle "raw" switches to override > dir_name_raw > last segment — the
+// walk and the parser title both skipped ("clean" is the default; "" is the
+// module default, i.e. clean). The walk inputs are SERVED only (the resolved
+// title_sources pairs + language_preference); omitted bindings skip the walk.
+export function seriesName(
+  sr: SeriesNameSource,
+  groupStyle: string,
+  titleSources: TitleSourcePair[] = [],
+  langPrefs: string[] = [],
+): string {
+  return seriesNameFrom(sr, sr.title_override ?? "", groupStyle, titleSources, langPrefs);
+}
+
+// NamerContext — the served inputs one composition context carries
+// (display.go namer): the library's naming options, the gate-resolved title
+// chain, the language pick order, the library-wide series map the item join
+// reads, and the point-read series override for the row under composition.
+export interface NamerContext {
+  groupStyle: string;
+  elementTemplate: string;
+  seriesByPath: SeriesNameSource[];
+  seriesOverride: string;
+  titleSources: TitleSourcePair[];
+  languagePreference: string[];
+}
+
+// itemName — an item's display name, precedence exactly (display.go
+// namer.itemName): the item's stored title_override first, then the composed
+// element name (episode facts joined to the resolved series row, tombstones
+// skipped), then the title walk over the item's OWN namespaces, then the
+// document's _view.title.value verbatim, then "". Every floor leg is honest.
+export function itemName(override: string, doc: ItemDocument, n: NamerContext): string {
+  if (override !== "") {
+    return override;
+  }
+  if (n.elementTemplate !== "") {
+    const facts = episodeFacts(doc);
+    if (facts) {
+      const sr = n.seriesByPath.find((s) => s.relative_path === facts.path);
+      if (sr && sr.status !== "deleted") {
+        return composeItemName(
+          n.elementTemplate,
+          {
+            title: seriesNameFrom(
+              sr,
+              n.seriesOverride,
+              n.groupStyle,
+              n.titleSources,
+              n.languagePreference,
+            ),
+            season: facts.season,
+            episode: facts.episode,
+          },
+        );
+      }
+    }
+  }
+  const walked = sourceTitle(doc, n.titleSources, n.languagePreference);
+  if (walked !== "") {
+    return walked;
+  }
+  return viewTitle(doc);
 }
 
 // lastSegment — the raw last path segment, verbatim (display.go lastSegment).

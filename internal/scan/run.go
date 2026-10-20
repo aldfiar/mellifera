@@ -108,13 +108,15 @@ type notifier func(ctx context.Context, libraryID int64)
 // runScan is the orchestrator body, factored out so the test can inject a fake
 // scanner resolver, a fake enricher (the retained serial seam, B6), and a fake
 // notifier (the async-enqueue seam, S5). Run is the verbatim contracts.md §7
-// entrypoint. enrich is the retained serial-path seam — scan no longer invokes
-// it from persist (enrichment is async via notify); it stays wired so the serial
-// path remains available and tests can assert it is NOT called inline. A clean
+// entrypoint. enrichItem is the retained serial-path seam — scan no longer
+// invokes it from persist (enrichment is async via notify); it stays wired so
+// the serial path remains available and tests can assert it is NOT called
+// inline. (It is named enrichItem, not enrich, so the enrich package stays
+// addressable for the gate resolution below.) A clean
 // drain — the precondition for the sweep and the notify — is a CONFIRMED clean
 // completion (the scanner stream reported nil) plus a live context; anything
 // less is a warning and neither sweep nor notify runs.
-func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolve scannerResolver, enrich enricher, notify notifier, libraryID int64) (Result, error) {
+func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolve scannerResolver, enrichItem enricher, notify notifier, libraryID int64) (Result, error) {
 	res := Result{LibraryID: libraryID, StartedAt: time.Now().UTC()}
 
 	lib, err := st.GetLibrary(ctx, libraryID)
@@ -125,6 +127,20 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 	if err != nil {
 		return finish(res), fmt.Errorf("scan: module %q: %w", lib.ModuleID, err)
 	}
+	// Gate prefs are read ONCE per run (plugin-title-enrichment D5: the same
+	// batched read derivation uses — module scope + this library) and resolved
+	// onto the LOCAL module copy before any enricher invocation, so the
+	// production-dead serial seam (prodEnricher) can never re-write a dormant
+	// source's namespace if it ever fires. A read error leaves prefs empty
+	// (soft, AC-6: everything inherits the config — the queue's derivation
+	// behaves the same); ResolveGates returns binding copies, so the
+	// registry's backing slice is never mutated.
+	prefs, err := st.ListMetadataSourcePrefs(ctx, mod.ID, []int64{libraryID})
+	if err != nil {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("scan: source gate prefs: %v", err))
+		prefs = nil
+	}
+	mod.MetadataSources = enrich.ResolveGates(mod, prefs, libraryID)
 	sc, err := resolve(mod.Scanner.PluginID, mod.Scanner.CapabilityID)
 	if err != nil {
 		return finish(res), fmt.Errorf("scan: scanner %s/%s: %w", mod.Scanner.PluginID, mod.Scanner.CapabilityID, err)

@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
   composeItemName,
   episodeFacts,
+  itemName,
   seriesName,
   type ElementTokens,
+  type NamerContext,
+  type SeriesNameSource,
+  type TitleSourcePair,
 } from "@/lib/naming";
 import type { ItemDocument } from "@/lib/document";
 
@@ -138,5 +145,120 @@ describe("seriesName — the {title} token's feed (namer.seriesName mirror)", ()
     };
     expect(seriesName(sr, "raw")).toBe("Show.2019");
     expect(seriesName(sr, "")).toBe("Clean");
+  });
+
+  it("the title walk runs above the parser title when SERVED pairs are given — and is skipped without them", () => {
+    const sr: SeriesNameSource = {
+      ...base,
+      document: {
+        sources: {
+          shikimori: { title: { russian: "Атланта", romaji: "Atlanta romaji" } },
+          "serial-parser": { title: "Clean" },
+        },
+      },
+    };
+    const pairs: TitleSourcePair[] = [{ id: "shikimori", enabled: true }];
+    expect(seriesName(sr, "clean", pairs, ["ru", "en"])).toBe("Атланта");
+    expect(seriesName(sr, "clean", pairs, ["en"])).toBe("Atlanta romaji");
+    // No bindings served → the walk is skipped, chain byte-identical to pre-walk.
+    expect(seriesName(sr, "clean")).toBe("Clean");
+  });
+});
+
+// ---- the shared composer–SPA golden fixture ----------------------------------
+// ONE committed file — internal/api/testdata/golden/title_vectors.json — pins
+// BOTH composers (spec scenario 341a94e9c2975995): the Go half is
+// TestGoldenTitleVectors (internal/api/golden_title_vectors_test.go), this is
+// the SPA half. The vectors carry SERVED inputs only (title_sources pairs —
+// the EFFECTIVE gate resolution — language_preference, the row documents);
+// this mirror never resolves gates. A vector changed on either side alone
+// fails that side's suite.
+
+interface GoldenSourcePair {
+  id: string;
+  enabled: boolean;
+}
+
+interface GoldenRow {
+  relative_path: string;
+  title_override?: string;
+  status?: string;
+  document: ItemDocument;
+}
+
+interface GoldenVector {
+  name: string;
+  kind: "series" | "item";
+  note?: string;
+  group_style?: string;
+  element_template?: string;
+  title_sources?: GoldenSourcePair[];
+  language_preference?: string[];
+  series?: GoldenRow;
+  library_series?: GoldenRow[];
+  item?: GoldenRow;
+  expected: string;
+}
+
+// Resolved from THIS file's location (web/src/lib/) — the fixture lives in the
+// Go package's testdata convention. vitest's jsdom transform hands
+// import.meta.url over as a plain filesystem path (no file: scheme), so both
+// shapes are handled.
+const moduleDir = path.dirname(
+  import.meta.url.startsWith("file:") ? fileURLToPath(import.meta.url) : import.meta.url,
+);
+const GOLDEN_FIXTURE_PATH = path.resolve(
+  moduleDir,
+  "../../../internal/api/testdata/golden/title_vectors.json",
+);
+
+const goldenFixture = JSON.parse(readFileSync(GOLDEN_FIXTURE_PATH, "utf8")) as {
+  vectors: GoldenVector[];
+};
+
+function goldenNamer(v: GoldenVector): NamerContext {
+  return {
+    groupStyle: v.group_style ?? "",
+    elementTemplate: v.element_template ?? "",
+    seriesByPath: (v.library_series ?? []).map((row) => ({
+      relative_path: row.relative_path,
+      title_override: row.title_override,
+      status: row.status,
+      document: row.document,
+    })),
+    seriesOverride: "",
+    titleSources: v.title_sources ?? [],
+    languagePreference: v.language_preference ?? [],
+  };
+}
+
+describe("golden fixture — composer–SPA parity (title_vectors.json)", () => {
+  it("the mirror composes every vector's expected name from the served inputs", () => {
+    expect(goldenFixture.vectors).toHaveLength(11);
+    for (const v of goldenFixture.vectors) {
+      const n = goldenNamer(v);
+      let got: string;
+      if (v.kind === "series") {
+        got = seriesName(
+          {
+            relative_path: v.series!.relative_path,
+            title_override: v.series!.title_override,
+            document: v.series!.document,
+          },
+          n.groupStyle,
+          n.titleSources,
+          n.languagePreference,
+        );
+      } else {
+        // Point-read the resolved series' stored override (display.go
+        // withSeriesOverride) from the fixture rows — no store behind it.
+        const anchor = episodeFacts(v.item!.document);
+        n.seriesOverride = anchor
+          ? (n.seriesByPath.find((s) => s.relative_path === anchor.path)?.title_override ?? "")
+          : "";
+        got = itemName(v.item!.title_override ?? "", v.item!.document, n);
+      }
+      expect(got, `vector ${v.name}`).toBe(v.expected);
+    }
   });
 });

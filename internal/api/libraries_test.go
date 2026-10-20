@@ -546,16 +546,16 @@ func TestLibraryPatchParsers(t *testing.T) {
 // identity_fields and the ordered parser bindings with display_fields, served
 // verbatim from the Deps.ModulePresentation closure (module config is the
 // render-order source; api never restates field names). The block is ADDITIVE:
-// a nil closure serves the row without it, and the list/create/patch surfaces
-// never carry it.
+// a nil closure serves the row without it, and the create/patch surfaces never
+// carry it (the list carries it per-library — TestLibraryListPresentation).
 func TestLibraryDetailPresentation(t *testing.T) {
 	ctx := context.Background()
 
 	// fakeModulePresentation stands in for the cmd/mellifera closure over
 	// module.Registry — the api contract is the api-local shape, not the
 	// registry type (INV4).
-	fakeModulePresentation := func(mp ModulePresentation) func(context.Context, string) (ModulePresentation, error) {
-		return func(context.Context, string) (ModulePresentation, error) {
+	fakeModulePresentation := func(mp ModulePresentation) func(context.Context, string, int64) (ModulePresentation, error) {
+		return func(context.Context, string, int64) (ModulePresentation, error) {
 			return mp, nil
 		}
 	}
@@ -654,6 +654,174 @@ func TestLibraryDetailPresentation(t *testing.T) {
 	})
 }
 
+// TestLibraryListPresentation covers the list surface's module block
+// (plugin-title-enrichment D5, display-naming "Module presentation carries
+// the resolved title chain"): GET /api/v1/libraries resolves the
+// presentation for EVERY listed library — two rows of one module, one
+// carrying a library-scope disable, show different title_sources on the same
+// response (enabled for the ungated row, disabled for the gated one) while
+// language_preference is identical everywhere — and the detail endpoint
+// answers the same per row. The fake closure mirrors the cmd/mellifera
+// production path's CONTRACT — ONE batched prefs read for the requested
+// library, then inherit-then-override over the config-enabled chain —
+// against REAL pref rows in the store. enrich.ResolveGates itself is pinned
+// by internal/enrich's tests (api cannot import enrich — INV2): the fake
+// restates only the resolution rule the closure applies, so a change here
+// still proves the per-library plumbing, not the gate policy.
+func TestLibraryListPresentation(t *testing.T) {
+	ctx := context.Background()
+	st := openAPIStore(t)
+	ungatedID, err := st.CreateLibrary(ctx, "tv", "/media/list-ungated", "Ungated")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	gatedID, err := st.CreateLibrary(ctx, "tv", "/media/list-gated", "Gated")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	// Operator gate (D2/D3): kinopoisk disabled for the gated library ONLY —
+	// no module-scope row, so the ungated sibling inherits the config default.
+	if err := st.UpsertMetadataSourcePref(ctx, store.MetadataSourcePref{
+		ModuleID: "tv", LibraryID: gatedID, PluginID: "kinopoisk", Enabled: false,
+	}); err != nil {
+		t.Fatalf("UpsertMetadataSourcePref: %v", err)
+	}
+
+	base := ModulePresentation{
+		IdentityFields:     []string{"title", "year"},
+		ItemName:           "{title}",
+		TitleSources:       []titleSourceBinding{{ID: "kinopoisk", Enabled: true}, {ID: "tmdb", Enabled: true}},
+		LanguagePreference: []string{"ru", "en"},
+	}
+	fakeModulePresentation := func(base ModulePresentation) func(context.Context, string, int64) (ModulePresentation, error) {
+		return func(_ context.Context, _ string, libraryID int64) (ModulePresentation, error) {
+			prefs, err := st.ListMetadataSourcePrefs(ctx, "tv", []int64{libraryID})
+			if err != nil {
+				return ModulePresentation{}, err
+			}
+			override := make(map[string]bool, len(prefs))
+			for _, p := range prefs {
+				override[p.PluginID] = p.Enabled
+			}
+			mp := base
+			mp.TitleSources = make([]titleSourceBinding, len(base.TitleSources))
+			for i, ts := range base.TitleSources {
+				enabled := ts.Enabled
+				if o, ok := override[ts.ID]; ok {
+					enabled = ts.Enabled && o
+				}
+				mp.TitleSources[i] = titleSourceBinding{ID: ts.ID, Enabled: enabled}
+			}
+			return mp, nil
+		}
+	}
+	h := New(Deps{AdminToken: adminToken, Store: st, ModulePresentation: fakeModulePresentation(base)})
+
+	enabledByID := func(t *testing.T, mp ModulePresentation) map[string]bool {
+		t.Helper()
+		out := make(map[string]bool, len(mp.TitleSources))
+		for _, ts := range mp.TitleSources {
+			out[ts.ID] = ts.Enabled
+		}
+		return out
+	}
+
+	t.Run("list_resolves_gates_per_row", func(t *testing.T) {
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/libraries", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var lr librariesResponse
+		if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+			t.Fatalf("decode librariesResponse: %v", err)
+		}
+		if len(lr.Items) != 2 {
+			t.Fatalf("items = %d, want 2", len(lr.Items))
+		}
+		byID := make(map[int64]libraryDTO, len(lr.Items))
+		for _, dto := range lr.Items {
+			byID[dto.ID] = dto
+		}
+		ungated, ok := byID[ungatedID]
+		if !ok || ungated.Module == nil {
+			t.Fatalf("ungated row missing module block: %+v", byID[ungatedID])
+		}
+		gated, ok := byID[gatedID]
+		if !ok || gated.Module == nil {
+			t.Fatalf("gated row missing module block: %+v", byID[gatedID])
+		}
+		ungatedOn := enabledByID(t, *ungated.Module)
+		if !ungatedOn["kinopoisk"] || !ungatedOn["tmdb"] {
+			t.Fatalf("ungated title_sources = %+v, want kinopoisk and tmdb enabled", ungated.Module.TitleSources)
+		}
+		gatedOn := enabledByID(t, *gated.Module)
+		if gatedOn["kinopoisk"] {
+			t.Fatalf("gated title_sources = %+v, want kinopoisk disabled by the library-scope pref", gated.Module.TitleSources)
+		}
+		if !gatedOn["tmdb"] {
+			t.Fatalf("gated title_sources = %+v, want tmdb enabled (only kinopoisk is gated)", gated.Module.TitleSources)
+		}
+		if got := strings.Join(ungated.Module.LanguagePreference, ","); got != "ru,en" {
+			t.Fatalf("ungated language_preference = %q, want %q", got, "ru,en")
+		}
+		if got := strings.Join(gated.Module.LanguagePreference, ","); got != "ru,en" {
+			t.Fatalf("gated language_preference = %q, want identical %q", got, "ru,en")
+		}
+	})
+
+	t.Run("detail_matches_list_per_library", func(t *testing.T) {
+		for _, tc := range []struct {
+			id            int64
+			wantKinopoisk bool
+		}{
+			{id: ungatedID, wantKinopoisk: true},
+			{id: gatedID, wantKinopoisk: false},
+		} {
+			resp := doRequest(t, h, http.MethodGet, "/api/v1/libraries/"+itoa64(tc.id), "", adminToken)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("library %d: status = %d, want %d", tc.id, resp.StatusCode, http.StatusOK)
+			}
+			var lr libraryDTO
+			if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+				t.Fatalf("decode libraryDTO: %v", err)
+			}
+			if lr.Module == nil {
+				t.Fatalf("library %d: module block missing", tc.id)
+			}
+			on := enabledByID(t, *lr.Module)
+			if on["kinopoisk"] != tc.wantKinopoisk {
+				t.Fatalf("library %d: kinopoisk enabled = %v, want %v", tc.id, on["kinopoisk"], tc.wantKinopoisk)
+			}
+			if !on["tmdb"] {
+				t.Fatalf("library %d: tmdb disabled, want enabled", tc.id)
+			}
+		}
+	})
+
+	t.Run("nil_closure_lists_rows_without_block", func(t *testing.T) {
+		bare := New(Deps{AdminToken: adminToken, Store: st})
+		resp := doRequest(t, bare, http.MethodGet, "/api/v1/libraries", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var lr librariesResponse
+		if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+			t.Fatalf("decode librariesResponse: %v", err)
+		}
+		if len(lr.Items) != 2 {
+			t.Fatalf("items = %d, want 2", len(lr.Items))
+		}
+		for _, dto := range lr.Items {
+			if dto.Module != nil {
+				t.Fatalf("library %d: module block = %+v, want absent (nil closure degrades)", dto.ID, dto.Module)
+			}
+		}
+	})
+}
+
 // TestLibraryChainOrderServed covers the consumer half of the stored
 // per-library chain (element-pages 3.1: the parser order defines the footer
 // group order): GET /libraries/{id} overlays store.GetLibraryChain onto the
@@ -671,8 +839,8 @@ func TestLibraryChainOrderServed(t *testing.T) {
 			{ID: "tmdb", DisplayFields: []string{"overview"}},
 		},
 	}
-	fakeModulePresentation := func(mp ModulePresentation) func(context.Context, string) (ModulePresentation, error) {
-		return func(context.Context, string) (ModulePresentation, error) {
+	fakeModulePresentation := func(mp ModulePresentation) func(context.Context, string, int64) (ModulePresentation, error) {
+		return func(context.Context, string, int64) (ModulePresentation, error) {
 			return mp, nil
 		}
 	}

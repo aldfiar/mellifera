@@ -16,12 +16,24 @@ import (
 
 // TestSeriesDisplayName covers the series chain (display-naming 2.1):
 // byte-for-byte Home.tsx seriesDisplayTitle — the four-row clean chain
-// (override > serial-parser title > parsed.dir_name_raw > last path
-// segment), the raw group style (override > dir_name_raw > last segment,
-// parser title ignored), and Cyrillic passing through verbatim. Plus the
+// (override > config-driven title walk > serial-parser title >
+// parsed.dir_name_raw > last path segment), the raw group style
+// (override > dir_name_raw > last segment, walk and parser title both
+// ignored), and Cyrillic passing through verbatim. The walk leg
+// (plugin-title-enrichment) is pinned for: priority order (first non-empty
+// binding wins), string verbatim, object titles picked by
+// language_preference, empty/mistyped/missing floors to the next source,
+// and empty walk inputs leaving the chain byte-identical. Plus the
 // namerFor store read: tombstones land in the map (the join, not the read,
 // skips them).
 func TestSeriesDisplayName(t *testing.T) {
+	src := func(ids ...string) []titleSourceBinding {
+		bindings := make([]titleSourceBinding, len(ids))
+		for i, id := range ids {
+			bindings[i] = titleSourceBinding{ID: id, Enabled: true}
+		}
+		return bindings
+	}
 	cases := []struct {
 		name     string
 		namer    namer
@@ -95,12 +107,146 @@ func TestSeriesDisplayName(t *testing.T) {
 			relPath: "Атланта (2016)",
 			want:    "Атланта",
 		},
+		// ---- the config-driven walk leg (plugin-title-enrichment) ----
+		{
+			name:    "walk_beats_parser_title",
+			namer:   namer{groupStyle: "clean", titleSources: src("shikimori")},
+			doc:     `{"sources":{"shikimori":{"title":"アトランタ"},"serial-parser":{"title":"Атланта"}}}`,
+			relPath: "Атланта (2016)",
+			want:    "アトランタ",
+		},
+		{
+			name:    "walk_priority_order_first_non_empty_wins",
+			namer:   namer{groupStyle: "clean", titleSources: src("shikimori", "kinopoisk")},
+			doc:     `{"sources":{"shikimori":{"title":"アトランタ"},"kinopoisk":{"title":"Атланта"}}}`,
+			relPath: "Атланта (2016)",
+			want:    "アトランタ",
+		},
+		{
+			name:    "walk_second_source_after_empty_first",
+			namer:   namer{groupStyle: "clean", titleSources: src("shikimori", "kinopoisk")},
+			doc:     `{"sources":{"shikimori":{"title":""},"kinopoisk":{"title":"Атланта"}}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта",
+		},
+		{
+			name:    "walk_string_title_verbatim",
+			namer:   namer{groupStyle: "clean", titleSources: src("kinopoisk")},
+			doc:     `{"sources":{"kinopoisk":{"title":"Атланта (2016)"}}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта (2016)",
+		},
+		{
+			name:    "walk_object_title_ru_pick",
+			namer:   namer{groupStyle: "clean", titleSources: src("shikimori"), langPrefs: []string{"ru", "en"}},
+			doc:     `{"sources":{"shikimori":{"title":{"romaji":"Атланта romaji","russian":"Атланта"}}}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта",
+		},
+		{
+			name:    "walk_object_title_en_pick",
+			namer:   namer{groupStyle: "clean", titleSources: src("shikimori"), langPrefs: []string{"en"}},
+			doc:     `{"sources":{"shikimori":{"title":{"romaji":"Атланта romaji","russian":"Атланта"}}}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта romaji",
+		},
+		{
+			name:    "walk_disabled_binding_skipped",
+			namer:   namer{groupStyle: "clean", titleSources: []titleSourceBinding{{ID: "shikimori", Enabled: false}, {ID: "kinopoisk", Enabled: true}}},
+			doc:     `{"sources":{"shikimori":{"title":"アトランタ"},"kinopoisk":{"title":"Атланта"}}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта",
+		},
+		{
+			name:    "walk_missing_namespace_floors_to_parser",
+			namer:   namer{groupStyle: "clean", titleSources: src("shikimori")},
+			doc:     `{"sources":{"serial-parser":{"title":"Атланта"}}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта",
+		},
+		{
+			name:    "walk_mistyped_number_title_floors_to_parser",
+			namer:   namer{groupStyle: "clean", titleSources: src("shikimori")},
+			doc:     `{"sources":{"shikimori":{"title":42},"serial-parser":{"title":"Атланта"}}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта",
+		},
+		{
+			name:    "walk_mistyped_bool_title_floors",
+			namer:   namer{groupStyle: "clean", titleSources: src("shikimori")},
+			doc:     `{"sources":{"shikimori":{"title":true}},"parsed":{"dir_name_raw":"Атланта (2016)"}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта (2016)",
+		},
+		{
+			name:    "walk_object_language_miss_floors_to_parser",
+			namer:   namer{groupStyle: "clean", titleSources: src("shikimori"), langPrefs: []string{"ru"}},
+			doc:     `{"sources":{"shikimori":{"title":{"romaji":"Атланта romaji"}},"serial-parser":{"title":"Атланта"}}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта",
+		},
+		{
+			name:     "walk_override_still_beats_the_walk",
+			namer:    namer{groupStyle: "clean", titleSources: src("shikimori")},
+			doc:      `{"sources":{"shikimori":{"title":"アトランタ"}}}`,
+			relPath:  "Атланта (2016)",
+			override: "Моё название",
+			want:     "Моё название",
+		},
+		{
+			name:    "walk_raw_style_skips_the_walk",
+			namer:   namer{groupStyle: "raw", titleSources: src("shikimori")},
+			doc:     `{"sources":{"shikimori":{"title":"アトランタ"}},"parsed":{"dir_name_raw":"Атланта (2016)"}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта (2016)",
+		},
+		{
+			name:    "walk_empty_inputs_chain_byte_identical",
+			namer:   namer{groupStyle: "clean"},
+			doc:     `{"sources":{"shikimori":{"title":"アトランタ"},"serial-parser":{"title":"Атланта"}}}`,
+			relPath: "Атланта (2016)",
+			want:    "Атланта",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sr := store.Series{RelativePath: tc.relPath, Document: json.RawMessage(tc.doc)}
 			if got := tc.namer.seriesName(sr, tc.override); got != tc.want {
 				t.Fatalf("seriesName(%q, %q) = %q, want %q", tc.doc, tc.override, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPickLanguage covers the language-pick policy (plugin-title-enrichment)
+// directly — the ONE named home of pref→key mapping: "ru" reads `russian`,
+// "en" reads `romaji`, prefs apply in order (first usable pick wins), an
+// unknown pref code floors to the next pref, an empty key value is skipped,
+// and no usable pick floors to "".
+func TestPickLanguage(t *testing.T) {
+	ns := map[string]any{
+		"romaji":  "Атланта romaji",
+		"russian": "Атланта",
+	}
+	cases := []struct {
+		name  string
+		ns    map[string]any
+		prefs []string
+		want  string
+	}{
+		{name: "ru_first_pref_reads_russian", ns: ns, prefs: []string{"ru", "en"}, want: "Атланта"},
+		{name: "en_pref_reads_romaji", ns: ns, prefs: []string{"en"}, want: "Атланта romaji"},
+		{name: "order_matters", ns: ns, prefs: []string{"en", "ru"}, want: "Атланта romaji"},
+		{name: "unknown_pref_floors_to_next", ns: ns, prefs: []string{"jp", "ru"}, want: "Атланта"},
+		{name: "empty_value_skipped_to_next_pref", ns: map[string]any{"russian": "", "romaji": "Атланта romaji"}, prefs: []string{"ru", "en"}, want: "Атланта romaji"},
+		{name: "mistyped_value_skipped", ns: map[string]any{"russian": 7}, prefs: []string{"ru"}, want: ""},
+		{name: "empty_prefs_floor", ns: ns, prefs: nil, want: ""},
+		{name: "all_misses_floor", ns: map[string]any{"romaji": "X"}, prefs: []string{"ru"}, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pickLanguage(tc.ns, tc.prefs); got != tc.want {
+				t.Fatalf("pickLanguage(%v, %v) = %q, want %q", tc.ns, tc.prefs, got, tc.want)
 			}
 		})
 	}
@@ -220,17 +366,34 @@ func TestItemNameTemplate(t *testing.T) {
 
 // TestItemDisplayNamePrecedence covers itemName's exact precedence chain
 // (display-naming 2.3): title_override > composed element name (episode facts
-// + resolved series + template) > _view.title.value verbatim > "". Includes
-// the floor legs — film/tv/image paths (no facts -> no template -> _view
-// floor -> ""), unresolved-series and deleted-series floors (never
-// fabricated) — and the fixed-order namespace iteration (serial-parser, then
-// tv-parser, then sorted rest; Go map order never leaks).
+// + resolved series + template) > the config-driven title walk over the
+// item's OWN namespaces (plugin-title-enrichment — the floor for EVERY
+// failed composition, films included) > _view.title.value verbatim > "".
+// Includes the floor legs — film/tv/image paths (no facts -> no template ->
+// walk -> _view floor -> ""), unresolved-series and deleted-series floors
+// (never fabricated), the walk cases (object RU pick, string verbatim,
+// mistyped floors to _view, walk beats _view, number passthrough after a
+// failed walk, empty walk inputs byte-identical) — and the fixed-order
+// namespace iteration (serial-parser, then tv-parser, then sorted rest; Go
+// map order never leaks).
 func TestItemDisplayNamePrecedence(t *testing.T) {
 	// One namer, one resolved series ("Атланта (2016)" -> parser title
-	// "Атланта", plus one tombstoned row), the module-default template.
+	// "Атланта", plus one tombstoned row), the module-default template, and
+	// the module's title-walk inputs — every pre-walk case below must stay
+	// green WITH the walk inputs live, and every walk case must sit exactly
+	// between the composed name and the _view floor.
+	src := func(ids ...string) []titleSourceBinding {
+		bindings := make([]titleSourceBinding, len(ids))
+		for i, id := range ids {
+			bindings[i] = titleSourceBinding{ID: id, Enabled: true}
+		}
+		return bindings
+	}
 	n := namer{
-		groupStyle:  "clean",
-		elementTmpl: "{title} · S{season}E{episode}",
+		groupStyle:   "clean",
+		elementTmpl:  "{title} · S{season}E{episode}",
+		titleSources: src("shikimori", "kinopoisk"),
+		langPrefs:    []string{"ru", "en"},
 		seriesByPath: map[string]store.Series{
 			"Атланта (2016)": {
 				RelativePath: "Атланта (2016)",
@@ -289,6 +452,48 @@ func TestItemDisplayNamePrecedence(t *testing.T) {
 			doc:  `{"_view":{"title":{"value":42}}}`,
 			want: "42",
 		},
+		// ---- the walk floor over the item's OWN namespaces (plugin-title-
+		// enrichment): every failed-composition shape, films included ----
+		{
+			name: "film_walk_object_title_ru_pick",
+			doc:  `{"sources":{"shikimori":{"title":{"romaji":"Укигуме romaji","russian":"Укигуме"}}},"_view":{"title":{"value":"Файл фильма"}}}`,
+			want: "Укигуме",
+		},
+		{
+			name: "film_walk_string_title_verbatim",
+			doc:  `{"sources":{"kinopoisk":{"title":"Укигуме (2019)"}},"_view":{"title":{"value":"Файл фильма"}}}`,
+			want: "Укигуме (2019)",
+		},
+		{
+			name: "walk_priority_order_first_non_empty_wins",
+			doc:  `{"sources":{"shikimori":{"title":""},"kinopoisk":{"title":"Укигуме"}}}`,
+			want: "Укигуме",
+		},
+		{
+			name: "walk_beats_view_title_string",
+			doc:  `{"sources":{"shikimori":{"title":"アトランタ"}},"_view":{"title":{"value":"Файловое имя"}}}`,
+			want: "アトランタ",
+		},
+		{
+			name: "walk_mistyped_title_floors_to_view",
+			doc:  `{"sources":{"shikimori":{"title":42}},"_view":{"title":{"value":"Файловое имя"}}}`,
+			want: "Файловое имя",
+		},
+		{
+			name: "walk_language_miss_floors_to_view",
+			doc:  `{"sources":{"shikimori":{"title":{"russian":"","romaji":""}}},"_view":{"title":{"value":"Файл фильма"}}}`,
+			want: "Файл фильма",
+		},
+		{
+			name: "view_number_passes_after_failed_walk",
+			doc:  `{"sources":{"shikimori":{"title":true}},"_view":{"title":{"value":42}}}`,
+			want: "42",
+		},
+		{
+			name: "composed_still_beats_the_walk",
+			doc:  `{"parsed":{"series_relative_path":"Атланта (2016)"},"sources":{"serial-parser":{"season":2,"episode":6},"shikimori":{"title":"アトランタ"}}}`,
+			want: "Атланта · S02E06",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -303,6 +508,29 @@ func TestItemDisplayNamePrecedence(t *testing.T) {
 		doc := `{"parsed":{"series_relative_path":"Атланта (2016)"},"sources":{"serial-parser":{"season":2,"episode":6}}}`
 		if got := noTmpl.itemName(item(doc), ""); got != "" {
 			t.Fatalf("itemName without template = %q, want the empty floor", got)
+		}
+	})
+	t.Run("empty_walk_inputs_byte_identical", func(t *testing.T) {
+		noWalk := namer{
+			groupStyle:  "clean",
+			elementTmpl: "{title} · S{season}E{episode}",
+			seriesByPath: map[string]store.Series{
+				"Атланта (2016)": {
+					RelativePath: "Атланта (2016)",
+					Status:       "ready",
+					Document:     json.RawMessage(`{"sources":{"serial-parser":{"title":"Атланта"}}}`),
+				},
+			},
+		}
+		// The zero-walk namer (plain unit-test namers) must skip the leg
+		// entirely: the shikimori namespace is NOT read, the chain floors
+		// straight to _view.title — byte-identical to the pre-walk chain.
+		doc := `{"sources":{"shikimori":{"title":"アトランタ"}},"_view":{"title":{"value":"Файловое имя"}}}`
+		if got := noWalk.itemName(item(doc), ""); got != "Файловое имя" {
+			t.Fatalf("itemName without walk inputs = %q, want the _view floor %q", got, "Файловое имя")
+		}
+		if got := noWalk.itemName(item(`{"_view":{"title":{"value":42}}}`), ""); got != "42" {
+			t.Fatalf("itemName without walk inputs (number) = %q, want %q", got, "42")
 		}
 	})
 }
