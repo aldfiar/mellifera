@@ -46,6 +46,15 @@ type namer struct {
 	// episode names. "" (e.g. plain unit-test namers) floors to the chain, and
 	// the item's own override still beats the composed name in itemName.
 	seriesOverride string
+	// titleSources and langPrefs are the module's title-walk inputs
+	// (plugin-title-enrichment D5): the config-ordered source bindings —
+	// ALREADY gate-resolved upstream (cmd-side via enrich.ResolveGates; the
+	// composer is pure and never imports enrich) — and the language pick
+	// order over object titles. Empty/absent inputs mean the walk is
+	// skipped: seriesName and itemName stay byte-identical to the pre-walk
+	// chains.
+	titleSources []titleSourceBinding
+	langPrefs    []string
 }
 
 // namerFor builds the namer for one library: GetLibrary carries the two
@@ -73,7 +82,7 @@ func (a *app) namerFor(ctx context.Context, libraryID int64) (namer, error) {
 	for _, sr := range rows {
 		byPath[sr.RelativePath] = sr
 	}
-	tmpl, err := a.elementTemplate(ctx, lib)
+	tmpl, pres, err := a.elementTemplate(ctx, lib)
 	if err != nil {
 		return namer{}, err
 	}
@@ -81,43 +90,57 @@ func (a *app) namerFor(ctx context.Context, libraryID int64) (namer, error) {
 		groupStyle:   lib.NamingGroupStyle,
 		elementTmpl:  tmpl,
 		seriesByPath: byPath,
+		titleSources: pres.TitleSources,
+		langPrefs:    pres.LanguagePreference,
 	}, nil
 }
 
 // elementTemplate resolves the ACTIVE element template for a library row:
 // the library's own naming_element_name option when set, ELSE the module
-// default (ModulePresentation.ItemName through the Deps closure, nil-safe —
-// a nil closure or a module without a seeded template means no composition),
-// else "" (the floor applies). The library option layers OVER the module
-// default (display-naming 3.2); a closure error is a real failure and
-// propagates to the caller (the handlers map it, like any other read).
-func (a *app) elementTemplate(ctx context.Context, lib store.Library) (string, error) {
-	if lib.NamingElementName != "" {
-		return lib.NamingElementName, nil
-	}
+// default (ModulePresentation.ItemName through the Deps closure), else ""
+// (no composition). It returns the presentation alongside the template: the
+// SAME closure call carries the title-walk inputs (TitleSources/
+// LanguagePreference, plugin-title-enrichment D5) — scoped to THIS library's
+// id, the gate-resolution scope — so namerFor gets both
+// from one read even when the library option wins the template — the walk
+// is module config, not a composition option, and applies either way. A nil
+// closure is the zero presentation (no default template, empty walk); a
+// closure error is a real failure and propagates to the caller (the
+// handlers map it, like any other read).
+func (a *app) elementTemplate(ctx context.Context, lib store.Library) (string, ModulePresentation, error) {
 	if a.deps.ModulePresentation == nil {
-		return "", nil
+		return lib.NamingElementName, ModulePresentation{}, nil
 	}
-	mp, err := a.deps.ModulePresentation(ctx, lib.ModuleID)
+	mp, err := a.deps.ModulePresentation(ctx, lib.ModuleID, lib.ID)
 	if err != nil {
-		return "", err
+		return "", ModulePresentation{}, err
 	}
-	return mp.ItemName, nil
+	tmpl := lib.NamingElementName
+	if tmpl == "" {
+		tmpl = mp.ItemName
+	}
+	return tmpl, mp, nil
 }
 
 // seriesName is a series row's display title, precedence-ordered —
 // byte-for-byte Home.tsx seriesDisplayTitle: the stored manual override
-// first (the operator's name beats every document fact), then the cleaned
-// display title serial-parser writes into its source namespace, then the raw
-// directory name (parsed.dir_name_raw verbatim), else the relative path's
-// last segment. groupStyle "raw" switches to override > dir_name_raw > last
-// segment ("clean" is the default; "" is the module default, i.e. clean).
+// first (the operator's name beats every document fact), then the
+// config-driven title walk over the plugin namespaces (plugin-title-
+// enrichment, above the parser leg), then the cleaned display title
+// serial-parser writes into its source namespace, then the raw directory
+// name (parsed.dir_name_raw verbatim), else the relative path's last
+// segment. groupStyle "raw" switches to override > dir_name_raw > last
+// segment — the walk and the parser title both skipped ("clean" is the
+// default; "" is the module default, i.e. clean).
 func (n namer) seriesName(sr store.Series, override string) string {
 	if override != "" {
 		return override
 	}
 	doc := docMap(sr.Document)
 	if n.groupStyle != "raw" {
+		if title := n.sourceTitle(doc); title != "" {
+			return title
+		}
 		if title := sourceStr(doc, "serial-parser", "title"); title != "" {
 			return title
 		}
@@ -128,6 +151,71 @@ func (n namer) seriesName(sr store.Series, override string) string {
 		}
 	}
 	return lastSegment(sr.RelativePath)
+}
+
+// sourceTitle walks the module's config-ordered title sources across a row
+// document's sources.* namespaces (plugin-title-enrichment) — the walk leg
+// of BOTH chains: above the serial-parser title in seriesName, and as the
+// floor between the composed element name and _view.title in itemName (over
+// the item's OWN namespaces — items carry plugin namespaces via
+// element-attached extras). The bindings arrive ALREADY
+// gate-resolved — upstream cmd-side via enrich.ResolveGates; this composer
+// is pure, imports no enrich symbol, and just skips disabled entries. Per
+// binding, in order: a disabled entry, a missing namespace, an empty string
+// title, a mistyped title (neither string nor object), or an empty language
+// pick all floor to the NEXT source. A string title passes through
+// verbatim; an object title is picked by the module's language_preference.
+// Returns "" when nothing resolves — the caller floors to its next leg
+// (the serial-parser title in seriesName, _view.title in itemName). No
+// plugin id literal appears here: the ids come only from the bindings.
+func (n namer) sourceTitle(doc map[string]any) string {
+	if len(n.titleSources) == 0 {
+		return ""
+	}
+	sources, _ := doc["sources"].(map[string]any)
+	for _, ts := range n.titleSources {
+		if !ts.Enabled {
+			continue
+		}
+		ns, ok := sources[ts.ID].(map[string]any)
+		if !ok {
+			continue
+		}
+		switch title := ns["title"].(type) {
+		case string:
+			if title != "" {
+				return title
+			}
+		case map[string]any:
+			if picked := pickLanguage(title, n.langPrefs); picked != "" {
+				return picked
+			}
+		}
+	}
+	return ""
+}
+
+// pickLanguage resolves one object-shaped source title against the module's
+// language_preference order (plugin-title-enrichment) — the ONE home of the
+// language-pick policy: pref "ru" reads the `russian` key, pref "en" reads
+// the `romaji` key, an unknown pref code floors to the next pref, and no
+// usable pick floors to "" (the caller moves on to the next source).
+func pickLanguage(ns map[string]any, prefs []string) string {
+	for _, pref := range prefs {
+		var key string
+		switch pref {
+		case "ru":
+			key = "russian"
+		case "en":
+			key = "romaji"
+		default:
+			continue
+		}
+		if s := strField(ns, key); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // lastSegment is the raw last path segment, verbatim (the SPA's fileName).
@@ -264,10 +352,14 @@ func pad2(v *int64) string {
 // itemName is an item's display name, precedence exactly (display-naming
 // D-2): the item's stored title_override first, then the composed element
 // name — its episode facts joined to the series its parsed anchor resolves
-// to, rendered through the active element template — then the document's
-// _view.title.value verbatim, then "". Every floor leg is honest: no facts,
-// no template, an unresolved series, or a tombstoned series all fall through —
-// the composer never fabricates a name. Cyrillic passes through every leg
+// to, rendered through the active element template — then the config-driven
+// title walk over the item's OWN document namespaces (the same sourceTitle
+// walk the series chain uses — plugin-title-enrichment), then the document's
+// _view.title.value verbatim, then "". The walk leg is the floor for EVERY
+// failed item composition, not just films: a film (no series row, no episode
+// facts), a missing template, an unresolved series, or a tombstoned series
+// all reach it before the _view floor. Every floor leg is honest — the
+// composer never fabricates a name. Cyrillic passes through every leg
 // verbatim, as everywhere in this file.
 func (n namer) itemName(it store.Item, override string) string {
 	if override != "" {
@@ -278,6 +370,9 @@ func (n namer) itemName(it store.Item, override string) string {
 		if name, ok := n.elementName(doc); ok {
 			return name
 		}
+	}
+	if title := n.sourceTitle(doc); title != "" {
+		return title
 	}
 	return viewTitle(doc)
 }

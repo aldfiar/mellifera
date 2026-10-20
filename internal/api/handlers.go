@@ -75,9 +75,11 @@ type updateLibraryRequest struct {
 // noun). CreatedAt is intentionally omitted, mirroring itemDTO time-omission
 // (the document is the source of truth; carrying time.Time here would force a
 // disallowed time import) — INV4. Module is the additive presentation block
-// (element-pages 3.4), present only on GET /libraries/{id} and only when the
-// Deps.ModulePresentation closure is wired — the list/create/patch responses
-// never carry it. NamingGroupStyle/NamingElementName (display-naming 3.2)
+// (element-pages 3.4; plugin-title-enrichment D5): present on GET
+// /libraries/{id} and on the GET /libraries list — each row resolved PER
+// LIBRARY through the Deps.ModulePresentation closure (the title_sources
+// gates are library-scoped) — and only when the closure is wired; the
+// create/patch responses never carry it. NamingGroupStyle/NamingElementName (display-naming 3.2)
 // are the library's two naming options, ALWAYS on the wire as flat strings —
 // "" = module default (the module default layers under the library option at
 // composition, namerFor).
@@ -104,9 +106,11 @@ type ParserBinding struct {
 	DisplayFields []string `json:"display_fields"`
 }
 
-// ModulePresentation is the additive module block on GET /libraries/{id}
-// (element-pages 3.4): the module's mandatory identity_fields (the element
-// page's identity badges) plus the collection's ordered parser chain. It is
+// ModulePresentation is the additive module block on the library surfaces
+// (element-pages 3.4; the list rows carry it per-library since
+// plugin-title-enrichment D5): the module's mandatory identity_fields (the
+// element page's identity badges) plus the collection's ordered parser chain.
+// It is
 // ALSO the Deps.ModulePresentation seam-input shape (like PluginHealth for
 // Status): the closure is built in cmd/mellifera over module.Registry, so the
 // type is exported and its fields carry the JSON tags — the handler embeds the
@@ -120,6 +124,41 @@ type ModulePresentation struct {
 	// own naming_element_name option — namerFor uses the library option when
 	// set, else this default, else no composition.
 	ItemName string `json:"item_name"`
+	// TitleSources is the module's resolved title-walk input (plugin-title-
+	// enrichment D5, additive): display.title_source_priority in config order,
+	// each binding carrying its effective enabled flag AFTER gate resolution.
+	// The gate resolution lives upstream (cmd-side, via enrich.ResolveGates per
+	// library) — this shape is the pure seam-input; an empty/absent list means
+	// the composer skips the walk entirely. Pairs are appended through
+	// AddTitleSource — the element type is unexported (complexity budget:
+	// package-level exports capped at 12; see titleSourceBinding).
+	TitleSources []titleSourceBinding `json:"title_sources,omitempty"`
+	// LanguagePreference is the module's display.language_preference order —
+	// the pick order the composer applies over object-shaped source titles.
+	LanguagePreference []string `json:"language_preference,omitempty"`
+}
+
+// titleSourceBinding is one title-walk entry (plugin-title-enrichment D3/D5):
+// the source's plugin id and its effective enablement after gate resolution.
+// UNEXPORTED on purpose: the repo's complexity budget caps package-level
+// exports at 12 per package (mellifera-build check.sh) and api sits exactly
+// at the cap — the pair type is type surface, not package surface. The
+// cmd-side closure constructs pairs through the exported AddTitleSource
+// method; the exported JSON-tagged fields keep the wire bytes identical
+// ({"id":…,"enabled":…}).
+type titleSourceBinding struct {
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
+}
+
+// AddTitleSource appends one resolved title-walk pair to the presentation's
+// TitleSources (plugin-title-enrichment D3/D5): the cmd-side closure's
+// construction path for the per-library gate resolution — one call per
+// title_source_priority entry that carries a modeled binding. Lives on the
+// method set (not the package surface) so the package-level export count
+// stays at the complexity budget's cap of 12.
+func (p *ModulePresentation) AddTitleSource(id string, enabled bool) {
+	p.TitleSources = append(p.TitleSources, titleSourceBinding{ID: id, Enabled: enabled})
 }
 
 // librariesResponse is the wire shape for GET /libraries.
@@ -247,6 +286,11 @@ type PluginHealth struct {
 	State     string `json:"state"`
 	Restarts  int    `json:"restarts"`
 	CheckedAt string `json:"checked_at"`
+	// Message is the plugin's own liveness word from the last status probe
+	// (plugin.Health.Message — the failure reason when not serving).
+	// ADDITIVE on both health surfaces (/admin/status and /admin/sources,
+	// plugin-title-enrichment): omitted on the wire while "".
+	Message string `json:"message,omitempty"`
 }
 
 // EnrichStats is the seam-input shape for the async-enrichment queue snapshot,
@@ -483,7 +527,7 @@ func (a *app) getLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	dto := toLibraryDTO(lib)
 	if a.deps.ModulePresentation != nil {
-		mp, err := a.deps.ModulePresentation(r.Context(), lib.ModuleID)
+		mp, err := a.deps.ModulePresentation(r.Context(), lib.ModuleID, id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -812,7 +856,27 @@ func (a *app) listLibraries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusOK, librariesResponse{Items: toLibraryDTOs(libs)})
+	dtos := toLibraryDTOs(libs)
+	// Module block per row (plugin-title-enrichment D5, display-naming
+	// "Module presentation carries the resolved title chain"): the list
+	// surface resolves the presentation for EVERY listed library — the
+	// closure gets each row's own (module_id, id), so a library-scope gate
+	// shows on the list row itself. Nil closure degrades (no block on any
+	// row), mirroring the detail endpoint; a closure error is a real failure
+	// → 500. No chain overlay here (that footer-order read stays the detail
+	// endpoint's contract) — the list block exists to carry the per-library
+	// title chain, and its parsers render in module config order.
+	if a.deps.ModulePresentation != nil {
+		for i := range libs {
+			mp, err := a.deps.ModulePresentation(r.Context(), libs[i].ModuleID, libs[i].ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+				return
+			}
+			dtos[i].Module = &mp
+		}
+	}
+	writeJSON(w, http.StatusOK, librariesResponse{Items: dtos})
 }
 
 // getItem: parse {id} → store.GetItem → write itemResponse. One domain call

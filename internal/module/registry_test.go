@@ -410,7 +410,8 @@ func mustListLen(t *testing.T, r *Registry) int {
 // structure knob, and the ordered metadata chain serial-parser (priority 1) +
 // frame-grabber (priority 2) + shikimori (priority 3, enrichment D-7),
 // media_type "serial" — while the seeded tv and
-// image configs stay byte-identical.
+// image configs stay byte-identical. The two Go-consumed display view inputs
+// (plugin-title-enrichment 1.2) decode into their exported Module fields.
 func TestSerialModuleSeed(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
@@ -476,6 +477,18 @@ func TestSerialModuleSeed(t *testing.T) {
 	wantDisplay := []string{"title", "season_episode", "parsed_from"}
 	if got := m.MetadataSources[0].DisplayFields; !reflect.DeepEqual(got, wantDisplay) {
 		t.Errorf("serial-parser display_fields = %v, want %v", got, wantDisplay)
+	}
+
+	// The two Go-consumed view inputs (plugin-title-enrichment 1.2): the
+	// display block's language pick order and title-source walk decode into
+	// exported Module fields; the remaining display keys stay SPA-consumed.
+	wantLangPref := []string{"ru", "en"}
+	if got := m.LanguagePreference; !reflect.DeepEqual(got, wantLangPref) {
+		t.Errorf("language_preference = %v, want %v", got, wantLangPref)
+	}
+	wantTitlePriority := []string{"shikimori"}
+	if got := m.TitleSourcePriority; !reflect.DeepEqual(got, wantTitlePriority) {
+		t.Errorf("title_source_priority = %v, want %v", got, wantTitlePriority)
 	}
 
 	// The tv/image seeds are untouched by the serial addition: their persisted

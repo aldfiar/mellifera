@@ -361,6 +361,22 @@ func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask
 		return nil, err
 	}
 	nowt := now()
+	// Gate prefs are read ONCE per module per pass (plugin-title-enrichment
+	// D5: one batched read — module scope + this library), then resolved into
+	// the rows' bindings; a read error leaves the module's prefs empty (soft:
+	// everything inherits, config order wins, re-derived on the next sweep).
+	prefsByModule := make(map[string][]store.MetadataSourcePref)
+	prefsFor := func(moduleID string) []store.MetadataSourcePref {
+		if p, ok := prefsByModule[moduleID]; ok {
+			return p
+		}
+		p, err := q.deps.Store.ListMetadataSourcePrefs(ctx, moduleID, []int64{libraryID})
+		if err != nil {
+			p = nil
+		}
+		prefsByModule[moduleID] = p
+		return p
+	}
 	tasks := make([]queueTask, 0)
 	for _, it := range items {
 		mod, err := q.deps.Modules.Get(it.ModuleID)
@@ -368,18 +384,20 @@ func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask
 			continue // module unresolvable -> row not derivable (soft)
 		}
 		doc := decodeDoc(it.Document)
-		chainPending := pendingSources(chainOrderedSources(mod.MetadataSources, chain), doc, it.ID, idx, nowt)
+		gated := ResolveGates(mod, prefsFor(mod.ID), libraryID)
+		chainPending := pendingSources(chainOrderedSources(gated, chain), doc, it.ID, idx, nowt)
 		for _, pluginID := range chainPending {
 			tasks = append(tasks, queueTask{rowID: it.ID, pluginID: pluginID})
 		}
-		tasks = append(tasks, q.pendingExtras(ctx, mod, doc, it.ID, chainPending, idx, nowt)...)
+		tasks = append(tasks, q.pendingExtras(ctx, mod, prefsFor(mod.ID), libraryID, doc, it.ID, chainPending, idx, nowt)...)
 	}
 	for _, sr := range seriesRows {
 		mod, err := q.deps.Modules.Get(sr.ModuleID)
 		if err != nil {
 			continue // module unresolvable -> row not derivable (soft)
 		}
-		for _, pluginID := range pendingSources(chainOrderedSources(mod.MetadataSources, chain), decodeDoc(sr.Document), sr.ID, idx, nowt) {
+		gated := ResolveGates(mod, prefsFor(mod.ID), libraryID)
+		for _, pluginID := range pendingSources(chainOrderedSources(gated, chain), decodeDoc(sr.Document), sr.ID, idx, nowt) {
 			tasks = append(tasks, queueTask{rowID: sr.ID, pluginID: pluginID})
 		}
 	}
@@ -443,12 +461,15 @@ func pendingSources(srcs []module.MetadataSourceBinding, doc map[string]any, row
 // is never queued; its declared AuthMode is the lock), namespace absent, not in
 // ledger-cooldown. Attachments the chain already queued this pass are skipped
 // (one task per (item, plugin), never two). Attachments are item-keyed only —
-// series rows have none (the control table joins the items table). A store read
-// error leaves the item's extras underived for this pass (soft; re-derived on
-// the next sweep).
+// series rows have none (the control table joins the items table). The
+// resolution — declared bindings AND the synthesized defaults (Enabled: true) —
+// passes through ResolveGates, so an attachment gated at module or library
+// scope derives nothing (plugin-title-enrichment D3). A store read error leaves
+// the item's extras underived for this pass (soft; re-derived on the next
+// sweep).
 func (q *Queue) pendingExtras(
-	ctx context.Context, mod module.Module, doc map[string]any, itemID string,
-	chainPending []string, idx failureIndex, nowt time.Time,
+	ctx context.Context, mod module.Module, prefs []store.MetadataSourcePref, libraryID int64,
+	doc map[string]any, itemID string, chainPending []string, idx failureIndex, nowt time.Time,
 ) []queueTask {
 	attached, err := q.deps.Store.ListItemParsers(ctx, itemID)
 	if err != nil || len(attached) == 0 {
@@ -459,7 +480,7 @@ func (q *Queue) pendingExtras(
 		queued[id] = struct{}{}
 	}
 	out := make([]queueTask, 0)
-	for _, src := range resolveExtraSources(mod, attached) {
+	for _, src := range ResolveGates(module.Module{ID: mod.ID, MetadataSources: resolveExtraSources(mod, attached)}, prefs, libraryID) {
 		if _, taken := queued[src.PluginID]; taken {
 			continue // already derived via the chain this pass
 		}
@@ -539,12 +560,13 @@ func hasNamespace(doc map[string]any, pluginID string) bool {
 // loaded for items only; a series row never has attachments (the item_parsers
 // control table joins the items table).
 type queueRow struct {
-	id       string
-	moduleID string
-	status   string
-	doc      json.RawMessage
-	extras   []string
-	persist  func(ctx context.Context, status string, doc json.RawMessage)
+	id        string
+	moduleID  string
+	libraryID int64
+	status    string
+	doc       json.RawMessage
+	extras    []string
+	persist   func(ctx context.Context, status string, doc json.RawMessage)
 }
 
 // loadRow loads the queue target by row id: the item table first, the series
@@ -555,7 +577,8 @@ func (q *Queue) loadRow(ctx context.Context, id string) (queueRow, error) {
 	it, err := q.deps.Store.GetItem(ctx, id)
 	if err == nil {
 		return queueRow{
-			id: it.ID, moduleID: it.ModuleID, status: it.Status, doc: it.Document,
+			id: it.ID, moduleID: it.ModuleID, libraryID: it.LibraryID,
+			status: it.Status, doc: it.Document,
 			extras: q.itemExtras(ctx, it.ID),
 			persist: func(ctx context.Context, status string, doc json.RawMessage) {
 				q.putItem(ctx, it, status, doc)
@@ -570,7 +593,8 @@ func (q *Queue) loadRow(ctx context.Context, id string) (queueRow, error) {
 		return queueRow{}, serr // includes ErrNoRows: the row is gone
 	}
 	return queueRow{
-		id: sr.ID, moduleID: sr.ModuleID, status: sr.Status, doc: sr.Document,
+		id: sr.ID, moduleID: sr.ModuleID, libraryID: sr.LibraryID,
+		status: sr.Status, doc: sr.Document,
 		persist: func(ctx context.Context, status string, doc json.RawMessage) {
 			q.putSeries(ctx, sr, status, doc)
 		},
@@ -620,8 +644,22 @@ func (q *Queue) workItem(ctx context.Context, rowID string) {
 	}
 	doc := decodeDoc(row.doc)
 	status := reengage(row.status)
-	extras := runExtras(mod, row.extras) // chain-declared attachments stay chain-driven (no double run)
-	dr := q.driveSources(ctx, mod, extras, doc, reconstructBase(doc), rowID, idx, &status)
+	// Gate prefs are read ONCE per claim (plugin-title-enrichment D3: ONE
+	// resolution per (pass, row) — drain and settle consume the SAME resolved
+	// bindings, so a pref flip landing mid-pass cannot split the verdict and
+	// takes effect on the next pass). A read error leaves the prefs empty
+	// (soft: everything inherits config).
+	prefs, err := q.deps.Store.ListMetadataSourcePrefs(ctx, mod.ID, []int64{row.libraryID})
+	if err != nil {
+		prefs = nil
+	}
+	gated := mod
+	gated.MetadataSources = ResolveGates(mod, prefs, row.libraryID)
+	// Chain-declared attachments stay chain-driven (no double run); the
+	// narrowed extras — synthesized defaults included — resolve through the
+	// SAME prefs, mirroring derivation's pendingExtras resolution.
+	extras := ResolveGates(module.Module{ID: mod.ID, MetadataSources: runExtras(mod, row.extras)}, prefs, row.libraryID)
+	dr := q.driveSources(ctx, gated, extras, doc, reconstructBase(doc), rowID, idx, &status)
 	if dr.hardAbort {
 		q.hardFail(ctx, row, doc, dr.err)
 		return
@@ -629,7 +667,7 @@ func (q *Queue) workItem(ctx context.Context, rowID string) {
 	if dr.begun && dr.succeeded > 0 {
 		status = advance(status, evEnriched) // parsed -> enriched
 	}
-	status = q.settle(ctx, mod, extras, doc, rowID, status)
+	status = q.settle(ctx, gated, extras, doc, rowID, status)
 	q.persistRow(ctx, row, status, doc)
 	if status == statusReady {
 		q.statDone.Add(1)

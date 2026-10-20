@@ -40,13 +40,17 @@ type Deps struct {
 	// 404 in the handlers.
 	Play func(ctx context.Context, itemID string, retry bool, fromSeconds *float64) (queued bool, err error)
 	// ModulePresentation is the module presentation closure (element-pages
-	// 3.4): built in cmd/mellifera over module.Registry (IdentityFields +
-	// the ordered parser bindings with their display_fields). Nil-safe — the
-	// `module` block on GET /libraries/{id} is ADDITIVE: a nil closure omits
-	// it and the handler still serves the library row (the SPA degrades to a
-	// footer without the presentation block). A non-nil closure erroring is a
-	// real failure → 500.
-	ModulePresentation func(ctx context.Context, moduleID string) (ModulePresentation, error)
+	// 3.4; widened per plugin-title-enrichment D5): built in cmd/mellifera
+	// over module.Registry (IdentityFields + the ordered parser bindings with
+	// their display_fields) — and, since the widening, over the store's
+	// metadata-source prefs: TitleSources carries the EFFECTIVE per-library
+	// gate resolution (inherit-then-override via enrich.ResolveGates from ONE
+	// batched prefs read), so the libraryID argument is the gate scope. Nil-
+	// safe — the `module` block on the library surfaces is ADDITIVE: a nil
+	// closure omits it and the handlers still serve the library rows (the SPA
+	// degrades to a footer without the presentation block). A non-nil closure
+	// erroring is a real failure → 500.
+	ModulePresentation func(ctx context.Context, moduleID string, libraryID int64) (ModulePresentation, error)
 	// PluginCapabilities answers the parser-validation question for the
 	// mutating parser endpoints (element-pages 3.3): is pluginID a loaded
 	// plugin, and which capability types does it serve (e.g. "scanner",
@@ -78,6 +82,27 @@ type Deps struct {
 	// computed on demand — drift is never stored. Built in cmd/mellifera.
 	// Nil-safe (503 when nil), mirroring Reenrich.
 	EnrichPreview func(ctx context.Context, libraryID int64, pluginID string) (EnrichPreview, error)
+	// SourceInventory is the admin-sources boot-literal inventory closure
+	// (plugin-title-enrichment D6): the plugin ids the process booted with,
+	// in boot order, each with its operator-facing display name and
+	// description (cmd literals — Manager.List() is Phase-2). The returns are
+	// PRIMITIVE types on purpose: the api package-level export budget sits at
+	// its cap, so the aggregate's shapes stay unexported (sourceAdminSource)
+	// and the handler assembles them from these plain slices/maps. Nil-safe
+	// (503 when nil), mirroring Status.
+	SourceInventory func(ctx context.Context) (ids []string, names, descriptions map[string]string)
+	// ModuleIDs lists the module registry's module ids — the enumeration
+	// scope for chain positions and gate resolution on GET /admin/sources.
+	// Primitive return (budget — see SourceInventory). Nil-safe (503).
+	ModuleIDs func(ctx context.Context) ([]string, error)
+	// ModuleSources resolves ONE module's metadata-source chain for ONE gate
+	// scope (libraryID 0 = module scope): the ordered plugin ids with their
+	// config priorities and their EFFECTIVE enablement after gate resolution
+	// — cmd-side via ONE batched prefs read (store.ListMetadataSourcePrefs)
+	// + enrich.ResolveGates, the same resolution the ModulePresentation
+	// closure applies. Parallel slices keep the return primitive-typed
+	// (budget — see SourceInventory). Nil-safe (503).
+	ModuleSources func(ctx context.Context, moduleID string, libraryID int64) (pluginIDs []string, priorities []int, enabled []bool, err error)
 	// OnParsersChanged is the parser-wake seam (enrichment D-6): invoked by
 	// putItemParsers/deleteItemParsers after a successful SetItemParsers,
 	// with the library resolved from the item row — the cmd-side
@@ -85,6 +110,16 @@ type Deps struct {
 	// removed) parser sources join or leave derivation without a rescan.
 	// Nil-safe (a nil closure is a no-op), mirroring OnProgress.
 	OnParsersChanged func(ctx context.Context, libraryID int64)
+	// OnSourceGateChanged is the source-gate wake seam (plugin-title-
+	// enrichment): invoked by adminSourcePatch after a successful module-scope
+	// gate ENABLE, once per library of the affected modules, and by the
+	// library-scope gate endpoints for the one scoped library (PUT on enable,
+	// DELETE on the clear-to-inherit — a clear may restore the source) — the
+	// cmd-side implementation notifies the enrich queue so newly-applicable
+	// source namespaces re-derive without a rescan. Nil-safe (a nil closure is
+	// a no-op), mirroring OnParsersChanged. Keeps api free of enrich imports
+	// (INV2).
+	OnSourceGateChanged func(ctx context.Context, libraryID int64)
 }
 
 // Role is the authorization role resolved from the credential. MVP issues
@@ -214,6 +249,32 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Post("/libraries/{id}/refresh", h.libraryRefresh)
 		r.Get("/libraries/{id}/enrich/preview", h.enrichPreview)
 		r.Get("/enrich/failures", h.enrichFailures)
+		// Metadata-source admin aggregate (plugin-title-enrichment): the
+		// read-only per-plugin inventory — boot-literal list, health,
+		// capabilities, chain positions, effective gates per module and per
+		// library, on-demand title counts (?title_counts=true). Operator
+		// observability, so the admin group.
+		r.Get("/admin/sources", h.adminSources)
+		// Module-wide source gate (plugin-title-enrichment): the operator
+		// enable/disable write — validation-first (unknown plugin 400, nothing
+		// written), enable wakes every affected library's derivation, disable
+		// wakes nothing. Operator mutation, so the admin group.
+		r.Patch("/admin/sources/{plugin_id}", h.adminSourcePatch)
+		// Per-collection source gate (plugin-title-enrichment): PUT writes the
+		// library-scope override, DELETE clears it back to inherit — one
+		// library of one module. Validation-first like the module-wide PATCH
+		// (unknown library 404, unknown plugin 400, nothing written on error).
+		// Operator mutation of one library's gate, so the admin group beside
+		// the other library mutations.
+		r.Put("/libraries/{id}/sources/{plugin_id}", h.librarySourcePut)
+		r.Delete("/libraries/{id}/sources/{plugin_id}", h.librarySourceDelete)
+		// Composition preview (plugin-title-enrichment): the production
+		// composer run TWICE over the same library rows — the live gates vs.
+		// the request's hypothetical gate vector — answering symmetric
+		// before/after name sets with the no_data marker. Pure read path:
+		// nothing is written, no derivation wakes. Operator observability, so
+		// the admin group beside the gate writes it previews.
+		r.Post("/admin/sources/preview", h.adminSourcePreview)
 		r.Get("/admin/status", h.adminStatus)
 	})
 }

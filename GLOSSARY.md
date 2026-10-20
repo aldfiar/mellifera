@@ -3,6 +3,7 @@
 Canonical vocabulary for mellifera. Definitions only — design notes live in specs and proposals.
 
 - **Client (enrichment context)** — an HTTP consumer of the mellifera API (the SPA or any REST caller) that can *trigger* enrichment of an entity. The server always executes enrichment fetches (fetch mode A). Not the go-plugin host (that is always mellifera core), and not a mode B credential holder.
+- **Dormant source** — a metadata source whose operator gate (module- or Collection-scope preference) disables it: it derives nothing (excluded from the enrichment chain and its extras) and composes nothing (excluded from the display title walk), while its stored namespace, provenance and view entries stay byte-identical and are never purged. Re-enabling restores derivation through the enrichment queue's wake — no rescan, no lifecycle transition.
 - **Fetch mode A / mode B** — who executes a plugin-built RequestSpec: A = the server; B = a client holding the upstream credentials (contract-supported, not built).
 - **Enrichment queue** — the derived set of pending (row, plugin) work, computed from rows + namespaces + the failure ledger. There is no queue, claim, or lease table; work is never stored, only derived.
 - **Namespace** — the per-plugin subtree an enrichment plugin owns inside an item/series document (`sources.<plugin_id>`, plus its `_provenance` / `_view` entries). A plugin may write only its own namespace.

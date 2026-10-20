@@ -1,0 +1,236 @@
+{
+  "vectors": [
+    {
+      "name": "ru_en_pick_russian_first",
+      "kind": "series",
+      "note": "the russian/romaji pick: pref \"ru\" reads `russian`, pref \"en\" reads `romaji`, prefs apply in order (first usable pick wins)",
+      "group_style": "clean",
+      "title_sources": [
+        { "id": "shikimori", "enabled": true }
+      ],
+      "language_preference": ["ru", "en"],
+      "series": {
+        "relative_path": "Атланта (2016)",
+        "document": {
+          "sources": {
+            "shikimori": { "title": { "romaji": "Atlanta romaji", "russian": "Атланта" } }
+          }
+        }
+      },
+      "expected": "Атланта"
+    },
+    {
+      "name": "empty_title_floors_to_next_source",
+      "kind": "series",
+      "note": "an empty string title floors to the NEXT source — never rendered as the picked name",
+      "group_style": "clean",
+      "title_sources": [
+        { "id": "shikimori", "enabled": true },
+        { "id": "kinopoisk", "enabled": true }
+      ],
+      "language_preference": ["ru"],
+      "series": {
+        "relative_path": "Атланта (2016)",
+        "document": {
+          "sources": {
+            "shikimori": { "title": "" },
+            "kinopoisk": { "title": "Атланта" }
+          }
+        }
+      },
+      "expected": "Атланта"
+    },
+    {
+      "name": "missing_namespace_floors_to_parser",
+      "kind": "series",
+      "note": "a binding whose sources.* namespace is absent from the document floors to the next leg (the serial-parser title)",
+      "group_style": "clean",
+      "title_sources": [
+        { "id": "shikimori", "enabled": true }
+      ],
+      "language_preference": ["ru", "en"],
+      "series": {
+        "relative_path": "Атланта (2016)",
+        "document": {
+          "sources": {
+            "serial-parser": { "title": "Атланта" }
+          }
+        }
+      },
+      "expected": "Атланта"
+    },
+    {
+      "name": "override_beats_walk",
+      "kind": "series",
+      "note": "override precedence: the operator's stored title beats every document fact, the walk included",
+      "group_style": "clean",
+      "title_sources": [
+        { "id": "shikimori", "enabled": true }
+      ],
+      "language_preference": ["ru", "en"],
+      "series": {
+        "relative_path": "Атланта (2016)",
+        "title_override": "Моё название",
+        "document": {
+          "sources": {
+            "shikimori": { "title": "アトランタ" }
+          }
+        }
+      },
+      "expected": "Моё название"
+    },
+    {
+      "name": "dormant_source_excluded",
+      "kind": "series",
+      "note": "dormant-source exclusion: a disabled binding is skipped, the next enabled source wins",
+      "group_style": "clean",
+      "title_sources": [
+        { "id": "shikimori", "enabled": false },
+        { "id": "kinopoisk", "enabled": true }
+      ],
+      "language_preference": ["ru"],
+      "series": {
+        "relative_path": "Атланта (2016)",
+        "document": {
+          "sources": {
+            "shikimori": { "title": "アトランタ" },
+            "kinopoisk": { "title": "Атланта" }
+          }
+        }
+      },
+      "expected": "Атланта"
+    },
+    {
+      "name": "item_composition_walk_title",
+      "kind": "item",
+      "note": "item composition: the composed element name joins the item's episode facts to its series row; the {title} token is the series' own walk-resolved name",
+      "group_style": "clean",
+      "element_template": "{title} · S{season}E{episode}",
+      "title_sources": [
+        { "id": "shikimori", "enabled": true }
+      ],
+      "language_preference": ["ru", "en"],
+      "library_series": [
+        {
+          "relative_path": "Атланта (2016)",
+          "status": "ready",
+          "document": {
+            "sources": {
+              "shikimori": { "title": { "russian": "Атланта", "romaji": "Atlanta romaji" } }
+            },
+            "parsed": { "dir_name_raw": "Атланта (2016)" }
+          }
+        }
+      ],
+      "item": {
+        "relative_path": "Атланта (2016)/S01E02.mkv",
+        "document": {
+          "parsed": { "series_relative_path": "Атланта (2016)" },
+          "sources": {
+            "serial-parser": { "season": 1, "episode": 2 }
+          }
+        }
+      },
+      "expected": "Атланта · S01E02"
+    },
+    {
+      "name": "mistyped_title_floors_to_next_source",
+      "kind": "series",
+      "note": "a mistyped title (neither string nor object — here a number) floors to the next source",
+      "group_style": "clean",
+      "title_sources": [
+        { "id": "shikimori", "enabled": true },
+        { "id": "kinopoisk", "enabled": true }
+      ],
+      "language_preference": ["ru"],
+      "series": {
+        "relative_path": "Атланта (2016)",
+        "document": {
+          "sources": {
+            "shikimori": { "title": 42 },
+            "kinopoisk": { "title": "Атланта" }
+          }
+        }
+      },
+      "expected": "Атланта"
+    },
+    {
+      "name": "language_miss_floors_to_parser",
+      "kind": "series",
+      "note": "a language-preference miss (no usable pick under the module's prefs) floors to the next leg (the serial-parser title)",
+      "group_style": "clean",
+      "title_sources": [
+        { "id": "shikimori", "enabled": true }
+      ],
+      "language_preference": ["ru"],
+      "series": {
+        "relative_path": "Атланта (2016)",
+        "document": {
+          "sources": {
+            "shikimori": { "title": { "romaji": "Atlanta romaji" } },
+            "serial-parser": { "title": "Атланта" }
+          }
+        }
+      },
+      "expected": "Атланта"
+    },
+    {
+      "name": "gate_conjunction_served_pairs",
+      "kind": "series",
+      "note": "the module∧library gate conjunction is resolved UPSTREAM: title_sources carries the SERVED effective pairs (module gate disabled, library inherits) — the composer and the mirror never resolve gates",
+      "group_style": "clean",
+      "title_sources": [
+        { "id": "shikimori", "enabled": false }
+      ],
+      "language_preference": ["ru", "en"],
+      "series": {
+        "relative_path": "Атланта (2016)",
+        "document": {
+          "sources": {
+            "shikimori": { "title": "アトランタ" },
+            "serial-parser": { "title": "Атланта" }
+          }
+        }
+      },
+      "expected": "Атланта"
+    },
+    {
+      "name": "raw_style_skips_the_walk",
+      "kind": "series",
+      "note": "the raw-style walk skip: group_style \"raw\" switches to override > dir_name_raw > last segment — the walk and the parser title both skipped",
+      "group_style": "raw",
+      "title_sources": [
+        { "id": "shikimori", "enabled": true }
+      ],
+      "language_preference": ["ru", "en"],
+      "series": {
+        "relative_path": "Атланта (2016)",
+        "document": {
+          "sources": {
+            "shikimori": { "title": "アトランタ" }
+          },
+          "parsed": { "dir_name_raw": "Атланта (2016)" }
+        }
+      },
+      "expected": "Атланта (2016)"
+    },
+    {
+      "name": "view_title_number_passthrough",
+      "kind": "item",
+      "note": "the number-typed _view.title.value passthrough: a JSON number renders as its literal bytes (String(value); vector literals must avoid trailing-zero/exponent forms — Go keeps json.Number bytes, JS parses)",
+      "group_style": "clean",
+      "element_template": "",
+      "title_sources": [],
+      "language_preference": ["ru", "en"],
+      "item": {
+        "relative_path": "Атланта (2016)/S01E02.mkv",
+        "document": {
+          "_view": {
+            "title": { "value": 12.5, "source": "ffprobe", "reason": "scanner" }
+          }
+        }
+      },
+      "expected": "12.5"
+    }
+  ]
+}

@@ -39,9 +39,29 @@ definitions:
           own naming_element_name option — namerFor uses the library option when
           set, else this default, else no composition.
         type: string
+      language_preference:
+        description: |-
+          LanguagePreference is the module's display.language_preference order —
+          the pick order the composer applies over object-shaped source titles.
+        items:
+          type: string
+        type: array
       parsers:
         items:
           $ref: '#/definitions/api.ParserBinding'
+        type: array
+      title_sources:
+        description: |-
+          TitleSources is the module's resolved title-walk input (plugin-title-
+          enrichment D5, additive): display.title_source_priority in config order,
+          each binding carrying its effective enabled flag AFTER gate resolution.
+          The gate resolution lives upstream (cmd-side, via enrich.ResolveGates per
+          library) — this shape is the pure seam-input; an empty/absent list means
+          the composer skips the walk entirely. Pairs are appended through
+          AddTitleSource — the element type is unexported (complexity budget:
+          package-level exports capped at 12; see titleSourceBinding).
+        items:
+          $ref: '#/definitions/api.titleSourceBinding'
         type: array
     type: object
   api.ParserBinding:
@@ -60,6 +80,13 @@ definitions:
       checked_at:
         type: string
       id:
+        type: string
+      message:
+        description: |-
+          Message is the plugin's own liveness word from the last status probe
+          (plugin.Health.Message — the failure reason when not serving).
+          ADDITIVE on both health surfaces (/admin/status and /admin/sources,
+          plugin-title-enrichment): omitted on the wire while "".
         type: string
       restarts:
         type: integer
@@ -345,6 +372,100 @@ definitions:
       series:
         $ref: '#/definitions/api.seriesDTO'
     type: object
+  api.sourceAdminChain:
+    properties:
+      module_id:
+        type: string
+      position:
+        type: integer
+    type: object
+  api.sourceAdminEffective:
+    properties:
+      libraries:
+        additionalProperties:
+          type: boolean
+        type: object
+      modules:
+        additionalProperties:
+          type: boolean
+        type: object
+    type: object
+  api.sourceAdminResponse:
+    properties:
+      sources:
+        items:
+          $ref: '#/definitions/api.sourceAdminSource'
+        type: array
+    type: object
+  api.sourceAdminSource:
+    properties:
+      capabilities:
+        items:
+          type: string
+        type: array
+      chains:
+        items:
+          $ref: '#/definitions/api.sourceAdminChain'
+        type: array
+      description:
+        type: string
+      effective:
+        $ref: '#/definitions/api.sourceAdminEffective'
+      health:
+        $ref: '#/definitions/api.PluginHealth'
+      name:
+        type: string
+      plugin_id:
+        type: string
+      title_counts:
+        $ref: '#/definitions/api.sourceTitleCounts'
+    type: object
+  api.sourcePatchRequest:
+    properties:
+      enabled:
+        type: boolean
+    type: object
+  api.sourcePatchResponse:
+    properties:
+      queued:
+        type: integer
+    type: object
+  api.sourcePreviewRequest:
+    properties:
+      gates:
+        additionalProperties:
+          type: boolean
+        type: object
+      library_id:
+        type: integer
+    type: object
+  api.sourcePreviewResponse:
+    properties:
+      after:
+        items:
+          $ref: '#/definitions/api.sourcePreviewRow'
+        type: array
+      before:
+        items:
+          $ref: '#/definitions/api.sourcePreviewRow'
+        type: array
+    type: object
+  api.sourcePreviewRow:
+    properties:
+      item_id:
+        type: string
+      name:
+        type: string
+      no_data:
+        type: boolean
+    type: object
+  api.sourceTitleCounts:
+    properties:
+      items:
+        type: integer
+      series:
+        type: integer
+    type: object
   api.statusResponse:
     properties:
       enrich:
@@ -366,6 +487,13 @@ definitions:
   api.titleRequest:
     properties:
       title:
+        type: string
+    type: object
+  api.titleSourceBinding:
+    properties:
+      enabled:
+        type: boolean
+      id:
         type: string
     type: object
   api.updateLibraryRequest:
@@ -400,6 +528,103 @@ info:
   title: Mellifera API
   version: "1.0"
 paths:
+  /admin/sources:
+    get:
+      operationId: admin-sources
+      parameters:
+      - description: compute per-plugin title counts from the stored documents (O(all-rows))
+        in: query
+        name: title_counts
+        type: boolean
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.sourceAdminResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List every loaded metadata-source plugin with its gates
+      tags:
+      - admin
+  /admin/sources/{plugin_id}:
+    patch:
+      operationId: admin-source-patch
+      parameters:
+      - description: plugin id
+        in: path
+        name: plugin_id
+        required: true
+        type: string
+      - description: gate to write
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.sourcePatchRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.sourcePatchResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Enable or disable a metadata source module-wide
+      tags:
+      - admin
+  /admin/sources/preview:
+    post:
+      operationId: admin-source-preview
+      parameters:
+      - description: library and hypothetical gates
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.sourcePreviewRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.sourcePreviewResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Preview composition under a hypothetical gate vector
+      tags:
+      - admin
   /admin/status:
     get:
       operationId: admin-status
@@ -946,6 +1171,83 @@ paths:
       summary: Trigger a scan for a library
       tags:
       - libraries
+  /libraries/{id}/sources/{plugin_id}:
+    delete:
+      operationId: delete-library-source-gate
+      parameters:
+      - description: library id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: plugin id
+        in: path
+        name: plugin_id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: 'gate cleared (absent row: still 204, idempotent)'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Clear a library's metadata-source gate
+      tags:
+      - admin
+    put:
+      operationId: put-library-source-gate
+      parameters:
+      - description: library id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: plugin id
+        in: path
+        name: plugin_id
+        required: true
+        type: string
+      - description: gate to write
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.sourcePatchRequest'
+      responses:
+        "204":
+          description: gate written
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Set a library's metadata-source gate
+      tags:
+      - admin
   /libraries/{id}/summary:
     get:
       operationId: library-summary

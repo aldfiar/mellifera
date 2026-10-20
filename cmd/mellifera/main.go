@@ -90,11 +90,33 @@ func main() {
 		MagicCookieValue: magicCookieValue,
 		CoreVersion:      coreVersion,
 	})
+	// sourceCatalog is the boot-literal plugin inventory table (plugin-title-
+	// enrichment D6): every plugin the Manager loads below, with its
+	// operator-facing display name and one-line description for the
+	// GET /admin/sources aggregate. The single source for BOTH the pluginIDs
+	// load/status set (derived below) and the Deps.SourceInventory closure —
+	// a plugin added to the load list is added here once. A Phase-2+
+	// Manager.List() would replace the id half (INV-known-plugin-set).
+	type catalogEntry struct {
+		id, name, description string
+	}
+	sourceCatalog := []catalogEntry{
+		{"base-scanner", "Base Scanner", "Directory scanner for tv and image libraries."},
+		{"serial-scanner", "Serial Scanner", "Structure-aware directory scanner for serial libraries."},
+		{"tv-parser", "TV Parser", "Local filename parser for tv episodes."},
+		{"image-enricher", "Image Enricher", "Local EXIF metadata enrichment for images."},
+		{"serial-parser", "Serial Parser", "Local directory-facts parser for serials."},
+		{"frame-grabber", "Frame Grabber", "ffmpeg thumbnail and frame metadata for serial episodes."},
+		{"shikimori", "Shikimori", "External Shikimori metadata enrichment for serials."},
+	}
 	// pluginIDs is the canonical set of plugin IDs loaded + started below AND
-	// iterated by the Deps.Status closure. Defined ONCE here (DRY) so the load
-	// sites and the status closure cannot diverge. A Phase-2+ Manager.List()
-	// would replace this literal (INV-known-plugin-set).
-	pluginIDs := []string{"base-scanner", "serial-scanner", "tv-parser", "image-enricher", "serial-parser", "frame-grabber", "shikimori"}
+	// iterated by the Deps.Status closure — derived from sourceCatalog so the
+	// load sites, the status closure, and the admin-sources inventory cannot
+	// diverge.
+	pluginIDs := make([]string, len(sourceCatalog))
+	for i, p := range sourceCatalog {
+		pluginIDs[i] = p.id
+	}
 	// loadedCaps is each loaded plugin's declared capability TYPES, captured at
 	// its Load site — the Deps.PluginCapabilities closure's validation set
 	// (element-pages 3.1/3.3). Derived from the same []sdk.Capability literals
@@ -229,6 +251,7 @@ func main() {
 			plugins = append(plugins, api.PluginHealth{
 				ID:        id,
 				State:     h.State,
+				Message:   h.Message,
 				Restarts:  h.Restarts,
 				CheckedAt: checkedAt,
 			})
@@ -320,13 +343,20 @@ func main() {
 		// every executor failure is log-and-skip — progress is never
 		// load-bearing and the PUT response never carries it.
 		OnProgress: newThumbRegrab(st, mgr),
-		// Module presentation (element-pages 3.4/3.1): the GET /libraries/{id}
-		// block — identity_fields plus the ordered parser bindings (scanner
-		// slot, then the metadata_source chain in config order) with their
-		// capability ids and display_fields declarations. Built over the module
-		// registry (INV2: api imports no module package); slices are copied
-		// defensively so the handler can never alias cached registry state.
-		ModulePresentation: func(_ context.Context, moduleID string) (api.ModulePresentation, error) {
+		// Module presentation (element-pages 3.4/3.1; widened per
+		// plugin-title-enrichment D5): the library-surface block —
+		// identity_fields plus the ordered parser bindings (scanner slot, then
+		// the metadata_source chain in config order) with their capability ids
+		// and display_fields declarations, and the title-walk inputs: ONE
+		// batched prefs read for THIS library (module-scope rows + its own;
+		// store.ListMetadataSourcePrefs) resolved through enrich.ResolveGates
+		// (inherit-then-override; a muted source carries Enabled=false, which
+		// the composer skips) and projected in the config's
+		// title_source_priority order — plus language_preference verbatim.
+		// Built over the module registry and the store (INV2: api imports
+		// neither); slices are copied defensively so the handler can never
+		// alias cached registry state.
+		ModulePresentation: func(ctx context.Context, moduleID string, libraryID int64) (api.ModulePresentation, error) {
 			m, err := reg.Get(moduleID)
 			if err != nil {
 				return api.ModulePresentation{}, err
@@ -344,14 +374,85 @@ func main() {
 					DisplayFields: copyStrings(src.DisplayFields),
 				})
 			}
-			return api.ModulePresentation{
+			prefs, err := st.ListMetadataSourcePrefs(ctx, moduleID, []int64{libraryID})
+			if err != nil {
+				return api.ModulePresentation{}, err
+			}
+			gated := enrich.ResolveGates(m, prefs, libraryID)
+			byID := make(map[string]module.MetadataSourceBinding, len(gated))
+			for _, src := range gated {
+				byID[src.PluginID] = src
+			}
+			pres := api.ModulePresentation{
 				IdentityFields: copyStrings(m.IdentityFields),
 				Parsers:        parsers,
 				// Module default element template (display-naming 3.3): the
 				// composition floor under a library's own naming_element_name
 				// option — namerFor layers the library option OVER this.
-				ItemName: m.ItemName,
-			}, nil
+				ItemName:           m.ItemName,
+				LanguagePreference: copyStrings(m.LanguagePreference),
+			}
+			for _, id := range m.TitleSourcePriority {
+				src, ok := byID[id]
+				if !ok {
+					continue // a priority id with no modeled binding is config drift — skip it silently
+				}
+				pres.AddTitleSource(id, src.Enabled)
+			}
+			return pres, nil
+		},
+		// Admin sources aggregate (plugin-title-enrichment D6): the three
+		// primitive seams the api handler assembles its read-only inventory
+		// from — the boot-literal catalog above, the registry module list,
+		// and the per-(module, scope) gate resolution over ONE batched prefs
+		// read + enrich.ResolveGates (the SAME resolution the
+		// ModulePresentation closure applies; INV2: api imports neither
+		// module nor enrich, so the resolution lives here).
+		SourceInventory: func(_ context.Context) ([]string, map[string]string, map[string]string) {
+			ids := make([]string, len(sourceCatalog))
+			names := make(map[string]string, len(sourceCatalog))
+			descriptions := make(map[string]string, len(sourceCatalog))
+			for i, p := range sourceCatalog {
+				ids[i] = p.id
+				names[p.id] = p.name
+				descriptions[p.id] = p.description
+			}
+			return ids, names, descriptions
+		},
+		ModuleIDs: func(context.Context) ([]string, error) {
+			mods, err := reg.List()
+			if err != nil {
+				return nil, err
+			}
+			ids := make([]string, 0, len(mods))
+			for _, m := range mods {
+				ids = append(ids, m.ID)
+			}
+			return ids, nil
+		},
+		ModuleSources: func(ctx context.Context, moduleID string, libraryID int64) ([]string, []int, []bool, error) {
+			m, err := reg.Get(moduleID)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			libraryIDs := []int64(nil)
+			if libraryID != 0 {
+				libraryIDs = []int64{libraryID}
+			}
+			prefs, err := st.ListMetadataSourcePrefs(ctx, moduleID, libraryIDs)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			gated := enrich.ResolveGates(m, prefs, libraryID)
+			pids := make([]string, 0, len(gated))
+			priorities := make([]int, 0, len(gated))
+			enabled := make([]bool, 0, len(gated))
+			for _, src := range gated {
+				pids = append(pids, src.PluginID)
+				priorities = append(priorities, src.Priority)
+				enabled = append(enabled, src.Enabled)
+			}
+			return pids, priorities, enabled, nil
 		},
 		// Parser-attachment validation (element-pages 3.3/3.1): is pluginID
 		// loaded, and which capability types does it serve? Answered from
@@ -374,6 +475,14 @@ func main() {
 		// detachment scanDeps.Notify applies (the feeder must outlive the
 		// HTTP request; SIGINT/SIGTERM cancels pool + server together).
 		OnParsersChanged: func(_ context.Context, libraryID int64) {
+			enrichQueue.Notify(ctx, libraryID)
+		},
+		// Source-gate wake (plugin-title-enrichment): a module-wide source
+		// ENABLE fires the queue's Notify per affected library so the restored
+		// source's namespaces re-derive without a rescan. The request-scoped
+		// ctx is substituted with the PROCESS ctx — the same detachment
+		// OnParsersChanged applies (the feeder must outlive the HTTP request).
+		OnSourceGateChanged: func(_ context.Context, libraryID int64) {
 			enrichQueue.Notify(ctx, libraryID)
 		},
 	})

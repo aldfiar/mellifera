@@ -317,6 +317,92 @@ export interface EnrichPreview {
   versions: Record<string, number>;
 }
 
+// source_admin.go sourceAdminChain — one metadata-chain position of one
+// plugin: the module that binds the plugin as a metadata source plus the
+// binding's config priority (1-based, the enrichment chain order).
+export interface SourceAdminChain {
+  module_id: string;
+  position: number;
+}
+
+// source_admin.go sourceAdminEffective — one plugin's effective-enabled
+// resolution: modules keys module-scope verdicts by module id, libraries keys
+// per-library verdicts by DECIMAL library id (the Go int64 is formatted). A
+// gate can only mute a config-enabled source, so true means "serves this
+// scope". The SPA renders these verdicts verbatim — it never resolves gates
+// client-side.
+export interface SourceAdminEffective {
+  modules: Record<string, boolean>;
+  libraries: Record<string, boolean>;
+}
+
+// source_admin.go sourceTitleCounts — one plugin's on-demand title tally
+// (GET /admin/sources?title_counts=true): stored item rows and series rows
+// carrying the plugin's namespace WITH title data.
+export interface SourceTitleCounts {
+  items: number;
+  series: number;
+}
+
+// source_admin.go sourceAdminSource — one loaded plugin's row of the GET
+// /admin/sources aggregate: boot-literal identity, the health snapshot when
+// the plugin reported, capability chips, metadata-chain positions, and the
+// effective gate resolution per module and per library. health/title_counts
+// are optional in TS like every additive field — an absent field means
+// "not reported / not asked", never a type hole.
+export interface SourceAdminSource {
+  plugin_id: string;
+  name: string;
+  description: string;
+  health?: PluginHealth;
+  capabilities: string[];
+  chains: SourceAdminChain[];
+  effective: SourceAdminEffective;
+  title_counts?: SourceTitleCounts;
+}
+
+// source_admin.go sourceAdminResponse — empty array, never null
+export interface SourcesResponse {
+  sources: SourceAdminSource[];
+}
+
+// source_admin.go sourcePatchResponse — both PATCH outcomes: how many
+// libraries the enable woke (the queue re-derives each without a scan). A
+// disable always answers queued=0 — it notifies nothing.
+export interface SourcePatchResponse {
+  queued: number;
+}
+
+// source_admin.go sourcePreviewRequest — the POST /admin/sources/preview
+// body: library_id names the one library whose rows are composed; gates is
+// the HYPOTHETICAL gate vector keyed by plugin id — a present key pins that
+// source's walk binding to the requested enablement for the after pass only;
+// keys absent keep the live resolution.
+export interface SourcePreviewRequest {
+  library_id: number;
+  gates?: Record<string, boolean>;
+}
+
+// source_admin.go sourcePreviewRow — one composed row of one preview pass:
+// the row id (ser_/itm_ id space — both row kinds compose here), the name the
+// production composer produced under that pass's gates, and the no_data
+// marker (true when the composition had no title-source data to compose
+// from). Rendered verbatim — the SPA mirrors served pairs, never re-walks.
+export interface SourcePreviewRow {
+  item_id: string;
+  name: string;
+  no_data: boolean;
+}
+
+// source_admin.go sourcePreviewResponse — the SAME rows composed under the
+// live gates (before) and the request's hypothetical vector (after) —
+// symmetric by construction (one row slice, composed twice), so before[i]
+// and after[i] are the same row.
+export interface SourcePreviewResponse {
+  before: SourcePreviewRow[];
+  after: SourcePreviewRow[];
+}
+
 // handlers.go itemResponse
 export interface ItemResponse {
   item: ItemDTO;
@@ -387,6 +473,20 @@ export const ENDPOINTS = {
   librarySummary: (id: number): string => `/api/v1/libraries/${id}/summary`,
   libraryFolders: (id: number): string => `/api/v1/libraries/${id}/folders`,
   adminStatus: "/api/v1/admin/status",
+  // adminSources / adminSource / sourcePreview / librarySource — the Sources
+  // admin surface (plugin-title-enrichment 6.2, source_admin.go). GET lists
+  // every loaded plugin with its chain positions and effective gate
+  // resolution (?title_counts=true adds the on-demand per-plugin title
+  // tally); PATCH flips a plugin's module-wide gate and answers {queued};
+  // PUT/DELETE write/clear ONE library's gate row (both answer 204, the
+  // DELETE an idempotent clear-to-inherit); POST composes the symmetric
+  // before/after preview under a hypothetical gate vector (a pure read —
+  // it writes no gate).
+  adminSources: "/api/v1/admin/sources",
+  adminSource: (pluginId: string): string => `/api/v1/admin/sources/${pluginId}`,
+  sourcePreview: "/api/v1/admin/sources/preview",
+  librarySource: (id: number, pluginId: string): string =>
+    `/api/v1/libraries/${id}/sources/${pluginId}`,
   items: "/api/v1/items",
   item: (id: string): string => `/api/v1/items/${id}`,
   // itemMedia — GET /api/v1/items/{id}/media (handlers.go itemMedia,
@@ -683,6 +783,88 @@ export async function getEnrichPreview(
   return apiRequest<EnrichPreview>(
     `${ENDPOINTS.enrichPreview(id)}?${q.toString()}`,
   );
+}
+
+// getAdminSources — GET /api/v1/admin/sources (source_admin.go adminSources):
+// every loaded plugin with its health snapshot, capability chips,
+// metadata-chain positions, and the effective gate resolution per module and
+// per library. `titleCounts=true` appends ?title_counts=true — the on-demand
+// O(all-rows) per-plugin title tally (the admin surface asks for it; nothing
+// else should). 503 "unavailable" when the endpoint is unwired, 400 for a
+// non-boolean title_counts — both canonical, surfaced by the caller.
+export async function getAdminSources(titleCounts: boolean): Promise<SourcesResponse> {
+  const path = titleCounts
+    ? `${ENDPOINTS.adminSources}?title_counts=true`
+    : ENDPOINTS.adminSources;
+  return apiRequest<SourcesResponse>(path);
+}
+
+// patchAdminSource — PATCH /api/v1/admin/sources/{plugin_id}
+// (source_admin.go adminSourcePatch): the module-wide gate write. 200 with
+// {queued} — how many libraries the enable woke (a disable always answers
+// queued=0, it wakes nothing). 400 bad_request for an unknown plugin or a
+// body missing `enabled`, 500/503 canonical — all surfaced inline by the
+// caller, no auto-retry (mutations are retry:0).
+export async function patchAdminSource(
+  pluginId: string,
+  enabled: boolean,
+): Promise<SourcePatchResponse> {
+  return apiRequest<SourcePatchResponse>(ENDPOINTS.adminSource(pluginId), {
+    method: "PATCH",
+    body: { enabled } as unknown as BodyInit,
+  });
+}
+
+// putLibrarySource — PUT /api/v1/libraries/{id}/sources/{plugin_id}
+// (source_admin.go librarySourcePut): ONE library's gate row — the override
+// shadowing the module-scope resolution until cleared. 204, no body: the
+// write is its own acknowledgement (no queued count — the scope is the one
+// library). The body goes through apiRequestVoid PRE-stringified because the
+// wrapper does not stringify (its 204 parse would throw on JSON.parse(""))
+// and fetch does not serialize objects — the explicit Content-Type keeps the
+// request canonical. 400 unknown plugin, 404 unknown library — canonical,
+// surfaced inline, no auto-retry.
+export async function putLibrarySource(
+  libraryId: number,
+  pluginId: string,
+  enabled: boolean,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.librarySource(libraryId, pluginId), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+// deleteLibrarySource — DELETE /api/v1/libraries/{id}/sources/{plugin_id}
+// (source_admin.go librarySourceDelete): the clear-to-inherit action — the
+// library-scope row is removed and the library falls back to the
+// module-scope resolution (or the config default) on the next read.
+// Idempotent: deleting an absent row still answers 204.
+export async function deleteLibrarySource(
+  libraryId: number,
+  pluginId: string,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.librarySource(libraryId, pluginId), {
+    method: "DELETE",
+  });
+}
+
+// postSourcePreview — POST /api/v1/admin/sources/preview
+// (source_admin.go adminSourcePreview): the composition preview. The
+// production composer runs TWICE over the same rows — under the live gates
+// (before, byte-identical to what /series and /items serve) and under the
+// request's hypothetical vector (after) — with a per-pass no_data marker.
+// WRITES NOTHING on the server: no prefs row, no wake. 400 for a malformed
+// body / missing library_id / unknown gate plugin, 404 unknown library,
+// 503 unwired — canonical, surfaced inline by the caller.
+export async function postSourcePreview(
+  req: SourcePreviewRequest,
+): Promise<SourcePreviewResponse> {
+  return apiRequest<SourcePreviewResponse>(ENDPOINTS.sourcePreview, {
+    method: "POST",
+    body: req as unknown as BodyInit,
+  });
 }
 
 // getItem — GET /api/v1/items/{id} (handlers.go:266-278). The id is the item's

@@ -227,7 +227,7 @@ func TestModuleDefaultItemName(t *testing.T) {
 		return &app{deps: Deps{
 			AdminToken: adminToken, Store: st,
 			Scan: func(context.Context, int64) (scan.Result, error) { return scan.Result{}, nil },
-			ModulePresentation: func(context.Context, string) (ModulePresentation, error) {
+			ModulePresentation: func(context.Context, string, int64) (ModulePresentation, error) {
 				return mp, mpErr
 			},
 		}}
