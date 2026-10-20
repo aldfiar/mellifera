@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-10-19
+goal: Titles update from shikimori data; operators control which metadata
+  sources enrich and name titles.
