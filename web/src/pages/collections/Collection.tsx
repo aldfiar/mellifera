@@ -1662,7 +1662,7 @@ function EpisodesView(props: {
       {series !== null ? (
         <header className="flex flex-col gap-2">
           <h2 className="text-xl font-semibold">{seriesTitle(series)}</h2>
-          <Synopsis doc={series.document} />
+          <Synopsis about={series.metadata?.about} />
         </header>
       ) : null}
       {items.length === 0 ? (

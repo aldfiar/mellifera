@@ -1,6 +1,6 @@
 {
   "status": "done",
-  "summary": "group 2 applied + verified: probe 3100aa62f043cfcb green, boxes 1.1/1.2/2.1 ticked (fingerprint 07d8d6cf); three proto additive guards re-pinned to 13e441a (repo remedy, precedent fab6e7b), all guards + probes green",
-  "next": "group 3: shikimori cast conformer",
-  "updated_at": "2026-10-21T21:28:57.618832Z"
+  "summary": "group 3 applied + verified: probes 6e7a220212cfa040/80dd1e5b5e0c9e1f green, 5/7 boxes ticked; joint test request-count pin updated 4->6 (by-id + /roles per id), full suite green",
+  "next": "group 4: SPA consumption switch (synopsis reads served about block)",
+  "updated_at": "2026-10-21T21:49:56.559198Z"
 }

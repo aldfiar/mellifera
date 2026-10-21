@@ -942,11 +942,15 @@ function IdentityBlock(props: {
       ) : null}
 
       {/* The scraped synopsis (the About panel, the Plex/Jellyfin idiom —
-          user-locked 2026-10-21): an EPISODE shows its SHOW's synopsis (the
-          series document carries the scraped description; the episode's own
-          never does), any other element its own. No description on the
-          document → no panel (noise, not information). */}
-      <Synopsis doc={series !== null ? series.document : doc} />
+          user-locked 2026-10-21): an EPISODE shows its SHOW's about (the
+          series' SERVED metadata block — the episode's own never carries the
+          show's), any other element its own served block. No block on the
+          row → no panel (noise, not information). */}
+      <Synopsis
+        about={
+          series !== null ? series.metadata?.about : item.metadata?.about
+        }
+      />
 
       {isVideoItem(item) ? (
         <p className="text-sm text-muted-foreground">

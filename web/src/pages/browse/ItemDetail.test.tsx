@@ -1533,11 +1533,13 @@ describe("ItemDetail — display name heading + on-page rename", () => {
     });
   });
 
-  it("shows the SHOW's About panel beside the player — the series' scraped synopsis, not the episode's", async () => {
+  it("shows the SHOW's About panel beside the player — the series' served metadata block, not the episode's", async () => {
     // The Plex idiom (user-locked 2026-10-21): the episode page carries the
-    // series document's scraped synopsis — the episode's own document never
-    // has one. The panel renders from the SAME series resolution that feeds
-    // Rename series (path-anchored through the shared series cache).
+    // series' SERVED metadata.about (media-data-convention) — the episode's
+    // own row never does. The panel renders from the SAME series resolution
+    // that feeds Rename series (path-anchored through the shared series
+    // cache); the decoy description in the series DOCUMENT proves the panel
+    // consumes the served block, not a client-side namespace walk.
     vi.spyOn(apiModule, "getItem").mockResolvedValue({
       item: {
         ...EPISODE_WITH_NAME.item,
@@ -1557,14 +1559,10 @@ describe("ItemDetail — display name heading + on-page rename", () => {
           relative_path: "Ария (2005)",
           document: {
             sources: {
+              // decoy: the client walk is retired — a description in the
+              // document's namespace must NOT reach the panel anymore.
               shikimori: {
-                description: "Действие разворачивается на Аквамарине.",
-                genres: ["Фэнтези", "Повседневность"],
-                score: "4.65",
-                kind: "tv",
-                status: "released",
-                episodes: 13,
-                aired_on: "2005-10-05",
+                description: "Синопсис из документа — не рендерится.",
               },
             },
           },
@@ -1572,6 +1570,18 @@ describe("ItemDetail — display name heading + on-page rename", () => {
           status: "ready",
           title_override: "",
           display_name: "Aria",
+          metadata: {
+            about: {
+              source: "shikimori",
+              description: "Действие разворачивается на Аквамарине.",
+              genres: ["Фэнтези", "Повседневность"],
+              score: 4.65,
+              kind: "tv",
+              status: "released",
+              episodes: 13,
+              aired_on: "2005-10-05",
+            },
+          },
         },
       ],
     });
@@ -1580,7 +1590,11 @@ describe("ItemDetail — display name heading + on-page rename", () => {
 
     const panel = await screen.findByRole("region", { name: "About" });
     expect(panel.textContent).toContain("Действие разворачивается");
+    // The served block, not the document's namespace description.
+    expect(panel.textContent).not.toContain("не рендерится");
     expect(screen.getByText("Фэнтези")).toBeDefined();
-    expect(screen.getByText("★ 4.65 · tv · released · 13 ep · 2005")).toBeDefined();
+    expect(
+      screen.getByText("★ 4.65 · tv · released · 13 ep · 2005"),
+    ).toBeDefined();
   });
 });

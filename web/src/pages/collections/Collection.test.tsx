@@ -10,6 +10,7 @@ import Collection, {
 } from "@/pages/collections/Collection";
 import type {
   ItemDTO,
+  MetadataAbout,
   LibraryDTO,
   ModulePresentation,
   ParserBinding,
@@ -343,6 +344,9 @@ describe("Collection — serial body (box 5.4)", () => {
     // extraSources — additional sources.<plugin_id> namespaces (e.g. a
     // metadata source's scraped synopsis for the About panel).
     extraSources?: Record<string, Record<string, unknown>>;
+    // about — the SERVED convention block the About panel consumes
+    // (media-data-convention); absent → no metadata on the row.
+    about?: MetadataAbout;
   }): SeriesDTO {
     const d: ItemDocument = {};
     if (parts.title !== undefined || parts.season !== undefined) {
@@ -369,6 +373,7 @@ describe("Collection — serial body (box 5.4)", () => {
       schema_version: 1,
       status: parts.status ?? "ready",
       ...(parts.displayName !== undefined ? { display_name: parts.displayName } : {}),
+      ...(parts.about !== undefined ? { metadata: { about: parts.about } } : {}),
     };
   }
 
@@ -501,15 +506,21 @@ describe("Collection — serial body (box 5.4)", () => {
                 dirNameRaw: "Show 2019",
                 displayName: "Show 2019",
                 extraSources: {
+                  // decoy: the client walk is retired — a description in the
+                  // document's namespace must NOT reach the panel anymore.
                   shikimori: {
-                    description: "Совершенно обычное шоу.",
-                    genres: ["Драма"],
-                    score: "7.81",
-                    kind: "tv",
-                    status: "released",
-                    episodes: 8,
-                    aired_on: "2019-01-31",
+                    description: "Синопсис из документа — не рендерится.",
                   },
+                },
+                about: {
+                  source: "shikimori",
+                  description: "Совершенно обычное шоу.",
+                  genres: ["Драма"],
+                  score: 7.81,
+                  kind: "tv",
+                  status: "released",
+                  episodes: 8,
+                  aired_on: "2019-01-31",
                 },
               }),
             ],
@@ -529,6 +540,8 @@ describe("Collection — serial body (box 5.4)", () => {
     ).toBeDefined();
     const panel = await screen.findByRole("region", { name: "About" });
     expect(panel.textContent).toContain("Совершенно обычное шоу.");
+    // The served block, not the document's namespace description.
+    expect(panel.textContent).not.toContain("не рендерится");
     expect(screen.getByText("Драма")).toBeDefined();
     expect(
       screen.getByText("★ 7.81 · tv · released · 8 ep · 2019"),

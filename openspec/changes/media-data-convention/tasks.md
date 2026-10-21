@@ -1,4 +1,4 @@
-<!-- wf: source_fingerprint=aa55a76dfbe906900a59b7b7331aea5f0e62b4a5d58c50e43840cc31279da81f -->
+<!-- wf: source_fingerprint=0bbf22401e6c4c7f2101c5306fb83128e739fb1ab8bc5233a56ec4ed0d4464a9 -->
 <!-- wf: initial_skip_specs=false -->
 # Tasks: media-data-convention
 
@@ -26,7 +26,7 @@ then 5.
 
 ## 4. SPA consumption switch
 
-- [ ] 4.1 `Synopsis` takes the resolved about as its prop and both call sites pass the served block — ItemDetail resolves the series' `metadata.about` for episodes (the resolution it already does over documents) and its own otherwise, Collection passes the series' served block — while the client-side walk (`sourcesOf`/`synopsisOf` in that component's path) retires with its tests replaced by served-block consumption tests; vitest + tsc stay green in the session (the probe below is the node-free floor) [probe:aa0a7a63c5580d45]
+- [x] 4.1 `Synopsis` takes the resolved about as its prop and both call sites pass the served block — ItemDetail resolves the series' `metadata.about` for episodes (the resolution it already does over documents) and its own otherwise, Collection passes the series' served block — while the client-side walk (`sourcesOf`/`synopsisOf` in that component's path) retires with its tests replaced by served-block consumption tests; vitest + tsc stay green in the session (the probe below is the node-free floor) [probe:aa0a7a63c5580d45]
 
 ## 5. QA — cross-module joint
 
