@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 
 import { JsonValue } from "@/components/metadata/JsonValue";
 import type { SourceNamespace } from "@/lib/document";
@@ -148,12 +148,22 @@ export interface ParserFooterProps {
 // SlotNote — the shared slot state (element-pages D-1/D-5): a dashed note
 // naming what is missing — never a blank, never a fabricated value. Used for
 // empty footer groups (the seeded-but-unloaded provider case) and, from the
-// element page, for a missing mandatory identity field.
-export function SlotNote(props: { label: string; note?: string }): ReactElement {
+// element page, for a missing mandatory identity field. `action` renders an
+// optional affordance row inside the note (the item page's "Name manually…"
+// on a missing name field — a slot that CAN be cured is stated with the
+// cure, proposal E).
+export function SlotNote(props: {
+  label: string;
+  note?: string;
+  action?: ReactNode;
+}): ReactElement {
   return (
     <div className="rounded border border-dashed px-3 py-2 text-sm text-muted-foreground">
       <span className="font-medium">{props.label}</span>
       {props.note ? <span className="block text-xs">{props.note}</span> : null}
+      {props.action ? (
+        <span className="mt-1 block text-xs">{props.action}</span>
+      ) : null}
     </div>
   );
 }

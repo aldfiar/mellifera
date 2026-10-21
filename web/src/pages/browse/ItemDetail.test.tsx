@@ -656,18 +656,25 @@ describe("ItemDetail — identity block (episode-name slot state)", () => {
     },
   };
 
-  it("stands the derived episode number in as the heading and names the missing episode name in a slot", async () => {
+  it("stands the derived episode number in as the heading and names the missing name in its identity slot", async () => {
     vi.spyOn(apiModule, "getItem").mockResolvedValue(EPISODE_ITEM);
     vi.spyOn(apiModule, "getLibrary").mockResolvedValue(SERIAL_LIBRARY);
 
     renderAtId("itm_3_ep", freshClient());
 
-    // The SxxEyy eyebrow stands in as the heading; the slot names the missing
-    // episode name (never a blank, never a fabricated value). ("S01E02"
-    // recurs — eyebrow paragraph + heading — and "episode" recurs across
-    // badge, footer label, and slot.)
+    // The SxxEyy eyebrow stands in as the heading; the identity slot names
+    // the missing name field and carries its cure inline (management-ui E:
+    // a curable slot states the cure) — no second "Episode name" note for
+    // the same missing fact. ("S01E02" recurs — eyebrow paragraph + heading
+    // — and "episode" recurs across badge, footer label, and slot.)
     expect((await screen.findAllByText("S01E02")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Episode name — not identified/).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/display title — not identified/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("Name manually…").length).toBeGreaterThan(0);
+    expect(screen.queryAllByText(/Episode name — not identified/)).toHaveLength(
+      0,
+    );
     expect(screen.getAllByText(/season/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/episode/).length).toBeGreaterThan(0);
 
@@ -1357,5 +1364,223 @@ describe("ItemDetail — watch selections do not survive navigation (serial-watc
       (await screen.findByLabelText("Voiceover") as HTMLSelectElement).value,
     ).toBe("0");
     expect(theVideo().querySelector("track")).toBeNull();
+  });
+});
+
+// The display-naming + on-page management slice: the heading follows the
+// SERVED display_name (override-aware — the SPA never re-derives the name),
+// the embedded SxxEyy tail de-duplicates the eyebrow paragraph, and the
+// missing-name slot's cure opens the rename form (PUT /items/{id}/title via
+// the shared ManageActions unit the cards host).
+describe("ItemDetail — display name heading + on-page rename", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const SERIAL_LIBRARY: LibraryDTO = {
+    id: 3,
+    module_id: "serial",
+    root_path: "/libs/serial",
+    display_name: "Serials",
+    description: "",
+    streams_enabled: true,
+    module: {
+      identity_fields: ["display_title", "season", "episode"],
+      parsers: [
+        {
+          id: "serial-parser",
+          display_fields: ["display_title", "season_episode", "parsed_from"],
+        },
+      ],
+    },
+  };
+
+  const EPISODE_WITH_NAME: ItemResponse = {
+    item: {
+      ...ITEM_RESPONSE.item,
+      id: "itm_3_ep",
+      module_id: "serial",
+      library_id: 3,
+      display_name: "Проснись, Ария! · S01E02",
+      title_override: "",
+      document: {
+        sources: {
+          "serial-parser": { season: 1, episode: 2, parsed_from: "Show/S01E02.mkv" },
+        },
+      },
+    },
+  };
+
+  it("heads the page with the served display_name and drops the duplicated eyebrow tail", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(EPISODE_WITH_NAME);
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(SERIAL_LIBRARY);
+
+    renderAtId("itm_3_ep", freshClient());
+
+    const heading = await screen.findByRole("heading", {
+      level: 1,
+      name: "Проснись, Ария! · S01E02",
+    });
+    expect(heading).toBeDefined();
+    // The composed name embeds its "· S01E02" tail — the eyebrow paragraph
+    // (the mono SxxEyy line) must not stack the same number above it.
+    expect(screen.queryByText("S01E02")).toBeNull();
+  });
+
+  it("opens the rename form from the missing-name slot and PUTs the title override", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(EPISODE_WITH_NAME);
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(SERIAL_LIBRARY);
+    const setItemTitle = vi.spyOn(apiModule, "setItemTitle").mockResolvedValue({
+      entity_id: "itm_3_ep",
+      title: "Пробуждение",
+      updated_at: "2026-10-21T00:00:00Z",
+    });
+
+    renderAtId("itm_3_ep", freshClient());
+
+    // The slot's shortcut: "Name manually…" opens the shared rename form.
+    fireEvent.click(await screen.findByRole("button", { name: "Name manually…" }));
+    const input = await screen.findByLabelText(/New title for/);
+    fireEvent.change(input, { target: { value: "Пробуждение" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(setItemTitle).toHaveBeenCalledWith("itm_3_ep", "Пробуждение");
+    });
+  });
+
+  it("hosts the ⋯ management menu with Rename, Identify, and Refresh metadata rows", async () => {
+    const library: LibraryDTO = {
+      ...SERIAL_LIBRARY,
+      module: {
+        identity_fields: ["display_title", "season", "episode"],
+        parsers: [
+          {
+            id: "serial-parser",
+            display_fields: ["display_title", "season_episode"],
+          },
+        ],
+        refresh_sources: [{ id: "shikimori", enabled: true }],
+      },
+    };
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(EPISODE_WITH_NAME);
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(library);
+
+    renderAtId("itm_3_ep", freshClient());
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Actions for Проснись, Ария! · S01E02" }),
+    );
+    expect(await screen.findByRole("button", { name: "Rename…" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Identify…" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Refresh metadata…" })).toBeDefined();
+  });
+
+  it("renames the SERIES from the episode page — the override recomposes the whole show", async () => {
+    // The serial case (user-locked 2026-10-21): an episode's composed name
+    // carries the series title from the series document — shikimori can
+    // match it wrong. The ⋯ menu gains "Rename series…" once the episode's
+    // series anchor resolves to a series row (matched BY PATH through the
+    // shared series cache), and the save PUTs the SERIES override.
+    vi.spyOn(apiModule, "getItem").mockResolvedValue({
+      item: {
+        ...EPISODE_WITH_NAME.item,
+        document: {
+          ...EPISODE_WITH_NAME.item.document,
+          parsed: { series_relative_path: "Ария (2005)" },
+        },
+      },
+    });
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(SERIAL_LIBRARY);
+    vi.spyOn(apiModule, "getSeries").mockResolvedValue({
+      items: [
+        {
+          id: "ser_3_aria",
+          module_id: "serial",
+          library_id: 3,
+          relative_path: "Ария (2005)",
+          document: {},
+          schema_version: 1,
+          status: "ready",
+          title_override: "",
+          display_name: "Проснись, Ария!",
+        },
+      ],
+    });
+    const setSeriesTitle = vi
+      .spyOn(apiModule, "setSeriesTitle")
+      .mockResolvedValue({
+        entity_id: "ser_3_aria",
+        title: "Aria",
+        updated_at: "2026-10-21T00:00:00Z",
+      });
+
+    renderAtId("itm_3_ep", freshClient());
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Actions for Проснись, Ария! · S01E02",
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Rename series…" }),
+    );
+    const input = await screen.findByLabelText(/New title for Проснись, Ария!/);
+    fireEvent.change(input, { target: { value: "Aria" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(setSeriesTitle).toHaveBeenCalledWith("ser_3_aria", "Aria");
+    });
+  });
+
+  it("shows the SHOW's About panel beside the player — the series' scraped synopsis, not the episode's", async () => {
+    // The Plex idiom (user-locked 2026-10-21): the episode page carries the
+    // series document's scraped synopsis — the episode's own document never
+    // has one. The panel renders from the SAME series resolution that feeds
+    // Rename series (path-anchored through the shared series cache).
+    vi.spyOn(apiModule, "getItem").mockResolvedValue({
+      item: {
+        ...EPISODE_WITH_NAME.item,
+        document: {
+          ...EPISODE_WITH_NAME.item.document,
+          parsed: { series_relative_path: "Ария (2005)" },
+        },
+      },
+    });
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(SERIAL_LIBRARY);
+    vi.spyOn(apiModule, "getSeries").mockResolvedValue({
+      items: [
+        {
+          id: "ser_3_aria",
+          module_id: "serial",
+          library_id: 3,
+          relative_path: "Ария (2005)",
+          document: {
+            sources: {
+              shikimori: {
+                description: "Действие разворачивается на Аквамарине.",
+                genres: ["Фэнтези", "Повседневность"],
+                score: "4.65",
+                kind: "tv",
+                status: "released",
+                episodes: 13,
+                aired_on: "2005-10-05",
+              },
+            },
+          },
+          schema_version: 1,
+          status: "ready",
+          title_override: "",
+          display_name: "Aria",
+        },
+      ],
+    });
+
+    renderAtId("itm_3_ep", freshClient());
+
+    const panel = await screen.findByRole("region", { name: "About" });
+    expect(panel.textContent).toContain("Действие разворачивается");
+    expect(screen.getByText("Фэнтези")).toBeDefined();
+    expect(screen.getByText("★ 4.65 · tv · released · 13 ep · 2005")).toBeDefined();
   });
 });

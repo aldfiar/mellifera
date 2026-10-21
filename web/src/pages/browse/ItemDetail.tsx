@@ -9,11 +9,18 @@ import {
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import type { ApiError, ItemDTO, ModulePresentation, VoiceoverDTO } from "@/lib/api";
+import type {
+  ApiError,
+  ItemDTO,
+  ModulePresentation,
+  SeriesDTO,
+  VoiceoverDTO,
+} from "@/lib/api";
 import {
   ENDPOINTS,
   fetchSidecarText,
   getPlayback,
+  getSeries,
   hasFrameGrabberThumb,
   hasOriginalFile,
   isPhotoItem,
@@ -42,12 +49,21 @@ import {
   type ParserFooterGroup,
 } from "@/components/metadata/ParserFooter";
 import { JsonValue } from "@/components/metadata/JsonValue";
+import { Synopsis } from "@/components/metadata/Synopsis";
 import { ProvenanceBadge } from "@/components/metadata/ProvenanceBadge";
 import { SourceCard } from "@/components/metadata/SourceCard";
 import { StagesProgress } from "@/components/metadata/StagesProgress";
 import { ViewFields } from "@/components/metadata/ViewFields";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { DialogShell } from "@/components/DialogShell";
+import {
+  CardActions,
+  IdentifyView,
+  RefreshView,
+  RenameTitle,
+  useTitleOverride,
+} from "@/components/manage/ManageActions";
 
 // ItemDetail — the full §3.1 document for one item (/items/:id), rendered
 // VERBATIM (INV-no-rounding, INV-no-merge) following the media-first ladder
@@ -760,8 +776,9 @@ function TrackControls(props: {
 // (module config `identity_fields` via the presentation block, resolved
 // _view-first then across namespaces — D-1). A mandatory field with no value
 // renders the slot state — naming the missing field and its remedy — never a
-// blank and never a fabricated value (the episode-name case until a naming
-// source lands). Carries the resume/progress row for video items.
+// blank and never a fabricated value; a missing NAME field carries its cure
+// inline (the "Name manually…" action, management-ui proposal E). Carries
+// the resume/progress row for video items and the page's ⋯ management menu.
 function IdentityBlock(props: {
   item: ItemDTO;
   doc: ItemDocument;
@@ -783,17 +800,57 @@ function IdentityBlock(props: {
       ? `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`
       : null;
 
-  // The element name: the computed title facts first; the derived eyebrow
-  // stands in as the episode number when no naming source wrote a name (the
-  // episode-name slot below); the raw path is the last resort.
+  // The element name (display-naming): the SERVED display_name first — the
+  // composed, override-aware name every surface shows (a rename from this
+  // page or a card recomposes it server-side, so the page follows the row);
+  // then the computed title facts; the derived eyebrow stands in as the
+  // episode number when no naming source wrote a name; the raw path is the
+  // last resort.
   const nameValue = [
     resolveIdentityValue(doc, "title"),
     resolveIdentityValue(doc, "display_title"),
   ].find(present);
+  const composed = present(item.display_name) ? item.display_name : undefined;
   const heading =
-    nameValue !== undefined
+    composed ??
+    (nameValue !== undefined
       ? String(nameValue)
-      : eyebrow ?? item.relative_path;
+      : eyebrow ?? item.relative_path);
+  // The eyebrow paragraph stays only when the heading does not already carry
+  // it — the composed episode name embeds its "· S01E02" tail, and a doubled
+  // "S01E02 S01E02" stack is noise, not context (a manual override that
+  // drops the number keeps the eyebrow: context, not duplication).
+  const showEyebrow =
+    eyebrow !== null && !(composed !== undefined && composed.includes(eyebrow));
+
+  // The name-slot cure: the rename dialog opened straight from the slot
+  // note. The ⋯ menu (ItemActions) stays the full entry; the slot button is
+  // the shortcut for the one action the slot names.
+  const [slotRenameOpen, setSlotRenameOpen] = useState(false);
+  const slotRename = useTitleOverride("item", item.id, ["item", item.id]);
+  const slotRenamePending =
+    slotRename.set.isPending || slotRename.clear.isPending;
+
+  // The serial case: resolve the episode's series row through the shared
+  // series cache (keyed ["series", library] — the same entry the collection
+  // page reads), matched BY PATH on the parsed series anchor — never on a
+  // title (serial episodes carry no title fact; same contract as Home's
+  // episodeFacts). The row feeds BOTH the ⋯ menu's Rename series and the
+  // About panel below (the show's scraped synopsis — the episode's own
+  // document never carries it). Unresolved → both simply stay hidden.
+  const anchor = seriesAnchor(item);
+  const seriesList = useQuery({
+    queryKey: ["series", item.library_id],
+    queryFn: () => getSeries(item.library_id),
+    enabled: anchor !== null,
+    retry: 0,
+  });
+  const series =
+    anchor !== null
+      ? ((seriesList.data?.items ?? []).find(
+          (s) => s.relative_path === anchor,
+        ) ?? null)
+      : null;
 
   // Resume/progress row (video): the stored playback position, when one
   // exists — whole-minute wording; the player owns the actual resume.
@@ -802,12 +859,32 @@ function IdentityBlock(props: {
     (entry) => entry.item_id === item.id,
   )?.position_seconds;
 
+  // An absent NAME identity field (title/display_title — the literals the
+  // name walk reads): its slot note names the cure, so the separate
+  // episode-name note would state the SAME missing fact twice — the episode
+  // note renders only for modules that declare no name field at all.
+  const nameSlotAbsent = identityFields.some(
+    (field) =>
+      (field === "title" || field === "display_title") &&
+      !present(resolveIdentityValue(doc, field)),
+  );
+
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      {eyebrow ? (
-        <p className="font-mono text-sm text-muted-foreground">{eyebrow}</p>
-      ) : null}
-      <h1 className="break-words text-2xl font-semibold">{heading}</h1>
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-col gap-1">
+          {showEyebrow ? (
+            <p className="font-mono text-sm text-muted-foreground">{eyebrow}</p>
+          ) : null}
+          <h1 className="break-words text-2xl font-semibold">{heading}</h1>
+        </div>
+        <ItemActions
+          item={item}
+          presentation={presentation}
+          heading={heading}
+          series={series ?? undefined}
+        />
+      </div>
       <p className="break-all font-mono text-xs text-muted-foreground">
         {item.relative_path}
       </p>
@@ -817,6 +894,7 @@ function IdentityBlock(props: {
           {identityFields.map((field) => {
             const value = resolveIdentityValue(doc, field);
             const label = humanizeField(field);
+            const isNameField = field === "title" || field === "display_title";
             return present(value) ? (
               <div key={field} className="flex flex-wrap items-baseline gap-2">
                 <Badge variant="secondary" className="gap-1">
@@ -827,22 +905,48 @@ function IdentityBlock(props: {
               <SlotNote
                 key={field}
                 label={`${label} — not identified`}
-                note="No attached parser wrote this field yet — run or attach the parser that provides it."
+                note={
+                  isNameField
+                    ? "No parser wrote a name yet — name it manually or attach a naming parser from the ⋯ menu."
+                    : "No attached parser wrote this field yet — run or attach the parser that provides it."
+                }
+                action={
+                  isNameField ? (
+                    <button
+                      type="button"
+                      className="underline underline-offset-2 hover:text-foreground"
+                      onClick={() => setSlotRenameOpen(true)}
+                    >
+                      Name manually…
+                    </button>
+                  ) : undefined
+                }
               />
             );
           })}
         </div>
       ) : null}
 
-      {/* The episode-name case: no naming source wrote a name, the derived
-          episode number stands in as the heading, and the slot names what is
-          missing (never a blank heading). */}
-      {nameValue === undefined && eyebrow ? (
+      {/* The episode-name case — only when the identity slots did not
+          already name the missing name field (that slot's action cures it):
+          no naming source wrote a name, and the note says what stands in. */}
+      {nameValue === undefined && eyebrow && !nameSlotAbsent ? (
         <SlotNote
           label="Episode name — not identified"
-          note="No attached parser wrote a name for this episode yet — the derived episode number stands in."
+          note={
+            composed !== undefined
+              ? "No parser wrote an episode-level name — the series name stands in. Name it manually to set your own."
+              : "No attached parser wrote a name for this episode yet — the derived episode number stands in."
+          }
         />
       ) : null}
+
+      {/* The scraped synopsis (the About panel, the Plex/Jellyfin idiom —
+          user-locked 2026-10-21): an EPISODE shows its SHOW's synopsis (the
+          series document carries the scraped description; the episode's own
+          never does), any other element its own. No description on the
+          document → no panel (noise, not information). */}
+      <Synopsis doc={series !== null ? series.document : doc} />
 
       {isVideoItem(item) ? (
         <p className="text-sm text-muted-foreground">
@@ -853,8 +957,157 @@ function IdentityBlock(props: {
               : "Resume — less than a minute in."}
         </p>
       ) : null}
+
+      <DialogShell
+        open={slotRenameOpen}
+        label={`Rename ${heading}`}
+        onClose={() => {
+          if (!slotRenamePending) {
+            setSlotRenameOpen(false);
+          }
+        }}
+      >
+        <RenameTitle
+          entityLabel={heading}
+          initial={item.title_override ?? ""}
+          set={slotRename.set}
+          clear={slotRename.clear}
+          onCollapse={() => setSlotRenameOpen(false)}
+          onBack={() => setSlotRenameOpen(false)}
+        />
+      </DialogShell>
     </div>
   );
+}
+
+// ItemActions — the identity block's ⋯ management menu (ui-management §2):
+// the SAME overlay unit the collection cards host — Rename (the item title
+// override, PUT/DELETE /items/{id}/title), Rename series (the SERIES
+// override, PUT/DELETE /series/{id}/title — an episode's composed name
+// carries the series title, so curing the show's name cures every episode;
+// user-locked 2026-10-21), Identify (parser attachments) when the module's
+// parser chain is wired, Refresh metadata when the module serves refresh
+// sources — with the trigger INLINE and always visible (this page IS the
+// action surface; hover-reveal is a grid idiom). Identify is promoted to
+// the first row when the row is unidentified (no composed display name),
+// matching the cards.
+function ItemActions(props: {
+  item: ItemDTO;
+  presentation?: ModulePresentation;
+  heading: string;
+  series?: SeriesDTO;
+}): ReactElement {
+  const chain = props.presentation?.parsers;
+  const refreshSources =
+    props.presentation !== undefined
+      ? (props.presentation.refresh_sources ?? [])
+      : undefined;
+  const { set, clear } = useTitleOverride("item", props.item.id, [
+    "item",
+    props.item.id,
+  ]);
+  const unidentified = !present(props.item.display_name);
+
+  // The series row arrives RESOLVED from the identity block (matched BY
+  // PATH on the parsed series anchor through the shared series cache —
+  // never on a title; serial episodes carry none). Absent → the series
+  // affordance stays hidden; guessing an id would write to the wrong
+  // entity.
+  const series = props.series ?? null;
+  const seriesRename = useTitleOverride("series", series?.id ?? "", [
+    "item",
+    props.item.id,
+  ]);
+  const qc = useQueryClient();
+
+  return (
+    <CardActions
+      triggerLabel={`Actions for ${props.heading}`}
+      triggerClassName="cardact-trigger--inline"
+      pending={
+        set.isPending ||
+        clear.isPending ||
+        seriesRename.set.isPending ||
+        seriesRename.clear.isPending
+      }
+      identifyFirst={unidentified}
+      identify={
+        chain !== undefined
+          ? (ctl) => (
+              <IdentifyView
+                itemId={props.item.id}
+                chain={chain}
+                invalidate={["item", props.item.id]}
+                onCollapse={ctl.collapse}
+                onBack={ctl.back}
+              />
+            )
+          : undefined
+      }
+      refresh={
+        refreshSources !== undefined
+          ? (ctl) => (
+              <RefreshView
+                libraryId={props.item.library_id}
+                rowId={props.item.id}
+                sources={refreshSources}
+                onBack={ctl.back}
+              />
+            )
+          : undefined
+      }
+      rename={(ctl) => (
+        <RenameTitle
+          entityLabel={props.heading}
+          initial={props.item.title_override ?? ""}
+          set={set}
+          clear={clear}
+          onCollapse={ctl.collapse}
+          onBack={ctl.back}
+        />
+      )}
+      renameSeries={
+        series !== null
+          ? (ctl) => (
+              <RenameTitle
+                entityLabel={
+                  present(series.display_name)
+                    ? String(series.display_name)
+                    : series.relative_path
+                }
+                initial={series.title_override ?? ""}
+                set={seriesRename.set}
+                clear={seriesRename.clear}
+                onCollapse={() => {
+                  // The series override recomposes names everywhere the
+                  // show surfaces — the series cards and every items list
+                  // follow the item read the hook already invalidates.
+                  void qc.invalidateQueries({
+                    queryKey: ["series", props.item.library_id],
+                  });
+                  void qc.invalidateQueries({ queryKey: ["items"] });
+                  ctl.collapse();
+                }}
+                onBack={ctl.back}
+              />
+            )
+          : undefined
+      }
+    />
+  );
+}
+
+// seriesAnchor — the episode's series fact anchor (the same contract as
+// Home's episodeFacts): parsed.series_relative_path, matched against the
+// series rows BY PATH. null when the document carries no anchor — the
+// caller omits the series affordance rather than guessing.
+function seriesAnchor(item: ItemDTO): string | null {
+  const parsed = item.document.parsed;
+  if (parsed === undefined || parsed === null || typeof parsed !== "object") {
+    return null;
+  }
+  const value = (parsed as Record<string, unknown>).series_relative_path;
+  return typeof value === "string" && value !== "" ? value : null;
 }
 
 // HeroImage — the media stage's lead image, filling its column with its

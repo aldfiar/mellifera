@@ -340,6 +340,9 @@ describe("Collection — serial body (box 5.4)", () => {
     status?: string;
     relativePath?: string;
     displayName?: string;
+    // extraSources — additional sources.<plugin_id> namespaces (e.g. a
+    // metadata source's scraped synopsis for the About panel).
+    extraSources?: Record<string, Record<string, unknown>>;
   }): SeriesDTO {
     const d: ItemDocument = {};
     if (parts.title !== undefined || parts.season !== undefined) {
@@ -347,6 +350,9 @@ describe("Collection — serial body (box 5.4)", () => {
       if (parts.title !== undefined) sp.title = parts.title;
       if (parts.season !== undefined) sp.season = parts.season;
       d.sources = { "serial-parser": sp };
+    }
+    if (parts.extraSources !== undefined) {
+      d.sources = { ...(d.sources ?? {}), ...parts.extraSources };
     }
     const parsed: Record<string, unknown> = {};
     if (parts.dirNameRaw !== undefined) parsed.dir_name_raw = parts.dirNameRaw;
@@ -477,6 +483,56 @@ describe("Collection — serial body (box 5.4)", () => {
     fireEvent.click(screen.getByRole("button", { name: "← All series" }));
     expect(await screen.findByRole("link", { name: /Show 2019/ })).toBeDefined();
     expect(episodesFetches).toBe(1);
+  });
+
+  it("heads the episode flow with the series name and its scraped About panel", async () => {
+    // The Plex idiom (user-locked 2026-10-21): opening a series' episode
+    // flow shows the show's display name and the scraped synopsis ON TOP of
+    // the episodes — out of the footer, from the series row already in the
+    // shared cache.
+    fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              seriesRow({
+                id: "ser_1_show",
+                dirNameRaw: "Show 2019",
+                displayName: "Show 2019",
+                extraSources: {
+                  shikimori: {
+                    description: "Совершенно обычное шоу.",
+                    genres: ["Драма"],
+                    score: "7.81",
+                    kind: "tv",
+                    status: "released",
+                    episodes: 8,
+                    aired_on: "2019-01-31",
+                  },
+                },
+              }),
+            ],
+          }),
+        ),
+      "/api/v1/series/ser_1_show/episodes": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("link", { name: /Show 2019/ }));
+
+    // The header lands above the (empty) episode list: the series name as
+    // the heading, the synopsis panel under it.
+    expect(
+      await screen.findByRole("heading", { name: "Show 2019" }),
+    ).toBeDefined();
+    const panel = await screen.findByRole("region", { name: "About" });
+    expect(panel.textContent).toContain("Совершенно обычное шоу.");
+    expect(screen.getByText("Драма")).toBeDefined();
+    expect(
+      screen.getByText("★ 7.81 · tv · released · 8 ep · 2019"),
+    ).toBeDefined();
   });
 
   it("shows an honest empty state when no series has been scanned", async () => {
