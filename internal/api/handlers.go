@@ -146,6 +146,17 @@ type ModulePresentation struct {
 	// AddRefreshSource, reusing the titleSourceBinding element type so the
 	// package-level export count stays at the complexity budget's cap of 12.
 	RefreshSources []titleSourceBinding `json:"refresh_sources,omitempty"`
+	// SourceChain is the module's gate-resolved metadata-source chain
+	// (media-data-convention D6, additive): every bound source in CHAIN order
+	// (the module config's m.MetadataSources order, NOT title_source_priority —
+	// the title walk's order is the title machine's, deliberately different),
+	// each pair carrying its effective enabled flag AFTER gate resolution. The
+	// list IS the served resolution order: the convention projection walks it
+	// to resolve groups, so priority is served data, never document key order.
+	// Pairs are appended through AddChainSource, reusing the titleSourceBinding
+	// element type so the package-level export count stays at the complexity
+	// budget's cap of 12.
+	SourceChain []titleSourceBinding `json:"source_chain,omitempty"`
 }
 
 // titleSourceBinding is one title-walk entry (plugin-title-enrichment D3/D5):
@@ -181,6 +192,18 @@ func (p *ModulePresentation) AddTitleSource(id string, enabled bool) {
 // stays at the complexity budget's cap of 12.
 func (p *ModulePresentation) AddRefreshSource(id string, enabled bool) {
 	p.RefreshSources = append(p.RefreshSources, titleSourceBinding{ID: id, Enabled: enabled})
+}
+
+// AddChainSource appends one gate-resolved chain pair to the presentation's
+// SourceChain (media-data-convention D6): the cmd-side closure's construction
+// path — one call per bound metadata source in chain order, each carrying its
+// enrich.ResolveGates verdict (a muted source is carried with enabled false —
+// the projection must SEE the mute to skip it, unlike the filtered refresh
+// list). Reuses titleSourceBinding and lives on the method set (not the
+// package surface) so the package-level export count stays at the complexity
+// budget's cap of 12.
+func (p *ModulePresentation) AddChainSource(id string, enabled bool) {
+	p.SourceChain = append(p.SourceChain, titleSourceBinding{ID: id, Enabled: enabled})
 }
 
 // librariesResponse is the wire shape for GET /libraries.
@@ -274,6 +297,13 @@ type seriesDTO struct {
 	Status        string          `json:"status"`
 	TitleOverride string          `json:"title_override"`
 	Display       string          `json:"display_name"`
+	// Metadata is the additive convention projection (media-data-convention
+	// D5): the about / cast / episode blocks resolved at read from the
+	// document's sources.* namespaces over the gate-resolved source_chain —
+	// first effectively-enabled carrier wins WHOLE, values verbatim. Absent
+	// (omitempty) when the chain is unwired or no group has a carrier —
+	// honest absence, never an empty block.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // seriesListResponse is the wire shape for GET /series.
@@ -374,6 +404,10 @@ type itemDTO struct {
 	TitleOverride string          `json:"title_override"`
 	Display       string          `json:"display_name"`
 	ExtraParsers  []string        `json:"extra_parsers,omitempty"`
+	// Metadata is the additive convention projection (media-data-convention
+	// D5) — the same read-time block seriesDTO carries: see the field comment
+	// there; one shape, one resolution rule, both wire nouns.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // createLibrary: parse createLibraryRequest → store.CreateLibrary → write
@@ -1356,6 +1390,7 @@ func toItemDTO(it store.Item, override string, n namer) itemDTO {
 		Status:        it.Status,
 		TitleOverride: override,
 		Display:       n.itemName(it, override),
+		Metadata:      n.metadataFor(it.Document),
 	}
 }
 
@@ -1418,6 +1453,7 @@ func toSeriesDTO(sr store.Series, override string, n namer) seriesDTO {
 		Status:        sr.Status,
 		TitleOverride: override,
 		Display:       n.seriesName(sr, override),
+		Metadata:      n.metadataFor(sr.Document),
 	}
 }
 

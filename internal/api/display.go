@@ -55,6 +55,13 @@ type namer struct {
 	// chains.
 	titleSources []titleSourceBinding
 	langPrefs    []string
+	// chain is the module's gate-resolved metadata-source chain (media-data-
+	// convention D5/D6): the SourceChain list off the SAME ModulePresentation
+	// read the title walk's inputs ride in from — the served resolution order
+	// the convention projection (metadataFor) walks. Empty/absent means no
+	// metadata block is composed: the DTOs stay byte-identical to the
+	// pre-projection wire.
+	chain []titleSourceBinding
 }
 
 // namerFor builds the namer for one library: GetLibrary carries the two
@@ -92,6 +99,7 @@ func (a *app) namerFor(ctx context.Context, libraryID int64) (namer, error) {
 		seriesByPath: byPath,
 		titleSources: pres.TitleSources,
 		langPrefs:    pres.LanguagePreference,
+		chain:        pres.SourceChain,
 	}, nil
 }
 

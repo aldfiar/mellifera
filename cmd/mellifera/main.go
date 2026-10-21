@@ -409,6 +409,18 @@ func main() {
 					pres.AddRefreshSource(id, src.Enabled)
 				}
 			}
+			// source_chain (media-data-convention D6, additive): every bound
+			// metadata source in CHAIN order — m.MetadataSources order, which
+			// enrich.ResolveGates preserves — each carrying its gate-resolved
+			// enabled verdict. Unlike the filtered refresh list, a muted
+			// source is carried WITH enabled=false: the api convention
+			// projection walks this list as the served resolution order and
+			// must see the mute to skip the source. Deliberately not the
+			// title_source_priority walk above — that order is the title
+			// machine's, not the chain's.
+			for _, src := range gated {
+				pres.AddChainSource(src.PluginID, src.Enabled)
+			}
 			return pres, nil
 		},
 		// Admin sources aggregate (plugin-title-enrichment D6): the three

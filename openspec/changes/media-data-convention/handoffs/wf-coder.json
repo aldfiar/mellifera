@@ -1,0 +1,6 @@
+{
+  "status": "done",
+  "summary": "Group 1 applied: source_chain presentation (ModulePresentation.SourceChain + AddChainSource, wired in cmd closure over ResolveGates verdicts in MetadataSources order) and the convention projection (internal/api/metadata.go resolver walking the chain: about/cast/episode groups, first effectively-enabled carrier wins whole, honest partial/absence) composed at read into itemDTO/seriesDTO metadata (omitempty) + optional TS shapes in web/src/lib/api.ts. Tests: TestSourceChainPresentation, TestMetadataProjection (internal/api). Probes 8dd8ab32/b138c9d1 pass; full go test ./... green; golangci-lint rc 0; check.sh OK (api export cap unchanged). Files: internal/api/{handlers.go,display.go,metadata.go,metadata_test.go,source_chain_test.go}, cmd/mellifera/main.go, web/src/lib/api.ts. Note for group 5: episode group serves only on episode documents (parsed.series_relative_path anchor via episodeFacts); synopsis/about only on series/film docs; cast on any doc; about block carries source, cast/episode are the design-JSON shapes (bare array / member object). Pre-existing gofmt nit in internal/itest/qa_display_naming_joint_test.go (HEAD, untouched).",
+  "next": "Session verification + ticks for 1.1, 1.2",
+  "updated_at": "2026-10-21T21:04:53.053369Z"
+}

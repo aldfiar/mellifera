@@ -171,6 +171,42 @@ export interface ProgressListResponse {
   items: ProgressDTO[];
 }
 
+// handlers.go metadata.go (media-data-convention, additive) — the convention
+// projection resolved server-side: each group comes WHOLE from the first
+// effectively-enabled source_chain namespace that carries it (never stitched
+// across sources), values verbatim, and an absent group means the SPA block
+// is absent — never fabricated. Field names match the JSON shape EXACTLY.
+export interface MetadataAbout {
+  // the winning namespace id — who wrote the block
+  source: string;
+  description: string; // the carrier: always present on a served about block
+  genres?: string[];
+  score?: number;
+  kind?: string;
+  status?: string;
+  episodes?: number;
+  aired_on?: string;
+}
+
+export interface MetadataCastEntry {
+  name: string;
+  role?: string;
+  photo_url?: string;
+}
+
+// the episode document's own fields — honest partial: title alone is a
+// served episode block
+export interface MetadataEpisode {
+  title?: string;
+  description?: string;
+}
+
+export interface ElementMetadata {
+  about?: MetadataAbout;
+  cast?: MetadataCastEntry[];
+  episode?: MetadataEpisode;
+}
+
 // handlers.go:129-139 (itemDTO) — the §3.1 document travels as json.RawMessage
 // on the Go side (opaque there) and is typed here via ItemDocument. Field names
 // match the JSON tags EXACTLY.
@@ -201,6 +237,10 @@ export interface ItemDTO {
   // `_view.title` > "". Optional in TS like title_override — an absent
   // field means unset, and the caller floors to its own honest fallback.
   display_name?: string;
+  // metadata — the served convention projection (media-data-convention,
+  // additive; absent when the source chain is unwired or no group has a
+  // carrier). Optional in TS: absence means no block, never an empty one.
+  metadata?: ElementMetadata;
 }
 
 // handlers.go itemsResponse — empty array, never null
@@ -276,6 +316,11 @@ export interface SeriesDTO {
   // in TS like title_override — an absent field means unset, and the caller
   // floors to its own honest fallback.
   display_name?: string;
+  // metadata — the served convention projection (media-data-convention,
+  // additive; the same read-time block ItemDTO carries — one shape, one
+  // resolution rule, both wire nouns). Optional in TS: absence means no
+  // block, never an empty one.
+  metadata?: ElementMetadata;
 }
 
 // handlers.go seriesListResponse — empty array, never null. GET /series is NOT
