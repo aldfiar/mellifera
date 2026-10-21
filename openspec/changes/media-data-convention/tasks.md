@@ -1,4 +1,4 @@
-<!-- wf: source_fingerprint=0bbf22401e6c4c7f2101c5306fb83128e739fb1ab8bc5233a56ec4ed0d4464a9 -->
+<!-- wf: source_fingerprint=158957c4195ac41613b64573424f069e25ad5368b617c7fc62040c0724c658c0 -->
 <!-- wf: initial_skip_specs=false -->
 # Tasks: media-data-convention
 
@@ -30,4 +30,4 @@ then 5.
 
 ## 5. QA — cross-module joint
 
-- [ ] 5.1 `internal/itest/qa_media_data_joint_test.go` (`TestQAMediaDataJoint`), Tier-1 joint per the qa_shikimori_joint pattern — real store, stub upstream serving the anime + roles payloads: a series enriches through shikimori, the stored document carries `sources.shikimori` with the convention fields and `cast`, and the served series/item carry `metadata.about` + `metadata.cast` naming `shikimori`; an episode fixture document serves its `metadata.episode` block; a document with no convention carriers serves none; the group's `go test ./...` stays green [probe:fb9511dbf7bcf5e2]
+- [x] 5.1 `internal/itest/qa_media_data_joint_test.go` (`TestQAMediaDataJoint`), Tier-1 joint per the qa_shikimori_joint pattern — real store, stub upstream serving the anime + roles payloads: a series enriches through shikimori, the stored document carries `sources.shikimori` with the convention fields and `cast`, and the served series/item carry `metadata.about` + `metadata.cast` naming `shikimori`; an episode fixture document serves its `metadata.episode` block; a document with no convention carriers serves none; the group's `go test ./...` stays green [probe:fb9511dbf7bcf5e2]

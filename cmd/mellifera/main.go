@@ -489,7 +489,7 @@ func main() {
 		// Re-enrichment admin surface (enrichment D-6/D-7): the closures are
 		// built HERE in cmd/mellifera so api imports neither enrich nor
 		// plugin (INV2) — the same anti-corruption seam as Status above.
-		Reenrich:      newReenrichClosure(st, reg, enrichQueue, loadedCaps, sweeps),
+		Reenrich:      newReenrichClosure(ctx, st, reg, enrichQueue, loadedCaps, sweeps),
 		EnrichPreview: newEnrichPreviewClosure(st, reg),
 		// Plugin admin surfaces (plugin-admin-surfaces): the config-binding
 		// flatten over the module registry (options verbatim as raw JSON —
@@ -776,12 +776,15 @@ func (g *sweepGuard) finish(libraryID int64) {
 // whole-library sweep (row_ids omitted) claims the per-library in-flight slot
 // for the sweep's duration, while a per-row refresh bypasses the guard
 // entirely. Queued = the rows the sweep scoped = stripped + deferred
-// (Queue.ReenrichSource's counting invariant).
+// (Queue.ReenrichSource's counting invariant). procCtx is the PROCESS ctx
+// ReenrichSource rides: the closure discards the request-scoped ctx at its
+// boundary — the same detachment scanDeps.Notify applies (the queue's feeder
+// must outlive the HTTP request).
 func newReenrichClosure(
-	st *store.Store, reg *module.Registry, q *enrich.Queue,
+	procCtx context.Context, st *store.Store, reg *module.Registry, q *enrich.Queue,
 	loadedPlugins map[string][]string, sweeps *sweepGuard,
 ) func(context.Context, int64, string, []string) (api.ReenrichResult, error) {
-	return func(ctx context.Context, libraryID int64, pluginID string, rowIDs []string) (api.ReenrichResult, error) {
+	return func(_ context.Context, libraryID int64, pluginID string, rowIDs []string) (api.ReenrichResult, error) {
 		if _, loaded := loadedPlugins[pluginID]; !loaded || !hasMetadataBinding(reg, pluginID) {
 			return api.ReenrichResult{}, fmt.Errorf("refresh %q: %w", pluginID, api.ErrUnknownPlugin)
 		}
@@ -795,7 +798,7 @@ func newReenrichClosure(
 			// admin-API spec: unknown rows are rejected with neither
 			// triggering a strip).
 			for _, id := range rowIDs {
-				ok, err := rowInLibrary(ctx, st, libraryID, id)
+				ok, err := rowInLibrary(procCtx, st, libraryID, id)
 				if err != nil {
 					return api.ReenrichResult{}, err
 				}
@@ -804,7 +807,14 @@ func newReenrichClosure(
 				}
 			}
 		}
-		stripped, deferred, err := q.ReenrichSource(ctx, libraryID, pluginID, rowIDs...)
+		// The request-scoped ctx is substituted with the PROCESS ctx — the
+		// same detachment scanDeps.Notify applies (the feeder must outlive
+		// the HTTP request): ReenrichSource ends in a queue Notify whose
+		// feeder selects on the ctx it is handed, so the cancelled request
+		// ctx would abort it the moment the 202 is written and the stripped
+		// rows would stay pending forever (SIGINT/SIGTERM cancels pool +
+		// server together).
+		stripped, deferred, err := q.ReenrichSource(procCtx, libraryID, pluginID, rowIDs...)
 		if err != nil {
 			return api.ReenrichResult{}, err
 		}

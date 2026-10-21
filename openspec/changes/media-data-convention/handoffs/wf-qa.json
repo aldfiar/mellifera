@@ -1,0 +1,9 @@
+{
+  "status": "blocked",
+  "summary": "Box 5.1 deliverable landed: internal/itest/qa_media_data_joint_test.go (Tier-1 joint, real server+store+7 plugin binaries+stub shikimori upstream; search-leg assertions all pass). BLOCKED on an implementation bug: the whole-library refresh re-derivation never drains, so the anchored leg (cast after POST /libraries/{id}/refresh) times out deterministically. Test asserts the contract and stays red until the fix lands; CONTRACT MISMATCH comment atop the file carries the evidence chain.",
+  "next": "wf-coder: apply the process-ctx detachment in newReenrichClosure (cmd/mellifera/main.go:807 area), then the session re-runs the box 5.1 probe (go test ./internal/itest -run TestQAMediaDataJoint) and ticks fb9511dbf7bcf5e2 when green.",
+  "findings": [
+    "Request-context leak into the enrich re-derivation: cmd/mellifera/main.go:807 (newReenrichClosure, built :770, wired :492) passes the HTTP handler ctx into q.ReenrichSource, whose final q.Notify(ctx, libraryID) (internal/enrich/reenrich.go:74) spawns deriveAsync/feed on that ctx (internal/enrich/queue.go:258,273); feed selects on ctx.Done() so the feeder dies the moment the 202 is written — stripped rows stay pending forever. Every sibling path applies the documented detachment invariant (scanDeps.Notify main.go:227-230; OnParsersChanged/OnSourceGateChanged main.go:503-514 substitute the PROCESS ctx: \"the feeder must outlive the HTTP request\"). Fix shape: the same detachment in newReenrichClosure."
+  ],
+  "updated_at": "2026-10-21T23:16:31.274551Z"
+}
