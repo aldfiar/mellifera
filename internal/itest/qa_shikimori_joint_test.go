@@ -321,7 +321,7 @@ func TestShikimoriJoint(t *testing.T) {
 	qaShikAssertLedger(t, j, map[string]bool{})
 	qaShikAssertNamespace(t, j, qaShikAwaitNamespace(t, j, qaShikDirA), qaShikWantA)
 	qaShikAssertNamespace(t, j, qaShikAwaitNamespace(t, j, qaShikDirB), qaShikWantB)
-	qaShikAssertAnchoredLeg(t, j, 4, qaShikIDa, qaShikIDb)
+	qaShikAssertAnchoredLeg(t, j, 6, qaShikIDa, qaShikIDb)
 }
 
 // qaShikAwaitNamespace polls the series rows until the dir's row settles
@@ -481,19 +481,21 @@ func qaShikAssertSearchLeg(t *testing.T, j *qaShikJoint, wantTotal int, titles [
 }
 
 // qaShikAssertAnchoredLeg pins the second leg's upstream contract: the tail
-// requests after the sweep are GETs on the BY-ID endpoints — one per id, as
-// a set (rows drain concurrently) — proving identifiers.shikimori_id
-// anchored the second Match (the search endpoint is never hit again).
+// requests after the sweep are GETs on the BY-ID endpoints — two per id (the
+// by-id fetch plus its /roles request-plan companion), as a set (rows drain
+// concurrently) — proving identifiers.shikimori_id anchored the second Match
+// (the search endpoint is never hit again).
 func qaShikAssertAnchoredLeg(t *testing.T, j *qaShikJoint, wantTotal int, ids ...int) {
 	t.Helper()
 	reqs := j.stub.requests()
 	if len(reqs) != wantTotal {
 		t.Fatalf("upstream saw %d requests, want %d: %+v", len(reqs), wantTotal, reqs)
 	}
-	tail := reqs[len(reqs)-len(ids):]
+	tail := reqs[len(reqs)-2*len(ids):]
 	paths := map[string]bool{}
 	for _, id := range ids {
 		paths[qaShikAPI+"/"+strconv.Itoa(id)] = false
+		paths[qaShikAPI+"/"+strconv.Itoa(id)+"/roles"] = false
 	}
 	for i, r := range tail {
 		if r.method != http.MethodGet {

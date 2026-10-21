@@ -1,4 +1,4 @@
-<!-- wf: source_fingerprint=07d8d6cfb697193016520c562d674be5155ab34485263d116c7d011462718b52 -->
+<!-- wf: source_fingerprint=aa55a76dfbe906900a59b7b7331aea5f0e62b4a5d58c50e43840cc31279da81f -->
 <!-- wf: initial_skip_specs=false -->
 # Tasks: media-data-convention
 
@@ -21,8 +21,8 @@ then 5.
 
 ## 3. shikimori cast conformer
 
-- [ ] 3.1 Anchored plans attach the roles fetch: `BuildRequest` returns the primary anime spec plus `GET /api/animes/{id}/roles` (same User-Agent + `min_interval_ms` contract) as an extra spec when the query carries `shikimori_id`, and the primary-only plan for search matches; subtests under `TestBuildRequest` [probe:6e7a220212cfa040]
-- [ ] 3.2 Roles convert into the convention cast: `Convert` composes `cast` from the roles body — one entry per character, `name` the character (russian preferred), `role` the free-text seiyuu credit when present, `photo_url` the character portrait — skipping unusable entries, and leaves `cast` ABSENT when the roles body is missing/unfetched or carries nothing usable; search-run namespaces unchanged; subtests under `TestConvert` [probe:80dd1e5b5e0c9e1f]
+- [x] 3.1 Anchored plans attach the roles fetch: `BuildRequest` returns the primary anime spec plus `GET /api/animes/{id}/roles` (same User-Agent + `min_interval_ms` contract) as an extra spec when the query carries `shikimori_id`, and the primary-only plan for search matches; subtests under `TestBuildRequest` [probe:6e7a220212cfa040]
+- [x] 3.2 Roles convert into the convention cast: `Convert` composes `cast` from the roles body — one entry per character, `name` the character (russian preferred), `role` the free-text seiyuu credit when present, `photo_url` the character portrait — skipping unusable entries, and leaves `cast` ABSENT when the roles body is missing/unfetched or carries nothing usable; search-run namespaces unchanged; subtests under `TestConvert` [probe:80dd1e5b5e0c9e1f]
 
 ## 4. SPA consumption switch
 

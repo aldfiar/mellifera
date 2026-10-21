@@ -28,6 +28,19 @@ func convertReq(t *testing.T, payload string, query map[string]any) *metadatav1.
 	return req
 }
 
+// byIDPayload is a minimal by-id anime answer (the anchored run's primary
+// body) reused by the cast subtests; a list variant covers the search run.
+const (
+	byIDPayload = `{
+		"id": 1, "name": "Air", "russian": "Воздух",
+		"kind": "tv", "status": "released", "episodes": 13,
+		"url": "/animes/1-air"
+	}`
+	listPayload = `[
+		{"id": 1, "name": "Air", "kind": "tv", "episodes": 13, "aired_on": "2005-01-06"}
+	]`
+)
+
 // TestConvert drives Convert over the fixture payloads (box 1.3): the by-id
 // single-object namespace shape, the multi-candidate selection (preference
 // score + nothing-agrees determinism), the empty result, and the provenance
@@ -142,6 +155,89 @@ func TestConvert(t *testing.T) {
 		}
 		if len(res.GetMetadata().GetFields()) != 0 {
 			t.Errorf("metadata = %v, want empty on a soft error", res.GetMetadata().AsMap())
+		}
+	})
+
+	t.Run("roles extra response composes the convention cast", func(t *testing.T) {
+		rolesPayload := `[
+			{"id": 448, "name": "Misuzu Kamio", "russian": "Мисудзу Камио",
+			 "image": {"original": "/images/characters/448.jpg"}, "roles": ["Main"],
+			 "seyu": [{"id": 522, "name": "Asami Sanada", "russian": "Асами Санада"}]},
+			{"id": 451, "name": "Yukito Kunisaki", "russian": "Юкито Кунисаки",
+			 "image": {"original": "/images/characters/451.jpg"}, "roles": ["Main"], "seyu": []},
+			{"id": 460, "name": "No Portrait", "russian": "Без Портрета"},
+			{"image": {"original": "/images/characters/999.jpg"},
+			 "seyu": [{"name": "Unnamed Voice"}]},
+			{"id": 470, "name": "Multi Credit", "russian": "Много Голосов",
+			 "image": {"original": "/images/characters/470.jpg"},
+			 "seyu": [{"name": "First Va", "russian": "Первый Сэйю"}, {"name": "Second Va"}]}
+		]`
+		req := convertReq(t, byIDPayload, nil)
+		req.ExtraResponses = []*metadatav1.FetchedResponse{
+			{Fetched: true, HttpStatus: 200, Body: []byte(rolesPayload)},
+		}
+		res, err := p.Convert(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if res.GetError() != nil {
+			t.Fatalf("unexpected Convert error: %v", res.GetError())
+		}
+		cast, ok := res.GetMetadata().AsMap()[castKey].([]any)
+		if !ok || len(cast) != 4 {
+			t.Fatalf("cast = %v (ok=%v), want 4 usable entries (the nameless entry skipped)", cast, ok)
+		}
+		e0, e1, e2, e3 := cast[0].(map[string]any), cast[1].(map[string]any), cast[2].(map[string]any), cast[3].(map[string]any)
+		if e0["name"] != "Мисудзу Камио" || e0["role"] != "Асами Санада" ||
+			e0["photo_url"] != "https://shikimori.io/images/characters/448.jpg" {
+			t.Errorf("cast[0] = %v, want the russian character name, the seiyuu credit and the absolute portrait", e0)
+		}
+		if e1["name"] != "Юкито Кунисаки" || e1["role"] != nil {
+			t.Errorf("cast[1] = %v, want no role when the character has no seiyuu credit", e1)
+		}
+		if e2["name"] != "Без Портрета" || e2["photo_url"] != nil || e2["role"] != nil {
+			t.Errorf("cast[2] = %v, want the optional keys ABSENT when the upstream omits them", e2)
+		}
+		if e3["role"] != "Первый Сэйю, Second Va" {
+			t.Errorf("cast[3].role = %v, want the comma-joined russian-preferred credits", e3["role"])
+		}
+		if _, has := res.GetProvenance()[castKey]; !has {
+			t.Errorf("provenance carries no %q hint, want one like every namespace field", castKey)
+		}
+	})
+
+	t.Run("missing unfetched or unusable roles leave cast absent", func(t *testing.T) {
+		fetchedRoles := func(body string) []*metadatav1.FetchedResponse {
+			return []*metadatav1.FetchedResponse{{Fetched: true, HttpStatus: 200, Body: []byte(body)}}
+		}
+		for _, tc := range []struct {
+			name    string
+			payload string
+			extras  []*metadatav1.FetchedResponse
+		}{
+			{"no extra responses at all", byIDPayload, nil},
+			{"soft-failed extra carries no body", byIDPayload,
+				[]*metadatav1.FetchedResponse{{Fetched: false, Error: "connection refused"}}},
+			{"empty roles array", byIDPayload, fetchedRoles(`[]`)},
+			{"unparsable roles body", byIDPayload, fetchedRoles(`{"error":"not found"}`)},
+			{"no usable entries", byIDPayload, fetchedRoles(`[{"seyu": [{"name": "X"}]}]`)},
+			{"search list payload stays castless", listPayload, nil},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				req := convertReq(t, tc.payload, nil)
+				req.ExtraResponses = tc.extras
+				res, err := p.Convert(context.Background(), req)
+				if err != nil {
+					t.Fatalf("Convert: %v", err)
+				}
+				if got := res.GetError(); tc.payload == byIDPayload && got != nil {
+					t.Fatalf("unexpected Convert error: %v", got)
+				}
+				meta := res.GetMetadata().AsMap()
+				if cast, has := meta[castKey]; has {
+					t.Errorf("meta[%q] = %v, want the field ABSENT (honest absence, never an empty array)", castKey, cast)
+				}
+			})
 		}
 	})
 }

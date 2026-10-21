@@ -98,6 +98,9 @@ func TestBuildRequest(t *testing.T) {
 		if _, ok := spec.GetVariables()["season"]; ok {
 			t.Error("season leaked into spec variables, want the search shaped by title only")
 		}
+		if got := len(res.GetExtraSpecs()); got != 0 {
+			t.Errorf("extra_specs = %d, want 0 (a search run is a single fetch)", got)
+		}
 		buildSpec(t, spec)
 	})
 
@@ -115,5 +118,35 @@ func TestBuildRequest(t *testing.T) {
 			t.Errorf("variables[kind] = %q, want movie", got)
 		}
 		buildSpec(t, spec)
+	})
+
+	t.Run("anchored plan attaches the roles fetch as the extra spec", func(t *testing.T) {
+		res, err := p.BuildRequest(context.Background(),
+			buildReq(t, map[string]any{"shikimori_id": int64(123)}))
+		if err != nil {
+			t.Fatalf("BuildRequest: %v", err)
+		}
+		extras := res.GetExtraSpecs()
+		if len(extras) != 1 {
+			t.Fatalf("extra_specs = %d, want exactly the roles fetch", len(extras))
+		}
+		rolesSpec := extras[0]
+		if got := rolesSpec.GetMethod(); got != "GET" {
+			t.Errorf("roles method = %q, want GET", got)
+		}
+		if got := rolesSpec.GetUrlTemplate(); got != rolesTemplate {
+			t.Errorf("roles url_template = %q, want %q", got, rolesTemplate)
+		}
+		// Placeholder/variable agreement by NAME, as for the primary: the
+		// core rejects a placeholder with no declared variable.
+		if !strings.Contains(rolesSpec.GetUrlTemplate(), "{shikimori_id}") {
+			t.Errorf("roles url_template = %q, want the {shikimori_id} placeholder", rolesSpec.GetUrlTemplate())
+		}
+		if got := rolesSpec.GetVariables()["shikimori_id"].GetIntValue(); got != 123 {
+			t.Errorf("roles variables[shikimori_id] = %d, want 123 (the anchored id)", got)
+		}
+		// The SAME anonymous-tier contract: app-named User-Agent, 700 ms
+		// pacing, no auth, no secret variables.
+		buildSpec(t, rolesSpec)
 	})
 }
