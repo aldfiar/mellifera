@@ -1,6 +1,6 @@
 {
   "status": "done",
-  "summary": "GATE 1 approved by human: Layer 0 media-data convention — served metadata projection first-chain-wins, request-plan extra_specs, shikimori cast conformer, SPA synopsis switch; settlements blessed (flat cast[], source-namespace episode fields, machinery-now line)",
-  "next": "apply groups 1+2 (convention projection, multi-request runs) in DAG order",
-  "updated_at": "2026-10-21T20:47:44.653074Z"
+  "summary": "group 1 applied + verified: probes 8dd8ab3215581b83/b138c9d1b7c48bee green on disk, boxes 1.1+1.2 ticked, committed on feature/media-data-convention",
+  "next": "group 2: multi-request source runs (proto + enrich)",
+  "updated_at": "2026-10-21T21:08:01.427479Z"
 }

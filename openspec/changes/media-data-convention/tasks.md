@@ -1,4 +1,4 @@
-<!-- wf: source_fingerprint=7794e56437f1072c3726723c14c06e8be82b362e8e307c529fe0853cbc6e392b -->
+<!-- wf: source_fingerprint=07d8d6cfb697193016520c562d674be5155ab34485263d116c7d011462718b52 -->
 <!-- wf: initial_skip_specs=false -->
 # Tasks: media-data-convention
 
@@ -17,7 +17,7 @@ then 5.
 
 ## 2. Multi-request source runs — proto + enrich
 
-- [ ] 2.1 The request plan: additive proto — `repeated RequestSpec extra_specs` on `BuildRequestResponse`, new `FetchedResponse {body, http_status, headers, fetched, error}`, `repeated FetchedResponse extra_responses = 7` on `ConvertRequest` — regenerated; the enrich fetch point loops spec + extras in order through the same validation and the plugin's `FetchGate` slot (pacing spans the plan), a failed extra yields `{fetched:false, error}` while the run continues, primary failure unchanged; `TestRequestPlan` covering ordered delivery, soft-failed extras, and interval spacing on the injectable clock [probe:3100aa62f043cfcb]
+- [x] 2.1 The request plan: additive proto — `repeated RequestSpec extra_specs` on `BuildRequestResponse`, new `FetchedResponse {body, http_status, headers, fetched, error}`, `repeated FetchedResponse extra_responses = 7` on `ConvertRequest` — regenerated; the enrich fetch point loops spec + extras in order through the same validation and the plugin's `FetchGate` slot (pacing spans the plan), a failed extra yields `{fetched:false, error}` while the run continues, primary failure unchanged; `TestRequestPlan` covering ordered delivery, soft-failed extras, and interval spacing on the injectable clock [probe:3100aa62f043cfcb]
 
 ## 3. shikimori cast conformer
 

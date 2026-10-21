@@ -32,12 +32,14 @@ import (
 // (acceptance.md): Phase A is additive (deprecate-don't-delete), so proto/ (no
 // proto edits) must be byte-unchanged since the split-repo baseline f2dc2e8 (the
 // repo root after the 2026-10-14 subtree split, where proto/ first lives at root
-// level; no sanctioned proto change has landed since). The old pin 7bcc6c9
+// level; no sanctioned proto change had landed since). The old pin 7bcc6c9
 // (scan-library's shipped tip) cannot work here: its tree predates root-level
 // proto/, so a diff against it reports the directory as all-insertions (13
 // files, +4057) — vacuously failing on every run. Re-baselining to f2dc2e8
 // preserves the guard's semantics: "no proto/ change since the sanctioned
-// baseline". (go.mod/go.sum were previously guarded as "no new deps", but
+// baseline". Re-baselined to 13e441a by media-data-convention 2.1 (the
+// first sanctioned proto change since f2dc2e8).
+// (go.mod/go.sum were previously guarded as "no new deps", but
 // web-ui Phase 1 legitimately adds the first Go dependency —
 // swaggo/http-swagger — so deps are no longer repo-wide-constant; forward
 // additivity is each feature's AC-7 probe.)
@@ -47,12 +49,12 @@ func TestQA_AdditiveContract_ProtoAndDepsUnchanged(t *testing.T) {
 		t.Skip("git not on PATH — cannot verify the additive proto/deps contract")
 	}
 	root := moduleRoot(t)
-	if !qprCommitExists(t, root, "f2dc2e8") {
-		t.Skip("commit f2dc2e8 not present — cannot verify additive contract (shallow clone?)")
+	if !qprCommitExists(t, root, "13e441a") {
+		t.Skip("commit 13e441a not present — cannot verify additive contract (shallow clone?)")
 	}
 	for _, target := range []string{"proto/"} {
-		if diff := qprDiffNames(t, root, "f2dc2e8", target); diff != "" {
-			t.Errorf("AC-3: additive contract broken — %s changed since f2dc2e8 (deprecate-don't-delete):\n%s", target, diff)
+		if diff := qprDiffNames(t, root, "13e441a", target); diff != "" {
+			t.Errorf("AC-3: additive contract broken — %s changed since 13e441a (deprecate-don't-delete):\n%s", target, diff)
 		}
 	}
 }
