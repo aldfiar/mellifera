@@ -88,9 +88,14 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 			return failOutcome(src, start, "fetch", err)
 		}
 	}
+	// The request plan (media-data convention D4): extras run after the
+	// primary, in order, through the same validation and FetchGate slot —
+	// a failed extra soft-fails its own entry and never this run.
+	extraResponses := fetchExtras(ctx, gate, src.PluginID, buildRes.GetExtraSpecs())
 	conv, err := md.Convert(ctx, &metadatav1.ConvertRequest{
 		Query: matchRes.GetQuery(), ModuleType: mod.MediaType,
 		RawResponse: raw, HttpStatus: httpStatus, ResponseHeaders: respHeaders,
+		ExtraResponses: extraResponses,
 	})
 	if err != nil {
 		return failOutcome(src, start, "convert", err)
