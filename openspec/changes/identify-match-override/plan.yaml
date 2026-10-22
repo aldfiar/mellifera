@@ -1,0 +1,96 @@
+schema: plan/2
+lane: loop
+groups:
+  - id: 'g1'
+  - id: 'g2'
+    goal: Core identify: queue search orchestrator + identify action, api wire, guard re-pin
+  - id: 'g3'
+    goal: SPA identify overlay: three-step view, confirm flow + api client, series-card menu row
+  - id: 'g4'
+    goal: QA joint: search passthrough + identify re-anchor over the real graph
+boxes:
+  - id: '1.1'
+    group: g1
+    title: Additive proto: SearchSpecs/SearchResults RPC pair + SearchCandidate, regenerated
+    text: Additive proto: `rpc SearchSpecs(SearchSpecsRequest) returns (SearchSpecsResult)` and `rpc SearchResults(SearchResultsRequest) returns (SearchResultsResult)` appended to the `MetadataSource` service — `SearchSpecsRequest{query, kind}`, `SearchSpecsResult{spec RequestSpec}` (reusing the existing `RequestSpec` — the search spec is a core-executed fetch like every other), `SearchResultsRequest{query, kind, fetched FetchedResponse}` (reusing `FetchedResponse`), `SearchResultsResult{repeated SearchCandidate candidates}`, `SearchCandidate{external_id, title, optional russian_title, optional year, optional episodes, kind, optional poster}` (proto3 field presence on the optionals so an absent field is never an empty string) — regenerated with the existing protoc flow; no existing message or RPC changes; `go build ./proto/... ./pkg/sdk/...` green
+    duty:
+      verify: grep -q "rpc SearchSpecs" proto/mellifera/metadata/v1/metadata.proto && grep -q "rpc SearchResults" proto/mellifera/metadata/v1/metadata.proto && grep -q "message SearchCandidate" proto/mellifera/metadata/v1/metadata.proto && go build ./proto/... ./pkg/sdk/...
+  - id: '1.2'
+    group: g1
+    title: SDK surface: MetadataSource methods + UnsupportedSearch base; serial-parser embeds
+    deps: ['1.1']
+    text: SDK surface: `sdk.MetadataSource` gains the two methods with server/client adapter forwarding in `pkg/sdk/metadata.go`, plus an embeddable `UnsupportedSearch` base whose two methods fail with the sentinel `ErrSearchUnsupported` — `plugins/serial-parser`'s metadata_source impl embeds it (compile-compatible, behavior unchanged) and `plugins/shikimori` will override; subtests under `pkg/sdk` (`TestUnsupportedSearch`) and `plugins/serial-parser` (`TestSearchUnsupported`)
+    duty:
+      verify: go test ./pkg/sdk -run TestUnsupportedSearch -count=1 && go test ./plugins/serial-parser -run TestSearchUnsupported -count=1
+  - id: '1.3'
+    group: g1
+    title: shikimori SearchSpecs: the bounded anime search spec
+    deps: ['1.2']
+    text: shikimori SearchSpecs: the bounded anime search spec — `GET https://shikimori.io/api/animes?search={query}&limit=10` shaped by title only, the application User-Agent header, `min_interval_ms = 700`, no secret variables, `{placeholder}` substitution only — with the optional kind (`tv`/`movie`/…) narrowing the upstream `kind` filter when present; subtests under `plugins/shikimori` `TestSearchSpecs`
+    duty:
+      verify: go test ./plugins/shikimori -run TestSearchSpecs -count=1
+  - id: '1.4'
+    group: g1
+    title: shikimori SearchResults: candidates in the payload order
+    deps: ['1.2']
+    text: shikimori SearchResults: the search-list payload converts into candidates in the payload's order — `external_id` the anime id, `title`/`russian_title` per the RU-first convention, `year`/`kind`/`episodes`/`poster` verbatim where the payload carries them, absent fields staying absent (proto presence), nothing re-scored or padded; subtests under `plugins/shikimori` `TestSearchResults`
+    duty:
+      verify: go test ./plugins/shikimori -run TestSearchResults -count=1
+  - id: '2.1'
+    group: g2
+    title: enrich Queue.SearchSource: typed client -> FetchGate -> SearchResults
+    deps: ['1.4']
+    text: enrich search orchestrator: `Queue.SearchSource(ctx, pluginID, query, kind string) ([]map[string]any, error)` — resolve the typed client (the same `deps.Plugins.MetadataSource` accessor the chain uses), `SearchSpecs` → execute the returned spec through the queue's own `FetchGate` (the interactive search shares the plugin's anonymous-tier budget with sweeps) → `SearchResults` → candidates as primitive maps keyed by the convention field names (proto → map at the RPC boundary; an unsupported source surfaces `ErrSearchUnsupported`, an unknown plugin errors from the manager); table-driven `TestSearchSource` over an overridable resolve + injectable clock gate covering order preservation, gate spacing, and both error sentinels
+    duty:
+      verify: go test ./internal/enrich -run TestSearchSource -count=1
+  - id: '2.2'
+    group: g2
+    title: enrich Queue.IdentifySeries: lease -> identifiers overwrite -> ReenrichSource
+    deps: ['1.4']
+    text: enrich identify action: `Queue.IdentifySeries(ctx, seriesID, pluginID, externalID string) (ReenrichSource-shaped counts, error)` — under the row's own lease: load the series, write `identifiers.<pluginID>_id = externalID` (OVERWRITE — no tombstone; the core-side identifiers write is the D-4 precedent), persist, release; then the existing `ReenrichSource` strip (never touches `identifiers`) + library notify; a lease-held row reports `{deferred: 1}` with the document byte-identical; title namespaces and `title_overrides` untouched throughout; table-driven `TestIdentifySeries` covering re-anchor + id-anchored re-derive, display-name byte-parity, the deferred no-write path, and unknown-series/unknown-plugin errors
+    duty:
+      verify: go test ./internal/enrich -run TestIdentifySeries -count=1
+  - id: '2.3'
+    group: g2
+    title: api wire: admin search route + PUT /series/{id}/identify, closures, OpenAPI
+    deps: ['1.4']
+    text: api wire + cmd closures + OpenAPI: `Deps.SearchSource func(ctx, pluginID, query, kind string) ([]map[string]any, error)` and `Deps.IdentifySeries func(ctx, seriesID, pluginID, externalID string) (queued bool, stripped, deferred int, err error)` — primitive returns, the `SourceInventory` budget precedent (the api package stays at its 12-symbol export cap; all DTOs unexported); routes in the admin group: `GET /admin/sources/{plugin_id}/search` beside the aggregate (query required, `search_unsupported`/upstream error mapping) and `PUT /series/{id}/identify` beside the title overrides (`{source_id, external_id}` validation, 202 with the counts, 404/400 error paths, nil-closure 503); cmd builds both closures over `enrichQueue` + `loadedCaps` in the `newReenrichClosure` pattern; table-driven `TestSourceSearch` + `TestSeriesIdentify`; swag annotations on the route wrappers and the OpenAPI regenerated (`make web-build` — GOPATH/bin on PATH for swag)
+    duty:
+      verify: go test ./internal/api -run "TestSourceSearch|TestSeriesIdentify" -count=1
+  - id: '2.4'
+    group: g2
+    title: Guard re-pin to this change's proto commit
+    deps: ['1.4']
+    text: Guard re-pin (precedent 32daa76): after 1.1's proto edit has landed in its commit, re-pin every additive baseline anchor across `internal/itest` — `qa_pipeline_regression_test.go` (`TestQA_AdditiveContract_ProtoAndDepsUnchanged`), `qa_image_regression_test.go` (`b2MergeBase`), and `integration_web_test.go`'s additive probe — to that commit, each comment naming identify-match-override as the sanction; `TestWeb_Integration` re-verifies the third anchor at the gate
+    duty:
+      verify: grep -q "identify-match-override" internal/itest/qa_pipeline_regression_test.go && grep -q "identify-match-override" internal/itest/qa_image_regression_test.go && go test ./internal/itest -run "TestQA_AdditiveContract_ProtoAndDepsUnchanged|TestB2_Ac3Additive" -count=1
+  - id: '3.1'
+    group: g3
+    title: IdentifySeries overlay: three steps and their states
+    deps: ['2.3']
+    text: The overlay component `web/src/components/manage/IdentifySeries.tsx` with the three steps and their states: search (input `data-testid="identify-search-input"` pre-filled from the display name prop; current-match line `data-testid="identify-current-match"` from the served metadata, honest none-state without), candidates (`data-testid="identify-candidate"` rows in served order — no `.sort(` anywhere in the component — optional poster `<img>` from the served URL), and the three states (`data-testid="identify-searching"` quiet line, `identify-empty` suggest-original-title-or-source-id, `identify-error` canonical inline error, retry disabled); vitest suite `IdentifySeries.test.tsx` stays green in-session (the probe below is the node-free floor)
+    duty:
+      verify: test -f web/src/components/manage/IdentifySeries.tsx && grep -q "data-testid=\"identify-search-input\"" web/src/components/manage/IdentifySeries.tsx && grep -q "data-testid=\"identify-current-match\"" web/src/components/manage/IdentifySeries.tsx && grep -q "data-testid=\"identify-candidate\"" web/src/components/manage/IdentifySeries.tsx && if grep -qE "\.sort\(" web/src/components/manage/IdentifySeries.tsx; then exit 1; fi && grep -q "data-testid=\"identify-searching\"" web/src/components/manage/IdentifySeries.tsx && grep -q "data-testid=\"identify-empty\"" web/src/components/manage/IdentifySeries.tsx && grep -q "data-testid=\"identify-error\"" web/src/components/manage/IdentifySeries.tsx
+  - id: '3.2'
+    group: g3
+    title: Confirm flow + api.ts wire (searchSource, identifySeries)
+    deps: ['2.3']
+    text: The confirm step + wire: `data-testid="identify-confirm"` naming the picked title with the replaces-what copy (description/genres/facts re-pull, display name stays), `PUT /series/{id}/identify` via a new `identifySeries` in `web/src/lib/api.ts` (plus `searchSource`), the 202 invalidating the `["series", …]` reads with the staleness copy, canonical errors inline with the overlay open, the awaited-mutation collapse; vitest green in-session
+    duty:
+      verify: grep -q "/identify" web/src/lib/api.ts && grep -q "searchSource" web/src/lib/api.ts && grep -q "data-testid=\"identify-confirm\"" web/src/components/manage/IdentifySeries.tsx
+  - id: '3.3'
+    group: g3
+    title: Series-card menu Identify row (seriesIdentifyGate)
+    deps: ['2.3']
+    text: Series-card menu wiring in `web/src/pages/collections/Collection.tsx`: the series card's `CardActions` gains `identify={seriesIdentifyGate(…)}` — the row present only when the module block is wired and its chain non-empty (the item-card idiom), opening `IdentifySeries` with the source picker from the served `refresh_sources` bindings (dropdown only when more than one; default first); vitest green in-session
+    duty:
+      verify: grep -q "identify={seriesIdentifyGate" web/src/pages/collections/Collection.tsx
+  - id: '4.1'
+    group: g4
+    title: QA joint: TestIdentifyMatchJoint over the real graph
+    deps: ['2.3']
+    text: |
+      `internal/itest/qa_identify_joint_test.go` (`TestIdentifyMatchJoint`), Tier-1 joint per the `qa_shikimori_joint` pattern — real store, real queue, shikimori subprocess over a stub upstream: the search passthrough answers the stub's candidates verbatim through the real chain (api → plugin RPCs → gate-paced fetch), then `PUT /series/{id}/identify` with the stub's OTHER anime id re-anchors the row, the strip runs, the anchored leg fetches `GET /api/animes/{picked_id}` (UA + pacing asserted on the recorded requests), the fresh namespace reflects the picked anime, and the served display name is byte-identical; the group's `go test ./...` stays green
+    duty:
+      verify: go test ./internal/itest -run TestIdentifyMatchJoint -count=1
+probes: []

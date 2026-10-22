@@ -1,0 +1,36 @@
+schema: lite
+created: 2026-10-22
+goal: "A wrong metadata match is fixable in one overlay: search, pick, confirm —
+events:
+  - seq: 1
+    box: 1.1
+    kind: claim
+    by: session
+    at: 2026-10-22T19:33:59Z
+    cmd: 'grep -q "rpc SearchSpecs" proto/mellifera/metadata/v1/metadata.proto && grep -q "rpc SearchResults" proto/mellifera/metadata/v1/metadata.proto && grep -q "message SearchCandidate" proto/mellifera/metadata/v1/metadata.proto && go build ./proto/... ./pkg/sdk/...'
+    exit: 0
+    duration_ms: 128
+  - seq: 2
+    box: 1.2
+    kind: claim
+    by: session
+    at: 2026-10-22T19:34:00Z
+    cmd: 'go test ./pkg/sdk -run TestUnsupportedSearch -count=1 && go test ./plugins/serial-parser -run TestSearchUnsupported -count=1'
+    exit: 0
+    duration_ms: 1391
+  - seq: 3
+    box: 1.3
+    kind: claim
+    by: session
+    at: 2026-10-22T19:34:01Z
+    cmd: go test ./plugins/shikimori -run TestSearchSpecs -count=1
+    exit: 0
+    duration_ms: 653
+  - seq: 4
+    box: 1.4
+    kind: claim
+    by: session
+    at: 2026-10-22T19:34:02Z
+    cmd: go test ./plugins/shikimori -run TestSearchResults -count=1
+    exit: 0
+    duration_ms: 948
