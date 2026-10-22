@@ -28,6 +28,14 @@ service MetadataSource {
   //   (a) only write into its OWN source namespace
   //   (b) update the _view layer per the supplied MergePolicy
   rpc Merge(MergeRequest) returns (MergeResult);
+
+  // SEARCH (identify-match-override): interactive match picking for the
+  // admin identify flow. SearchSpecs shapes the source's bounded search
+  // fetch — pure data, executed by the core through the same gate as every
+  // other fetch; SearchResults converts the fetched search-list payload
+  // into candidates in the source's own served order (no re-scoring).
+  rpc SearchSpecs(SearchSpecsRequest) returns (SearchSpecsResult);
+  rpc SearchResults(SearchResultsRequest) returns (SearchResultsResult);
 }
 
 // --- Match ---
@@ -195,4 +203,48 @@ message MergeResult {
   repeated mellifera.common.v1.MergeConflict conflicts = 2;
   repeated mellifera.common.v1.ViewBinding view = 3;   // the recomputed view bindings
   repeated string warnings = 4;
+}
+
+// --- Search (identify-match-override) ---
+
+message SearchSpecsRequest {
+  // Free-text title the operator typed into the identify overlay.
+  string query = 1;
+
+  // Optional kind narrowing (e.g. "tv", "movie"); empty = no narrowing.
+  string kind = 2;
+}
+
+message SearchSpecsResult {
+  // The search fetch spec — pure data the core executes through its own
+  // FetchGate (the interactive search shares the plugin's budget).
+  RequestSpec spec = 1;
+}
+
+message SearchResultsRequest {
+  string query = 1;
+  string kind = 2;
+
+  // The fetched search-list response (verbatim; the same shape every fetch
+  // delivers). A failed fetch arrives with fetched=false and error set.
+  FetchedResponse fetched = 3;
+}
+
+message SearchResultsResult {
+  // Candidates in the payload's own order — the plugin renders nothing and
+  // re-scores nothing; the SPA serves this list verbatim.
+  repeated SearchCandidate candidates = 1;
+}
+
+message SearchCandidate {
+  string external_id = 1;
+  string title = 2;
+
+  // proto3 field presence: an absent field is never an empty string/0 —
+  // the overlay renders exactly what the source served.
+  optional string russian_title = 3;
+  optional int32 year = 4;
+  optional int32 episodes = 5;
+  string kind = 6;
+  optional string poster = 7;
 }

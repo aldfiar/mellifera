@@ -5,11 +5,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
 	"google.golang.org/protobuf/types/known/structpb"
 
+	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
 )
@@ -557,4 +559,36 @@ func TestNamespaceEmission(t *testing.T) {
 			t.Fatalf("episode namespace = %v, want exactly season+episode", ns)
 		}
 	})
+}
+
+// TestSearchUnsupported pins the UnsupportedSearch embed (identify-match-
+// override): the plugin's interactive-search pair declines with the sdk
+// sentinel — compile-compatible with the grown MetadataSource interface,
+// behavior unchanged for the four enrichment RPCs.
+func TestSearchUnsupported(t *testing.T) {
+	impl := &parserImpl{}
+	cases := []struct {
+		name string
+		call func() (any, error)
+	}{
+		{"search_specs", func() (any, error) {
+			r, err := impl.SearchSpecs(context.Background(), &metadatav1.SearchSpecsRequest{})
+			return r, err
+		}},
+		{"search_results", func() (any, error) {
+			r, err := impl.SearchResults(context.Background(), &metadatav1.SearchResultsRequest{})
+			return r, err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := tc.call()
+			if !errors.Is(err, sdk.ErrSearchUnsupported) {
+				t.Fatalf("err = %v, want sdk.ErrSearchUnsupported", err)
+			}
+			if res != nil && !reflect.ValueOf(res).IsNil() {
+				t.Errorf("result = %+v, want nil", res)
+			}
+		})
+	}
 }

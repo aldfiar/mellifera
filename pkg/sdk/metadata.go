@@ -5,6 +5,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
@@ -16,15 +17,19 @@ import (
 // implements. It mirrors Scanner (pkg/sdk/scanner.go) at the plugin seam: it
 // has >=2 real implementations -- the subprocess client wrapper built by
 // MetadataSourcePlugin.GRPCClient (core side) and an in-process test fake
-// (test side) -- which justifies the interface (R8). All four RPCs are UNARY
+// (test side) -- which justifies the interface (R8). All six RPCs are UNARY
 // (no streaming surface, unlike Scanner.Scan): Match decides applicability,
 // BuildRequest shapes the fetch, Convert normalizes a raw response, and Merge
-// integrates the result into the core document (the 4-RPC enrichment chain).
+// integrates the result into the core document (the 4-RPC enrichment chain);
+// SearchSpecs/SearchResults (identify-match-override) add the interactive
+// match-picking pair for sources whose upstream carries a search endpoint.
 type MetadataSource interface {
 	Match(ctx context.Context, req *metadatav1.MatchRequest) (*metadatav1.MatchResult, error)
 	BuildRequest(ctx context.Context, req *metadatav1.BuildRequestRequest) (*metadatav1.BuildRequestResponse, error)
 	Convert(ctx context.Context, req *metadatav1.ConvertRequest) (*metadatav1.ConvertResult, error)
 	Merge(ctx context.Context, req *metadatav1.MergeRequest) (*metadatav1.MergeResult, error)
+	SearchSpecs(ctx context.Context, req *metadatav1.SearchSpecsRequest) (*metadatav1.SearchSpecsResult, error)
+	SearchResults(ctx context.Context, req *metadatav1.SearchResultsRequest) (*metadatav1.SearchResultsResult, error)
 }
 
 // MetadataSourcePlugin is the dual-side go-plugin adapter for the
@@ -78,6 +83,14 @@ func (s *metadataServer) Merge(ctx context.Context, req *metadatav1.MergeRequest
 	return s.Impl.Merge(ctx, req)
 }
 
+func (s *metadataServer) SearchSpecs(ctx context.Context, req *metadatav1.SearchSpecsRequest) (*metadatav1.SearchSpecsResult, error) {
+	return s.Impl.SearchSpecs(ctx, req)
+}
+
+func (s *metadataServer) SearchResults(ctx context.Context, req *metadatav1.SearchResultsRequest) (*metadatav1.SearchResultsResult, error) {
+	return s.Impl.SearchResults(ctx, req)
+}
+
 // metadataGRPC adapts the generated gRPC stub to the MetadataSource interface
 // on the core side. Each method forwards to the unary stub.
 type metadataGRPC struct {
@@ -98,4 +111,32 @@ func (c *metadataGRPC) Convert(ctx context.Context, req *metadatav1.ConvertReque
 
 func (c *metadataGRPC) Merge(ctx context.Context, req *metadatav1.MergeRequest) (*metadatav1.MergeResult, error) {
 	return c.stub.Merge(ctx, req)
+}
+
+func (c *metadataGRPC) SearchSpecs(ctx context.Context, req *metadatav1.SearchSpecsRequest) (*metadatav1.SearchSpecsResult, error) {
+	return c.stub.SearchSpecs(ctx, req)
+}
+
+func (c *metadataGRPC) SearchResults(ctx context.Context, req *metadatav1.SearchResultsRequest) (*metadatav1.SearchResultsResult, error) {
+	return c.stub.SearchResults(ctx, req)
+}
+
+// ErrSearchUnsupported is the sentinel both UnsupportedSearch methods fail
+// with: a source embedding the base declares the interactive search
+// capability absent (the core maps it to the `search_unsupported` answer
+// instead of an opaque failure).
+var ErrSearchUnsupported = errors.New("metadata source does not support search")
+
+// UnsupportedSearch is the embeddable base for MetadataSource authors whose
+// upstream carries no search endpoint: both methods fail with the sentinel
+// ErrSearchUnsupported. Embed it and the interface stays satisfied when the
+// capability pair grows — a source WITH search (shikimori) overrides both.
+type UnsupportedSearch struct{}
+
+func (UnsupportedSearch) SearchSpecs(context.Context, *metadatav1.SearchSpecsRequest) (*metadatav1.SearchSpecsResult, error) {
+	return nil, ErrSearchUnsupported
+}
+
+func (UnsupportedSearch) SearchResults(context.Context, *metadatav1.SearchResultsRequest) (*metadatav1.SearchResultsResult, error) {
+	return nil, ErrSearchUnsupported
 }

@@ -235,8 +235,9 @@ func TestFetchSource(t *testing.T) {
 // captureSource hands runSource a fetch spec and captures the ConvertRequest
 // the core builds from the fetch result.
 type captureSource struct {
-	spec      *metadatav1.RequestSpec
-	onConvert func(*metadatav1.ConvertRequest)
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+	spec                  *metadatav1.RequestSpec
+	onConvert             func(*metadatav1.ConvertRequest)
 }
 
 var _ sdk.MetadataSource = (*captureSource)(nil)

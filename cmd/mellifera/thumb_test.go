@@ -63,13 +63,14 @@ func (f *fakeThumbSources) MetadataSource(string, string) (sdk.MetadataSource, e
 // records the query (seek_seconds especially) and optionally writes
 // grabPayload to a test-chosen path — standing in for the real ffmpeg write.
 type fakeGrabber struct {
-	mu         sync.Mutex
-	applies    bool
-	reason     string
-	matchErr   error
-	convertErr error
-	warnings   []string
-	writePath  string
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+	mu                    sync.Mutex
+	applies               bool
+	reason                string
+	matchErr              error
+	convertErr            error
+	warnings              []string
+	writePath             string
 
 	parsed   []*structpb.Struct // per Match: the base it was handed
 	converts []*structpb.Struct // per Convert: the query it received

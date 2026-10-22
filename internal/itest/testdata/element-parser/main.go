@@ -59,7 +59,9 @@ func main() {
 // parser that always applies and contributes one fixed metadata field. The core
 // stamps the namespace id (MergeRequest.plugin_id) and the authoritative
 // _provenance/_view — the plugin writes ONLY sources.<its directed id>.
-type elementParser struct{}
+type elementParser struct {
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+}
 
 var _ sdk.MetadataSource = (*elementParser)(nil)
 

@@ -25,10 +25,11 @@ import (
 // plan into a namespace field (extras_fetched) so a test can see what the
 // run gained from what actually arrived.
 type planSource struct {
-	primary   *metadatav1.RequestSpec
-	extras    []*metadatav1.RequestSpec
-	onConvert func(*metadatav1.ConvertRequest)
-	converted bool
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+	primary               *metadatav1.RequestSpec
+	extras                []*metadatav1.RequestSpec
+	onConvert             func(*metadatav1.ConvertRequest)
+	converted             bool
 }
 
 var _ sdk.MetadataSource = (*planSource)(nil)

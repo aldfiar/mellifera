@@ -22,8 +22,9 @@ import (
 // races across concurrent workers). Every Merge errors -> the source exhausts
 // its retry budget terminally every run.
 type flatFailSource struct {
-	id     string
-	merges atomic.Int32
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+	id                    string
+	merges                atomic.Int32
 }
 
 var _ sdk.MetadataSource = (*flatFailSource)(nil)

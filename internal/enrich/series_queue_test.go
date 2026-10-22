@@ -31,9 +31,10 @@ import (
 // same shape the bundled plugins' Merge emits. An unset convert returns EMPTY
 // metadata (the no_data path); an unset match applies unconditionally.
 type fnSource struct {
-	id      string
-	match   func(*metadatav1.MatchRequest) (*metadatav1.MatchResult, error)
-	convert func(*metadatav1.ConvertRequest) (*metadatav1.ConvertResult, error)
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+	id                    string
+	match                 func(*metadatav1.MatchRequest) (*metadatav1.MatchResult, error)
+	convert               func(*metadatav1.ConvertRequest) (*metadatav1.ConvertResult, error)
 }
 
 func (f *fnSource) Match(_ context.Context, req *metadatav1.MatchRequest) (*metadatav1.MatchResult, error) {
@@ -73,7 +74,10 @@ func (f *fnSource) Merge(_ context.Context, req *metadatav1.MergeRequest) (*meta
 
 // matchErrSource is a source whose Match RPC errors — the chain's outcomeFailed
 // path (retried, then terminal exhausted).
-type matchErrSource struct{ id string }
+type matchErrSource struct {
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+	id                    string
+}
 
 func (m *matchErrSource) Match(context.Context, *metadatav1.MatchRequest) (*metadatav1.MatchResult, error) {
 	return nil, errors.New("match rpc failed") // any RPC error; the kind, not the cause, matters

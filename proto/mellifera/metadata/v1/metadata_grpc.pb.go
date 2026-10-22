@@ -19,10 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	MetadataSource_Match_FullMethodName        = "/mellifera.metadata.v1.MetadataSource/Match"
-	MetadataSource_BuildRequest_FullMethodName = "/mellifera.metadata.v1.MetadataSource/BuildRequest"
-	MetadataSource_Convert_FullMethodName      = "/mellifera.metadata.v1.MetadataSource/Convert"
-	MetadataSource_Merge_FullMethodName        = "/mellifera.metadata.v1.MetadataSource/Merge"
+	MetadataSource_Match_FullMethodName         = "/mellifera.metadata.v1.MetadataSource/Match"
+	MetadataSource_BuildRequest_FullMethodName  = "/mellifera.metadata.v1.MetadataSource/BuildRequest"
+	MetadataSource_Convert_FullMethodName       = "/mellifera.metadata.v1.MetadataSource/Convert"
+	MetadataSource_Merge_FullMethodName         = "/mellifera.metadata.v1.MetadataSource/Merge"
+	MetadataSource_SearchSpecs_FullMethodName   = "/mellifera.metadata.v1.MetadataSource/SearchSpecs"
+	MetadataSource_SearchResults_FullMethodName = "/mellifera.metadata.v1.MetadataSource/SearchResults"
 )
 
 // MetadataSourceClient is the client API for MetadataSource service.
@@ -45,6 +47,13 @@ type MetadataSourceClient interface {
 	//	(a) only write into its OWN source namespace
 	//	(b) update the _view layer per the supplied MergePolicy
 	Merge(ctx context.Context, in *MergeRequest, opts ...grpc.CallOption) (*MergeResult, error)
+	// SEARCH (identify-match-override): interactive match picking for the
+	// admin identify flow. SearchSpecs shapes the source's bounded search
+	// fetch — pure data, executed by the core through the same gate as every
+	// other fetch; SearchResults converts the fetched search-list payload
+	// into candidates in the source's own served order (no re-scoring).
+	SearchSpecs(ctx context.Context, in *SearchSpecsRequest, opts ...grpc.CallOption) (*SearchSpecsResult, error)
+	SearchResults(ctx context.Context, in *SearchResultsRequest, opts ...grpc.CallOption) (*SearchResultsResult, error)
 }
 
 type metadataSourceClient struct {
@@ -95,6 +104,26 @@ func (c *metadataSourceClient) Merge(ctx context.Context, in *MergeRequest, opts
 	return out, nil
 }
 
+func (c *metadataSourceClient) SearchSpecs(ctx context.Context, in *SearchSpecsRequest, opts ...grpc.CallOption) (*SearchSpecsResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SearchSpecsResult)
+	err := c.cc.Invoke(ctx, MetadataSource_SearchSpecs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *metadataSourceClient) SearchResults(ctx context.Context, in *SearchResultsRequest, opts ...grpc.CallOption) (*SearchResultsResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SearchResultsResult)
+	err := c.cc.Invoke(ctx, MetadataSource_SearchResults_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MetadataSourceServer is the server API for MetadataSource service.
 // All implementations must embed UnimplementedMetadataSourceServer
 // for forward compatibility.
@@ -115,6 +144,13 @@ type MetadataSourceServer interface {
 	//	(a) only write into its OWN source namespace
 	//	(b) update the _view layer per the supplied MergePolicy
 	Merge(context.Context, *MergeRequest) (*MergeResult, error)
+	// SEARCH (identify-match-override): interactive match picking for the
+	// admin identify flow. SearchSpecs shapes the source's bounded search
+	// fetch — pure data, executed by the core through the same gate as every
+	// other fetch; SearchResults converts the fetched search-list payload
+	// into candidates in the source's own served order (no re-scoring).
+	SearchSpecs(context.Context, *SearchSpecsRequest) (*SearchSpecsResult, error)
+	SearchResults(context.Context, *SearchResultsRequest) (*SearchResultsResult, error)
 	mustEmbedUnimplementedMetadataSourceServer()
 }
 
@@ -136,6 +172,12 @@ func (UnimplementedMetadataSourceServer) Convert(context.Context, *ConvertReques
 }
 func (UnimplementedMetadataSourceServer) Merge(context.Context, *MergeRequest) (*MergeResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method Merge not implemented")
+}
+func (UnimplementedMetadataSourceServer) SearchSpecs(context.Context, *SearchSpecsRequest) (*SearchSpecsResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method SearchSpecs not implemented")
+}
+func (UnimplementedMetadataSourceServer) SearchResults(context.Context, *SearchResultsRequest) (*SearchResultsResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method SearchResults not implemented")
 }
 func (UnimplementedMetadataSourceServer) mustEmbedUnimplementedMetadataSourceServer() {}
 func (UnimplementedMetadataSourceServer) testEmbeddedByValue()                        {}
@@ -230,6 +272,42 @@ func _MetadataSource_Merge_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _MetadataSource_SearchSpecs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SearchSpecsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MetadataSourceServer).SearchSpecs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MetadataSource_SearchSpecs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MetadataSourceServer).SearchSpecs(ctx, req.(*SearchSpecsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MetadataSource_SearchResults_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SearchResultsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MetadataSourceServer).SearchResults(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MetadataSource_SearchResults_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MetadataSourceServer).SearchResults(ctx, req.(*SearchResultsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // MetadataSource_ServiceDesc is the grpc.ServiceDesc for MetadataSource service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -252,6 +330,14 @@ var MetadataSource_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Merge",
 			Handler:    _MetadataSource_Merge_Handler,
+		},
+		{
+			MethodName: "SearchSpecs",
+			Handler:    _MetadataSource_SearchSpecs_Handler,
+		},
+		{
+			MethodName: "SearchResults",
+			Handler:    _MetadataSource_SearchResults_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
