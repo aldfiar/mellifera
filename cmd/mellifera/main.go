@@ -491,6 +491,12 @@ func main() {
 		// plugin (INV2) — the same anti-corruption seam as Status above.
 		Reenrich:      newReenrichClosure(ctx, st, reg, enrichQueue, loadedCaps, sweeps),
 		EnrichPreview: newEnrichPreviewClosure(st, reg),
+		// Identify overlay (identify-match-override): the interactive search
+		// passthrough (a live read on the request ctx) and the series
+		// re-anchor (the write detaches onto the process ctx — see the
+		// closure). Same INV2 seam.
+		SearchSource:   newSearchClosure(enrichQueue, reg, loadedCaps),
+		IdentifySeries: newIdentifyClosure(ctx, reg, enrichQueue, loadedCaps),
 		// Plugin admin surfaces (plugin-admin-surfaces): the config-binding
 		// flatten over the module registry (options verbatim as raw JSON —
 		// api never parses config semantics, INV4) and the log tail
@@ -861,6 +867,49 @@ func hasMetadataBinding(reg *module.Registry, pluginID string) bool {
 		}
 	}
 	return false
+}
+
+// newSearchClosure builds the api Deps.SearchSource seam (identify-match-
+// override): the interactive search is a live read against the source's own
+// budget — the request ctx rides, because nothing needs to outlive the answer
+// (unlike the re-anchoring identify, a search notifies nothing). Validation
+// mirrors newReenrichClosure: an unknown plugin (not loaded, or no module
+// binds it as a metadata_source) is rejected with the api sentinel BEFORE the
+// queue is asked, and the SDK's unsupported-search sentinel is re-wrapped so
+// the handler's errors.Is maps it to 400 search_unsupported.
+func newSearchClosure(
+	q *enrich.Queue, reg *module.Registry, loadedPlugins map[string][]string,
+) func(context.Context, string, string, string) ([]map[string]any, error) {
+	return func(ctx context.Context, pluginID, query, kind string) ([]map[string]any, error) {
+		if _, loaded := loadedPlugins[pluginID]; !loaded || !hasMetadataBinding(reg, pluginID) {
+			return nil, fmt.Errorf("search %q: %w", pluginID, api.ErrUnknownPlugin)
+		}
+		cands, err := q.SearchSource(ctx, pluginID, query, kind)
+		if errors.Is(err, sdk.ErrSearchUnsupported) {
+			return nil, fmt.Errorf("search %q: %w", pluginID, api.ErrSearchUnsupported)
+		}
+		return cands, err
+	}
+}
+
+// newIdentifyClosure builds the api Deps.IdentifySeries seam (identify-match-
+// override): the operator's picked anchor rides into Queue.IdentifySeries on
+// the PROCESS ctx — the identify write ends in a queue Notify whose feeder
+// must outlive the HTTP request, so the request-scoped ctx is discarded at
+// this boundary (the newReenrichClosure detachment). Unknown-plugin
+// validation runs BEFORE any write (the spec: nothing is written on the
+// error paths); an unknown series surfaces as the store's sql.ErrNoRows,
+// preserved for the handler's 404.
+func newIdentifyClosure(
+	procCtx context.Context, reg *module.Registry, q *enrich.Queue,
+	loadedPlugins map[string][]string,
+) func(context.Context, string, string, string) (bool, int, int, error) {
+	return func(_ context.Context, seriesID, pluginID, externalID string) (bool, int, int, error) {
+		if _, loaded := loadedPlugins[pluginID]; !loaded || !hasMetadataBinding(reg, pluginID) {
+			return false, 0, 0, fmt.Errorf("identify %q: %w", pluginID, api.ErrUnknownPlugin)
+		}
+		return q.IdentifySeries(procCtx, seriesID, pluginID, externalID)
+	}
 }
 
 // previewBatch is the pagination width for the preview closure's QueryItems

@@ -38,7 +38,9 @@ import (
 // files, +4057) — vacuously failing on every run. Re-baselining to f2dc2e8
 // preserves the guard's semantics: "no proto/ change since the sanctioned
 // baseline". Re-baselined to 13e441a by media-data-convention 2.1 (the
-// first sanctioned proto change since f2dc2e8).
+// first sanctioned proto change since f2dc2e8). Re-baselined to 6f7a612 by
+// identify-match-override 1.1 (the interactive search pair: the
+// MetadataSource SearchSpecs/SearchResults RPCs).
 // (go.mod/go.sum were previously guarded as "no new deps", but
 // web-ui Phase 1 legitimately adds the first Go dependency —
 // swaggo/http-swagger — so deps are no longer repo-wide-constant; forward
@@ -49,12 +51,12 @@ func TestQA_AdditiveContract_ProtoAndDepsUnchanged(t *testing.T) {
 		t.Skip("git not on PATH — cannot verify the additive proto/deps contract")
 	}
 	root := moduleRoot(t)
-	if !qprCommitExists(t, root, "13e441a") {
-		t.Skip("commit 13e441a not present — cannot verify additive contract (shallow clone?)")
+	if !qprCommitExists(t, root, "6f7a612") {
+		t.Skip("commit 6f7a612 not present — cannot verify additive contract (shallow clone?)")
 	}
 	for _, target := range []string{"proto/"} {
-		if diff := qprDiffNames(t, root, "13e441a", target); diff != "" {
-			t.Errorf("AC-3: additive contract broken — %s changed since 13e441a (deprecate-don't-delete):\n%s", target, diff)
+		if diff := qprDiffNames(t, root, "6f7a612", target); diff != "" {
+			t.Errorf("AC-3: additive contract broken — %s changed since 6f7a612 (deprecate-don't-delete):\n%s", target, diff)
 		}
 	}
 }
