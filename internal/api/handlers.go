@@ -818,6 +818,42 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toProgressDTO(rec))
 }
 
+// deleteLibrary: parse {id} → store.DeleteLibrary → 204. One domain call.
+// The store transaction removes the library together with every dependent
+// row (items, series, per-item control rows, scan jobs, the parser chain,
+// library-scope source gates); files on disk are never touched. A missing id
+// surfaces from store as a wrapped sql.ErrNoRows → 404 not_found. Not
+// idempotent on purpose (unlike the source-gate clears): the second DELETE
+// of the same id is a 404, so an operator double-click cannot hide a
+// mistaken delete of a re-created library.
+//
+// @Summary      Delete a library and its scan results
+// @Tags         libraries
+// @ID           delete-library
+// @Router       /libraries/{id} [delete]
+// @Param        id path int true "library id"
+// @Success      204 "library deleted (rows only; media files on disk untouched)"
+// @Failure      400 {object} errorBody
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) deleteLibrary(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "library id must be an integer", false)
+		return
+	}
+	if err := a.deps.Store.DeleteLibrary(r.Context(), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found",
+				fmt.Sprintf("library %d not found", id), false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // scanLibrary: parse {id} → deps.Scan → write scanResponse. One domain call.
 //
 // @Summary      Trigger a scan for a library

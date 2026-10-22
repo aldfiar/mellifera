@@ -10,6 +10,7 @@ import {
 
 import {
   apiRequest,
+  deleteLibrary,
   fetchItemMediaObjectUrl,
   getItem,
   getLibrary,
@@ -136,6 +137,33 @@ export function useUpdateLibrary(): UseMutationResult<
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["libraries"] });
       queryClient.invalidateQueries({ queryKey: ["library", variables.id] });
+    },
+  });
+}
+
+// useDeleteLibrary — DELETE /api/v1/libraries/{id} via deleteLibrary. The
+// server removes the library with every dependent row in one transaction;
+// media files on disk are untouched. Non-idempotent → retry:0 — a 404 (row
+// already gone) or 500 surfaces inline, no auto-retry.
+//
+// Invalidation contract: success invalidates ["libraries"] (the admin table
+// re-fetches without the row) and REMOVES the per-library cache entries —
+// ["library", id] and the summary/folders keys — because their rows are gone
+// server-side; a stale cached entry could otherwise render against a deleted
+// library until the next mount.
+export function useDeleteLibrary(): UseMutationResult<
+  void,
+  ApiError,
+  number /* library id */
+> {
+  return useMutation({
+    mutationFn: (id: number) => deleteLibrary(id),
+    retry: 0,
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ["libraries"] });
+      queryClient.removeQueries({ queryKey: ["library", id] });
+      queryClient.removeQueries({ queryKey: ["library-summary", id] });
+      queryClient.removeQueries({ queryKey: ["library-folders", id] });
     },
   });
 }

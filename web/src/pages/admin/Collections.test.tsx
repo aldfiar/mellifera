@@ -137,6 +137,88 @@ describe("Collections — admin panel (group 6)", () => {
     expect(within(container.querySelector('tr[data-library-id="3"]') as HTMLElement).queryByText(/discovered 5/)).toBeNull();
   });
 
+  // Delete is TWO-STEP (INV-no-native-confirm): the first Delete click only
+  // arms the row (Confirm delete/No appear, deleteLibrary NOT called); No
+  // disarms. Confirm delete calls DELETE /libraries/{id} via the api.ts
+  // fetcher seam (same-module delegation, the updateLibrary idiom) and the
+  // ["libraries"] invalidation re-fetches the table without the row. The
+  // target row is a SERIAL library so the serial badge render is covered too.
+  it("delete is two-step per row: arm → Confirm delete removes the row (serial badge renders)", async () => {
+    const serialLib: LibraryDTO = {
+      id: 7,
+      module_id: "serial",
+      root_path: "/media/kofe/ongoing",
+      display_name: "Ongoings",
+      description: "",
+      streams_enabled: true,
+    };
+    let listCalls = 0;
+    vi.spyOn(apiModule, "apiRequest").mockImplementation(
+      (async (path: string) => {
+        if (path === "/api/v1/libraries") {
+          listCalls += 1;
+          return { items: listCalls === 1 ? [serialLib] : [] };
+        }
+        throw new Error(`unexpected call ${path}`);
+      }) as typeof apiModule.apiRequest,
+    );
+    mockSummary(() => 0, "");
+    const delSpy = vi
+      .spyOn(apiModule, "deleteLibrary")
+      .mockResolvedValue(undefined);
+
+    const { container } = render(<Collections />, { wrapper: withClient(activeClient()) });
+    await screen.findByText("/media/kofe/ongoing");
+    // The serial module's badge renders verbatim (TypeBadge known set).
+    expect(screen.getByText("serial")).toBeDefined();
+
+    const row = container.querySelector('tr[data-library-id="7"]') as HTMLElement;
+
+    // Step 1: Delete only arms — no API call, Confirm delete + No appear.
+    fireEvent.click(within(row).getByRole("button", { name: /^Delete$/i }));
+    expect(delSpy).not.toHaveBeenCalled();
+    expect(within(row).getByRole("button", { name: /confirm delete/i })).toBeDefined();
+
+    // No disarms back to the plain Delete button.
+    fireEvent.click(within(row).getByRole("button", { name: /^No$/i }));
+    expect(within(row).queryByRole("button", { name: /confirm delete/i })).toBeNull();
+
+    // Step 2: arm again, confirm → deleteLibrary(7), list re-fetch, row gone.
+    fireEvent.click(within(row).getByRole("button", { name: /^Delete$/i }));
+    fireEvent.click(within(row).getByRole("button", { name: /confirm delete/i }));
+    await waitFor(() => expect(delSpy).toHaveBeenCalledWith(7));
+    expect(await screen.findByText("No collections yet")).toBeDefined();
+    expect(container.querySelector('tr[data-library-id="7"]')).toBeNull();
+  });
+
+  // A failed delete renders the canonical error INLINE on the row (with the
+  // not-deleted note) and the armed state stays — the operator can retry or
+  // back out; nothing auto-retries (retry:0) and the row never disappears.
+  it("delete error surfaces inline on the row and the collection stays", async () => {
+    const libs = fakeLibs(1);
+    vi.spyOn(apiModule, "apiRequest").mockResolvedValue({ items: libs });
+    mockSummary(() => 0, "");
+    vi.spyOn(apiModule, "deleteLibrary").mockRejectedValue(
+      new apiModule.ApiError(404, {
+        code: "not_found",
+        message: "library 1 not found",
+        retryable: false,
+      }),
+    );
+
+    const { container } = render(<Collections />, { wrapper: withClient(freshClient()) });
+    await screen.findByText("/media/lib-1");
+
+    const row = container.querySelector('tr[data-library-id="1"]') as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: /^Delete$/i }));
+    fireEvent.click(within(row).getByRole("button", { name: /confirm delete/i }));
+
+    expect(await screen.findByText("not_found")).toBeDefined();
+    expect(screen.getByText(/the collection was NOT deleted/i)).toBeDefined();
+    // The row is still there (the list was NOT invalidated on failure).
+    expect(container.querySelector('tr[data-library-id="1"]')).not.toBeNull();
+  });
+
   it("add form POSTs the verbatim body including description and clears the form on 201", async () => {
     let listCalls = 0;
     const spy = vi.spyOn(apiModule, "apiRequest").mockImplementation(

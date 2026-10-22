@@ -804,6 +804,45 @@
                     }
                 }
             },
+            "delete": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "Delete a library and its scan results",
+                "operationId": "delete-library",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "library deleted (rows only; media files on disk untouched)"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            },
             "patch": {
                 "tags": [
                     "libraries"
@@ -1614,6 +1653,13 @@
                         "$ref": "#/definitions/api.titleSourceBinding"
                     }
                 },
+                "source_chain": {
+                    "description": "SourceChain is the module's gate-resolved metadata-source chain\n(media-data-convention D6, additive): every bound source in CHAIN order\n(the module config's m.MetadataSources order, NOT title_source_priority —\nthe title walk's order is the title machine's, deliberately different),\neach pair carrying its effective enabled flag AFTER gate resolution. The\nlist IS the served resolution order: the convention projection walks it\nto resolve groups, so priority is served data, never document key order.\nPairs are appended through AddChainSource, reusing the titleSourceBinding\nelement type so the package-level export count stays at the complexity\nbudget's cap of 12.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.titleSourceBinding"
+                    }
+                },
                 "title_sources": {
                     "description": "TitleSources is the module's resolved title-walk input (plugin-title-\nenrichment D5, additive): display.title_source_priority in config order,\neach binding carrying its effective enabled flag AFTER gate resolution.\nThe gate resolution lives upstream (cmd-side, via enrich.ResolveGates per\nlibrary) — this shape is the pure seam-input; an empty/absent list means\nthe composer skips the walk entirely. Pairs are appended through\nAddTitleSource — the element type is unexported (complexity budget:\npackage-level exports capped at 12; see titleSourceBinding).",
                     "type": "array",
@@ -1797,6 +1843,11 @@
                 },
                 "media_type": {
                     "type": "string"
+                },
+                "metadata": {
+                    "description": "Metadata is the additive convention projection (media-data-convention\nD5) — the same read-time block seriesDTO carries: see the field comment\nthere; one shape, one resolution rule, both wire nouns.",
+                    "type": "object",
+                    "additionalProperties": {}
                 },
                 "module_id": {
                     "type": "string"
@@ -2155,6 +2206,11 @@
                 },
                 "library_id": {
                     "type": "integer"
+                },
+                "metadata": {
+                    "description": "Metadata is the additive convention projection (media-data-convention\nD5): the about / cast / episode blocks resolved at read from the\ndocument's sources.* namespaces over the gate-resolved source_chain —\nfirst effectively-enabled carrier wins WHOLE, values verbatim. Absent\n(omitempty) when the chain is unwired or no group has a carrier —\nhonest absence, never an empty block.",
+                    "type": "object",
+                    "additionalProperties": {}
                 },
                 "module_id": {
                     "type": "string"

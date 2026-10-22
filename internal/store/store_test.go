@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -448,3 +449,124 @@ func TestStore_ItemsStatus_Migration(t *testing.T) {
 		t.Fatalf("ensureItemsStatus re-run (must be idempotent): %v", err)
 	}
 }
+
+// TestStore_DeleteLibrary covers the cascade contract: deleting a library
+// removes the row, its items and series, their identity-keyed control rows
+// (progress, parser attachments, title overrides in BOTH id spaces), and the
+// library-scope rows (scan jobs, parser chain, source-prefs) — while a
+// bystander library sharing the tables keeps every row, and module-scope
+// metadata_source_prefs (library_id 0) survive. A second delete of the same
+// id is sql.ErrNoRows (the api layer maps it to 404).
+func TestStore_DeleteLibrary(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+
+	target, err := s.CreateLibrary(ctx, "serial", "/data/ongoing", "Ongoings")
+	if err != nil {
+		t.Fatalf("CreateLibrary target: %v", err)
+	}
+	bystander, err := s.CreateLibrary(ctx, "tv", "/data/tv", "TV")
+	if err != nil {
+		t.Fatalf("CreateLibrary bystander: %v", err)
+	}
+
+	mkItem := func(id, fileID string, lib int64) Item {
+		return Item{
+			ID: id, ModuleID: "tv", LibraryID: lib, FileID: fileID,
+			RelativePath: fileID + ".mkv", MediaType: "video",
+			Document: json.RawMessage(`{"_view":{"title":{"value":"` + id + `"}}}`),
+			SchemaVersion: 1,
+		}
+	}
+	for _, it := range []Item{mkItem("itm_a1", "f1", target), mkItem("itm_a2", "f2", target), mkItem("itm_b1", "f3", bystander)} {
+		if err := s.PutItem(ctx, it); err != nil {
+			t.Fatalf("PutItem %s: %v", it.ID, err)
+		}
+	}
+	if err := s.PutSeries(ctx, Series{
+		ModuleID: "serial", LibraryID: target, RelativePath: "One Piece",
+		Document: json.RawMessage(`{}`), SchemaVersion: 1, Status: "new",
+	}); err != nil {
+		t.Fatalf("PutSeries: %v", err)
+	}
+	var serID string
+	if err := s.db.QueryRowContext(ctx, "SELECT id FROM series WHERE library_id = ?", target).Scan(&serID); err != nil {
+		t.Fatalf("read series id: %v", err)
+	}
+
+	// Control rows: per-item ones for BOTH libraries' items, per-series
+	// title overrides, and the library-scope tables for both libraries.
+	for _, itemID := range []string{"itm_a1", "itm_b1"} {
+		if _, err := s.PutProgress(ctx, itemID, 42); err != nil {
+			t.Fatalf("PutProgress %s: %v", itemID, err)
+		}
+	}
+	seed := []string{
+		`INSERT INTO item_parsers (item_id, plugin_id, position) VALUES ('itm_a1','p1',0),('itm_b1','p1',0)`,
+		`INSERT INTO enrichment_failures (item_id, plugin_id, status, reason, attempts, failed_at, next_eligible_at) VALUES ('itm_a1','p1','failed','',1,'t','t')`,
+		`INSERT INTO title_overrides (entity_id, title, updated_at) VALUES ('itm_a1','A','t'),('` + serID + `','S','t'),('itm_b1','B','t')`,
+		`INSERT INTO scan_jobs (library_id, status, started_at, updated_at) VALUES (` + fmtInt(target) + `,'done','t','t'),(` + fmtInt(bystander) + `,'done','t','t')`,
+		`INSERT INTO library_parsers (library_id, plugin_id, position) VALUES (` + fmtInt(target) + `,'p1',0),(` + fmtInt(bystander) + `,'p1',0)`,
+		`INSERT INTO metadata_source_prefs (module_id, library_id, plugin_id, enabled, updated_at) VALUES ('tv',` + fmtInt(target) + `,'p1',0,'t'),('tv',0,'p2',1,'t')`,
+	}
+	for _, q := range seed {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+
+	if err := s.DeleteLibrary(ctx, target); err != nil {
+		t.Fatalf("DeleteLibrary: %v", err)
+	}
+
+	count := func(table, where string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE "+where, args...).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		return n
+	}
+	// The target's every row is gone...
+	for _, c := range []struct{ table, where string }{
+		{"items", "library_id = ?"},
+		{"series", "library_id = ?"},
+		{"scan_jobs", "library_id = ?"},
+		{"library_parsers", "library_id = ?"},
+		{"metadata_source_prefs", "library_id = ?"},
+		{"playback_progress", "item_id = 'itm_a1'"},
+		{"item_parsers", "item_id = 'itm_a1'"},
+		{"enrichment_failures", "item_id = 'itm_a1'"},
+		{"title_overrides", "entity_id IN ('itm_a1',?)"},
+	} {
+		var args []any
+		if c.where == "library_id = ?" {
+			args = append(args, target)
+		} else if c.where == "entity_id IN ('itm_a1',?)" {
+			args = append(args, serID)
+		}
+		if n := count(c.table, c.where, args...); n != 0 {
+			t.Fatalf("%s after delete = %d rows, want 0", c.table, n)
+		}
+	}
+	// ...the bystander's every row survives, and so does the module-scope pref.
+	if n := count("items", "library_id = ?", bystander); n != 1 {
+		t.Fatalf("bystander items = %d, want 1", n)
+	}
+	if n := count("title_overrides", "entity_id = 'itm_b1'"); n != 1 {
+		t.Fatalf("bystander title override = %d, want 1", n)
+	}
+	if n := count("metadata_source_prefs", "library_id = 0"); n != 1 {
+		t.Fatalf("module-scope source pref = %d, want 1 (library delete never touches module scope)", n)
+	}
+	if _, err := s.GetLibrary(ctx, target); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetLibrary deleted = %v, want sql.ErrNoRows", err)
+	}
+	// Second delete of the same id: sql.ErrNoRows (404 at the api layer).
+	if err := s.DeleteLibrary(ctx, target); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DeleteLibrary repeat = %v, want sql.ErrNoRows", err)
+	}
+}
+
+// fmtInt is the test-local int64→string for building seed SQL literals.
+func fmtInt(v int64) string { return strconv.FormatInt(v, 10) }
