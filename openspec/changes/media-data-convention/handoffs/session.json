@@ -1,6 +1,0 @@
-{
-  "status": "done",
-  "summary": "group 4 applied + verified: probe aa0a7a63c5580d45 green, 6/7 boxes ticked; vitest 233/233 + tsc clean; served-block consumption replaces the client walk in Synopsis's path",
-  "next": "group 5: qa joint (enrich->store->serve end-to-end)",
-  "updated_at": "2026-10-21T22:00:05.285022Z"
-}
