@@ -66,3 +66,27 @@ events:
     cmd: 'grep -q "identify-match-override" internal/itest/qa_pipeline_regression_test.go && grep -q "identify-match-override" internal/itest/qa_image_regression_test.go && go test ./internal/itest -run "TestQA_AdditiveContract_ProtoAndDepsUnchanged|TestB2_Ac3Additive" -count=1'
     exit: 0
     duration_ms: 4902
+  - seq: 9
+    box: 3.1
+    kind: claim
+    by: session
+    at: 2026-10-22T20:03:37Z
+    cmd: 'test -f web/src/components/manage/IdentifySeries.tsx && grep -q "data-testid=\"identify-search-input\"" web/src/components/manage/IdentifySeries.tsx && grep -q "data-testid=\"identify-current-match\"" web/src/components/manage/IdentifySeries.tsx && grep -q "data-testid=\"identify-candidate\"" web/src/components/manage/IdentifySeries.tsx && if grep -qE "\.sort\(" web/src/components/manage/IdentifySeries.tsx; then exit 1; fi && grep -q "data-testid=\"identify-searching\"" web/src/components/manage/IdentifySeries.tsx && grep -q "data-testid=\"identify-empty\"" web/src/components/manage/IdentifySeries.tsx && grep -q "data-testid=\"identify-error\"" web/src/components/manage/IdentifySeries.tsx'
+    exit: 0
+    duration_ms: 17
+  - seq: 10
+    box: 3.2
+    kind: claim
+    by: session
+    at: 2026-10-22T20:03:37Z
+    cmd: 'grep -q "/identify" web/src/lib/api.ts && grep -q "searchSource" web/src/lib/api.ts && grep -q "data-testid=\"identify-confirm\"" web/src/components/manage/IdentifySeries.tsx'
+    exit: 0
+    duration_ms: 9
+  - seq: 11
+    box: 3.3
+    kind: claim
+    by: session
+    at: 2026-10-22T20:04:18Z
+    cmd: 'grep -q "identify={seriesIdentifyGate" web/src/pages/collections/Collection.tsx'
+    exit: 0
+    duration_ms: 6
