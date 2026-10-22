@@ -30,7 +30,7 @@ import (
 	"time"
 )
 
-// b2MergeBase is the split-repo baseline (f2dc2e8 — the repo root after the
+// b2MergeBase pins the additive baseline (originally f2dc2e8 — the repo root after the
 // 2026-10-14 subtree split, where proto/ first lives at root level; no
 // sanctioned proto change has landed since). All additive diff probes anchor
 // here. The old pin e2a7562 (the umbrella-era merge base) cannot work in the
@@ -38,7 +38,7 @@ import (
 // the directory as all-insertions (13 files, +4057) — vacuously failing on
 // every run. Re-baselining to f2dc2e8 preserves the guard's semantics: empty
 // diff in the no_seam trees = additive holds.
-const b2MergeBase = "f2dc2e8"
+const b2MergeBase = "13e441a" // re-baselined by media-data-convention 2.1 (request-plan extras); was f2dc2e8
 
 // b2Token is the admin bearer for the TV regression server.
 const b2Token = "qa-b2-regression-token"

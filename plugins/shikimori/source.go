@@ -27,17 +27,22 @@ var _ sdk.MetadataSource = (*sourceImpl)(nil)
 // episode; the film path stamps title with neither); the emitted keys are the
 // sources.shikimori namespace shape plus the query keys BuildRequest consumes.
 const (
-	idKey          = "shikimori_id"
-	titleKey       = "title"
-	seasonKey      = "season"
-	episodeKey     = "episode"
-	kindKey        = "kind"
-	yearKey        = "year"
-	episodesKey    = "episodes"
-	kindMovie      = "movie"
-	resolvedIDsKey = "resolved_ids"
+	idKey       = "shikimori_id"
+	titleKey    = "title"
+	seasonKey   = "season"
+	episodeKey  = "episode"
+	kindKey     = "kind"
+	yearKey     = "year"
+	episodesKey = "episodes"
+	kindMovie   = "movie"
+
 	// resolvedIDsKey rides inside Convert's metadata so the core can lift it
 	// into doc.identifiers; Merge strips it — it is NEVER a namespace field.
+	resolvedIDsKey = "resolved_ids"
+
+	// castKey is the media-data convention's cast field (design D1): flat
+	// {name, role?, photo_url?} entries composed from the roles payload.
+	castKey = "cast"
 
 	// The serial module's serial-record document vocabulary (the scanner's
 	// stamp: serial_record/dir_name_raw/series_relative_path). Read here as
@@ -163,9 +168,14 @@ func seasonField(f map[string]*structpb.Value) (int64, bool) {
 func (*sourceImpl) BuildRequest(_ context.Context, req *metadatav1.BuildRequestRequest) (*metadatav1.BuildRequestResponse, error) {
 	vars := map[string]*metadatav1.VariableValue{}
 	template := searchTemplate
+	res := &metadatav1.BuildRequestResponse{}
 	if id, ok := intField(req.GetQuery(), idKey); ok && id > 0 {
 		template = anchoredTemplate
 		vars[idKey] = intVar(id)
+		// The request plan (media-data convention, design Interfaces §5):
+		// an anchored run also fetches the anime's roles so Convert can
+		// compose the convention cast. A search stays single-fetch.
+		res.ExtraSpecs = []*metadatav1.RequestSpec{rolesSpec(id)}
 	} else {
 		title := req.GetQuery().GetFields()[titleKey].GetStringValue()
 		vars[titleKey] = stringVar(title)
@@ -174,13 +184,29 @@ func (*sourceImpl) BuildRequest(_ context.Context, req *metadatav1.BuildRequestR
 			vars[kindKey] = stringVar(kind)
 		}
 	}
-	return &metadatav1.BuildRequestResponse{Spec: &metadatav1.RequestSpec{
+	res.Spec = &metadatav1.RequestSpec{
 		Method:        "GET",
 		UrlTemplate:   template,
 		Headers:       map[string]string{"User-Agent": userAgent},
 		Variables:     vars,
 		MinIntervalMs: minIntervalMS,
-	}}, nil
+	}
+	return res, nil
+}
+
+// rolesSpec shapes the companion roles fetch (media-data convention D1):
+// GET /api/animes/{id}/roles under the SAME anonymous-tier contract as the
+// primary — the app-named User-Agent (never omitted) and the 700 ms pacing.
+// No new config, no new variables beyond the anchor id the primary already
+// carries.
+func rolesSpec(id int64) *metadatav1.RequestSpec {
+	return &metadatav1.RequestSpec{
+		Method:        "GET",
+		UrlTemplate:   rolesTemplate,
+		Headers:       map[string]string{"User-Agent": userAgent},
+		Variables:     map[string]*metadatav1.VariableValue{idKey: intVar(id)},
+		MinIntervalMs: minIntervalMS,
+	}
 }
 
 // Merge integrates shikimori's metadata into the core document, writing ONLY the
@@ -249,6 +275,10 @@ func upstreamBase() string {
 
 var (
 	anchoredTemplate = apiBase + "/api/animes/{shikimori_id}"
+
+	// rolesTemplate is the companion roles endpoint (media-data convention
+	// D1): the cast source for an anchored run.
+	rolesTemplate = apiBase + "/api/animes/{shikimori_id}/roles"
 
 	// searchTemplate is var-built only to bake the bounded page size into the
 	// endpoint block.

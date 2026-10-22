@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-10-21
+goal: Any conforming source feeds every UI surface with no per-source UI edits;
+  absent fields mean absent UI blocks, never fabricated data.

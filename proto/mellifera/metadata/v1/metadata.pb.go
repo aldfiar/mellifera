@@ -251,8 +251,15 @@ func (x *BuildRequestRequest) GetOptions() *structpb.Struct {
 }
 
 type BuildRequestResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Spec          *RequestSpec           `protobuf:"bytes,1,opt,name=spec,proto3" json:"spec,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Spec  *RequestSpec           `protobuf:"bytes,1,opt,name=spec,proto3" json:"spec,omitempty"`
+	// The ordered request plan beyond the primary spec (media-data convention
+	// D4): companion fetches the same run should perform after `spec`, in
+	// order. The core executes each extra at the reserved fetch point —
+	// validated and paced by its own min_interval_ms exactly like the
+	// primary — and delivers the outcomes to Convert as extra_responses.
+	// A failed extra soft-fails its own entry; it never fails the run.
+	ExtraSpecs    []*RequestSpec `protobuf:"bytes,2,rep,name=extra_specs,json=extraSpecs,proto3" json:"extra_specs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -294,6 +301,13 @@ func (x *BuildRequestResponse) GetSpec() *RequestSpec {
 	return nil
 }
 
+func (x *BuildRequestResponse) GetExtraSpecs() []*RequestSpec {
+	if x != nil {
+		return x.ExtraSpecs
+	}
+	return nil
+}
+
 type ConvertRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The original query, so the plugin can interpret response fields whose
@@ -305,8 +319,12 @@ type ConvertRequest struct {
 	ResponseHeaders map[string]string `protobuf:"bytes,4,rep,name=response_headers,json=responseHeaders,proto3" json:"response_headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	ModuleType      string            `protobuf:"bytes,5,opt,name=module_type,json=moduleType,proto3" json:"module_type,omitempty"`
 	Options         *structpb.Struct  `protobuf:"bytes,6,opt,name=options,proto3" json:"options,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Outcomes of the request plan's extra specs (BuildRequestResponse.
+	// extra_specs), aligned by position: entry i is extra spec i's outcome.
+	// The primary response stays in raw_response/http_status/response_headers.
+	ExtraResponses []*FetchedResponse `protobuf:"bytes,7,rep,name=extra_responses,json=extraResponses,proto3" json:"extra_responses,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ConvertRequest) Reset() {
@@ -381,6 +399,95 @@ func (x *ConvertRequest) GetOptions() *structpb.Struct {
 	return nil
 }
 
+func (x *ConvertRequest) GetExtraResponses() []*FetchedResponse {
+	if x != nil {
+		return x.ExtraResponses
+	}
+	return nil
+}
+
+// One extra spec's fetch outcome (media-data convention D4): the response
+// when fetched, or the error when that extra's fetch failed (the run
+// continues — Convert decides what the namespace gains from what arrived).
+type FetchedResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Raw response body (verbatim bytes), when fetched.
+	Body       []byte            `protobuf:"bytes,1,opt,name=body,proto3" json:"body,omitempty"`
+	HttpStatus int32             `protobuf:"varint,2,opt,name=http_status,json=httpStatus,proto3" json:"http_status,omitempty"`
+	Headers    map[string]string `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// False => this extra's fetch failed; `error` carries why and the other
+	// fields are unset.
+	Fetched       bool   `protobuf:"varint,4,opt,name=fetched,proto3" json:"fetched,omitempty"`
+	Error         string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FetchedResponse) Reset() {
+	*x = FetchedResponse{}
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FetchedResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FetchedResponse) ProtoMessage() {}
+
+func (x *FetchedResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FetchedResponse.ProtoReflect.Descriptor instead.
+func (*FetchedResponse) Descriptor() ([]byte, []int) {
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *FetchedResponse) GetBody() []byte {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+func (x *FetchedResponse) GetHttpStatus() int32 {
+	if x != nil {
+		return x.HttpStatus
+	}
+	return 0
+}
+
+func (x *FetchedResponse) GetHeaders() map[string]string {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *FetchedResponse) GetFetched() bool {
+	if x != nil {
+		return x.Fetched
+	}
+	return false
+}
+
+func (x *FetchedResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 type ConvertResult struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Normalized metadata in the plugin's namespace shape. Plugin returns
@@ -403,7 +510,7 @@ type ConvertResult struct {
 
 func (x *ConvertResult) Reset() {
 	*x = ConvertResult{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[5]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -415,7 +522,7 @@ func (x *ConvertResult) String() string {
 func (*ConvertResult) ProtoMessage() {}
 
 func (x *ConvertResult) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[5]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -428,7 +535,7 @@ func (x *ConvertResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConvertResult.ProtoReflect.Descriptor instead.
 func (*ConvertResult) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{5}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ConvertResult) GetMetadata() *structpb.Struct {
@@ -470,7 +577,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[6]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -482,7 +589,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[6]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -495,7 +602,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{6}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Error) GetCode() string {
@@ -538,7 +645,7 @@ type MergeRequest struct {
 
 func (x *MergeRequest) Reset() {
 	*x = MergeRequest{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[7]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -550,7 +657,7 @@ func (x *MergeRequest) String() string {
 func (*MergeRequest) ProtoMessage() {}
 
 func (x *MergeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[7]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -563,7 +670,7 @@ func (x *MergeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MergeRequest.ProtoReflect.Descriptor instead.
 func (*MergeRequest) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{7}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *MergeRequest) GetIncoming() *structpb.Struct {
@@ -621,7 +728,7 @@ type MergePolicy struct {
 
 func (x *MergePolicy) Reset() {
 	*x = MergePolicy{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[8]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -633,7 +740,7 @@ func (x *MergePolicy) String() string {
 func (*MergePolicy) ProtoMessage() {}
 
 func (x *MergePolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[8]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -646,7 +753,7 @@ func (x *MergePolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MergePolicy.ProtoReflect.Descriptor instead.
 func (*MergePolicy) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{8}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MergePolicy) GetSourcePriority() []string {
@@ -689,7 +796,7 @@ type MergeResult struct {
 
 func (x *MergeResult) Reset() {
 	*x = MergeResult{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[9]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -701,7 +808,7 @@ func (x *MergeResult) String() string {
 func (*MergeResult) ProtoMessage() {}
 
 func (x *MergeResult) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[9]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -714,7 +821,7 @@ func (x *MergeResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MergeResult.ProtoReflect.Descriptor instead.
 func (*MergeResult) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{9}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *MergeResult) GetDocument() *v11.MediaDocument {
@@ -769,9 +876,11 @@ const file_mellifera_metadata_v1_metadata_proto_rawDesc = "" +
 	"\vmodule_type\x18\x02 \x01(\tR\n" +
 	"moduleType\x124\n" +
 	"\x04auth\x18\x03 \x01(\v2 .mellifera.common.v1.AuthContextR\x04auth\x121\n" +
-	"\aoptions\x18\x04 \x01(\v2\x17.google.protobuf.StructR\aoptions\"N\n" +
+	"\aoptions\x18\x04 \x01(\v2\x17.google.protobuf.StructR\aoptions\"\x93\x01\n" +
 	"\x14BuildRequestResponse\x126\n" +
-	"\x04spec\x18\x01 \x01(\v2\".mellifera.metadata.v1.RequestSpecR\x04spec\"\x82\x03\n" +
+	"\x04spec\x18\x01 \x01(\v2\".mellifera.metadata.v1.RequestSpecR\x04spec\x12C\n" +
+	"\vextra_specs\x18\x02 \x03(\v2\".mellifera.metadata.v1.RequestSpecR\n" +
+	"extraSpecs\"\xd3\x03\n" +
 	"\x0eConvertRequest\x12-\n" +
 	"\x05query\x18\x01 \x01(\v2\x17.google.protobuf.StructR\x05query\x12!\n" +
 	"\fraw_response\x18\x02 \x01(\fR\vrawResponse\x12\x1f\n" +
@@ -780,8 +889,19 @@ const file_mellifera_metadata_v1_metadata_proto_rawDesc = "" +
 	"\x10response_headers\x18\x04 \x03(\v2:.mellifera.metadata.v1.ConvertRequest.ResponseHeadersEntryR\x0fresponseHeaders\x12\x1f\n" +
 	"\vmodule_type\x18\x05 \x01(\tR\n" +
 	"moduleType\x121\n" +
-	"\aoptions\x18\x06 \x01(\v2\x17.google.protobuf.StructR\aoptions\x1aB\n" +
+	"\aoptions\x18\x06 \x01(\v2\x17.google.protobuf.StructR\aoptions\x12O\n" +
+	"\x0fextra_responses\x18\a \x03(\v2&.mellifera.metadata.v1.FetchedResponseR\x0eextraResponses\x1aB\n" +
 	"\x14ResponseHeadersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x81\x02\n" +
+	"\x0fFetchedResponse\x12\x12\n" +
+	"\x04body\x18\x01 \x01(\fR\x04body\x12\x1f\n" +
+	"\vhttp_status\x18\x02 \x01(\x05R\n" +
+	"httpStatus\x12M\n" +
+	"\aheaders\x18\x03 \x03(\v23.mellifera.metadata.v1.FetchedResponse.HeadersEntryR\aheaders\x12\x18\n" +
+	"\afetched\x18\x04 \x01(\bR\afetched\x12\x14\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\x1a:\n" +
+	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xca\x02\n" +
 	"\rConvertResult\x123\n" +
@@ -836,67 +956,72 @@ func file_mellifera_metadata_v1_metadata_proto_rawDescGZIP() []byte {
 	return file_mellifera_metadata_v1_metadata_proto_rawDescData
 }
 
-var file_mellifera_metadata_v1_metadata_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_mellifera_metadata_v1_metadata_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_mellifera_metadata_v1_metadata_proto_goTypes = []any{
 	(*MatchRequest)(nil),         // 0: mellifera.metadata.v1.MatchRequest
 	(*MatchResult)(nil),          // 1: mellifera.metadata.v1.MatchResult
 	(*BuildRequestRequest)(nil),  // 2: mellifera.metadata.v1.BuildRequestRequest
 	(*BuildRequestResponse)(nil), // 3: mellifera.metadata.v1.BuildRequestResponse
 	(*ConvertRequest)(nil),       // 4: mellifera.metadata.v1.ConvertRequest
-	(*ConvertResult)(nil),        // 5: mellifera.metadata.v1.ConvertResult
-	(*Error)(nil),                // 6: mellifera.metadata.v1.Error
-	(*MergeRequest)(nil),         // 7: mellifera.metadata.v1.MergeRequest
-	(*MergePolicy)(nil),          // 8: mellifera.metadata.v1.MergePolicy
-	(*MergeResult)(nil),          // 9: mellifera.metadata.v1.MergeResult
-	nil,                          // 10: mellifera.metadata.v1.ConvertRequest.ResponseHeadersEntry
-	nil,                          // 11: mellifera.metadata.v1.ConvertResult.ProvenanceEntry
-	nil,                          // 12: mellifera.metadata.v1.MergePolicy.FieldSourceOverridesEntry
-	(*v1.IdentifyResult)(nil),    // 13: mellifera.scanner.v1.IdentifyResult
-	(*structpb.Struct)(nil),      // 14: google.protobuf.Struct
-	(*v11.AuthContext)(nil),      // 15: mellifera.common.v1.AuthContext
-	(*RequestSpec)(nil),          // 16: mellifera.metadata.v1.RequestSpec
-	(*v11.MediaDocument)(nil),    // 17: mellifera.common.v1.MediaDocument
-	(*v11.MergeConflict)(nil),    // 18: mellifera.common.v1.MergeConflict
-	(*v11.ViewBinding)(nil),      // 19: mellifera.common.v1.ViewBinding
-	(*v11.Provenance)(nil),       // 20: mellifera.common.v1.Provenance
+	(*FetchedResponse)(nil),      // 5: mellifera.metadata.v1.FetchedResponse
+	(*ConvertResult)(nil),        // 6: mellifera.metadata.v1.ConvertResult
+	(*Error)(nil),                // 7: mellifera.metadata.v1.Error
+	(*MergeRequest)(nil),         // 8: mellifera.metadata.v1.MergeRequest
+	(*MergePolicy)(nil),          // 9: mellifera.metadata.v1.MergePolicy
+	(*MergeResult)(nil),          // 10: mellifera.metadata.v1.MergeResult
+	nil,                          // 11: mellifera.metadata.v1.ConvertRequest.ResponseHeadersEntry
+	nil,                          // 12: mellifera.metadata.v1.FetchedResponse.HeadersEntry
+	nil,                          // 13: mellifera.metadata.v1.ConvertResult.ProvenanceEntry
+	nil,                          // 14: mellifera.metadata.v1.MergePolicy.FieldSourceOverridesEntry
+	(*v1.IdentifyResult)(nil),    // 15: mellifera.scanner.v1.IdentifyResult
+	(*structpb.Struct)(nil),      // 16: google.protobuf.Struct
+	(*v11.AuthContext)(nil),      // 17: mellifera.common.v1.AuthContext
+	(*RequestSpec)(nil),          // 18: mellifera.metadata.v1.RequestSpec
+	(*v11.MediaDocument)(nil),    // 19: mellifera.common.v1.MediaDocument
+	(*v11.MergeConflict)(nil),    // 20: mellifera.common.v1.MergeConflict
+	(*v11.ViewBinding)(nil),      // 21: mellifera.common.v1.ViewBinding
+	(*v11.Provenance)(nil),       // 22: mellifera.common.v1.Provenance
 }
 var file_mellifera_metadata_v1_metadata_proto_depIdxs = []int32{
-	13, // 0: mellifera.metadata.v1.MatchRequest.item:type_name -> mellifera.scanner.v1.IdentifyResult
-	14, // 1: mellifera.metadata.v1.MatchRequest.existing_ids:type_name -> google.protobuf.Struct
-	14, // 2: mellifera.metadata.v1.MatchRequest.options:type_name -> google.protobuf.Struct
-	14, // 3: mellifera.metadata.v1.MatchResult.query:type_name -> google.protobuf.Struct
-	14, // 4: mellifera.metadata.v1.MatchResult.resolved_ids:type_name -> google.protobuf.Struct
-	14, // 5: mellifera.metadata.v1.BuildRequestRequest.query:type_name -> google.protobuf.Struct
-	15, // 6: mellifera.metadata.v1.BuildRequestRequest.auth:type_name -> mellifera.common.v1.AuthContext
-	14, // 7: mellifera.metadata.v1.BuildRequestRequest.options:type_name -> google.protobuf.Struct
-	16, // 8: mellifera.metadata.v1.BuildRequestResponse.spec:type_name -> mellifera.metadata.v1.RequestSpec
-	14, // 9: mellifera.metadata.v1.ConvertRequest.query:type_name -> google.protobuf.Struct
-	10, // 10: mellifera.metadata.v1.ConvertRequest.response_headers:type_name -> mellifera.metadata.v1.ConvertRequest.ResponseHeadersEntry
-	14, // 11: mellifera.metadata.v1.ConvertRequest.options:type_name -> google.protobuf.Struct
-	14, // 12: mellifera.metadata.v1.ConvertResult.metadata:type_name -> google.protobuf.Struct
-	11, // 13: mellifera.metadata.v1.ConvertResult.provenance:type_name -> mellifera.metadata.v1.ConvertResult.ProvenanceEntry
-	6,  // 14: mellifera.metadata.v1.ConvertResult.error:type_name -> mellifera.metadata.v1.Error
-	14, // 15: mellifera.metadata.v1.MergeRequest.incoming:type_name -> google.protobuf.Struct
-	17, // 16: mellifera.metadata.v1.MergeRequest.document:type_name -> mellifera.common.v1.MediaDocument
-	8,  // 17: mellifera.metadata.v1.MergeRequest.policy:type_name -> mellifera.metadata.v1.MergePolicy
-	12, // 18: mellifera.metadata.v1.MergePolicy.field_source_overrides:type_name -> mellifera.metadata.v1.MergePolicy.FieldSourceOverridesEntry
-	17, // 19: mellifera.metadata.v1.MergeResult.document:type_name -> mellifera.common.v1.MediaDocument
-	18, // 20: mellifera.metadata.v1.MergeResult.conflicts:type_name -> mellifera.common.v1.MergeConflict
-	19, // 21: mellifera.metadata.v1.MergeResult.view:type_name -> mellifera.common.v1.ViewBinding
-	20, // 22: mellifera.metadata.v1.ConvertResult.ProvenanceEntry.value:type_name -> mellifera.common.v1.Provenance
-	0,  // 23: mellifera.metadata.v1.MetadataSource.Match:input_type -> mellifera.metadata.v1.MatchRequest
-	2,  // 24: mellifera.metadata.v1.MetadataSource.BuildRequest:input_type -> mellifera.metadata.v1.BuildRequestRequest
-	4,  // 25: mellifera.metadata.v1.MetadataSource.Convert:input_type -> mellifera.metadata.v1.ConvertRequest
-	7,  // 26: mellifera.metadata.v1.MetadataSource.Merge:input_type -> mellifera.metadata.v1.MergeRequest
-	1,  // 27: mellifera.metadata.v1.MetadataSource.Match:output_type -> mellifera.metadata.v1.MatchResult
-	3,  // 28: mellifera.metadata.v1.MetadataSource.BuildRequest:output_type -> mellifera.metadata.v1.BuildRequestResponse
-	5,  // 29: mellifera.metadata.v1.MetadataSource.Convert:output_type -> mellifera.metadata.v1.ConvertResult
-	9,  // 30: mellifera.metadata.v1.MetadataSource.Merge:output_type -> mellifera.metadata.v1.MergeResult
-	27, // [27:31] is the sub-list for method output_type
-	23, // [23:27] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	15, // 0: mellifera.metadata.v1.MatchRequest.item:type_name -> mellifera.scanner.v1.IdentifyResult
+	16, // 1: mellifera.metadata.v1.MatchRequest.existing_ids:type_name -> google.protobuf.Struct
+	16, // 2: mellifera.metadata.v1.MatchRequest.options:type_name -> google.protobuf.Struct
+	16, // 3: mellifera.metadata.v1.MatchResult.query:type_name -> google.protobuf.Struct
+	16, // 4: mellifera.metadata.v1.MatchResult.resolved_ids:type_name -> google.protobuf.Struct
+	16, // 5: mellifera.metadata.v1.BuildRequestRequest.query:type_name -> google.protobuf.Struct
+	17, // 6: mellifera.metadata.v1.BuildRequestRequest.auth:type_name -> mellifera.common.v1.AuthContext
+	16, // 7: mellifera.metadata.v1.BuildRequestRequest.options:type_name -> google.protobuf.Struct
+	18, // 8: mellifera.metadata.v1.BuildRequestResponse.spec:type_name -> mellifera.metadata.v1.RequestSpec
+	18, // 9: mellifera.metadata.v1.BuildRequestResponse.extra_specs:type_name -> mellifera.metadata.v1.RequestSpec
+	16, // 10: mellifera.metadata.v1.ConvertRequest.query:type_name -> google.protobuf.Struct
+	11, // 11: mellifera.metadata.v1.ConvertRequest.response_headers:type_name -> mellifera.metadata.v1.ConvertRequest.ResponseHeadersEntry
+	16, // 12: mellifera.metadata.v1.ConvertRequest.options:type_name -> google.protobuf.Struct
+	5,  // 13: mellifera.metadata.v1.ConvertRequest.extra_responses:type_name -> mellifera.metadata.v1.FetchedResponse
+	12, // 14: mellifera.metadata.v1.FetchedResponse.headers:type_name -> mellifera.metadata.v1.FetchedResponse.HeadersEntry
+	16, // 15: mellifera.metadata.v1.ConvertResult.metadata:type_name -> google.protobuf.Struct
+	13, // 16: mellifera.metadata.v1.ConvertResult.provenance:type_name -> mellifera.metadata.v1.ConvertResult.ProvenanceEntry
+	7,  // 17: mellifera.metadata.v1.ConvertResult.error:type_name -> mellifera.metadata.v1.Error
+	16, // 18: mellifera.metadata.v1.MergeRequest.incoming:type_name -> google.protobuf.Struct
+	19, // 19: mellifera.metadata.v1.MergeRequest.document:type_name -> mellifera.common.v1.MediaDocument
+	9,  // 20: mellifera.metadata.v1.MergeRequest.policy:type_name -> mellifera.metadata.v1.MergePolicy
+	14, // 21: mellifera.metadata.v1.MergePolicy.field_source_overrides:type_name -> mellifera.metadata.v1.MergePolicy.FieldSourceOverridesEntry
+	19, // 22: mellifera.metadata.v1.MergeResult.document:type_name -> mellifera.common.v1.MediaDocument
+	20, // 23: mellifera.metadata.v1.MergeResult.conflicts:type_name -> mellifera.common.v1.MergeConflict
+	21, // 24: mellifera.metadata.v1.MergeResult.view:type_name -> mellifera.common.v1.ViewBinding
+	22, // 25: mellifera.metadata.v1.ConvertResult.ProvenanceEntry.value:type_name -> mellifera.common.v1.Provenance
+	0,  // 26: mellifera.metadata.v1.MetadataSource.Match:input_type -> mellifera.metadata.v1.MatchRequest
+	2,  // 27: mellifera.metadata.v1.MetadataSource.BuildRequest:input_type -> mellifera.metadata.v1.BuildRequestRequest
+	4,  // 28: mellifera.metadata.v1.MetadataSource.Convert:input_type -> mellifera.metadata.v1.ConvertRequest
+	8,  // 29: mellifera.metadata.v1.MetadataSource.Merge:input_type -> mellifera.metadata.v1.MergeRequest
+	1,  // 30: mellifera.metadata.v1.MetadataSource.Match:output_type -> mellifera.metadata.v1.MatchResult
+	3,  // 31: mellifera.metadata.v1.MetadataSource.BuildRequest:output_type -> mellifera.metadata.v1.BuildRequestResponse
+	6,  // 32: mellifera.metadata.v1.MetadataSource.Convert:output_type -> mellifera.metadata.v1.ConvertResult
+	10, // 33: mellifera.metadata.v1.MetadataSource.Merge:output_type -> mellifera.metadata.v1.MergeResult
+	30, // [30:34] is the sub-list for method output_type
+	26, // [26:30] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_mellifera_metadata_v1_metadata_proto_init() }
@@ -911,7 +1036,7 @@ func file_mellifera_metadata_v1_metadata_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mellifera_metadata_v1_metadata_proto_rawDesc), len(file_mellifera_metadata_v1_metadata_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

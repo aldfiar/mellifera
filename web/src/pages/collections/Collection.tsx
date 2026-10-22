@@ -1,30 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { ReactElement, ReactNode, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-  type UseMutationResult,
-} from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import {
   ENDPOINTS,
-  deleteItemTitle,
-  deleteSeriesTitle,
   getEnrichPreview,
   hasFrameGrabberThumb,
   hasOriginalFile,
   postLibraryRefresh,
-  putItemParsers,
   putProgress,
-  setItemTitle,
-  setSeriesTitle,
   type ApiError,
   type EnrichPreview,
   type ItemDTO,
-  type ItemParsersResponse,
   type LibraryDTO,
   type LibraryRefreshResult,
   type ListItemsParams,
@@ -33,10 +22,8 @@ import {
   type RefreshSourceBinding,
   type ScanResponse,
   type SeriesDTO,
-  type TitleOverrideDTO,
 } from "@/lib/api";
 import {
-  useItem,
   useItemMedia,
   useItems,
   useLibraries,
@@ -56,6 +43,15 @@ import { formatPosition } from "@/pages/home/Home";
 import type { BrowseHandoff } from "@/pages/browse/ItemDetail";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 import { DialogShell } from "@/components/DialogShell";
+import {
+  CardActions,
+  IdentifyView,
+  NO_REFRESH_SOURCES,
+  RefreshView,
+  RenameTitle,
+  useTitleOverride,
+} from "@/components/manage/ManageActions";
+import { Synopsis } from "@/components/metadata/Synopsis";
 
 // Collection — the per-collection page at /collections/:id (web-ui-phase-3
 // group 5, boxes 5.1–5.3). The header comes from GET /api/v1/libraries +
@@ -81,13 +77,6 @@ import { DialogShell } from "@/components/DialogShell";
 // detail's Technical details (ui-management design §1).
 
 const PAGE_SIZE = 50;
-
-// NO_REFRESH_SOURCES — the shared empty-state copy of the two refresh
-// pickers (the Manage section and the per-item view): the served
-// refresh_sources list is empty — no loaded, effectively-enabled title
-// source, no kickoff.
-const NO_REFRESH_SOURCES =
-  "No refreshable sources — this module has no loaded, enabled title source to refresh with.";
 
 // refreshSourcesOf — the detail DTO's module block as the refresh pickers'
 // tri-state input: undefined = the module block is absent (unwired — the
@@ -1507,175 +1496,6 @@ function SeriesGrid(props: {
   );
 }
 
-// useTitleOverride — the rename mutations for ONE entity (serial-watch-flow
-// 4.3): kind picks the id space ("series" → setSeriesTitle/deleteSeriesTitle,
-// "item" → setItemTitle/deleteItemTitle). Both run retry:0
-// (INV-no-mutation-retry — a 400/404 surfaces inline, never auto-retried) and
-// invalidate the entity's read on success so the display follows the stored
-// row. Declared file-local rather than in lib/queries because only the serial
-// surface consumes the title routes and the invalidation keys are this page's.
-function useTitleOverride(
-  kind: "series" | "item",
-  entityId: string,
-  invalidate: readonly unknown[],
-): {
-  set: UseMutationResult<TitleOverrideDTO, ApiError, string>;
-  clear: UseMutationResult<void, ApiError, void>;
-} {
-  const qc = useQueryClient();
-  const invalidateRead = (): void => {
-    void qc.invalidateQueries({ queryKey: [...invalidate] });
-  };
-  const set = useMutation<TitleOverrideDTO, ApiError, string>({
-    mutationFn: (title: string) =>
-      kind === "series"
-        ? setSeriesTitle(entityId, title)
-        : setItemTitle(entityId, title),
-    retry: 0,
-    onSuccess: invalidateRead,
-  });
-  const clear = useMutation<void, ApiError, void>({
-    mutationFn: () =>
-      kind === "series"
-        ? deleteSeriesTitle(entityId)
-        : deleteItemTitle(entityId),
-    retry: 0,
-    onSuccess: invalidateRead,
-  });
-  return { set, clear };
-}
-
-// CardActions — the per-card management unit (ui-management §2): a quiet ⋯
-// trigger top-right of the card, revealed on card hover/focus on fine
-// pointers (the coarse-pointer persistent reveal is box 1.4's CSS), opening
-// ONE dialog overlay whose views are `menu`, `rename`, `identify` and
-// `refresh`. The trigger carries aria-haspopup="dialog" + aria-expanded; the
-// open state persists via data-open because the overlay is portaled (`.scard`
-// is overflow:hidden — in-card positioning would clip) and :focus-within goes
-// false once focus enters the panel. The shell mechanics (portal, scrim
-// click-away, Esc, focus trap, focus-return, aria-modal) live in the shared
-// DialogShell (pass 3 lift) — this component keeps the POLICY: the view state
-// machine and the Esc matrix (a view → menu, menu → close all, IGNORED while
-// a mutation is pending — an unmounted view could never render the canonical
-// inline error). Overlay state is LOCAL
-// (closed|menu|rename|identify|refresh), never URL state: a route change
-// unmounts the card and discards it.
-type OverlayState = "closed" | "menu" | "rename" | "identify" | "refresh";
-
-function CardActions(props: {
-  triggerLabel: string;
-  pending: boolean;
-  rows?: ReactElement;
-  footer?: ReactElement;
-  identify?: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
-  identifyFirst?: boolean;
-  refresh?: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
-  rename: (ctl: { collapse: () => void; back: () => void }) => ReactElement;
-}): ReactElement {
-  const [overlay, setOverlay] = useState<OverlayState>("closed");
-  const triggerRef = useRef<HTMLButtonElement>(null);
-
-  const closeAll = (): void => setOverlay("closed");
-  const open = overlay !== "closed";
-
-  const trigger = (
-    <button
-      type="button"
-      ref={triggerRef}
-      className="cardact-trigger"
-      aria-label={props.triggerLabel}
-      aria-haspopup="dialog"
-      aria-expanded={open}
-      data-open={open ? "" : undefined}
-      onClick={() => setOverlay(open ? "closed" : "menu")}
-    >
-      ⋯
-    </button>
-  );
-
-  return (
-    <>
-      {trigger}
-      <DialogShell
-        open={open}
-        label={props.triggerLabel}
-        returnFocusRef={triggerRef}
-        focusKey={overlay}
-        onClose={closeAll}
-        onEscape={() => {
-          if (props.pending) {
-            return;
-          }
-          if (overlay === "menu") {
-            closeAll();
-          } else {
-            setOverlay("menu");
-          }
-        }}
-      >
-        {overlay === "menu" ? (
-          <>
-            {/* Identify… rides the module-wired chain (the row is absent
-                without it) and is promoted to the first row when the card
-                is unidentified — curing the name is the operator's next
-                most likely intent there. */}
-            {props.identifyFirst && props.identify ? (
-              <button
-                type="button"
-                className="cardact-row"
-                onClick={() => setOverlay("identify")}
-              >
-                Identify…
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="cardact-row"
-              onClick={() => setOverlay("rename")}
-            >
-              Rename…
-            </button>
-            {!props.identifyFirst && props.identify ? (
-              <button
-                type="button"
-                className="cardact-row"
-                onClick={() => setOverlay("identify")}
-              >
-                Identify…
-              </button>
-            ) : null}
-            {props.refresh ? (
-              <button
-                type="button"
-                className="cardact-row"
-                onClick={() => setOverlay("refresh")}
-              >
-                Refresh metadata…
-              </button>
-            ) : null}
-            {props.rows ?? null}
-            {props.footer ?? null}
-          </>
-        ) : overlay === "rename" ? (
-          props.rename({
-            collapse: closeAll,
-            back: () => setOverlay("menu"),
-          })
-        ) : overlay === "identify" && props.identify ? (
-          props.identify({
-            collapse: closeAll,
-            back: () => setOverlay("menu"),
-          })
-        ) : overlay === "refresh" && props.refresh ? (
-          props.refresh({
-            collapse: closeAll,
-            back: () => setOverlay("menu"),
-          })
-        ) : null}
-      </DialogShell>
-    </>
-  );
-}
 
 // MarkWatchedRow — the item menu's "Mark watched" action row (ui-management
 // §2): PUTs the item's FULL duration as the playback position through the
@@ -1716,397 +1536,6 @@ function MarkWatchedRow(props: { itemId: string; duration: number }): ReactEleme
   );
 }
 
-// IdentifyView — the card menu's identify view (ui-management pass 2, boxes
-// 2.1–2.2). Opening it performs a MANDATORY GET /items/{id} (the `useItem`
-// detail hook): `extra_parsers` — the item's attached parser ids — is
-// populated ONLY by the detail endpoint, so computing the attachable diff
-// from list rows would show attached parsers as attachable and the
-// full-replacement parsers PUT would silently drop existing attachments.
-// Rendering is gated on that fetch: no parser list until the detail lands (a
-// muted loading line, never a spinner).
-//
-// The three facts the view shows:
-//   - attached — the item's `extra_parsers` in attachment order, up/down
-//     reorderable and per-row removable (keyboard-native; drag is a later
-//     refinement). The local draft order starts as the served order and is
-//     what Save sends as the COMPLETE ordered list — the parsers PUT is a
-//     full replacement, so the draft is always sent whole (empty clears).
-//   - the parser chain — the library module's declared bindings, served
-//     order, from the page-level module block (read-only here; the library
-//     Manage overlay owns editing it). Attached entries carry a status label;
-//     the attachable ones — declared minus attached (an absent `extra_parsers`
-//     field means empty attachments, so every declared parser is attachable) —
-//     render as add chips (ParserChainSection's pattern, box 2.4): tapping one
-//     appends that id to the END of the draft and the chip disappears; the
-//     row's remove affordance returns the parser to the chips.
-//
-// Save PUTs the full draft (retry:0); a canonical 400 (unknown/mismatched
-// parser) surfaces inline and the overlay stays open; the awaited success
-// invalidates the caller's read key (the items page or the episode list) and
-// this detail entry, then collapses the overlay — the name itself updates
-// when the background enrichment lands (staleness is copy-only per the
-// accepted default). A detail error surfaces inline (role="alert"); Back
-// returns to the menu.
-function IdentifyView(props: {
-  itemId: string;
-  chain: ParserBinding[];
-  invalidate: readonly unknown[];
-  onCollapse: () => void;
-  onBack: () => void;
-}): ReactElement {
-  const qc = useQueryClient();
-  const detail = useItem(props.itemId);
-  // The attachment draft: null until the operator edits — i.e. the served
-  // attachment order verbatim; a reorder or removal pins the edited order
-  // (an EMPTY pinned draft is the emptied-list save, never "unedited").
-  const [order, setOrder] = useState<string[] | null>(null);
-  const served = detail.data?.item.extra_parsers ?? [];
-  const attached = order ?? served;
-
-  const move = (index: number, dir: -1 | 1): void => {
-    const target = index + dir;
-    if (target < 0 || target >= attached.length) {
-      return;
-    }
-    const next = [...attached];
-    const [picked] = next.splice(index, 1);
-    next.splice(target, 0, picked);
-    setOrder(next);
-  };
-
-  const remove = (id: string): void => {
-    setOrder(attached.filter((a) => a !== id));
-  };
-
-  const save = useMutation<ItemParsersResponse, ApiError, void>({
-    mutationFn: () => putItemParsers(props.itemId, attached),
-    retry: 0,
-    onSuccess: () => {
-      // The write changes what the list rows and the detail read serve
-      // (extra_parsers, recomposed names): invalidate the caller's read key
-      // (the items page or the episode list) and this view's own entry.
-      void qc.invalidateQueries({ queryKey: [...props.invalidate] });
-      void qc.invalidateQueries({ queryKey: ["item", props.itemId] });
-    },
-  });
-
-  const saveDraft = (): void => {
-    save
-      .mutateAsync()
-      .then(props.onCollapse) // awaited collapse — never an isSuccess effect
-      .catch(() => {}); // the canonical error renders inline below
-  };
-
-  if (detail.isLoading) {
-    return (
-      <div className="flex flex-col gap-2 p-2">
-        <p className="text-xs text-muted-foreground">Loading parser details…</p>
-        <button
-          type="button"
-          className="cardact-row"
-          onClick={props.onBack}
-        >
-          Back
-        </button>
-      </div>
-    );
-  }
-  if (detail.error !== null || detail.data === undefined) {
-    const err = detail.error as ApiError | null;
-    return (
-      <div className="flex flex-col gap-2 p-2">
-        <p role="alert" className="text-xs text-destructive">
-          {err ? `${err.code}: ${err.message}` : "not_found: item not found"}
-        </p>
-        <button
-          type="button"
-          className="cardact-row"
-          onClick={props.onBack}
-        >
-          Back
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="flex flex-col gap-2 p-2"
-      onKeyDown={(e) => {
-        // While the save is in flight the panel's Esc walk is suppressed —
-        // an unmounted view could never render the canonical inline error
-        // (the rename view's guard, enforced here because the save mutation
-        // lives in this view).
-        if (e.key === "Escape" && save.isPending) {
-          e.stopPropagation();
-        }
-      }}
-    >
-      <p className="text-xs font-medium">Attached parsers</p>
-      {attached.length > 0 ? (
-        <ul className="flex flex-col gap-1" aria-label="Attached parsers">
-          {attached.map((id, i) => (
-            <li key={id} className="flex items-center justify-between gap-2">
-              <span className="text-xs">{id}</span>
-              <span className="flex gap-1">
-                <button
-                  type="button"
-                  className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
-                  aria-label={`Move ${id} up`}
-                  disabled={i === 0}
-                  onClick={() => move(i, -1)}
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
-                  aria-label={`Move ${id} down`}
-                  disabled={i === attached.length - 1}
-                  onClick={() => move(i, 1)}
-                >
-                  ↓
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
-                  aria-label={`Remove ${id}`}
-                  onClick={() => remove(id)}
-                >
-                  ×
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-xs text-muted-foreground">Nothing attached.</p>
-      )}
-      <p className="text-xs font-medium">Parser chain</p>
-      <ul className="flex flex-col gap-1" aria-label="Parser chain">
-        {props.chain.map((b) => (
-          <li key={b.id} className="flex items-center justify-between gap-2">
-            <span className="text-xs">{b.id}</span>
-            {attached.includes(b.id) ? (
-              <span className="text-xs text-muted-foreground">attached</span>
-            ) : (
-              <button
-                type="button"
-                className="chip"
-                aria-label={`Add ${b.id}`}
-                onClick={() => setOrder([...attached, b.id])}
-              >
-                + {b.id}
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
-      <button
-        type="button"
-        className="cardact-row"
-        disabled={save.isPending}
-        onClick={saveDraft}
-      >
-        Save
-      </button>
-      <p className="text-xs text-muted-foreground">
-        Enrichment runs in the background; the name updates when it lands. A
-        recently failed row waits out its cooldown before retrying.
-      </p>
-      <button
-        type="button"
-        className="cardact-row"
-        onClick={props.onBack}
-      >
-        Back
-      </button>
-      {save.error ? (
-        <p role="alert" className="text-xs text-destructive">
-          {save.error.code}: {save.error.message}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-// RefreshView — the per-item metadata refresh view (ui-management pass 2,
-// box 2.3; plugin-admin-surfaces): a dropdown of the module block's served
-// refresh_sources — the loaded, effectively-enabled title sources (the
-// endpoint requires exactly one plugin_id per invocation), so the view
-// preselects the served-first source and the selection drives the request
-// body — and a confirm that POSTs postLibraryRefresh(libraryId, {plugin_id,
-// row_ids: [rowId]}). rowId is the card's own id in the shared row space: an
-// episode/item id on the item cards, the series id from the series menu.
-// An empty served list renders the view's empty state with explanatory copy
-// and a disabled trigger — no refreshable source, no kickoff. The 202 sweep
-// counts render inline and the view stays open (names follow
-// when the background run lands); a deferred row kept its data — the copy
-// says so; 409 refresh_in_flight renders its own line; every other
-// canonical error (503 unwired, 400 unknown plugin, 404 unknown rows)
-// renders inline as code: message. retry:0 — no auto-retry.
-function RefreshView(props: {
-  libraryId: number;
-  rowId: string;
-  sources: RefreshSourceBinding[];
-  onBack: () => void;
-}): ReactElement {
-  const [pluginId, setPluginId] = useState(props.sources[0]?.id ?? "");
-  const refresh = useMutation<LibraryRefreshResult, ApiError, void>({
-    mutationFn: () =>
-      postLibraryRefresh(props.libraryId, {
-        plugin_id: pluginId,
-        row_ids: [props.rowId],
-      }),
-    retry: 0,
-  });
-  const res = refresh.data;
-
-  return (
-    <div
-      className="flex flex-col gap-2 p-2"
-      onKeyDown={(e) => {
-        // While the POST is in flight the panel's Esc walk is suppressed —
-        // an unmounted view could never render the canonical inline error.
-        if (e.key === "Escape" && refresh.isPending) {
-          e.stopPropagation();
-        }
-      }}
-    >
-      {props.sources.length === 0 ? (
-        // Empty served list — the view's empty state: explanatory copy, the
-        // trigger disabled (no refreshable source, no kickoff).
-        <p className="text-xs text-muted-foreground">{NO_REFRESH_SOURCES}</p>
-      ) : (
-        <select
-          aria-label="Refresh source"
-          className="rounded-md border bg-card px-2 py-1 text-xs"
-          value={pluginId}
-          onChange={(e) => setPluginId(e.target.value)}
-        >
-          {props.sources.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.id}
-            </option>
-          ))}
-        </select>
-      )}
-      <button
-        type="button"
-        className="cardact-row"
-        disabled={refresh.isPending || pluginId === ""}
-        onClick={() => refresh.mutate(undefined)}
-      >
-        Refresh
-      </button>
-      <button type="button" className="cardact-row" onClick={props.onBack}>
-        Back
-      </button>
-      {res ? (
-        <>
-          <p role="status" className="text-xs text-muted-foreground">
-            {String(res.queued)} queued · {String(res.stripped)} stripped ·{" "}
-            {String(res.deferred)} deferred
-          </p>
-          {res.deferred > 0 ? (
-            <p className="text-xs text-muted-foreground">
-              kept its data — try again shortly
-            </p>
-          ) : null}
-        </>
-      ) : null}
-      {refresh.error ? (
-        refresh.error.code === "refresh_in_flight" ? (
-          <p role="alert" className="text-xs text-destructive">
-            A refresh is already running
-          </p>
-        ) : (
-          <p role="alert" className="text-xs text-destructive">
-            {refresh.error.code}: {refresh.error.message}
-          </p>
-        )
-      ) : null}
-    </div>
-  );
-}
-
-// RenameTitle — the rename form (serial-watch-flow 4.3), hosted as the
-// CardActions rename view: a prefilled input with Save (PUT the override) and
-// Clear (DELETE it). The old always-visible toggle is gone — the view only
-// exists inside the overlay. Canonical errors surface INLINE from the
-// mutation state — no auto-retry, no navigation; the overlay stays open so
-// the operator can correct the value. A landed set or clear collapses the
-// overlay — awaited on the exact mutation the operator just ran (NOT an
-// isSuccess effect: a stale success from the other mutation would flip when
-// the next mutate starts and slam the view shut mid-submission); the display
-// behind it follows the invalidated read (the override on set, the chain
-// value on clear).
-function RenameTitle(props: {
-  entityLabel: string;
-  initial: string;
-  set: UseMutationResult<TitleOverrideDTO, ApiError, string>;
-  clear: UseMutationResult<void, ApiError, void>;
-  onCollapse: () => void;
-  onBack: () => void;
-}): ReactElement {
-  const [draft, setDraft] = useState(props.initial);
-  const error = props.set.error ?? props.clear.error;
-  const busy = props.set.isPending || props.clear.isPending;
-
-  return (
-    <form
-      className="flex flex-col gap-2 p-2"
-      onSubmit={(e) => {
-        e.preventDefault();
-        props.set
-          .mutateAsync(draft)
-          .then(props.onCollapse)
-          .catch(() => {}); // the canonical error renders inline below
-      }}
-    >
-      <input
-        aria-label={`New title for ${props.entityLabel}`}
-        className="w-full rounded-md border bg-transparent px-2 py-1 text-xs"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-      />
-      <div className="flex gap-1">
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:opacity-50"
-        >
-          Save
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent disabled:opacity-50"
-          onClick={() => {
-            props.clear
-              .mutateAsync()
-              .then(props.onCollapse)
-              .catch(() => {}); // the canonical error renders inline below
-          }}
-        >
-          Clear
-        </button>
-        <button
-          type="button"
-          className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent"
-          onClick={props.onBack}
-        >
-          Back
-        </button>
-      </div>
-      {error ? (
-        <p role="alert" className="text-xs text-destructive">
-          {error.code}: {error.message}
-        </p>
-      ) : null}
-    </form>
-  );
-}
 
 // SeriesCard — one series card: poster-ratio placeholder (media serving is a
 // deferred capability), display title (the SERVED display_name, display-
@@ -2187,8 +1616,11 @@ function SeriesCard(props: {
 }
 
 // EpisodesView — one series' episode flow: the back affordance into the grid,
-// then the episodes as movie-idiom cards (served title + muted meta line +
-// the ⋯ menu, deep-linking into /items/{id}), fetched once per series.
+// the series header (its display name and the scraped About panel — the
+// Plex/Jellyfin idiom, user-locked 2026-10-21: the synopsis rides ON TOP of
+// the episodes, out of the footer), then the episodes as movie-idiom cards
+// (served title + muted meta line + the ⋯ menu, deep-linking into
+// /items/{id}), fetched once per series.
 function EpisodesView(props: {
   seriesId: string;
   libraryId: number;
@@ -2197,6 +1629,13 @@ function EpisodesView(props: {
   onBack: () => void;
 }): ReactElement {
   const episodes = useSeriesEpisodes(props.seriesId);
+  // The series row from the shared grid cache (["series", library] — already
+  // warm: the grid fetched it before the flow opened). Absent (cache miss)
+  // → the header degrades to the flow without it, never blocks the episodes.
+  const seriesList = useSeries(props.libraryId);
+  const series =
+    (seriesList.data?.items ?? []).find((s) => s.id === props.seriesId) ??
+    null;
 
   if (episodes.isLoading) {
     return <LoadingState label="Loading episodes…" />;
@@ -2220,6 +1659,12 @@ function EpisodesView(props: {
       >
         ← All series
       </button>
+      {series !== null ? (
+        <header className="flex flex-col gap-2">
+          <h2 className="text-xl font-semibold">{seriesTitle(series)}</h2>
+          <Synopsis about={series.metadata?.about} />
+        </header>
+      ) : null}
       {items.length === 0 ? (
         <EmptyState message="No episodes found for this series." />
       ) : (

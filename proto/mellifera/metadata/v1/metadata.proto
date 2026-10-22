@@ -79,6 +79,14 @@ message BuildRequestRequest {
 
 message BuildRequestResponse {
   RequestSpec spec = 1;
+
+  // The ordered request plan beyond the primary spec (media-data convention
+  // D4): companion fetches the same run should perform after `spec`, in
+  // order. The core executes each extra at the reserved fetch point —
+  // validated and paced by its own min_interval_ms exactly like the
+  // primary — and delivers the outcomes to Convert as extra_responses.
+  // A failed extra soft-fails its own entry; it never fails the run.
+  repeated RequestSpec extra_specs = 2;
 }
 
 // --- Convert ---
@@ -96,6 +104,27 @@ message ConvertRequest {
 
   string module_type = 5;
   google.protobuf.Struct options = 6;
+
+  // Outcomes of the request plan's extra specs (BuildRequestResponse.
+  // extra_specs), aligned by position: entry i is extra spec i's outcome.
+  // The primary response stays in raw_response/http_status/response_headers.
+  repeated FetchedResponse extra_responses = 7;
+}
+
+// One extra spec's fetch outcome (media-data convention D4): the response
+// when fetched, or the error when that extra's fetch failed (the run
+// continues — Convert decides what the namespace gains from what arrived).
+message FetchedResponse {
+  // Raw response body (verbatim bytes), when fetched.
+  bytes body = 1;
+
+  int32 http_status = 2;
+  map<string, string> headers = 3;
+
+  // False => this extra's fetch failed; `error` carries why and the other
+  // fields are unset.
+  bool fetched = 4;
+  string error = 5;
 }
 
 message ConvertResult {

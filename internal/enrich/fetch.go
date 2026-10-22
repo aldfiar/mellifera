@@ -129,6 +129,30 @@ func fetchSource(ctx context.Context, gate *FetchGate, pluginID string, spec *me
 	return body, int32(resp.StatusCode), headers, nil
 }
 
+// fetchExtras executes the request plan's extra specs in order (media-data
+// convention D4): each extra goes through the same fetchSource validation and
+// the plugin's FetchGate slot, so pacing spans the whole plan. A failed extra
+// soft-fails its own entry ({fetched:false, error}) and the run continues —
+// Convert decides what the namespace gains from what arrived. The primary
+// spec's failure path lives at the call site and is untouched.
+func fetchExtras(ctx context.Context, gate *FetchGate, pluginID string, extras []*metadatav1.RequestSpec) []*metadatav1.FetchedResponse {
+	if len(extras) == 0 {
+		return nil
+	}
+	out := make([]*metadatav1.FetchedResponse, 0, len(extras))
+	for _, spec := range extras {
+		body, status, headers, err := fetchSource(ctx, gate, pluginID, spec)
+		if err != nil {
+			out = append(out, &metadatav1.FetchedResponse{Error: err.Error()})
+			continue
+		}
+		out = append(out, &metadatav1.FetchedResponse{
+			Body: body, HttpStatus: status, Headers: headers, Fetched: true,
+		})
+	}
+	return out
+}
+
 // resolveVariables renders each spec variable to its string form. A
 // redacted_ref (or any nil kind) is an explicit unsupported error — the core
 // never resolves client-held secrets server-side, and the caller aborts

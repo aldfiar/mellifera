@@ -7,7 +7,6 @@ import type {
   ApiError,
   PluginAdminBinding,
   PluginAdminPlugin,
-  PluginHealth,
 } from "@/lib/api";
 import { getAdminPluginLogs, getAdminPlugins } from "@/lib/api";
 import AdminTabs from "@/pages/admin/AdminTabs";
@@ -25,17 +24,26 @@ import {
 
 // Plugins — the Plugins admin surface (/admin/plugins, plugin-admin-surfaces)
 // beside Collections (/admin) and Sources (/admin/sources). One row per loaded
-// plugin in boot order: display name + description, capability chips, state
-// chips, and its config bindings rendered READ-ONLY.
+// plugin in boot order: display name + description, capability chips, the
+// colored STATUS (green/red/gray), and its config bindings rendered
+// READ-ONLY in human words.
 //
 // Wire contract (plugin_admin.go, mirrored verbatim — INV-verbatim-payload):
-//  - the state chips consume the SERVED health state (D5 presentation: the
-//    served word for `serving` is "working"; `failed`/`not_serving` render
-//    "errored" with the served message inline; anything else renders the
-//    served word itself) plus one disabled chip per served module verdict
-//    that mutes the plugin — the surface NEVER resolves gates client-side.
-//  - the config bindings render the served rows verbatim — module, kind,
-//    priority, enabled, auth mode, and the display_fields/options JSON
+//  - the status cell consumes the SERVED health state and the SERVED module
+//    verdicts — the surface never resolves gates client-side. The operator
+//    color contract (user-locked 2026-10-21):
+//      green  Working    — serving AND effectively enabled somewhere (a
+//                         served module verdict is true, or a scanner
+//                         binding exists — scanners have no gate)
+//      red    Failed     — the subprocess failed / stopped serving /
+//                         degraded, the served message inline
+//      gray   Disabled   — serving but every served verdict mutes it
+//            Not reporting — no health report served ("—")
+//  - the config bindings render the served rows as WORDS — module, kind,
+//    priority, the EFFECTIVE enablement word (the served module verdict
+//    when one exists, else the binding's own enabled flag) colored the same
+//    green/gray, auth mode when it is not NONE, and the display fields
+//    joined — with the raw options JSON folded behind a disclosure,
 //    pretty-printed exactly as served (raw JSON on the wire, never
 //    interpreted here).
 //  - the last-logs view fetches GET /admin/plugins/{plugin_id}/logs ON
@@ -87,7 +95,7 @@ function PluginsTable(props: { plugins: PluginAdminPlugin[] }): ReactElement {
       <TableHeader>
         <TableRow>
           <TableHead>Plugin</TableHead>
-          <TableHead className="w-44">State</TableHead>
+          <TableHead className="w-40">Status</TableHead>
           <TableHead className="w-36">Capabilities</TableHead>
           <TableHead>Config</TableHead>
           <TableHead className="w-28">Logs</TableHead>
@@ -138,7 +146,7 @@ function PluginRow(props: {
           </div>
         </TableCell>
         <TableCell>
-          <StateChips plugin={p} />
+          <StatusCell plugin={p} />
         </TableCell>
         <TableCell>
           <div className="flex flex-wrap gap-1">
@@ -147,7 +155,7 @@ function PluginRow(props: {
             ) : (
               p.capabilities.map((cap) => (
                 <Badge key={cap} variant="outline">
-                  {cap}
+                  {capabilityWord(cap)}
                 </Badge>
               ))
             )}
@@ -158,7 +166,13 @@ function PluginRow(props: {
             {p.config.length === 0 ? (
               <span className="text-xs text-muted-foreground">No bindings</span>
             ) : (
-              p.config.map((b) => <Binding key={`${b.module_id}-${b.kind}`} binding={b} />)
+              p.config.map((b) => (
+                <Binding
+                  key={`${b.module_id}-${b.kind}`}
+                  binding={b}
+                  verdict={p.effective?.modules?.[b.module_id]}
+                />
+              ))
             )}
           </div>
         </TableCell>
@@ -185,91 +199,164 @@ function PluginRow(props: {
   );
 }
 
-// StateChips — the served state, verbatim: the health chip (working /
-// errored + the served message inline / the served word otherwise) plus one
-// disabled chip per served module verdict muting the plugin. No health report
-// → "—" (the plugin never reported); no verdicts → no disabled chips.
-function StateChips(props: { plugin: PluginAdminPlugin }): ReactElement {
+// StatusCell — the operator's color contract (user-locked 2026-10-21):
+// green Working / red Failed / gray Disabled-or-Not-reporting, computed ONLY
+// from the served health state and served module verdicts (never resolved
+// client-side). The dot is aria-hidden decoration; the word carries the
+// state. `data-status` exposes the tone for tests; the title carries the
+// operator extras (state · restarts · checked-at) without cluttering the
+// cell.
+function StatusCell(props: { plugin: PluginAdminPlugin }): ReactElement {
   const { health, effective } = props.plugin;
-  const chip = health ? healthChip(health) : null;
+  const verdicts = Object.values(effective?.modules ?? {});
+  const scanner = props.plugin.config.some((b) => b.kind === "scanner");
+
+  let tone: "ok" | "fail" | "off";
+  let label: string;
+  let message: string | undefined;
+  if (health === undefined) {
+    tone = "off";
+    label = "Not reporting";
+  } else if (health.state === "failed" || health.state === "not_serving" || health.state === "degraded") {
+    tone = "fail";
+    label = "Failed";
+    message = health.message;
+  } else if (health.state === "serving") {
+    if (verdicts.some(Boolean) || scanner) {
+      tone = "ok";
+      label = "Working";
+    } else {
+      tone = "off";
+      label = "Disabled";
+    }
+  } else {
+    tone = "off";
+    label = health.state;
+  }
 
   return (
     <div className="flex flex-col items-start gap-1">
-      <div className="flex flex-wrap gap-1">
-        {chip ? (
-          <Badge variant={chip.variant}>{chip.label}</Badge>
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        )}
-        {Object.entries(effective?.modules ?? {})
-          .filter(([, enabled]) => !enabled)
-          .map(([moduleId]) => (
-            <Badge key={moduleId} variant="outline" className="text-muted-foreground">
-              {moduleId} · disabled
-            </Badge>
-          ))}
-      </div>
-      {chip?.message ? (
-        <span className="text-xs text-muted-foreground">{chip.message}</span>
+      <span
+        data-status={tone}
+        className={
+          tone === "ok"
+            ? "inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600"
+            : tone === "fail"
+              ? "inline-flex items-center gap-1.5 text-xs font-medium text-destructive"
+              : "inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
+        }
+        title={
+          health
+            ? `state: ${health.state} · restarts: ${health.restarts} · checked ${health.checked_at}`
+            : "no health report served"
+        }
+      >
+        <span
+          aria-hidden
+          className={
+            tone === "ok"
+              ? "h-2 w-2 rounded-full bg-emerald-500"
+              : tone === "fail"
+                ? "h-2 w-2 rounded-full bg-destructive"
+                : "h-2 w-2 rounded-full bg-muted-foreground/40"
+          }
+        />
+        {label}
+      </span>
+      {message ? (
+        <span className="text-xs text-muted-foreground">{message}</span>
       ) : null}
     </div>
   );
 }
 
-// healthChip — the D5 presentation of the served health state: `serving`
-// renders "working"; `failed`/`not_serving` render "errored" carrying the
-// served message; any other state renders the served word itself. Unknown
-// states render outline, never a crash.
-function healthChip(health: PluginHealth): {
-  label: string;
-  variant: "secondary" | "destructive" | "outline";
-  message?: string;
-} {
-  if (health.state === "serving") {
-    return { label: "working", variant: "secondary" };
-  }
-  if (health.state === "failed" || health.state === "not_serving") {
-    return { label: "errored", variant: "destructive", message: health.message };
-  }
-  const variant = health.state === "degraded" ? "destructive" : "outline";
-  return { label: health.state, variant };
+// capabilityWord — the served literal as a human word ("metadata_source" →
+// "Metadata source"); unknown literals capitalize, never crash.
+function capabilityWord(cap: string): string {
+  const words: Record<string, string> = {
+    scanner: "Scanner",
+    metadata_source: "Metadata source",
+    metadata: "Metadata",
+  };
+  return words[cap] ?? cap.charAt(0).toUpperCase() + cap.slice(1);
 }
 
-// Binding — one config binding row, read-only: module, kind, and the
-// metadata-only fields (priority, enabled, auth mode), then the served
-// display_fields/options JSON pretty-printed VERBATIM — the SPA interprets
-// nothing (INV4 posture: the raw config is rendered, never parsed for
-// meaning).
-function Binding(props: { binding: PluginAdminBinding }): ReactElement {
+// kindWord — the binding-kind literal as a human word.
+function kindWord(kind: string): string {
+  const words: Record<string, string> = {
+    scanner: "Scanner",
+    metadata: "Metadata source",
+  };
+  return words[kind] ?? kind;
+}
+
+// Binding — one config binding row, read-only and in words: module, kind,
+// priority, the EFFECTIVE enablement word (the served module verdict when
+// one exists — the resolved gate — else the binding's own enabled flag),
+// colored the same green/gray as the status; auth mode shows when it is not
+// NONE; the display fields join into one muted line; the raw options JSON
+// folds behind a disclosure, pretty-printed verbatim (INV-verbatim payload —
+// the SPA still interprets nothing).
+function Binding(props: {
+  binding: PluginAdminBinding;
+  verdict?: boolean;
+}): ReactElement {
   const b = props.binding;
+  const on = props.verdict !== undefined ? props.verdict : b.enabled;
 
   return (
     <div className="flex flex-col gap-1">
-      <span className="font-mono text-xs">{b.module_id}</span>
-      <span className="text-xs text-muted-foreground">
-        {b.kind}
-        {b.priority !== undefined ? ` · #${b.priority}` : ""}
-        {b.enabled !== undefined ? ` · ${b.enabled ? "enabled" : "disabled"}` : ""}
-        {b.auth_mode ? ` · ${b.auth_mode}` : ""}
-      </span>
-      <JsonBlock label="display fields" value={b.display_fields} />
-      <JsonBlock label="options" value={b.options} />
-    </div>
-  );
-}
-
-// JsonBlock — one served raw-JSON value pretty-printed verbatim; absent on
-// the wire (omitempty) → nothing rendered.
-function JsonBlock(props: { label: string; value: unknown }): ReactElement | null {
-  if (props.value === undefined || props.value === null) {
-    return null;
-  }
-  return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-xs text-muted-foreground">{props.label}</span>
-      <pre className="max-w-md overflow-x-auto rounded bg-muted p-2 font-mono text-xs">
-        {JSON.stringify(props.value, null, 2)}
-      </pre>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className="font-mono text-xs">{b.module_id}</span>
+        <span className="text-xs text-muted-foreground">{kindWord(b.kind)}</span>
+        {b.priority !== undefined ? (
+          <span className="text-xs text-muted-foreground">#{b.priority}</span>
+        ) : null}
+        {on !== undefined ? (
+          <span
+            className={
+              on
+                ? "text-xs font-medium text-emerald-600"
+                : "text-xs font-medium text-muted-foreground"
+            }
+          >
+            {on ? "Enabled" : "Disabled"}
+          </span>
+        ) : null}
+        {b.auth_mode && b.auth_mode !== "NONE" ? (
+          <span className="text-xs text-muted-foreground">
+            auth: {b.auth_mode}
+          </span>
+        ) : null}
+      </div>
+      {b.display_fields !== undefined && b.display_fields !== null ? (
+        Array.isArray(b.display_fields) &&
+        b.display_fields.length > 0 &&
+        b.display_fields.every((f) => typeof f === "string") ? (
+          <span className="text-xs text-muted-foreground">
+            fields: {(b.display_fields as string[]).join(", ")}
+          </span>
+        ) : (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground">
+              display fields
+            </summary>
+            <pre className="mt-1 max-w-md overflow-x-auto rounded bg-muted p-2 font-mono text-xs">
+              {JSON.stringify(b.display_fields, null, 2)}
+            </pre>
+          </details>
+        )
+      ) : null}
+      {b.options !== undefined && b.options !== null ? (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-muted-foreground">
+            options
+          </summary>
+          <pre className="mt-1 max-w-md overflow-x-auto rounded bg-muted p-2 font-mono text-xs">
+            {JSON.stringify(b.options, null, 2)}
+          </pre>
+        </details>
+      ) : null}
     </div>
   );
 }

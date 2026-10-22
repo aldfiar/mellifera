@@ -506,6 +506,17 @@ body.side-open .app-content {
   }
 }
 
+/* The INLINE variant (the item page's identity block): the trigger is a
+   flow-level flex child next to the heading and stays VISIBLE — on a full
+   detail page the management entry must be discoverable, not hover-gated
+   (the absolute hover-revealed form stays the grid idiom). Sizing, colors
+   and the coarse-pointer block above are inherited unchanged. */
+.cardact-trigger--inline {
+  position: static;
+  opacity: 1;
+  flex: none;
+}
+
 /* The portaled dialog panel: the menu and the rename view share one shell
    over the shared .overlay-backdrop scrim (click-away closes). */
 .cardact-panel {

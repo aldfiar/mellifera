@@ -87,11 +87,12 @@ describe("Plugins — admin surface (plugin-admin-surfaces)", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
-  it("renders state and config per plugin verbatim and issues no write", async () => {
+  it("renders status and config per plugin in human words and issues no write", async () => {
     // The scenario probe 85b1963591d79139: each loaded plugin renders its
-    // name, state chips (served health state; a disabled chip per served
-    // module verdict muting it), capability chips, and its config bindings
-    // with the options JSON verbatim — and the page issues no write.
+    // name, the colored status (the served health state + served module
+    // verdicts — never resolved client-side), capability chips, and its
+    // config bindings in words with the options JSON verbatim behind a
+    // disclosure — and the page issues no write.
     vi.spyOn(apiModule, "getAdminPlugins").mockResolvedValue({
       plugins: [SERVING, FAILED],
     });
@@ -106,27 +107,35 @@ describe("Plugins — admin surface (plugin-admin-surfaces)", () => {
     );
     const row = container.querySelector(ROW_SEL) as HTMLElement;
 
-    // The served health state through the D5 presentation: serving → working;
-    // the muted module verdict wears the disabled chip.
-    expect(within(row).getByText("working")).toBeDefined();
-    expect(within(row).getByText("serial · disabled")).toBeDefined();
-    expect(within(row).getByText("metadata")).toBeDefined();
-    // The config binding, read-only, options verbatim.
+    // The operator color contract (user-locked 2026-10-21): the served
+    // health says serving, but the only served module verdict mutes the
+    // plugin → gray Disabled, never green. The muted verdict also owns the
+    // binding's enablement word (the resolved gate beats the config flag).
+    expect(within(row).getAllByText("Disabled").length).toBeGreaterThan(0);
+    expect(row.querySelector('[data-status="off"]')).not.toBeNull();
+    expect(within(row).queryByText("Working")).toBeNull();
+    // Capabilities render as words.
+    expect(within(row).getByText("Metadata")).toBeDefined();
+    // The config binding, read-only and in words; NONE auth stays hidden.
     expect(within(row).getByText("serial")).toBeDefined();
-    expect(within(row).getByText("metadata · #1 · enabled · NONE")).toBeDefined();
+    expect(within(row).getByText("Metadata source")).toBeDefined();
+    expect(within(row).getByText("#1")).toBeDefined();
+    expect(within(row).getAllByText("Disabled").length).toBeGreaterThan(1);
+    expect(within(row).queryByText(/auth:/)).toBeNull();
+    expect(within(row).getByText("fields: title, year")).toBeDefined();
+    // The raw options JSON stays verbatim, folded behind the disclosure.
     expect(
       within(row).getByText(/"base_url": "https:\/\/shikimori\.one"/),
     ).toBeDefined();
-    expect(within(row).getByText(/"title"/)).toBeDefined();
 
-    // The failed plugin: errored chip with the served message inline.
+    // The failed plugin: red Failed with the served message inline.
     const failedRow = container.querySelector(
       'tr[data-plugin-id="frame-grabber"]',
     ) as HTMLElement;
-    expect(within(failedRow).getByText("errored")).toBeDefined();
+    expect(within(failedRow).getByText("Failed")).toBeDefined();
+    expect(failedRow.querySelector('[data-status="fail"]')).not.toBeNull();
     expect(within(failedRow).getByText("exit status 1")).toBeDefined();
-    // No verdicts served → no disabled chip; no bindings → the empty state.
-    expect(within(failedRow).queryByText(/· disabled/)).toBeNull();
+    // No verdicts served → no enablement word; no bindings → the empty state.
     expect(within(failedRow).getByText("No bindings")).toBeDefined();
 
     // READ-ONLY: no write left the surface, and logs were not fetched eagerly.
@@ -134,6 +143,62 @@ describe("Plugins — admin surface (plugin-admin-surfaces)", () => {
     expect(putSpy).not.toHaveBeenCalled();
     expect(delSpy).not.toHaveBeenCalled();
     expect(logsSpy).not.toHaveBeenCalled();
+  });
+
+  it("maps the health+verdict pairs onto the green/red/gray trio", async () => {
+    // The color contract, one row per tone:
+    //   green — serving AND enabled somewhere (a served verdict is true);
+    //   red   — failed at startup (failed/not_serving/degraded);
+    //   gray  — no health report served.
+    const WORKING = fakePlugin({
+      plugin_id: "tv-parser",
+      name: "TV parser",
+      effective: { modules: { tv: true } },
+      config: [
+        {
+          module_id: "tv",
+          kind: "metadata",
+          priority: 1,
+          enabled: true,
+          auth_mode: "NONE",
+        },
+      ],
+    });
+    const SILENT = fakePlugin({
+      plugin_id: "silent",
+      name: "Silent",
+      health: undefined,
+    });
+    vi.spyOn(apiModule, "getAdminPlugins").mockResolvedValue({
+      plugins: [WORKING, FAILED, SILENT],
+    });
+
+    const { container } = renderPlugins(freshClient());
+    await waitFor(() =>
+      expect(
+        container.querySelector('tr[data-plugin-id="tv-parser"]'),
+      ).not.toBeNull(),
+    );
+
+    const ok = container.querySelector(
+      'tr[data-plugin-id="tv-parser"]',
+    ) as HTMLElement;
+    expect(within(ok).getByText("Working")).toBeDefined();
+    expect(ok.querySelector('[data-status="ok"]')).not.toBeNull();
+    // The enabled verdict greens the binding word too.
+    expect(within(ok).getByText("Enabled")).toBeDefined();
+
+    const fail = container.querySelector(
+      'tr[data-plugin-id="frame-grabber"]',
+    ) as HTMLElement;
+    expect(within(fail).getByText("Failed")).toBeDefined();
+    expect(fail.querySelector('[data-status="fail"]')).not.toBeNull();
+
+    const off = container.querySelector(
+      'tr[data-plugin-id="silent"]',
+    ) as HTMLElement;
+    expect(within(off).getByText("Not reporting")).toBeDefined();
+    expect(off.querySelector('[data-status="off"]')).not.toBeNull();
   });
 
   it("last logs render on demand, oldest first", async () => {

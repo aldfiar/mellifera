@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -37,6 +38,15 @@ func (*sourceImpl) Convert(_ context.Context, req *metadatav1.ConvertRequest) (*
 	}
 	m := namespaceFields(entry)
 	m[resolvedIDsKey] = map[string]any{idKey: int64(entry.ID)}
+	// The request plan's extras are aligned by position (proto D4) and this
+	// plugin declares exactly one: the roles fetch (source.go BuildRequest).
+	// An unfetched extra (soft-failed) or an unusable body simply leaves the
+	// cast field absent — honest absence, never an empty array.
+	if extras := req.GetExtraResponses(); len(extras) > 0 && extras[0].GetFetched() {
+		if cast := castField(extras[0].GetBody()); len(cast) > 0 {
+			m[castKey] = cast
+		}
+	}
 	sourceURL, _ := m["url"].(string)
 	meta := toStruct(m)
 	return &metadatav1.ConvertResult{
@@ -168,11 +178,77 @@ func namespaceFields(e animeEntry) map[string]any {
 func genreNames(genres []animeGenre) []any {
 	out := make([]any, 0, len(genres))
 	for _, g := range genres {
-		if g.Russian != "" {
-			out = append(out, g.Russian)
-			continue
-		}
-		out = append(out, g.Name)
+		out = append(out, displayFirst(g.Russian, g.Name))
 	}
 	return out
+}
+
+// rolesEntry mirrors one entry of the shikimori roles payload
+// (GET /api/animes/{id}/roles, v1): a character with its voice-actor
+// credits ("seyu" is the upstream's own spelling of the field).
+type rolesEntry struct {
+	Name    string       `json:"name"`
+	Russian string       `json:"russian"`
+	Image   animeImage   `json:"image"`
+	Seiyuu  []roleSeiyuu `json:"seyu"`
+}
+
+// roleSeiyuu mirrors one voice-actor credit inside a roles entry.
+type roleSeiyuu struct {
+	Name    string `json:"name"`
+	Russian string `json:"russian"`
+}
+
+// castField composes the media-data convention cast array (design D1) from a
+// roles payload: one entry per character — name the character (russian
+// preferred), role the free-text seiyuu credit when the character has one,
+// photo_url the character portrait (made absolute like the poster). An
+// entry without a usable character name is skipped; a body that is not a
+// roles array, or one with no usable entries, composes nothing (nil) so the
+// cast field stays ABSENT rather than empty.
+func castField(body []byte) []any {
+	var roles []rolesEntry
+	if err := json.Unmarshal(body, &roles); err != nil {
+		return nil
+	}
+	out := make([]any, 0, len(roles))
+	for _, r := range roles {
+		name := displayFirst(r.Russian, r.Name)
+		if name == "" {
+			continue
+		}
+		entry := map[string]any{"name": name}
+		if credit := seiyuuCredit(r.Seiyuu); credit != "" {
+			entry["role"] = credit
+		}
+		if portrait := absoluteURL(r.Image.Original); portrait != "" {
+			entry["photo_url"] = portrait
+		}
+		out = append(out, entry)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// seiyuuCredit renders the free-text seiyuu credit (russian names preferred,
+// comma-joined when a character has several); no credit renders empty.
+func seiyuuCredit(seyu []roleSeiyuu) string {
+	names := make([]string, 0, len(seyu))
+	for _, s := range seyu {
+		if n := displayFirst(s.Russian, s.Name); n != "" {
+			names = append(names, n)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// displayFirst prefers the first non-empty string (the RU-first idiom the
+// namespace already uses for titles and genres).
+func displayFirst(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
