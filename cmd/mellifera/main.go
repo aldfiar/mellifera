@@ -875,8 +875,9 @@ func hasMetadataBinding(reg *module.Registry, pluginID string) bool {
 // (unlike the re-anchoring identify, a search notifies nothing). Validation
 // mirrors newReenrichClosure: an unknown plugin (not loaded, or no module
 // binds it as a metadata_source) is rejected with the api sentinel BEFORE the
-// queue is asked, and the SDK's unsupported-search sentinel is re-wrapped so
-// the handler's errors.Is maps it to 400 search_unsupported.
+// queue is asked. The queue's error returns verbatim — SearchSource already
+// re-wraps the gRPC text seam into sdk.ErrSearchUnsupported, which the
+// handler classifies directly (no api-local translation export; D7 cap).
 func newSearchClosure(
 	q *enrich.Queue, reg *module.Registry, loadedPlugins map[string][]string,
 ) func(context.Context, string, string, string) ([]map[string]any, error) {
@@ -884,11 +885,7 @@ func newSearchClosure(
 		if _, loaded := loadedPlugins[pluginID]; !loaded || !hasMetadataBinding(reg, pluginID) {
 			return nil, fmt.Errorf("search %q: %w", pluginID, api.ErrUnknownPlugin)
 		}
-		cands, err := q.SearchSource(ctx, pluginID, query, kind)
-		if errors.Is(err, sdk.ErrSearchUnsupported) {
-			return nil, fmt.Errorf("search %q: %w", pluginID, api.ErrSearchUnsupported)
-		}
-		return cands, err
+		return q.SearchSource(ctx, pluginID, query, kind)
 	}
 }
 

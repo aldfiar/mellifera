@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+
+	"github.com/mellifera/mellifera/pkg/sdk"
 )
 
 // searchCall records one Deps.SearchSource invocation.
@@ -118,7 +120,7 @@ func TestSourceSearch(t *testing.T) {
 		{
 			name:        "unsupported_source_is_400_search_unsupported",
 			path:        path,
-			searchErr:   fmt.Errorf("search %q: %w", "shikimori", ErrSearchUnsupported),
+			searchErr:   fmt.Errorf("search %q: %w", "shikimori", sdk.ErrSearchUnsupported),
 			wantStatus:  http.StatusBadRequest,
 			wantErrCode: "search_unsupported",
 			wantCalled:  true,

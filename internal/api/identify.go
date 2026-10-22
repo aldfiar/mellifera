@@ -11,14 +11,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/mellifera/mellifera/pkg/sdk"
 )
-
-// ErrSearchUnsupported: the named source implements no search capability →
-// 400 search_unsupported. api-local so the api package stays free of
-// pkg/sdk/enrich imports (INV2) — the cmd closure translates the SDK
-// sentinel into this one, and errors.Is is the mapping contract (the closure
-// may wrap it freely).
-var ErrSearchUnsupported = errors.New("source does not support search")
 
 // searchCandidatesResponse is the wire shape of the search passthrough: the
 // source's candidates in its SERVED order, convention field names verbatim —
@@ -50,7 +44,8 @@ type identifyResult struct {
 // cmd-side (the plugin's anonymous-tier budget shared with sweeps). The
 // closure owns every outcome input: unknown plugin (not loaded, or no module
 // binds it as a metadata source) → ErrUnknownPlugin → 400; a source without
-// search → ErrSearchUnsupported → 400 with the canonical search_unsupported
+// search → the SDK's ErrSearchUnsupported → 400 with the canonical
+// search_unsupported
 // code; a failed upstream fetch → 502 upstream_error with retry disabled.
 // Missing or whitespace-only query → 400 before the closure runs; nil
 // closure → 503.
@@ -84,7 +79,12 @@ func (a *app) sourceSearch(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrUnknownPlugin):
 		writeError(w, http.StatusBadRequest, "bad_request", "unknown plugin "+pluginID, false)
 		return
-	case errors.Is(err, ErrSearchUnsupported):
+	case errors.Is(err, sdk.ErrSearchUnsupported):
+		// The SDK sentinel classified HERE, not through an api-local copy:
+		// INV2 bans enrich/plugin imports (design Interfaces), pkg/sdk is the
+		// shared wire contract both ends already speak — and naming the sdk
+		// sentinel keeps the package at its 12-symbol export cap (D7), with
+		// no cmd-side translation hop.
 		writeError(w, http.StatusBadRequest, "search_unsupported", "source "+pluginID+" does not support search", false)
 		return
 	default:

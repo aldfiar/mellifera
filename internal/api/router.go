@@ -87,7 +87,7 @@ type Deps struct {
 	// fetch rides the enrichment pacing gate cmd-side, and the candidates
 	// come back as convention-field primitive maps in the source's served
 	// order. Unknown plugin errors (wrapping ErrUnknownPlugin); a source
-	// without search errors (wrapping ErrSearchUnsupported → 400
+	// without search errors (wrapping the SDK's ErrSearchUnsupported → 400
 	// search_unsupported). Nil-safe (503 when nil), mirroring Reenrich.
 	SearchSource func(ctx context.Context, pluginID, query, kind string) ([]map[string]any, error)
 	// IdentifySeries is the identify re-anchor closure (identify-match-
