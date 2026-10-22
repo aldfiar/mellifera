@@ -90,3 +90,11 @@ events:
     cmd: 'grep -q "identify={seriesIdentifyGate" web/src/pages/collections/Collection.tsx'
     exit: 0
     duration_ms: 6
+  - seq: 12
+    box: 4.1
+    kind: claim
+    by: session
+    at: 2026-10-22T20:19:31Z
+    cmd: go test ./internal/itest -run TestIdentifyMatchJoint -count=1
+    exit: 0
+    duration_ms: 8577
