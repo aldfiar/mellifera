@@ -4,16 +4,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   apiRequest,
+  approvePairing,
+  denyPairing,
   ENDPOINTS,
   fetchItemMediaObjectUrl,
+  getAdminDevices,
+  getAdminPairings,
   getItem,
   hasFrameGrabberThumb,
   hasOriginalFile,
   listItems,
+  revokeDevice,
+  startPairing,
+  waitPairing,
   type LibrariesResponse,
   type ListItemsParams,
 } from "@/lib/api";
-import { setToken, TOKEN_KEY } from "@/lib/auth";
+import { DEVICE_TOKEN_KEY, setDeviceToken, setToken, TOKEN_KEY } from "@/lib/auth";
 
 // S4 joint contract: apiRequest <-> Go /api/v1/* (authMiddleware expects
 // Bearer; canonical error body {error:{code,message,retryable}}). The wrapper
@@ -276,5 +283,146 @@ describe("itemMedia — media URL + authenticated blob channel (media-preview gr
     expect(caught).toBeInstanceOf(ApiError);
     expect((caught as ApiError).code).toBe("not_found");
     expect((caught as ApiError).status).toBe(404);
+  });
+});
+
+describe("pairing client — device-pairing (wire shapes + endpoint paths)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("startPairing POSTs /api/v1/pair and parses the PairingRequest shape verbatim", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { pairing_id: "3f9a1c2e", code: "ABCD-2345" }),
+    );
+
+    const out = await startPairing();
+
+    const [path, init] = fetchSpy.mock.calls[0]!;
+    expect(path).toBe("/api/v1/pair");
+    expect(init?.method).toBe("POST");
+    expect(out.pairing_id).toBe("3f9a1c2e");
+    expect(out.code).toBe("ABCD-2345");
+  });
+
+  it("waitPairing GETs /api/v1/pair/{id}/wait — device_token rides only when served", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () =>
+        jsonResponse(200, { status: "approved", device_token: "dev-token-1" }),
+      );
+
+    const approved = await waitPairing("3f9a1c2e");
+    expect(fetchSpy.mock.calls[0]![0]).toBe("/api/v1/pair/3f9a1c2e/wait");
+    expect(approved.status).toBe("approved");
+    expect(approved.device_token).toBe("dev-token-1");
+
+    // A pending (or consumed) poll omits the field entirely — absence, not null.
+    fetchSpy.mockImplementation(async () => jsonResponse(200, { status: "pending" }));
+    const pending = await waitPairing("3f9a1c2e");
+    expect(pending.status).toBe("pending");
+    expect(pending.device_token).toBeUndefined();
+  });
+
+  it("getAdminPairings hits /api/v1/admin/pairings and parses the pending list verbatim", async () => {
+    setToken("t1");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        pairings: [
+          {
+            pairing_id: "3f9a1c2e",
+            code: "ABCD-2345",
+            created_at: "2026-10-23T10:00:00Z",
+            expires_at: "2026-10-23T10:05:00Z",
+          },
+        ],
+      }),
+    );
+
+    const out = await getAdminPairings();
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe("/api/v1/admin/pairings");
+    expect(out.pairings[0]).toEqual({
+      pairing_id: "3f9a1c2e",
+      code: "ABCD-2345",
+      created_at: "2026-10-23T10:00:00Z",
+      expires_at: "2026-10-23T10:05:00Z",
+    });
+  });
+
+  it("approvePairing POSTs the approve route; denyPairing POSTs the deny route without a body parse", async () => {
+    setToken("t1");
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (path) =>
+        String(path).endsWith("/deny")
+          ? new Response(null, { status: 200 })
+          : jsonResponse(200, { pairing_id: "p1", status: "approved" }),
+      );
+
+    const approve = await approvePairing("p1");
+    expect(fetchSpy.mock.calls[0]![0]).toBe("/api/v1/admin/pairings/p1/approve");
+    expect(fetchSpy.mock.calls[0]![1]?.method).toBe("POST");
+    expect(approve.status).toBe("approved");
+
+    await denyPairing("p1");
+    expect(fetchSpy.mock.calls[1]![0]).toBe("/api/v1/admin/pairings/p1/deny");
+    expect(fetchSpy.mock.calls[1]![1]?.method).toBe("POST");
+  });
+
+  it("getAdminDevices hits /api/v1/admin/devices; revokeDevice DELETEs the device route", async () => {
+    setToken("t1");
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (path) =>
+        String(path).includes("/admin/devices/")
+          ? new Response(null, { status: 204 })
+          : jsonResponse(200, {
+              devices: [
+                {
+                  device_id: "dev1",
+                  code: "ABCD-2345",
+                  created_at: "2026-10-23T10:01:00Z",
+                },
+              ],
+            }),
+      );
+
+    const out = await getAdminDevices();
+    expect(fetchSpy.mock.calls[0]![0]).toBe("/api/v1/admin/devices");
+    expect(out.devices[0]).toEqual({
+      device_id: "dev1",
+      code: "ABCD-2345",
+      created_at: "2026-10-23T10:01:00Z",
+    });
+
+    await revokeDevice("dev1");
+    expect(fetchSpy.mock.calls[1]![0]).toBe("/api/v1/admin/devices/dev1");
+    expect(fetchSpy.mock.calls[1]![1]?.method).toBe("DELETE");
+  });
+
+  it("a 401 clears BOTH credentials — admin token and device token", async () => {
+    setToken("t1");
+    setDeviceToken("dev-token-1");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(401, {
+        error: { code: "unauthorized", message: "revoked", retryable: false },
+      }),
+    );
+    const assignSpy = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { assign: assignSpy },
+    });
+
+    await expect(waitPairing("p1")).rejects.toBeInstanceOf(ApiError);
+
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+    expect(localStorage.getItem(DEVICE_TOKEN_KEY)).toBeNull(); // device cleared too (D8)
+    expect(assignSpy).toHaveBeenCalledWith("/login"); // admin rotation unchanged
   });
 });

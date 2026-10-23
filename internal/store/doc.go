@@ -14,39 +14,69 @@
 // small set of generated-column paths defined at migration time and never
 // parses the document body in Go.
 //
-// # Public API (11 symbols — WARN >8, <12; pre-justified, R10)
+// # Public API (12 symbols — WARN >8, <12; pre-justified, R10)
 //
 //   - Store: wraps *sql.DB; the single SQLite connection owner.
+//
 //   - Item: a persisted media item (document + denormalized query fields +
 //     a core-managed lifecycle status; the canonical set new/pending/parsed/
 //     enriched/failed/deleted is owned by internal/enrich, not store).
+//
 //   - Series: a persisted serial-level entity (serials-library) keyed by
 //     (library_id, relative_path) with the SAME opaque-document discipline as
 //     items (INV3 applies verbatim — the store never parses a series document).
+//
 //   - SeriesBackings: the two backing-kind constants QueryItemsBySeries takes
 //     as a plain argument (the store never derives a backing from the document).
+//
 //   - Library: a configured scan root bound to a module.
+//
 //   - FolderCount: one depth-1 item-path prefix + its count (LibraryFolders).
+//
 //   - Open: opens SQLite, sets WAL, runs idempotent migrations, returns *Store.
+//
 //   - Close: releases the database handle.
+//
 //   - DB: returns the *sql.DB for trusted internal consumers (seam S10).
+//
 //   - CreateLibrary: inserts a library row (optional description), returns its id.
+//
 //   - GetLibrary: loads a library by id.
+//
 //   - UpdateLibrary: partial display_name/description/streams_enabled/
 //     naming_group_style/naming_element_name update (nil = unchanged; a
 //     non-nil "" on a naming column stores the module-default marker).
+//
 //   - LibrarySummary: constant-time item count + last-update stamp (404-able).
+//
 //   - LibraryFolders: depth-1 path prefixes + counts, path-ordered (404-able).
+//
 //   - GetItem: loads an item by id.
+//
 //   - PutItem: upserts an item keyed by file_id (idempotent re-scan).
+//
 //   - QueryItems: lists items for a library with LIMIT/OFFSET; a non-empty
 //     status arg filters by exact lifecycle-state match (empty = all statuses).
+//
 //   - PutSeries/GetSeries/QuerySeries/ListSeriesIDs/QueryItemsBySeries: the
 //     series CRUD set (methods — outside the symbol budget). PutSeries upserts
 //     by (library_id, relative_path) and mints the deterministic
 //     ser_<libraryID>_<sha16hex16(relative_path)> id; QueryItemsBySeries
 //     derives episodes by backing (exact match vs prefix + depth-1 filter)
 //     without a join column.
+//
+//   - PairingRequest: one device-pairing request row (device-pairing D6); the
+//     lifecycle pending → approved | denied | expired → consumed is owned by
+//     internal/pairing — expiry is lazy on read, the store never sweeps.
+//
+//   - DeviceToken: one paired-device credential row — the SHA-256 hash of the
+//     bearer token only, never the raw value (device-pairing D4); revocation
+//     = DeleteDevice.
+//
+//   - CreatePairingRequest/GetPairingRequest/SetPairingStatus/
+//     ListPendingPairings/InsertDeviceToken/LookupDeviceTokenByHash/
+//     ListDevices/DeleteDevice: the pairing control-table CRUD set (methods —
+//     outside the symbol budget).
 //
 // # Invariants
 //
@@ -68,7 +98,9 @@
 //   - INV5: store imports stdlib + modernc.org/sqlite only. It MAY NOT import
 //     any internal/*, any proto, or pkg/sdk — it is the bottom of the stack
 //     (contracts.md §10 import map).
-//   - INV6: 11 exported symbols (3 types + 8 funcs), under the 12 hard-fail
-//     ceiling. The DB accessor is the seam-S10 connection share for
+//   - INV6: 12 exported symbols (11 types + 1 func), AT the 12 hard-fail
+//     ceiling (device-pairing D6 — the two pairing row structs are the whole
+//     addition; future store growth goes through the S10 DB() seam or a trim
+//     pass). The DB accessor is the seam-S10 connection share for
 //     internal/module; store remains the sole opener/closer.
 package store

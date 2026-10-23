@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -74,7 +75,7 @@ func TestNew_Routes(t *testing.T) {
 		scanCalls = append(scanCalls, libraryID)
 		return wantScanResult, nil
 	}
-	h := New(Deps{AdminToken: adminToken, Store: st, Scan: scanStub})
+	h := New(Deps{AdminToken: adminToken, Store: st, Scan: scanStub, Pairing: pairing.NewService(st, nil)})
 
 	t.Run("create_library_happy", func(t *testing.T) {
 		body := `{"module_id":"tv","root_path":"/media/tv","display_name":"TV"}`
@@ -324,6 +325,50 @@ func TestNew_Routes(t *testing.T) {
 		}
 		if eb := decodeError(t, resp); eb.Error.Code != "not_found" {
 			t.Fatalf("error code = %q, want not_found", eb.Error.Code)
+		}
+	})
+
+	// Device-pairing mount (device-pairing D2): the pair group is the ONLY
+	// unauthenticated API surface — both routes answer with NO Authorization
+	// header — while every other group still 401s a tokenless request.
+	t.Run("pair_routes_answer_without_token", func(t *testing.T) {
+		resp := doRequest(t, h, http.MethodPost, "/api/v1/pair", "", "")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST /pair status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var pr pairCreateResponse
+		if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+			t.Fatalf("decode pairCreateResponse: %v", err)
+		}
+		if pr.PairingID == "" || pr.Code == "" {
+			t.Fatalf("pairCreateResponse = %+v (want pairing_id + code)", pr)
+		}
+		wait := doRequest(t, h, http.MethodGet, "/api/v1/pair/"+pr.PairingID+"/wait", "", "")
+		defer wait.Body.Close()
+		if wait.StatusCode != http.StatusOK {
+			t.Fatalf("GET /pair/{id}/wait status = %d, want %d", wait.StatusCode, http.StatusOK)
+		}
+		var wr pairWaitResponse
+		if err := json.NewDecoder(wait.Body).Decode(&wr); err != nil {
+			t.Fatalf("decode pairWaitResponse: %v", err)
+		}
+		if wr.Status != "pending" || wr.DeviceToken != "" {
+			t.Fatalf("pairWaitResponse = %+v (want pending, no token)", wr)
+		}
+	})
+
+	t.Run("authed_routes_still_401_without_token", func(t *testing.T) {
+		for _, rr := range []struct{ method, path string }{
+			{http.MethodGet, "/api/v1/libraries"},
+			{http.MethodGet, "/api/v1/admin/status"},
+			{http.MethodGet, "/api/v1/admin/pairings"},
+		} {
+			resp := doRequest(t, h, rr.method, rr.path, "", "")
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("%s %s without token: status = %d, want %d", rr.method, rr.path, resp.StatusCode, http.StatusUnauthorized)
+			}
 		}
 	})
 }

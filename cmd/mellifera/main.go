@@ -42,6 +42,7 @@ import (
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
+	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
@@ -275,9 +276,18 @@ func main() {
 	// Queue.ReenrichSource.
 	sweeps := &sweepGuard{inFlight: map[int64]bool{}}
 
+	// Device-pairing service (device-pairing D1): the api Deps.Pairing seam —
+	// the auth middleware's RoleClient branch and the pairing handlers
+	// delegate to it. A nil field would leave every pairing route 503-ing in
+	// production, so it is built here beside the other Deps wiring (the nil
+	// now func would also do — time.Now is spelled out to match the
+	// constructor's production contract).
+	pairingSvc := pairing.NewService(st, time.Now)
+
 	apiHandler := api.New(api.Deps{
 		AdminToken: cfg.adminToken,
 		Store:      st,
+		Pairing:    pairingSvc,
 		Scan: func(ctx context.Context, libraryID int64) (scan.Result, error) {
 			return scan.Run(ctx, scanDeps, libraryID)
 		},

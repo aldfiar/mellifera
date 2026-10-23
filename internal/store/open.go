@@ -200,6 +200,34 @@ var schemaSQL = []string{
   updated_at TEXT NOT NULL,
   PRIMARY KEY (module_id, library_id, plugin_id)
 )`,
+	// pairing_requests is the device-pairing request control table (device-
+	// pairing D6): ONE row per minted pairing request, keyed by the 128-bit
+	// pairing_id — the CAPABILITY (the 8-char code column is only what the
+	// admin visually compares against the TV screen). status moves
+	// pending → approved | denied | expired → consumed, CHECK-guarded;
+	// expiry is LAZY — decided on read by internal/pairing's injected clock,
+	// never swept here (the store stays value-agnostic, the control-state
+	// precedent of metadata_source_prefs).
+	`CREATE TABLE IF NOT EXISTS pairing_requests (
+  id         TEXT PRIMARY KEY,
+  code       TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'pending'
+             CHECK (status IN ('pending','approved','denied','expired','consumed')),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+)`,
+	// device_tokens is the durable client-credential table (device-pairing
+	// D4/D6): ONE row per paired device, keyed by a minted device id. It
+	// carries ONLY the SHA-256 hash of the bearer token — the raw value is
+	// handed to the device exactly once at pickup and never persisted — and
+	// the approval code of the pairing that minted it, for recognition in
+	// the admin device list. Revocation = DELETE row.
+	`CREATE TABLE IF NOT EXISTS device_tokens (
+  id         TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  code       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+)`,
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
 	// series_library backs the per-library series listing/sweep paths

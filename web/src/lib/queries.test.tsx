@@ -9,11 +9,18 @@ import type { ListItemsParams } from "@/lib/api";
 import {
   queryClient,
   useAdminStatus,
+  useApprovePairing,
   useCreateLibrary,
+  useDenyPairing,
+  useDevices,
   useItemMedia,
   useItems,
   useLibraries,
+  usePairingWait,
+  usePairings,
+  useRevokeDevice,
   useScanLibrary,
+  useStartPairing,
 } from "@/lib/queries";
 
 // S5 joint contract: query hooks -> Go /api/v1/{libraries,scan,admin/status}.
@@ -209,5 +216,112 @@ describe("useItemMedia — object-URL lifecycle (media-preview D5)", () => {
 
     expect(spy).not.toHaveBeenCalled();
     expect(result.current).toBeNull();
+  });
+});
+
+describe("pairing hooks — device-pairing (admin verbs + device bootstrap)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("usePairings / useDevices read the admin pairing surfaces", async () => {
+    const pairingsSpy = vi.spyOn(apiModule, "getAdminPairings").mockResolvedValue({
+      pairings: [
+        { pairing_id: "p1", code: "ABCD-2345", created_at: "c", expires_at: "e" },
+      ],
+    });
+    const devicesSpy = vi.spyOn(apiModule, "getAdminDevices").mockResolvedValue({
+      devices: [{ device_id: "dev1", code: "ABCD-2345", created_at: "c" }],
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    const pairings = renderHook(() => usePairings(), { wrapper: wrapper(client) });
+    await waitFor(() => expect(pairings.result.current.isSuccess).toBe(true));
+    expect(pairingsSpy).toHaveBeenCalledTimes(1);
+    expect(pairings.result.current.data?.pairings[0]?.pairing_id).toBe("p1");
+
+    const devices = renderHook(() => useDevices(), { wrapper: wrapper(client) });
+    await waitFor(() => expect(devices.result.current.isSuccess).toBe(true));
+    expect(devicesSpy).toHaveBeenCalledTimes(1);
+    expect(devices.result.current.data?.devices[0]?.device_id).toBe("dev1");
+  });
+
+  it("useApprovePairing POSTs and invalidates [\"admin-pairings\"] on success", async () => {
+    const approveSpy = vi.spyOn(apiModule, "approvePairing").mockResolvedValue({
+      pairing_id: "p1",
+      status: "approved",
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useApprovePairing(), {
+      wrapper: wrapper(queryClient),
+    });
+    result.current.mutate("p1");
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(approveSpy).toHaveBeenCalledWith("p1");
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["admin-pairings"] });
+    invalidateSpy.mockRestore();
+  });
+
+  it("useDenyPairing and useRevokeDevice invalidate their lists on success", async () => {
+    const denySpy = vi.spyOn(apiModule, "denyPairing").mockResolvedValue(undefined);
+    const revokeSpy = vi
+      .spyOn(apiModule, "revokeDevice")
+      .mockResolvedValue(undefined);
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const deny = renderHook(() => useDenyPairing(), {
+      wrapper: wrapper(queryClient),
+    });
+    deny.result.current.mutate("p1");
+    await waitFor(() => expect(deny.result.current.isSuccess).toBe(true));
+
+    const revoke = renderHook(() => useRevokeDevice(), {
+      wrapper: wrapper(queryClient),
+    });
+    revoke.result.current.mutate("dev1");
+    await waitFor(() => expect(revoke.result.current.isSuccess).toBe(true));
+
+    expect(denySpy).toHaveBeenCalledWith("p1");
+    expect(revokeSpy).toHaveBeenCalledWith("dev1");
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["admin-pairings"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["admin-devices"] });
+    invalidateSpy.mockRestore();
+  });
+
+  it("useStartPairing mints via POST /pair; usePairingWait polls only with an id", async () => {
+    const startSpy = vi.spyOn(apiModule, "startPairing").mockResolvedValue({
+      pairing_id: "p1",
+      code: "ABCD-2345",
+    });
+    const waitSpy = vi
+      .spyOn(apiModule, "waitPairing")
+      .mockResolvedValue({ status: "pending" });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: 0 } },
+    });
+
+    const start = renderHook(() => useStartPairing(), { wrapper: wrapper(client) });
+    start.result.current.mutate();
+    await waitFor(() => expect(start.result.current.isSuccess).toBe(true));
+    expect(startSpy).toHaveBeenCalledTimes(1);
+    expect(start.result.current.data?.code).toBe("ABCD-2345");
+
+    // Empty id (the start request has not landed yet) → the poll never fires.
+    const idle = renderHook(() => usePairingWait(""), { wrapper: wrapper(client) });
+    await waitFor(() => expect(idle.result.current.fetchStatus).toBe("idle"));
+    expect(waitSpy).not.toHaveBeenCalled();
+
+    // With the minted id → the poll fires.
+    const polling = renderHook(() => usePairingWait("p1"), {
+      wrapper: wrapper(client),
+    });
+    await waitFor(() => expect(polling.result.current.isSuccess).toBe(true));
+    expect(waitSpy).toHaveBeenCalledWith("p1");
   });
 });

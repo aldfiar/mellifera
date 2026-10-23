@@ -4,12 +4,15 @@ import { Navigate, Route, Routes } from "react-router-dom";
 
 import { RequireAuth } from "@/components/RequireAuth";
 import Sidebar from "@/components/Sidebar";
+import { getDeviceToken, getToken } from "@/lib/auth";
 import Login from "@/pages/Login";
+import PairingEntry from "@/pages/pair/PairingEntry";
 import Home from "@/pages/home/Home";
 import Collection from "@/pages/collections/Collection";
 import Collections from "@/pages/admin/Collections";
 import Sources from "@/pages/admin/Sources";
 import Plugins from "@/pages/admin/Plugins";
+import Pairing from "@/pages/admin/Pairing";
 import ItemDetail from "@/pages/browse/ItemDetail";
 
 // Client-side route table (web-ui-phase-3 group 3). Routing is purely
@@ -38,6 +41,20 @@ function Shell({ children }: { children: ReactNode }): ReactElement {
   );
 }
 
+// RootGate — the ROOT route's three-state credential gate (device-pairing
+// D8): no stored credential (neither the admin token nor a device token) →
+// the pairing entry screen; either credential → the app shell exactly as
+// today. ROOT ROUTE ONLY — every other protected route keeps <RequireAuth>'s
+// redirect to /login (web-ui "SPA token authentication" untouched there);
+// /login stays reachable for operator deep links. Presence-only, like
+// RequireAuth: the Go authMiddleware remains the sole authZ authority.
+function RootGate({ children }: { children: ReactNode }): ReactElement {
+  if (!getToken() && !getDeviceToken()) {
+    return <PairingEntry />;
+  }
+  return <>{children}</>;
+}
+
 export default function App(): ReactElement {
   return (
     <Routes>
@@ -45,11 +62,11 @@ export default function App(): ReactElement {
       <Route
         path="/"
         element={
-          <RequireAuth>
+          <RootGate>
             <Shell>
               <Home />
             </Shell>
-          </RequireAuth>
+          </RootGate>
         }
       />
       <Route
@@ -88,6 +105,16 @@ export default function App(): ReactElement {
           <RequireAuth>
             <Shell>
               <Plugins />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/admin/pairing"
+        element={
+          <RequireAuth>
+            <Shell>
+              <Pairing />
             </Shell>
           </RequireAuth>
         }
