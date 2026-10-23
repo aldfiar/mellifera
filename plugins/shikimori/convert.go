@@ -58,14 +58,19 @@ func (*sourceImpl) Convert(_ context.Context, req *metadatav1.ConvertRequest) (*
 // animeEntry mirrors the shikimori anime payload (v1 API). score is a decimal
 // STRING upstream; json.Number accepts both the string and a bare number.
 type animeEntry struct {
-	ID          int          `json:"id"`
-	Name        string       `json:"name"`
-	Russian     string       `json:"russian"`
-	Kind        string       `json:"kind"`
-	Status      string       `json:"status"`
-	Score       json.Number  `json:"score"`
-	Episodes    int          `json:"episodes"`
-	AiredOn     string       `json:"aired_on"`
+	ID       int         `json:"id"`
+	Name     string      `json:"name"`
+	Russian  string      `json:"russian"`
+	Kind     string      `json:"kind"`
+	Status   string      `json:"status"`
+	Score    json.Number `json:"score"`
+	Episodes int         `json:"episodes"`
+	AiredOn  string      `json:"aired_on"`
+
+	// Carried only by the search-list payload (identify-match-override);
+	// pointer so an absent upstream year stays absent in the candidate.
+	Year *int32 `json:"year"`
+
 	Description string       `json:"description"`
 	URL         string       `json:"url"`
 	Image       animeImage   `json:"image"`

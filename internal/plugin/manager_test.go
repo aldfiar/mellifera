@@ -68,7 +68,9 @@ func (mockScanner) Identify(context.Context, *scannerv1.IdentifyRequest) (*scann
 // mockMetadata is an sdk.MetadataSource whose methods are unused by accessor
 // tests (it exists so a fake-launched metadata_source entry can reach "serving"
 // and the accessor can return its typed client).
-type mockMetadata struct{}
+type mockMetadata struct {
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+}
 
 func (mockMetadata) Match(context.Context, *metadatav1.MatchRequest) (*metadatav1.MatchResult, error) {
 	return nil, nil

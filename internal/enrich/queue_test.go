@@ -66,11 +66,12 @@ func baseDoc(relPath string) map[string]any {
 // succeedSrc is a MetadataSource that always succeeds, writing sources.<id>. It
 // optionally captures the base handed to Match (the S7 reconstruct assertion).
 type succeedSrc struct {
-	id    string
-	got   *scannerv1.IdentifyResult // captured base (nil unless Match ran)
-	gotMu sync.Mutex
-	calls int32
-	delay time.Duration // >0 makes Match hold (lease no-double test)
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+	id                    string
+	got                   *scannerv1.IdentifyResult // captured base (nil unless Match ran)
+	gotMu                 sync.Mutex
+	calls                 int32
+	delay                 time.Duration // >0 makes Match hold (lease no-double test)
 }
 
 var _ sdk.MetadataSource = (*succeedSrc)(nil)

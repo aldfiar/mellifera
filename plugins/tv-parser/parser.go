@@ -29,7 +29,9 @@ var _ sdk.MetadataSource = (*parserImpl)(nil)
 // (arch §3.3). The core stamps _provenance/_view authoritatively
 // (INV-namespace-write): the plugin returns metadata + a provenance hint map +
 // proposed view bindings, and the core places them.
-type parserImpl struct{}
+type parserImpl struct {
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+}
 
 // Match decides whether this item looks like a TV episode and, when it does,
 // carries the parseTV result as the query the rest of the chain consumes. A

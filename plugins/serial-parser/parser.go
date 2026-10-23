@@ -30,8 +30,12 @@ var _ sdk.MetadataSource = (*parserImpl)(nil)
 // parses the episode numbers. Anything
 // else is applies=false — a skipped stage, not an error. Merge writes ONLY
 // sources["serial-parser"]; the core stamps _provenance/_view authoritatively
-// (INV-namespace-write). A local parser: BuildRequest is a nop (no fetch).
-type parserImpl struct{}
+// (INV-namespace-write). A local parser: BuildRequest is a nop (no fetch), and
+// the interactive search pair is declined via the embedded sdk.UnsupportedSearch
+// base (identify-match-override).
+type parserImpl struct {
+	sdk.UnsupportedSearch
+}
 
 // Marker fact names the serial-scanner stamps into parsed (design.md
 // §Interfaces §1-2). Read here as plain facts — the plugin never imports core.

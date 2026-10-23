@@ -233,6 +233,69 @@
                 }
             }
         },
+        "/admin/sources/{plugin_id}/search": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Search a metadata source interactively",
+                "operationId": "source-search",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "plugin id",
+                        "name": "plugin_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "search query",
+                        "name": "query",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "optional kind filter (tv/movie/...)",
+                        "name": "kind",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.searchCandidatesResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/admin/status": {
             "get": {
                 "tags": [
@@ -1498,6 +1561,71 @@
                 }
             }
         },
+        "/series/{id}/identify": {
+            "put": {
+                "tags": [
+                    "series"
+                ],
+                "summary": "Re-anchor a series' identity to a picked metadata match",
+                "operationId": "series-identify",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "series id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "source_id + external_id, both required",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.identifyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/api.identifyResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/series/{id}/title": {
             "put": {
                 "tags": [
@@ -1811,6 +1939,31 @@
                 },
                 "path": {
                     "type": "string"
+                }
+            }
+        },
+        "api.identifyRequest": {
+            "type": "object",
+            "properties": {
+                "external_id": {
+                    "type": "string"
+                },
+                "source_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.identifyResult": {
+            "type": "object",
+            "properties": {
+                "deferred": {
+                    "type": "integer"
+                },
+                "queued": {
+                    "type": "boolean"
+                },
+                "stripped": {
+                    "type": "integer"
                 }
             }
         },
@@ -2185,6 +2338,18 @@
                     "type": "array",
                     "items": {
                         "type": "string"
+                    }
+                }
+            }
+        },
+        "api.searchCandidatesResponse": {
+            "type": "object",
+            "properties": {
+                "candidates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": {}
                     }
                 }
             }

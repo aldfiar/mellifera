@@ -21,8 +21,9 @@ import (
 // resolved_ids claim inside its metadata, and Merge strips that reserved key
 // while writing ONLY sources.<id> — the shape the real plugin keeps.
 type anchorSource struct {
-	id       string
-	matchIDs []*structpb.Struct // ExistingIds seen per Match call, in order
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+	id                    string
+	matchIDs              []*structpb.Struct // ExistingIds seen per Match call, in order
 }
 
 var _ sdk.MetadataSource = (*anchorSource)(nil)

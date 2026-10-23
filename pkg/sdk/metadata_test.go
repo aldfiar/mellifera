@@ -5,12 +5,15 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"net"
+	"reflect"
 	"testing"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 )
@@ -26,10 +29,12 @@ const metadataServiceName = "mellifera.metadata.v1.MetadataSource"
 // the subprocess client wrapper built by MetadataSourcePlugin.GRPCClient it
 // justifies the MetadataSource interface at the plugin seam.
 type fakeMetadataSource struct {
-	match *metadatav1.MatchResult
-	build *metadatav1.BuildRequestResponse
-	conv  *metadatav1.ConvertResult
-	merge *metadatav1.MergeResult
+	match        *metadatav1.MatchResult
+	build        *metadatav1.BuildRequestResponse
+	conv         *metadatav1.ConvertResult
+	merge        *metadatav1.MergeResult
+	searchSpecs  *metadatav1.SearchSpecsResult
+	searchResult *metadatav1.SearchResultsResult
 }
 
 func (f fakeMetadataSource) Match(context.Context, *metadatav1.MatchRequest) (*metadatav1.MatchResult, error) {
@@ -46,6 +51,14 @@ func (f fakeMetadataSource) Convert(context.Context, *metadatav1.ConvertRequest)
 
 func (f fakeMetadataSource) Merge(context.Context, *metadatav1.MergeRequest) (*metadatav1.MergeResult, error) {
 	return f.merge, nil
+}
+
+func (f fakeMetadataSource) SearchSpecs(context.Context, *metadatav1.SearchSpecsRequest) (*metadatav1.SearchSpecsResult, error) {
+	return f.searchSpecs, nil
+}
+
+func (f fakeMetadataSource) SearchResults(context.Context, *metadatav1.SearchResultsRequest) (*metadatav1.SearchResultsResult, error) {
+	return f.searchResult, nil
 }
 
 // serveMetadata exercises both halves of MetadataSourcePlugin over a real
@@ -180,10 +193,80 @@ func TestMetadataSourcePlugin_RoundTrip(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "search_pair_forwards_intact",
+			impl: fakeMetadataSource{
+				searchSpecs: &metadatav1.SearchSpecsResult{Spec: &metadatav1.RequestSpec{
+					Method: "GET", UrlTemplate: "https://example.test/search?q={query}", MinIntervalMs: 700,
+				}},
+				searchResult: &metadatav1.SearchResultsResult{Candidates: []*metadatav1.SearchCandidate{
+					{ExternalId: "378", Title: "Aria", Kind: "tv", RussianTitle: proto.String("Ария")},
+					{ExternalId: "100", Title: "Wake Up, Aria", Kind: "ova"},
+				}},
+			},
+			check: func(t *testing.T, ms MetadataSource) {
+				ss, err := ms.SearchSpecs(context.Background(), &metadatav1.SearchSpecsRequest{Query: "aria"})
+				if err != nil {
+					t.Fatalf("SearchSpecs: %v", err)
+				}
+				if ss.Spec == nil || ss.Spec.UrlTemplate != "https://example.test/search?q={query}" || ss.Spec.MinIntervalMs != 700 {
+					t.Errorf("SearchSpecs spec = %+v, want bounded search spec", ss.Spec)
+				}
+
+				sr, err := ms.SearchResults(context.Background(), &metadatav1.SearchResultsRequest{Query: "aria"})
+				if err != nil {
+					t.Fatalf("SearchResults: %v", err)
+				}
+				if len(sr.Candidates) != 2 {
+					t.Fatalf("SearchResults candidates = %d, want 2", len(sr.Candidates))
+				}
+				first, second := sr.Candidates[0], sr.Candidates[1]
+				if first.ExternalId != "378" || first.Title != "Aria" || first.Kind != "tv" {
+					t.Errorf("candidate 0 = {%s %s %s}, want {378 Aria tv}", first.ExternalId, first.Title, first.Kind)
+				}
+				if first.RussianTitle == nil || *first.RussianTitle != "Ария" {
+					t.Errorf("candidate 0 russian_title = %v, want Ария (presence set)", first.RussianTitle)
+				}
+				if second.RussianTitle != nil {
+					t.Errorf("candidate 1 russian_title = %q, want absent", *second.RussianTitle)
+				}
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.check(t, serveMetadata(t, tc.impl))
+		})
+	}
+}
+
+// TestUnsupportedSearch pins the embeddable base: both methods fail with the
+// ErrSearchUnsupported sentinel and a nil result, so a source embedding it
+// (serial-parser) satisfies the grown interface without behavior changes.
+func TestUnsupportedSearch(t *testing.T) {
+	base := UnsupportedSearch{}
+	cases := []struct {
+		name string
+		call func() (any, error)
+	}{
+		{"search_specs", func() (any, error) {
+			r, err := base.SearchSpecs(context.Background(), &metadatav1.SearchSpecsRequest{})
+			return r, err
+		}},
+		{"search_results", func() (any, error) {
+			r, err := base.SearchResults(context.Background(), &metadatav1.SearchResultsRequest{})
+			return r, err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := tc.call()
+			if !errors.Is(err, ErrSearchUnsupported) {
+				t.Fatalf("err = %v, want ErrSearchUnsupported", err)
+			}
+			if res != nil && !reflect.ValueOf(res).IsNil() {
+				t.Errorf("result = %+v, want nil", res)
+			}
 		})
 	}
 }

@@ -38,7 +38,7 @@ import (
 // the directory as all-insertions (13 files, +4057) — vacuously failing on
 // every run. Re-baselining to f2dc2e8 preserves the guard's semantics: empty
 // diff in the no_seam trees = additive holds.
-const b2MergeBase = "13e441a" // re-baselined by media-data-convention 2.1 (request-plan extras); was f2dc2e8
+const b2MergeBase = "6f7a612" // re-baselined by identify-match-override 1.1 (the MetadataSource search RPCs); was 13e441a
 
 // b2Token is the admin bearer for the TV regression server.
 const b2Token = "qa-b2-regression-token"

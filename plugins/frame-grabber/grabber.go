@@ -37,10 +37,11 @@ const defaultDataDir = "./data"
 // writes ONLY sources["frame-grabber"] — the thumbnail PATH, never a BLOB.
 // The core stamps _provenance/_view authoritatively (INV-namespace-write).
 type grabberImpl struct {
-	ffmpegPath  string        // ffmpeg binary to invoke (default "ffmpeg")
-	dataDir     string        // thumbs root (MELLIFERA_DATA_DIR semantics)
-	seek        time.Duration // default seek into the file (default 300s)
-	grabTimeout time.Duration // per-grab ffmpeg deadline (default 30s)
+	sdk.UnsupportedSearch               // the interactive search pair: unsupported (identify-match-override)
+	ffmpegPath            string        // ffmpeg binary to invoke (default "ffmpeg")
+	dataDir               string        // thumbs root (MELLIFERA_DATA_DIR semantics)
+	seek                  time.Duration // default seek into the file (default 300s)
+	grabTimeout           time.Duration // per-grab ffmpeg deadline (default 30s)
 }
 
 // newGrabber fills the zero-value knobs with the shipped defaults.

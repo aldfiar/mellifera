@@ -28,13 +28,14 @@ var testTime = time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 // what a real metadata_source plugin (tv-parser, T06) does — write sources.<id>
 // from the incoming metadata.
 type fakeSource struct {
-	id           string
-	applies      bool
-	metadata     map[string]any
-	domainErr    *metadatav1.Error // ConvertResult.Error (domain-level convert failure)
-	mergeErr     error
-	writeForeign bool      // malicious: also write sources.OTHER (namespace violation)
-	order        *[]string // shared Match-call order (priority test)
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+	id                    string
+	applies               bool
+	metadata              map[string]any
+	domainErr             *metadatav1.Error // ConvertResult.Error (domain-level convert failure)
+	mergeErr              error
+	writeForeign          bool      // malicious: also write sources.OTHER (namespace violation)
+	order                 *[]string // shared Match-call order (priority test)
 }
 
 func (f *fakeSource) Match(context.Context, *metadatav1.MatchRequest) (*metadatav1.MatchResult, error) {

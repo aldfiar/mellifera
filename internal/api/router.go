@@ -82,6 +82,22 @@ type Deps struct {
 	// computed on demand — drift is never stored. Built in cmd/mellifera.
 	// Nil-safe (503 when nil), mirroring Reenrich.
 	EnrichPreview func(ctx context.Context, libraryID int64, pluginID string) (EnrichPreview, error)
+	// SearchSource is the identify overlay's interactive search closure
+	// (identify-match-override): a live read against ONE named source — the
+	// fetch rides the enrichment pacing gate cmd-side, and the candidates
+	// come back as convention-field primitive maps in the source's served
+	// order. Unknown plugin errors (wrapping ErrUnknownPlugin); a source
+	// without search errors (wrapping the SDK's ErrSearchUnsupported → 400
+	// search_unsupported). Nil-safe (503 when nil), mirroring Reenrich.
+	SearchSource func(ctx context.Context, pluginID, query, kind string) ([]map[string]any, error)
+	// IdentifySeries is the identify re-anchor closure (identify-match-
+	// override): writes the picked external id into the series document's
+	// identifiers, strips the source's namespace, and notifies the library so
+	// the next derivation run fetches BY the picked id. Unknown plugin errors
+	// (wrapping ErrUnknownPlugin); an unknown series errors with the store's
+	// sql.ErrNoRows preserved (→ 404 at the handler). Nil-safe (503 when
+	// nil), mirroring Reenrich.
+	IdentifySeries func(ctx context.Context, seriesID, pluginID, externalID string) (queued bool, stripped, deferred int, err error)
 	// SourceInventory is the admin-sources boot-literal inventory closure
 	// (plugin-title-enrichment D6): the plugin ids the process booted with,
 	// in boot order, each with its operator-facing display name and
@@ -298,6 +314,13 @@ func mountV1Routes(r chi.Router, h *app) {
 		// nothing is written, no derivation wakes. Operator observability, so
 		// the admin group beside the gate writes it previews.
 		r.Post("/admin/sources/preview", h.adminSourcePreview)
+		// Identify overlay (identify-match-override): the interactive source
+		// search passthrough (a read — but operator tooling, so the admin
+		// group beside /admin/sources) and the series re-anchor write (202;
+		// the strip + re-derive run under the row's lease). Both are
+		// Deps-closure endpoints (nil-safe, cmd-wired).
+		r.Get("/admin/sources/{plugin_id}/search", h.sourceSearch)
+		r.Put("/series/{id}/identify", h.seriesIdentify)
 		// Plugin admin surfaces (plugin-admin-surfaces): the read-only
 		// loaded-plugin aggregate — boot inventory, health snapshot,
 		// capability chips, module-scope effective verdicts, config bindings —

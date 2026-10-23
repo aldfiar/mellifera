@@ -536,6 +536,42 @@ export interface ListItemsParams {
   offset?: number;
 }
 
+// SearchCandidate — one served candidate of the interactive source search
+// (identify-match-override): the convention field names verbatim, the
+// optionals ABSENT when the source did not serve them. The client renders
+// the served order and never re-scores.
+export interface SearchCandidate {
+  external_id: string;
+  title: string;
+  kind: string;
+  russian_title?: string;
+  year?: number;
+  episodes?: number;
+  poster?: string;
+}
+
+// SearchCandidatesResponse — the search passthrough's 200 body: the source's
+// candidates in its served order.
+export interface SearchCandidatesResponse {
+  candidates: SearchCandidate[];
+}
+
+// SeriesIdentifyRequest — the PUT /series/{id}/identify body: the source to
+// re-anchor under and the picked upstream id, both required non-empty.
+export interface SeriesIdentifyRequest {
+  source_id: string;
+  external_id: string;
+}
+
+// SeriesIdentifyResult — the 202 answer: queued reports the anchor write +
+// strip landing; stripped rows re-derive now; deferred rows were lease-held
+// and kept their data (the overlay surfaces the staleness honestly).
+export interface SeriesIdentifyResult {
+  queued: boolean;
+  stripped: number;
+  deferred: number;
+}
+
 // Canonical error body inner object (handlers.go:364-385; arch §11.6).
 export interface ApiErrorBody {
   code: string;
@@ -642,6 +678,16 @@ export const ENDPOINTS = {
     `/api/v1/items/${id}/media?variant=sidecar&n=${String(n)}`,
   series: "/api/v1/series",
   seriesEpisodes: (id: string): string => `/api/v1/series/${id}/episodes`,
+  // sourceSearch / seriesIdentify — the identify overlay pair (identify-
+  // match-override, identify.go). GET /admin/sources/{plugin_id}/search
+  // passes the operator's interactive search through to the named source
+  // (400 search_unsupported for a source without search, 502 upstream_error
+  // with retry disabled for a failed fetch); PUT /series/{id}/identify
+  // re-anchors the series' identity to the picked candidate (202 {queued,
+  // stripped, deferred}; the strip + re-derive run in the background).
+  sourceSearch: (pluginId: string): string =>
+    `/api/v1/admin/sources/${pluginId}/search`,
+  seriesIdentify: (id: string): string => `/api/v1/series/${id}/identify`,
   // Title override verbs (serial-watch-flow 2.1, the admin rename routes):
   // PUT sets the override (200 with the stored record), DELETE clears it
   // (204, idempotent). 400 bad_request for a whitespace-only/non-string
@@ -914,6 +960,39 @@ export async function getEnrichPreview(
   return apiRequest<EnrichPreview>(
     `${ENDPOINTS.enrichPreview(id)}?${q.toString()}`,
   );
+}
+
+// searchSource — GET /api/v1/admin/sources/{plugin_id}/search?query=
+// (identify.go sourceSearch, identify-match-override): the identify
+// overlay's interactive search passthrough. Candidates return in the
+// source's SERVED order — never re-scored client-side. 400 bad_request for
+// a missing/whitespace query or an unknown plugin, 400 search_unsupported
+// for a source without search, 502 upstream_error (retry disabled) for a
+// failed fetch — all canonical, surfaced inline by the overlay.
+export async function searchSource(
+  pluginId: string,
+  query: string,
+): Promise<SearchCandidatesResponse> {
+  const q = new URLSearchParams({ query });
+  return apiRequest<SearchCandidatesResponse>(
+    `${ENDPOINTS.sourceSearch(pluginId)}?${q.toString()}`,
+  );
+}
+
+// identifySeries — PUT /api/v1/series/{id}/identify (identify.go
+// seriesIdentify): re-anchors the series' identity to the picked candidate —
+// the picked id becomes the stored anchor, the source's namespace strips,
+// and the background re-derive fetches BY the picked id while the display
+// name stays. 202 with the counts; 400 unknown source/empty fields, 404
+// unknown series — canonical, surfaced inline (retry:0 — no auto-retry).
+export async function identifySeries(
+  id: string,
+  req: SeriesIdentifyRequest,
+): Promise<SeriesIdentifyResult> {
+  return apiRequest<SeriesIdentifyResult>(ENDPOINTS.seriesIdentify(id), {
+    method: "PUT",
+    body: req as unknown as BodyInit,
+  });
 }
 
 // getAdminSources — GET /api/v1/admin/sources (source_admin.go adminSources):

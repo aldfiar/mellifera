@@ -22,11 +22,12 @@ import (
 // outcomeSkipped; a resolver error drives outcomeUnavailable. It reuses the
 // wrapNamespace helper from enrich_test.go (same package).
 type retrySource struct {
-	id         string
-	applies    bool
-	failN      int
-	noData     bool
-	mergeCalls int
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+	id                    string
+	applies               bool
+	failN                 int
+	noData                bool
+	mergeCalls            int
 }
 
 var _ sdk.MetadataSource = (*retrySource)(nil)

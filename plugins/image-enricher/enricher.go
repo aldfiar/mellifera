@@ -31,7 +31,9 @@ var _ sdk.MetadataSource = (*enricherImpl)(nil)
 // maps the EXIF tags; Merge writes the metadata into document.sources
 // ["image-enricher"] ONLY (arch §3.3). The core stamps _provenance/_view
 // authoritatively (INV-namespace-write).
-type enricherImpl struct{}
+type enricherImpl struct {
+	sdk.UnsupportedSearch // the interactive search pair: unsupported (identify-match-override)
+}
 
 // imageExts maps a lowercased image extension to its best-effort format hint
 // derived from the extension. The authoritative format comes from exiftool's

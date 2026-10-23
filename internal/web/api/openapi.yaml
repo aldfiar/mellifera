@@ -191,6 +191,22 @@ definitions:
       path:
         type: string
     type: object
+  api.identifyRequest:
+    properties:
+      external_id:
+        type: string
+      source_id:
+        type: string
+    type: object
+  api.identifyResult:
+    properties:
+      deferred:
+        type: integer
+      queued:
+        type: boolean
+      stripped:
+        type: integer
+    type: object
   api.itemDTO:
     properties:
       display_name:
@@ -436,6 +452,14 @@ definitions:
       warnings:
         items:
           type: string
+        type: array
+    type: object
+  api.searchCandidatesResponse:
+    properties:
+      candidates:
+        items:
+          additionalProperties: {}
+          type: object
         type: array
     type: object
   api.seriesDTO:
@@ -748,6 +772,48 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: Enable or disable a metadata source module-wide
+      tags:
+      - admin
+  /admin/sources/{plugin_id}/search:
+    get:
+      operationId: source-search
+      parameters:
+      - description: plugin id
+        in: path
+        name: plugin_id
+        required: true
+        type: string
+      - description: search query
+        in: query
+        name: query
+        required: true
+        type: string
+      - description: optional kind filter (tv/movie/...)
+        in: query
+        name: kind
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.searchCandidatesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Search a metadata source interactively
       tags:
       - admin
   /admin/sources/preview:
@@ -1618,6 +1684,49 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: List a series' episode items
+      tags:
+      - series
+  /series/{id}/identify:
+    put:
+      operationId: series-identify
+      parameters:
+      - description: series id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: source_id + external_id, both required
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.identifyRequest'
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/api.identifyResult'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Re-anchor a series' identity to a picked metadata match
       tags:
       - series
   /series/{id}/title:

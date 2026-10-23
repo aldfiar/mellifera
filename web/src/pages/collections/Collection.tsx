@@ -51,6 +51,7 @@ import {
   RenameTitle,
   useTitleOverride,
 } from "@/components/manage/ManageActions";
+import { seriesIdentifyGate } from "@/components/manage/IdentifySeries";
 import { Synopsis } from "@/components/metadata/Synopsis";
 
 // Collection — the per-collection page at /collections/:id (web-ui-phase-3
@@ -1594,6 +1595,19 @@ function SeriesCard(props: {
       <CardActions
         triggerLabel={`Actions for ${seriesTitle(sr)}`}
         pending={pending}
+        // The Identify… row (identify-match-override): gated on the wired
+        // module — the served chain (absent/empty → no row, the designed
+        // empty state) and the refresh_sources vocabulary — opening the
+        // three-step series identify overlay with the served about block as
+        // the orientation match.
+        identify={seriesIdentifyGate({
+          chain: props.chain,
+          refreshSources: props.refreshSources,
+          libraryId: props.libraryId,
+          seriesId: sr.id,
+          displayTitle: seriesTitle(sr),
+          about: sr.metadata?.about,
+        })}
         refresh={refresh}
         footer={
           backing === "file" ? (
