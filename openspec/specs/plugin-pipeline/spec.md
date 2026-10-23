@@ -357,11 +357,39 @@ go test ./pkg/sdk -run TestUnsupportedSearch -count=1
 sanctioned proto edit
 - **THEN** the guard pins name this change as the sanctioning baseline and
 the guard tests pass against the re-pinned sha
-<!-- wf:probe id=67e300875b4f5bbd -->
+<!-- wf:probe id=1661b76634439fa1 -->
 ```bash
 set -e
-grep -q "identify-match-override" internal/itest/qa_pipeline_regression_test.go
-grep -q "identify-match-override" internal/itest/qa_image_regression_test.go
+grep -q "episode-titles" internal/itest/qa_pipeline_regression_test.go
+grep -q "episode-titles" internal/itest/qa_image_regression_test.go
 go test ./internal/itest -run 'TestQA_AdditiveContract_ProtoAndDepsUnchanged|TestB2_Ac3Additive' -count=1
+```
+<!-- /wf:probe -->
+
+### Requirement: Per-episode convert output
+
+The MetadataSource convert contract SHALL let Convert return per-episode
+contributions beside the run's own namespace: ConvertResult MAY carry
+episode-title entries, each naming the source's episode number for the entry
+(the episode's number within the matched series' season) and the namespace
+fields for THAT episode (the convention episode fields only). The core SHALL
+wrap `metadata` into the run document's namespace exactly as before and SHALL
+hand the entries to the enrichment router; the entries SHALL never appear
+inside the run document's own namespace. The contract change SHALL be
+additive — no existing message, RPC, or field changes meaning — and a
+conversion that returns no entries runs unchanged.
+
+#### Scenario: Entries ride beside the run namespace, never inside it
+
+- **WHEN** Convert returns the run metadata plus per-episode entries for an
+anchored series run
+- **THEN** the run document's namespace wraps the metadata exactly as
+before, the entries travel in the additive episode-titles field, and no
+entry's fields appear inside the run document's namespace
+
+<!-- wf:probe id=402ef845bdb2e5ce -->
+```bash
+set -e
+go test ./internal/enrich -run TestEpisodeTitleRouting -count=1
 ```
 <!-- /wf:probe -->
