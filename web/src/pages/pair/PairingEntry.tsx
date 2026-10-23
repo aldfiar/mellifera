@@ -7,6 +7,7 @@ import type { ApiError } from "@/lib/api";
 import { setDeviceToken } from "@/lib/auth";
 import { usePairingWait, useStartPairing } from "@/lib/queries";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -25,7 +26,9 @@ import {
 // which is stored and the device navigates to the library main screen.
 // No token pasting anywhere. The muted Operator login link keeps /login
 // discoverable from this screen — the operator path never depends on
-// typing URLs.
+// typing URLs. An expired poll stops the wait and offers a fresh code —
+// showing a dead code forever strands the device on a pairing nobody can
+// approve.
 export default function PairingEntry(): ReactElement {
   const navigate = useNavigate();
   const {
@@ -45,6 +48,14 @@ export default function PairingEntry(): ReactElement {
       startMutate();
     }
   }, [startMutate]);
+
+  // remint — the device's code expired before approval (INV4). Reset the
+  // fire-once guard and mint a fresh request; the wait poll re-keys to the
+  // new pairing id.
+  const remint = () => {
+    started.current = false;
+    startMutate();
+  };
 
   const pairingId = startData?.pairing_id ?? "";
   const { data: waitData, error: waitError } = usePairingWait(pairingId);
@@ -92,14 +103,31 @@ export default function PairingEntry(): ReactElement {
               >
                 {startData?.code}
               </p>
-              <p className="text-xs text-muted-foreground">
-                Waiting for approval…
-              </p>
-              {waitData && waitData.status !== "pending" ? (
-                <p className="text-xs text-muted-foreground" data-testid="pairing-status">
-                  {waitData.status}
-                </p>
-              ) : null}
+              {waitData?.status === "expired" ? (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    This code expired.
+                  </p>
+                  <Button
+                    variant="outline"
+                    data-testid="remint"
+                    onClick={remint}
+                  >
+                    Get a new code
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    Waiting for approval…
+                  </p>
+                  {waitData && waitData.status !== "pending" ? (
+                    <p className="text-xs text-muted-foreground" data-testid="pairing-status">
+                      {waitData.status}
+                    </p>
+                  ) : null}
+                </>
+              )}
             </>
           )}
           {waitErr ? (

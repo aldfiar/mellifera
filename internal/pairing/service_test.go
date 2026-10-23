@@ -224,6 +224,31 @@ func TestServiceDenyAndExpiry(t *testing.T) {
 	})
 }
 
+// TestServiceListPendingDropsShelfExpired covers the stale-list fix: a
+// request that aged past its TTL WITHOUT any poll flipping it (status still
+// stored 'pending' — the zombie row) is dropped from the pending list, while
+// a genuinely still-live request stays listed. The admin panel must never
+// offer a dead pairing for approval — approving one 409s/strands the device
+// that minted the live code.
+func TestServiceListPendingDropsShelfExpired(t *testing.T) {
+	ctx := context.Background()
+	s, clock := newTestService(t)
+
+	stale := pair(t, s, "tv-a") // minted first, ages out unpolled
+
+	clock.Advance(requestTTL - time.Minute)
+	live := pair(t, s, "tv-b")
+	clock.Advance(2 * time.Minute) // stale is 1 min past its TTL; live has 4 min left
+
+	pending, err := s.ListPending(ctx)
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != live.ID {
+		t.Fatalf("ListPending = %+v, want only the live request %s (stale %s dropped)", pending, live.ID, stale.ID)
+	}
+}
+
 // TestServiceLookupToken covers the middleware branch: the picked-up raw
 // token resolves, garbage and empty never do, and a miss is (false, nil) —
 // never an error.
