@@ -62,4 +62,16 @@ boxes:
     text: internal/itest/qa_shikimori_joint_test.go only: the shikimori-enrichment delta sanctions a SECOND anchored extra (episodes), so the pre-existing joint pin is stale — update the two pin sites in TestShikimoriJoint: the want-total 6 becomes 8 (2 ids x [by-id, roles, episodes]) and qaShikAssertAnchoredLeg tail-slice/path-set accepts 3 requests per id (by-id + /roles + /episodes) instead of 2; comments name episode-titles as the sanction; ZERO behavioral assertion changes (UA/pacing/ordering/facts assertions stay as they are). No other test or source file.
     duty:
       verify: go test ./internal/itest -run TestShikimoriJoint -count=1
+  - id: '2.5'
+    group: g2
+    title: Reconcile TestIdentifyMatchJoint request pin to the episodes extra
+    text: internal/itest/qa_identify_joint_test.go only: the shikimori-enrichment delta sanctions a second anchored extra (episodes), so the joint pin at qa_identify_joint_test.go:121 is stale — the anchored leg now issues by-id + /roles + /episodes (3 per id, was 2). Update the want-total (4 to 5) and any per-id path expectations to accept the /episodes companion; comment names episode-titles as the sanction; ZERO behavioral assertion changes; no other file.
+    duty:
+      verify: go test ./internal/itest -run TestIdentifyMatchJoint -count=1
+  - id: '2.6'
+    group: g2
+    title: Reconcile TestQAMediaDataJoint request pin to the episodes extra
+    text: internal/itest/qa_media_data_joint_test.go only: the shikimori-enrichment delta sanctions a second anchored extra (episodes), so the joint pin at qa_media_data_joint_test.go:644 is stale — the anchored leg now issues by-id + /roles + /episodes (3, was 2). Update the want-total (3 to 4) and the named composition '(search + by-id + roles)' to include /episodes; comment names episode-titles as the sanction; ZERO behavioral assertion changes; no other file.
+    duty:
+      verify: go test ./internal/itest -run TestQAMediaDataJoint -count=1
 probes: []

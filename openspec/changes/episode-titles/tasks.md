@@ -15,6 +15,8 @@
 - [ ] 2.3 Guard re-pin to this change proto commit
 
 - [ ] 2.4 Reconcile TestShikimoriJoint anchored-leg pin to the two-extra plan
+- [ ] 2.5 Reconcile TestIdentifyMatchJoint request pin to the episodes extra
+- [ ] 2.6 Reconcile TestQAMediaDataJoint request pin to the episodes extra
 ## g3 - QA joint: plugin to core refresh to episode documents over the real graph
 
 - [ ] 3.1 QA joint: TestQAEpisodeTitlesJoint — series run routes titles onto episode docs over the real graph

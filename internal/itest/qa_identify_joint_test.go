@@ -113,12 +113,13 @@ func TestIdentifyMatchJoint(t *testing.T) {
 	// identifiers.shikimori_id == the picked id (the anchor the write put
 	// there and the strip preserved).
 	qaShikAssertNamespace(t, j, fresh, qaIdentifyWantPicked)
-	// The stub saw leg 1's 2 search requests, then EXACTLY the anchored pair
-	// appended: by-id + /roles for the picked id (leg 1 fetches by search
-	// only — the first by-id fetches ever recorded are the identify leg's).
-	// A search request here breaks either the total or the tail's by-id
-	// paths.
-	qaShikAssertAnchoredLeg(t, j, 2+2, qaIdentifyPickedID)
+	// The stub saw leg 1's 2 search requests, then EXACTLY the anchored
+	// triple appended: by-id + /roles + /episodes for the picked id — the
+	// /episodes companion sanctioned by openspec change episode-titles
+	// (leg 1 fetches by search only — the first by-id fetches ever recorded
+	// are the identify leg's). A search request here breaks either the
+	// total or the tail's by-id paths.
+	qaShikAssertAnchoredLeg(t, j, 2+3, qaIdentifyPickedID)
 
 	// --- the served display name survives ---
 	if after := qaIdentifyDisplayName(t, j, fresh); after != before {
