@@ -558,7 +558,9 @@ func hasNamespace(doc map[string]any, pluginID string) bool {
 // identical for both; only the persist sink differs (PutItem vs PutSeries).
 // extras carries the row's element-attached plugin ids (element-pages D-4) —
 // loaded for items only; a series row never has attachments (the item_parsers
-// control table joins the items table).
+// control table joins the items table). series is the loaded series row for a
+// series target (nil for an item) — the anchor the episode-title side-output
+// is routed against (episode_titles.go).
 type queueRow struct {
 	id        string
 	moduleID  string
@@ -566,6 +568,7 @@ type queueRow struct {
 	status    string
 	doc       json.RawMessage
 	extras    []string
+	series    *store.Series
 	persist   func(ctx context.Context, status string, doc json.RawMessage)
 }
 
@@ -595,6 +598,7 @@ func (q *Queue) loadRow(ctx context.Context, id string) (queueRow, error) {
 	return queueRow{
 		id: sr.ID, moduleID: sr.ModuleID, libraryID: sr.LibraryID,
 		status: sr.Status, doc: sr.Document,
+		series: &sr,
 		persist: func(ctx context.Context, status string, doc json.RawMessage) {
 			q.putSeries(ctx, sr, status, doc)
 		},
@@ -669,6 +673,12 @@ func (q *Queue) workItem(ctx context.Context, rowID string) {
 	}
 	status = q.settle(ctx, gated, extras, doc, rowID, status)
 	q.persistRow(ctx, row, status, doc)
+	if row.series != nil && len(dr.episodeRuns) > 0 {
+		// A series run that returned episode-title entries routes them onto the
+		// series' episode documents (episode-titles D5) — after the run's own
+		// namespace is durably committed, never part of the run result itself.
+		q.routeEpisodeTitles(ctx, *row.series, doc, dr.episodeRuns)
+	}
 	if status == statusReady {
 		q.statDone.Add(1)
 	}

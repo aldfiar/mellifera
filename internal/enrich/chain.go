@@ -38,10 +38,20 @@ type sourceResult struct {
 	provenance  map[string]map[string]any // _provenance.<field> entries (succeeded only)
 	view        map[string]map[string]any // _view.<field> entries (succeeded only)
 	resolvedIDs map[string]any            // identifiers claim (succeeded only, may be empty)
-	warnings    []string
-	errMsg      string
-	startedAt   string
-	finishedAt  string
+	// episodeTitles carries ConvertResult.EpisodeTitles (episode-titles): the
+	// per-episode contributions the worker routes onto the enriched series'
+	// episode documents. They NEVER touch the run document — the metadata field
+	// wraps into the run's namespace as usual, the entries ride beside it.
+	episodeTitles []*metadatav1.EpisodeTitle
+	// provHints and matchConfidence are the run's Convert provenance hints and
+	// Match confidence, carried so the routed episode stamps (episode_titles.go)
+	// are built over the same inputs the run document's stamps used.
+	provHints       map[string]*commonv1.Provenance
+	matchConfidence float64
+	warnings        []string
+	errMsg          string
+	startedAt       string
+	finishedAt      string
 }
 
 // runSource drives the full 4-RPC chain for one metadata_source binding:
@@ -121,8 +131,11 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 	return sourceResult{
 		kind: outcomeSucceeded, pluginID: src.PluginID,
 		namespace: namespace, provenance: prov, view: view,
-		resolvedIDs: resolvedIDsOf(conv.GetMetadata()),
-		startedAt:   start, finishedAt: stamp(),
+		resolvedIDs:     resolvedIDsOf(conv.GetMetadata()),
+		episodeTitles:   conv.GetEpisodeTitles(),
+		provHints:       conv.GetProvenance(),
+		matchConfidence: matchRes.GetConfidence(),
+		startedAt:       start, finishedAt: stamp(),
 	}
 }
 

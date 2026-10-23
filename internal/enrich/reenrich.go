@@ -7,6 +7,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/store"
 )
 
 // reenrichOwner is the lease owner tag the sweep claims rows under — distinct
@@ -23,7 +25,9 @@ const reenrichRetryDelay = 20 * time.Millisecond
 // exported symbol). Empty rowIDs scopes the whole library: every row carrying
 // the plugin's namespace or a within-cooldown ledger row for the plugin (the
 // rows a refresh can change — a row with neither has nothing to refresh).
-// Explicit rowIDs scope exactly the named rows.
+// Explicit rowIDs scope exactly the named rows — plus, when a named row is a
+// SERIES row, that series' episode items (the routed episode-title side-output
+// must refresh with its series or it goes stale forever; episode-titles D6).
 //
 // Per scoped row, under that row's own non-blocking lease (the workers' lease
 // primitive — a held row is NEVER stripped mid-flight, because persistRow on
@@ -76,12 +80,15 @@ func (q *Queue) ReenrichSource(ctx context.Context, libraryID int64, pluginID st
 	return stripped, deferred, nil
 }
 
-// reenrichScope resolves the sweep's row set: explicit rowIDs verbatim, or —
-// for a whole-library sweep — every item and series row of the library
-// carrying the plugin's namespace or a within-cooldown ledger row for it.
+// reenrichScope resolves the sweep's row set: explicit rowIDs verbatim (grown
+// by the named series rows' episode items — scopeWithEpisodes), or — for a
+// whole-library sweep — every item and series row of the library carrying the
+// plugin's namespace or a within-cooldown ledger row for it (a sweep needs no
+// cascade: it already covers every item and series row carrying the
+// namespace).
 func (q *Queue) reenrichScope(ctx context.Context, libraryID int64, pluginID string, rowIDs []string) ([]string, error) {
 	if len(rowIDs) > 0 {
-		return append([]string(nil), rowIDs...), nil
+		return q.scopeWithEpisodes(ctx, rowIDs), nil
 	}
 	items, err := q.allItems(ctx, libraryID)
 	if err != nil {
@@ -108,6 +115,46 @@ func (q *Queue) reenrichScope(ctx context.Context, libraryID int64, pluginID str
 		}
 	}
 	return scope, nil
+}
+
+// scopeWithEpisodes grows an explicit rowID scope: a named SERIES row also
+// scopes its episode items (QueryItemsBySeries — the same directory-backed
+// read the routing uses; a routed sources.<plugin> on an episode doc is the
+// series run's side-output and must refresh with the series strip or it goes
+// stale forever, episode-titles D6 — the pair gate skips on namespace
+// presence, so nothing else would ever rewrite it). A row id naming an item
+// (or a gone row) cascades nothing — item-only explicit scopes stay exactly
+// as before; a file-backed series cascades nothing (the routing never routes
+// episode docs onto one). The strip itself is the unchanged per-row purge;
+// this only widens WHO is scoped. Order-preserving, deduplicated (a caller
+// naming both a series and one of its episodes strips each row once).
+func (q *Queue) scopeWithEpisodes(ctx context.Context, rowIDs []string) []string {
+	scope := make([]string, 0, len(rowIDs))
+	seen := make(map[string]struct{}, len(rowIDs))
+	keep := func(id string) {
+		if _, dup := seen[id]; !dup {
+			seen[id] = struct{}{}
+			scope = append(scope, id)
+		}
+	}
+	for _, id := range rowIDs {
+		keep(id)
+		sr, err := q.deps.Store.GetSeries(ctx, id)
+		if err != nil {
+			continue // an item id (or a gone row): no cascade
+		}
+		if backingOf(decodeDoc(sr.Document)) != store.SeriesBackingDirectory {
+			continue // a file-backed series has no routed episode docs to cascade
+		}
+		eps, err := q.deps.Store.QueryItemsBySeries(ctx, sr, store.SeriesBackingDirectory)
+		if err != nil {
+			continue // best-effort: the named series row itself stays scoped
+		}
+		for _, ep := range eps {
+			keep(ep.ID)
+		}
+	}
+	return scope
 }
 
 // stripPass runs one strip attempt over the given rows and returns how many it
