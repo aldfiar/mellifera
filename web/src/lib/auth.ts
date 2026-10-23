@@ -81,6 +81,17 @@ export function clearDeviceToken(): void {
   }
 }
 
+// getBearerToken — the ONE wire-credential selector every API channel
+// attaches: the admin token when stored (the operator path, byte-identical
+// to before), else the device token (the paired TV's RoleClient credential).
+// Before this selector the channels read the admin token alone, so a
+// device-only browser sent every shell call unauthenticated — the shell
+// 401'd, handle401 cleared the just-minted token, and the device bounced
+// back to a freshly minted pairing code: approved forever, never entered.
+export function getBearerToken(): string | null {
+  return getToken() ?? getDeviceToken();
+}
+
 // useToken — React hook over the store. Seeds state from getToken() so the
 // first render reflects any persisted credential; setToken/clearToken write
 // through to localStorage AND update local state so consumers re-render.
