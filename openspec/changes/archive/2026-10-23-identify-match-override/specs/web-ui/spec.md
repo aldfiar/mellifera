@@ -112,19 +112,7 @@ grep -q 'identify={seriesIdentifyGate' web/src/pages/collections/Collection.tsx
 - **WHEN** the collection surface renders on a coarse-pointer device (touch/TV)
 - **THEN** the CardActions trigger is persistently visible with a muted glyph and a hit target of at least 40px, with no hover and no learned gesture required
 
-UNPROBEABLE
-
-
 ## ADDED Requirements
-
-- **WHEN** the collection surface renders on a coarse-pointer device (touch/TV)
-- **THEN** the CardActions trigger is persistently visible with a muted glyph and a hit target of at least 40px, with no hover and no learned gesture required
-
-UNPROBEABLE
-
-
-## ADDED Requirements
-
 
 ### Requirement: Series identify overlay
 
