@@ -190,14 +190,21 @@ func (s *Service) Wait(ctx context.Context, pairingID string) (WaitOutcome, erro
 }
 
 // ListPending returns every still-pending pairing request, oldest first — the
-// admin review surface's read.
+// admin review surface's read. Expiry is evaluated on this path too (INV4,
+// the service owns the clock): a request past its TTL that no poll ever
+// flipped is dead all the same — listing it invites approving a pairing no
+// device is waiting on, which strands the TV that minted the live one.
 func (s *Service) ListPending(ctx context.Context) ([]Pairing, error) {
 	reqs, err := s.st.ListPendingPairings(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("pairing: list pending: %w", err)
 	}
 	out := make([]Pairing, 0, len(reqs))
+	now := s.now()
 	for _, req := range reqs {
+		if now.After(req.ExpiresAt) {
+			continue
+		}
 		out = append(out, pairingOf(req))
 	}
 	return out, nil

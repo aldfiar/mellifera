@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -114,6 +114,36 @@ describe("PairingEntry — device pairing entry (device-pairing 3.4)", () => {
     // must never depend on typing URLs.
     const link = await screen.findByTestId("operator-login");
     expect(link.getAttribute("href")).toBe("/login");
+  });
+
+  // Stale-list fix: an expired poll stops the wait and offers a fresh code.
+  // Showing the dead code (with "Waiting for approval…") forever strands the
+  // TV on a pairing nobody can approve — the remint re-keys the poll to the
+  // new pairing id and mints exactly one more request (the fire-once guard
+  // resets for the remint, not for renders).
+  it("an expired poll offers a fresh code: remint mints once more and re-keys the wait", async () => {
+    const startSpy = vi
+      .spyOn(apiModule, "startPairing")
+      .mockResolvedValueOnce({ pairing_id: "p1", code: "ABCD-2345" })
+      .mockResolvedValueOnce({ pairing_id: "p2", code: "YZAB-6789" });
+    vi.spyOn(apiModule, "waitPairing").mockResolvedValue({
+      status: "expired",
+    });
+
+    renderEntry(freshClient());
+
+    const code = await screen.findByTestId("pairing-code");
+    expect(code.textContent).toBe("ABCD-2345");
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    // The expired verdict lands a poll after the code — await the remint
+    // affordance itself, never assume it rendered with the code.
+    fireEvent.click(await screen.findByTestId("remint"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("pairing-code").textContent).toBe("YZAB-6789"),
+    );
+    expect(startSpy).toHaveBeenCalledTimes(2);
   });
 
   // F1 (gate 2): the 401 rotation is credential-aware. A device-only browser
