@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { ItemDocument } from "@/lib/document";
-import { clearDeviceToken, clearToken, getToken } from "@/lib/auth";
+import { clearDeviceToken, clearToken, getBearerToken, getToken } from "@/lib/auth";
 
 // TS mirrors of the Go wire DTOs (internal/api/handlers.go). Field names match
 // the JSON tags EXACTLY (module_id, not moduleId) — these ARE the JSON shape;
@@ -914,7 +914,7 @@ export async function apiRequestVoid(
   path: string,
   init?: RequestInit,
 ): Promise<void> {
-  const token = getToken();
+  const token = getBearerToken();
   const headers: Record<string, string> = {
     Accept: "application/json",
     ...((init?.headers as Record<string, string>) ?? {}),
@@ -1309,7 +1309,7 @@ export async function fetchItemMediaObjectUrl(
   path: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const token = getToken();
+  const token = getBearerToken();
   const headers: Record<string, string> = {};
   if (token) {
     headers.Authorization = `Bearer ${token}`;
@@ -1336,7 +1336,7 @@ export async function fetchSidecarText(
   path: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const token = getToken();
+  const token = getBearerToken();
   const headers: Record<string, string> = {};
   if (token) {
     headers.Authorization = `Bearer ${token}`;
@@ -1415,9 +1415,10 @@ async function errorBody(res: Response): Promise<ApiErrorBody> {
 // apiRequest<T> — the Bearer fetch wrapper. Every /api/v1/* call funnels
 // through here.
 //
-// - attaches Authorization: Bearer <getToken()> when a token exists
-//   (INV-bearer-always); the Go authMiddleware (middleware.go:32-45) enforces
-//   authZ — the wrapper never does.
+// - attaches Authorization: Bearer <getBearerToken()> when a credential
+//   exists — the admin token when stored, else the paired device's token
+//   (the RoleClient credential; INV-bearer-always); the Go authMiddleware
+//   (middleware.go) enforces authZ — the wrapper never does.
 // - sends Accept: application/json; sends Content-Type: application/json +
 //   JSON.stringify(body) for requests with a body (POST).
 // - on 2xx: JSON.parse(await res.text()) verbatim — NEVER rounds/averages/
@@ -1427,7 +1428,7 @@ async function errorBody(res: Response): Promise<ApiErrorBody> {
 //   body and reject ApiError; if the body is not canonical, reject ApiError
 //   carrying the HTTP status text (fail-fast, no silent success).
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = getToken();
+  const token = getBearerToken();
   const headers: Record<string, string> = {
     Accept: "application/json",
     ...((init?.headers as Record<string, string>) ?? {}),
