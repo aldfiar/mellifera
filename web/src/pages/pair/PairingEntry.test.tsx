@@ -101,6 +101,21 @@ describe("PairingEntry — device pairing entry (device-pairing 3.4)", () => {
     expect(localStorage.getItem(DEVICE_TOKEN_KEY)).toBe("dev-token-1");
   });
 
+  it("offers the operator a discoverable login: the entry links to /login", async () => {
+    vi.spyOn(apiModule, "startPairing").mockResolvedValue({
+      pairing_id: "p1",
+      code: "ABCD-2345",
+    });
+    vi.spyOn(apiModule, "waitPairing").mockResolvedValue({ status: "pending" });
+
+    renderEntry(freshClient());
+
+    // The no-credential main screen is the TV surface — the operator path
+    // must never depend on typing URLs.
+    const link = await screen.findByTestId("operator-login");
+    expect(link.getAttribute("href")).toBe("/login");
+  });
+
   // F1 (gate 2): the 401 rotation is credential-aware. A device-only browser
   // (device token stored, NO admin token) must rotate to "/" — a full-page
   // /login would bypass the ROOT route and strand the revoked device on the

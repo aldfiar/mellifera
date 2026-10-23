@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useRef } from "react";
 import type { ReactElement } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import type { ApiError } from "@/lib/api";
 import { setDeviceToken } from "@/lib/auth";
@@ -23,7 +23,9 @@ import {
 // GET /api/v1/pair/{id}/wait (~2.5s) until the admin adjudicates. The
 // approved poll carries the device token — its single ride over the wire —
 // which is stored and the device navigates to the library main screen.
-// No token pasting anywhere.
+// No token pasting anywhere. The muted Operator login link keeps /login
+// discoverable from this screen — the operator path never depends on
+// typing URLs.
 export default function PairingEntry(): ReactElement {
   const navigate = useNavigate();
   const {
@@ -106,6 +108,13 @@ export default function PairingEntry(): ReactElement {
               <AlertDescription>{waitErr.message}</AlertDescription>
             </Alert>
           ) : null}
+          <Link
+            to="/login"
+            data-testid="operator-login"
+            className="mt-2 text-xs text-muted-foreground hover:underline"
+          >
+            Operator login
+          </Link>
         </CardContent>
       </Card>
     </div>
