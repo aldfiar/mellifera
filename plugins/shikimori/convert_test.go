@@ -30,6 +30,8 @@ func convertReq(t *testing.T, payload string, query map[string]any) *metadatav1.
 
 // byIDPayload is a minimal by-id anime answer (the anchored run's primary
 // body) reused by the cast subtests; a list variant covers the search run.
+// rolesPayload is a minimal roles answer (extras[0]'s body) reused by the
+// cast and episodes subtests.
 const (
 	byIDPayload = `{
 		"id": 1, "name": "Air", "russian": "Воздух",
@@ -38,6 +40,19 @@ const (
 	}`
 	listPayload = `[
 		{"id": 1, "name": "Air", "kind": "tv", "episodes": 13, "aired_on": "2005-01-06"}
+	]`
+	rolesPayload = `[
+		{"id": 448, "name": "Misuzu Kamio", "russian": "Мисудзу Камио",
+		 "image": {"original": "/images/characters/448.jpg"}, "roles": ["Main"],
+		 "seyu": [{"id": 522, "name": "Asami Sanada", "russian": "Асами Санада"}]},
+		{"id": 451, "name": "Yukito Kunisaki", "russian": "Юкито Кунисаки",
+		 "image": {"original": "/images/characters/451.jpg"}, "roles": ["Main"], "seyu": []},
+		{"id": 460, "name": "No Portrait", "russian": "Без Портрета"},
+		{"image": {"original": "/images/characters/999.jpg"},
+		 "seyu": [{"name": "Unnamed Voice"}]},
+		{"id": 470, "name": "Multi Credit", "russian": "Много Голосов",
+		 "image": {"original": "/images/characters/470.jpg"},
+		 "seyu": [{"name": "First Va", "russian": "Первый Сэйю"}, {"name": "Second Va"}]}
 	]`
 )
 
@@ -159,19 +174,6 @@ func TestConvert(t *testing.T) {
 	})
 
 	t.Run("roles extra response composes the convention cast", func(t *testing.T) {
-		rolesPayload := `[
-			{"id": 448, "name": "Misuzu Kamio", "russian": "Мисудзу Камио",
-			 "image": {"original": "/images/characters/448.jpg"}, "roles": ["Main"],
-			 "seyu": [{"id": 522, "name": "Asami Sanada", "russian": "Асами Санада"}]},
-			{"id": 451, "name": "Yukito Kunisaki", "russian": "Юкито Кунисаки",
-			 "image": {"original": "/images/characters/451.jpg"}, "roles": ["Main"], "seyu": []},
-			{"id": 460, "name": "No Portrait", "russian": "Без Портрета"},
-			{"image": {"original": "/images/characters/999.jpg"},
-			 "seyu": [{"name": "Unnamed Voice"}]},
-			{"id": 470, "name": "Multi Credit", "russian": "Много Голосов",
-			 "image": {"original": "/images/characters/470.jpg"},
-			 "seyu": [{"name": "First Va", "russian": "Первый Сэйю"}, {"name": "Second Va"}]}
-		]`
 		req := convertReq(t, byIDPayload, nil)
 		req.ExtraResponses = []*metadatav1.FetchedResponse{
 			{Fetched: true, HttpStatus: 200, Body: []byte(rolesPayload)},
@@ -238,6 +240,135 @@ func TestConvert(t *testing.T) {
 					t.Errorf("meta[%q] = %v, want the field ABSENT (honest absence, never an empty array)", castKey, cast)
 				}
 			})
+		}
+	})
+}
+
+// TestConvertEpisodeTitles pins the episodes leg of Convert (box 1.3): the
+// request plan's extras are positional and this plugin declares two —
+// extras[0] the roles fetch (cast, unchanged), extras[1] the episodes fetch —
+// so Convert maps the episodes body into per-episode EpisodeTitle entries:
+// episode the served number, metadata exactly {"title": the russian name when
+// the entry serves one, else the other served name} — NEVER a description.
+// An unfetched extra, an unparsable body, or entries without usable names
+// contribute NOTHING (honest absence); the series namespace mapping is
+// untouched by the leg; a search payload (no anchor, no extras) produces no
+// entries.
+func TestConvertEpisodeTitles(t *testing.T) {
+	p := &sourceImpl{}
+
+	// The fixture pins the episodes payload shape: per-season entries in the
+	// upstream's own name+russian convention (the one every other shikimori
+	// object in this plugin decodes), russian-preferred with the other
+	// served name the fallback. shikimori.io was unreachable this session
+	// (522), so the live capture could not re-pin it; the contract holds
+	// under either payload reality (design Risks) and the delta requirement
+	// never names upstream fields.
+	episodesPayload := `[
+		{"id": 501, "anime_id": 1, "episode": 1, "name": "I Recant", "russian": "Зов крови", "description": "upstream text"},
+		{"id": 502, "anime_id": 1, "episode": 2, "name": "Only Other Name"},
+		{"id": 503, "anime_id": 1, "episode": 3, "russian": "Только Русское"},
+		{"id": 504, "anime_id": 1, "episode": 4}
+	]`
+	fetchedEpisodes := func(body string) *metadatav1.FetchedResponse {
+		return &metadatav1.FetchedResponse{Fetched: true, HttpStatus: 200, Body: []byte(body)}
+	}
+
+	t.Run("named entries convert ru-first keyed by episode number", func(t *testing.T) {
+		req := convertReq(t, byIDPayload, nil)
+		req.ExtraResponses = []*metadatav1.FetchedResponse{
+			{Fetched: true, HttpStatus: 200, Body: []byte(rolesPayload)}, // extras[0] stays the roles fetch
+			fetchedEpisodes(episodesPayload),                             // extras[1] the episodes fetch
+		}
+		res, err := p.Convert(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if res.GetError() != nil {
+			t.Fatalf("unexpected Convert error: %v", res.GetError())
+		}
+		titles := res.GetEpisodeTitles()
+		if len(titles) != 3 {
+			t.Fatalf("episode_titles = %d entries, want 3 (the nameless entry skipped)", len(titles))
+		}
+		want := []struct {
+			episode int64
+			title   any
+		}{
+			{1, "Зов крови"}, // russian wins over the other served name
+			{2, "Only Other Name"},
+			{3, "Только Русское"},
+		}
+		for i, w := range want {
+			got := titles[i]
+			if got.GetEpisode() != w.episode {
+				t.Errorf("episode_titles[%d].episode = %d, want %d", i, got.GetEpisode(), w.episode)
+			}
+			meta := got.GetMetadata().AsMap()
+			if len(meta) != 1 || meta["title"] != w.title {
+				t.Errorf("episode_titles[%d].metadata = %v, want exactly {title: %v} (NEVER a description)", i, meta, w.title)
+			}
+		}
+		// The series namespace mapping is untouched by the episodes leg.
+		meta := res.GetMetadata().AsMap()
+		if _, ok := meta["title"].(map[string]any); !ok {
+			t.Errorf("meta[title] = %v, want the {romaji, russian} object unchanged", meta["title"])
+		}
+		if cast, has := meta[castKey].([]any); !has || len(cast) == 0 {
+			t.Errorf("meta[%q] = %v, want the roles leg still composing the cast", castKey, meta[castKey])
+		}
+		if _, has := meta["episode_titles"]; has {
+			t.Error("meta carries episode_titles, want per-episode data ONLY on the result field (D2)")
+		}
+	})
+
+	t.Run("unfetched unparsable and nameless episodes contribute nothing", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			extras []*metadatav1.FetchedResponse
+		}{
+			{"no extra responses at all", nil},
+			{"episodes extra soft-failed", []*metadatav1.FetchedResponse{
+				{Fetched: true, HttpStatus: 200, Body: []byte(rolesPayload)},
+				{Fetched: false, Error: "connection refused"},
+			}},
+			{"unparsable episodes body", []*metadatav1.FetchedResponse{
+				{Fetched: true, HttpStatus: 200, Body: []byte(rolesPayload)},
+				fetchedEpisodes(`{"error":"not found"}`),
+			}},
+			{"no usable entries", []*metadatav1.FetchedResponse{
+				{Fetched: true, HttpStatus: 200, Body: []byte(rolesPayload)},
+				fetchedEpisodes(`[{"episode": 1}, {"episode": 2, "name": "", "russian": ""}]`),
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				req := convertReq(t, byIDPayload, nil)
+				req.ExtraResponses = tc.extras
+				res, err := p.Convert(context.Background(), req)
+				if err != nil {
+					t.Fatalf("Convert: %v", err)
+				}
+				if got := res.GetError(); got != nil {
+					t.Fatalf("unexpected Convert error: %v", got)
+				}
+				if titles := res.GetEpisodeTitles(); len(titles) != 0 {
+					t.Errorf("episode_titles = %v, want NONE (honest absence — no empty entries, no placeholders)", titles)
+				}
+			})
+		}
+	})
+
+	t.Run("search payload produces no entries", func(t *testing.T) {
+		res, err := p.Convert(context.Background(), convertReq(t, listPayload, nil))
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if titles := res.GetEpisodeTitles(); len(titles) != 0 {
+			t.Errorf("episode_titles = %v, want none on a search run (single-fetch plan)", titles)
+		}
+		meta := res.GetMetadata().AsMap()
+		if _, ok := meta["title"].(map[string]any); !ok {
+			t.Errorf("meta[title] = %v, want the single-fetch namespace shape unchanged", meta["title"])
 		}
 	})
 }

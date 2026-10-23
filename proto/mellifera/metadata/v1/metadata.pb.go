@@ -503,7 +503,11 @@ type ConvertResult struct {
 	Warnings []string `protobuf:"bytes,3,rep,name=warnings,proto3" json:"warnings,omitempty"`
 	// If Convert could not run (http 404, parse failure), set error and leave
 	// metadata empty. The core records this; the document is not corrupted.
-	Error         *Error `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	Error *Error `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	// Episode-title contributions (episode-titles): per-episode namespace
+	// fields the core routes onto the enriched series' episode documents.
+	// NEVER part of the run document's own namespace.
+	EpisodeTitles []*EpisodeTitle `protobuf:"bytes,5,rep,name=episode_titles,json=episodeTitles,proto3" json:"episode_titles,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -566,6 +570,72 @@ func (x *ConvertResult) GetError() *Error {
 	return nil
 }
 
+func (x *ConvertResult) GetEpisodeTitles() []*EpisodeTitle {
+	if x != nil {
+		return x.EpisodeTitles
+	}
+	return nil
+}
+
+// One per-episode contribution (episode-titles): the namespace fields for
+// THAT episode only (the convention episode fields: title, description),
+// keyed by the source's episode number within the matched series' season.
+// Sources contribute entries only for episodes they can actually name —
+// honest absence, never a placeholder entry.
+type EpisodeTitle struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The source's episode number within the matched series' season.
+	Episode int64 `protobuf:"varint,1,opt,name=episode,proto3" json:"episode,omitempty"`
+	// The namespace fields for THAT episode (convention episode fields only).
+	Metadata      *structpb.Struct `protobuf:"bytes,2,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EpisodeTitle) Reset() {
+	*x = EpisodeTitle{}
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EpisodeTitle) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EpisodeTitle) ProtoMessage() {}
+
+func (x *EpisodeTitle) ProtoReflect() protoreflect.Message {
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EpisodeTitle.ProtoReflect.Descriptor instead.
+func (*EpisodeTitle) Descriptor() ([]byte, []int) {
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *EpisodeTitle) GetEpisode() int64 {
+	if x != nil {
+		return x.Episode
+	}
+	return 0
+}
+
+func (x *EpisodeTitle) GetMetadata() *structpb.Struct {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
 type Error struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"` // "upstream_404" | "parse_error" | "rate_limited" | ...
@@ -577,7 +647,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[7]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -589,7 +659,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[7]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -602,7 +672,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{7}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Error) GetCode() string {
@@ -645,7 +715,7 @@ type MergeRequest struct {
 
 func (x *MergeRequest) Reset() {
 	*x = MergeRequest{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[8]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -657,7 +727,7 @@ func (x *MergeRequest) String() string {
 func (*MergeRequest) ProtoMessage() {}
 
 func (x *MergeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[8]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -670,7 +740,7 @@ func (x *MergeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MergeRequest.ProtoReflect.Descriptor instead.
 func (*MergeRequest) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{8}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MergeRequest) GetIncoming() *structpb.Struct {
@@ -728,7 +798,7 @@ type MergePolicy struct {
 
 func (x *MergePolicy) Reset() {
 	*x = MergePolicy{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[9]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -740,7 +810,7 @@ func (x *MergePolicy) String() string {
 func (*MergePolicy) ProtoMessage() {}
 
 func (x *MergePolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[9]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -753,7 +823,7 @@ func (x *MergePolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MergePolicy.ProtoReflect.Descriptor instead.
 func (*MergePolicy) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{9}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *MergePolicy) GetSourcePriority() []string {
@@ -796,7 +866,7 @@ type MergeResult struct {
 
 func (x *MergeResult) Reset() {
 	*x = MergeResult{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[10]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -808,7 +878,7 @@ func (x *MergeResult) String() string {
 func (*MergeResult) ProtoMessage() {}
 
 func (x *MergeResult) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[10]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -821,7 +891,7 @@ func (x *MergeResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MergeResult.ProtoReflect.Descriptor instead.
 func (*MergeResult) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{10}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MergeResult) GetDocument() *v11.MediaDocument {
@@ -864,7 +934,7 @@ type SearchSpecsRequest struct {
 
 func (x *SearchSpecsRequest) Reset() {
 	*x = SearchSpecsRequest{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[11]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -876,7 +946,7 @@ func (x *SearchSpecsRequest) String() string {
 func (*SearchSpecsRequest) ProtoMessage() {}
 
 func (x *SearchSpecsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[11]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -889,7 +959,7 @@ func (x *SearchSpecsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchSpecsRequest.ProtoReflect.Descriptor instead.
 func (*SearchSpecsRequest) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{11}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SearchSpecsRequest) GetQuery() string {
@@ -917,7 +987,7 @@ type SearchSpecsResult struct {
 
 func (x *SearchSpecsResult) Reset() {
 	*x = SearchSpecsResult{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[12]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -929,7 +999,7 @@ func (x *SearchSpecsResult) String() string {
 func (*SearchSpecsResult) ProtoMessage() {}
 
 func (x *SearchSpecsResult) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[12]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -942,7 +1012,7 @@ func (x *SearchSpecsResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchSpecsResult.ProtoReflect.Descriptor instead.
 func (*SearchSpecsResult) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{12}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SearchSpecsResult) GetSpec() *RequestSpec {
@@ -965,7 +1035,7 @@ type SearchResultsRequest struct {
 
 func (x *SearchResultsRequest) Reset() {
 	*x = SearchResultsRequest{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[13]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -977,7 +1047,7 @@ func (x *SearchResultsRequest) String() string {
 func (*SearchResultsRequest) ProtoMessage() {}
 
 func (x *SearchResultsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[13]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -990,7 +1060,7 @@ func (x *SearchResultsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchResultsRequest.ProtoReflect.Descriptor instead.
 func (*SearchResultsRequest) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{13}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SearchResultsRequest) GetQuery() string {
@@ -1025,7 +1095,7 @@ type SearchResultsResult struct {
 
 func (x *SearchResultsResult) Reset() {
 	*x = SearchResultsResult{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[14]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1037,7 +1107,7 @@ func (x *SearchResultsResult) String() string {
 func (*SearchResultsResult) ProtoMessage() {}
 
 func (x *SearchResultsResult) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[14]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1050,7 +1120,7 @@ func (x *SearchResultsResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchResultsResult.ProtoReflect.Descriptor instead.
 func (*SearchResultsResult) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{14}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SearchResultsResult) GetCandidates() []*SearchCandidate {
@@ -1077,7 +1147,7 @@ type SearchCandidate struct {
 
 func (x *SearchCandidate) Reset() {
 	*x = SearchCandidate{}
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[15]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1089,7 +1159,7 @@ func (x *SearchCandidate) String() string {
 func (*SearchCandidate) ProtoMessage() {}
 
 func (x *SearchCandidate) ProtoReflect() protoreflect.Message {
-	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[15]
+	mi := &file_mellifera_metadata_v1_metadata_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1102,7 +1172,7 @@ func (x *SearchCandidate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchCandidate.ProtoReflect.Descriptor instead.
 func (*SearchCandidate) Descriptor() ([]byte, []int) {
-	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{15}
+	return file_mellifera_metadata_v1_metadata_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SearchCandidate) GetExternalId() string {
@@ -1205,17 +1275,21 @@ const file_mellifera_metadata_v1_metadata_proto_rawDesc = "" +
 	"\x05error\x18\x05 \x01(\tR\x05error\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xca\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x96\x03\n" +
 	"\rConvertResult\x123\n" +
 	"\bmetadata\x18\x01 \x01(\v2\x17.google.protobuf.StructR\bmetadata\x12T\n" +
 	"\n" +
 	"provenance\x18\x02 \x03(\v24.mellifera.metadata.v1.ConvertResult.ProvenanceEntryR\n" +
 	"provenance\x12\x1a\n" +
 	"\bwarnings\x18\x03 \x03(\tR\bwarnings\x122\n" +
-	"\x05error\x18\x04 \x01(\v2\x1c.mellifera.metadata.v1.ErrorR\x05error\x1a^\n" +
+	"\x05error\x18\x04 \x01(\v2\x1c.mellifera.metadata.v1.ErrorR\x05error\x12J\n" +
+	"\x0eepisode_titles\x18\x05 \x03(\v2#.mellifera.metadata.v1.EpisodeTitleR\repisodeTitles\x1a^\n" +
 	"\x0fProvenanceEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x125\n" +
-	"\x05value\x18\x02 \x01(\v2\x1f.mellifera.common.v1.ProvenanceR\x05value:\x028\x01\"S\n" +
+	"\x05value\x18\x02 \x01(\v2\x1f.mellifera.common.v1.ProvenanceR\x05value:\x028\x01\"]\n" +
+	"\fEpisodeTitle\x12\x18\n" +
+	"\aepisode\x18\x01 \x01(\x03R\aepisode\x123\n" +
+	"\bmetadata\x18\x02 \x01(\v2\x17.google.protobuf.StructR\bmetadata\"S\n" +
 	"\x05Error\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1c\n" +
@@ -1286,7 +1360,7 @@ func file_mellifera_metadata_v1_metadata_proto_rawDescGZIP() []byte {
 	return file_mellifera_metadata_v1_metadata_proto_rawDescData
 }
 
-var file_mellifera_metadata_v1_metadata_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_mellifera_metadata_v1_metadata_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_mellifera_metadata_v1_metadata_proto_goTypes = []any{
 	(*MatchRequest)(nil),         // 0: mellifera.metadata.v1.MatchRequest
 	(*MatchResult)(nil),          // 1: mellifera.metadata.v1.MatchResult
@@ -1295,75 +1369,78 @@ var file_mellifera_metadata_v1_metadata_proto_goTypes = []any{
 	(*ConvertRequest)(nil),       // 4: mellifera.metadata.v1.ConvertRequest
 	(*FetchedResponse)(nil),      // 5: mellifera.metadata.v1.FetchedResponse
 	(*ConvertResult)(nil),        // 6: mellifera.metadata.v1.ConvertResult
-	(*Error)(nil),                // 7: mellifera.metadata.v1.Error
-	(*MergeRequest)(nil),         // 8: mellifera.metadata.v1.MergeRequest
-	(*MergePolicy)(nil),          // 9: mellifera.metadata.v1.MergePolicy
-	(*MergeResult)(nil),          // 10: mellifera.metadata.v1.MergeResult
-	(*SearchSpecsRequest)(nil),   // 11: mellifera.metadata.v1.SearchSpecsRequest
-	(*SearchSpecsResult)(nil),    // 12: mellifera.metadata.v1.SearchSpecsResult
-	(*SearchResultsRequest)(nil), // 13: mellifera.metadata.v1.SearchResultsRequest
-	(*SearchResultsResult)(nil),  // 14: mellifera.metadata.v1.SearchResultsResult
-	(*SearchCandidate)(nil),      // 15: mellifera.metadata.v1.SearchCandidate
-	nil,                          // 16: mellifera.metadata.v1.ConvertRequest.ResponseHeadersEntry
-	nil,                          // 17: mellifera.metadata.v1.FetchedResponse.HeadersEntry
-	nil,                          // 18: mellifera.metadata.v1.ConvertResult.ProvenanceEntry
-	nil,                          // 19: mellifera.metadata.v1.MergePolicy.FieldSourceOverridesEntry
-	(*v1.IdentifyResult)(nil),    // 20: mellifera.scanner.v1.IdentifyResult
-	(*structpb.Struct)(nil),      // 21: google.protobuf.Struct
-	(*v11.AuthContext)(nil),      // 22: mellifera.common.v1.AuthContext
-	(*RequestSpec)(nil),          // 23: mellifera.metadata.v1.RequestSpec
-	(*v11.MediaDocument)(nil),    // 24: mellifera.common.v1.MediaDocument
-	(*v11.MergeConflict)(nil),    // 25: mellifera.common.v1.MergeConflict
-	(*v11.ViewBinding)(nil),      // 26: mellifera.common.v1.ViewBinding
-	(*v11.Provenance)(nil),       // 27: mellifera.common.v1.Provenance
+	(*EpisodeTitle)(nil),         // 7: mellifera.metadata.v1.EpisodeTitle
+	(*Error)(nil),                // 8: mellifera.metadata.v1.Error
+	(*MergeRequest)(nil),         // 9: mellifera.metadata.v1.MergeRequest
+	(*MergePolicy)(nil),          // 10: mellifera.metadata.v1.MergePolicy
+	(*MergeResult)(nil),          // 11: mellifera.metadata.v1.MergeResult
+	(*SearchSpecsRequest)(nil),   // 12: mellifera.metadata.v1.SearchSpecsRequest
+	(*SearchSpecsResult)(nil),    // 13: mellifera.metadata.v1.SearchSpecsResult
+	(*SearchResultsRequest)(nil), // 14: mellifera.metadata.v1.SearchResultsRequest
+	(*SearchResultsResult)(nil),  // 15: mellifera.metadata.v1.SearchResultsResult
+	(*SearchCandidate)(nil),      // 16: mellifera.metadata.v1.SearchCandidate
+	nil,                          // 17: mellifera.metadata.v1.ConvertRequest.ResponseHeadersEntry
+	nil,                          // 18: mellifera.metadata.v1.FetchedResponse.HeadersEntry
+	nil,                          // 19: mellifera.metadata.v1.ConvertResult.ProvenanceEntry
+	nil,                          // 20: mellifera.metadata.v1.MergePolicy.FieldSourceOverridesEntry
+	(*v1.IdentifyResult)(nil),    // 21: mellifera.scanner.v1.IdentifyResult
+	(*structpb.Struct)(nil),      // 22: google.protobuf.Struct
+	(*v11.AuthContext)(nil),      // 23: mellifera.common.v1.AuthContext
+	(*RequestSpec)(nil),          // 24: mellifera.metadata.v1.RequestSpec
+	(*v11.MediaDocument)(nil),    // 25: mellifera.common.v1.MediaDocument
+	(*v11.MergeConflict)(nil),    // 26: mellifera.common.v1.MergeConflict
+	(*v11.ViewBinding)(nil),      // 27: mellifera.common.v1.ViewBinding
+	(*v11.Provenance)(nil),       // 28: mellifera.common.v1.Provenance
 }
 var file_mellifera_metadata_v1_metadata_proto_depIdxs = []int32{
-	20, // 0: mellifera.metadata.v1.MatchRequest.item:type_name -> mellifera.scanner.v1.IdentifyResult
-	21, // 1: mellifera.metadata.v1.MatchRequest.existing_ids:type_name -> google.protobuf.Struct
-	21, // 2: mellifera.metadata.v1.MatchRequest.options:type_name -> google.protobuf.Struct
-	21, // 3: mellifera.metadata.v1.MatchResult.query:type_name -> google.protobuf.Struct
-	21, // 4: mellifera.metadata.v1.MatchResult.resolved_ids:type_name -> google.protobuf.Struct
-	21, // 5: mellifera.metadata.v1.BuildRequestRequest.query:type_name -> google.protobuf.Struct
-	22, // 6: mellifera.metadata.v1.BuildRequestRequest.auth:type_name -> mellifera.common.v1.AuthContext
-	21, // 7: mellifera.metadata.v1.BuildRequestRequest.options:type_name -> google.protobuf.Struct
-	23, // 8: mellifera.metadata.v1.BuildRequestResponse.spec:type_name -> mellifera.metadata.v1.RequestSpec
-	23, // 9: mellifera.metadata.v1.BuildRequestResponse.extra_specs:type_name -> mellifera.metadata.v1.RequestSpec
-	21, // 10: mellifera.metadata.v1.ConvertRequest.query:type_name -> google.protobuf.Struct
-	16, // 11: mellifera.metadata.v1.ConvertRequest.response_headers:type_name -> mellifera.metadata.v1.ConvertRequest.ResponseHeadersEntry
-	21, // 12: mellifera.metadata.v1.ConvertRequest.options:type_name -> google.protobuf.Struct
+	21, // 0: mellifera.metadata.v1.MatchRequest.item:type_name -> mellifera.scanner.v1.IdentifyResult
+	22, // 1: mellifera.metadata.v1.MatchRequest.existing_ids:type_name -> google.protobuf.Struct
+	22, // 2: mellifera.metadata.v1.MatchRequest.options:type_name -> google.protobuf.Struct
+	22, // 3: mellifera.metadata.v1.MatchResult.query:type_name -> google.protobuf.Struct
+	22, // 4: mellifera.metadata.v1.MatchResult.resolved_ids:type_name -> google.protobuf.Struct
+	22, // 5: mellifera.metadata.v1.BuildRequestRequest.query:type_name -> google.protobuf.Struct
+	23, // 6: mellifera.metadata.v1.BuildRequestRequest.auth:type_name -> mellifera.common.v1.AuthContext
+	22, // 7: mellifera.metadata.v1.BuildRequestRequest.options:type_name -> google.protobuf.Struct
+	24, // 8: mellifera.metadata.v1.BuildRequestResponse.spec:type_name -> mellifera.metadata.v1.RequestSpec
+	24, // 9: mellifera.metadata.v1.BuildRequestResponse.extra_specs:type_name -> mellifera.metadata.v1.RequestSpec
+	22, // 10: mellifera.metadata.v1.ConvertRequest.query:type_name -> google.protobuf.Struct
+	17, // 11: mellifera.metadata.v1.ConvertRequest.response_headers:type_name -> mellifera.metadata.v1.ConvertRequest.ResponseHeadersEntry
+	22, // 12: mellifera.metadata.v1.ConvertRequest.options:type_name -> google.protobuf.Struct
 	5,  // 13: mellifera.metadata.v1.ConvertRequest.extra_responses:type_name -> mellifera.metadata.v1.FetchedResponse
-	17, // 14: mellifera.metadata.v1.FetchedResponse.headers:type_name -> mellifera.metadata.v1.FetchedResponse.HeadersEntry
-	21, // 15: mellifera.metadata.v1.ConvertResult.metadata:type_name -> google.protobuf.Struct
-	18, // 16: mellifera.metadata.v1.ConvertResult.provenance:type_name -> mellifera.metadata.v1.ConvertResult.ProvenanceEntry
-	7,  // 17: mellifera.metadata.v1.ConvertResult.error:type_name -> mellifera.metadata.v1.Error
-	21, // 18: mellifera.metadata.v1.MergeRequest.incoming:type_name -> google.protobuf.Struct
-	24, // 19: mellifera.metadata.v1.MergeRequest.document:type_name -> mellifera.common.v1.MediaDocument
-	9,  // 20: mellifera.metadata.v1.MergeRequest.policy:type_name -> mellifera.metadata.v1.MergePolicy
-	19, // 21: mellifera.metadata.v1.MergePolicy.field_source_overrides:type_name -> mellifera.metadata.v1.MergePolicy.FieldSourceOverridesEntry
-	24, // 22: mellifera.metadata.v1.MergeResult.document:type_name -> mellifera.common.v1.MediaDocument
-	25, // 23: mellifera.metadata.v1.MergeResult.conflicts:type_name -> mellifera.common.v1.MergeConflict
-	26, // 24: mellifera.metadata.v1.MergeResult.view:type_name -> mellifera.common.v1.ViewBinding
-	23, // 25: mellifera.metadata.v1.SearchSpecsResult.spec:type_name -> mellifera.metadata.v1.RequestSpec
-	5,  // 26: mellifera.metadata.v1.SearchResultsRequest.fetched:type_name -> mellifera.metadata.v1.FetchedResponse
-	15, // 27: mellifera.metadata.v1.SearchResultsResult.candidates:type_name -> mellifera.metadata.v1.SearchCandidate
-	27, // 28: mellifera.metadata.v1.ConvertResult.ProvenanceEntry.value:type_name -> mellifera.common.v1.Provenance
-	0,  // 29: mellifera.metadata.v1.MetadataSource.Match:input_type -> mellifera.metadata.v1.MatchRequest
-	2,  // 30: mellifera.metadata.v1.MetadataSource.BuildRequest:input_type -> mellifera.metadata.v1.BuildRequestRequest
-	4,  // 31: mellifera.metadata.v1.MetadataSource.Convert:input_type -> mellifera.metadata.v1.ConvertRequest
-	8,  // 32: mellifera.metadata.v1.MetadataSource.Merge:input_type -> mellifera.metadata.v1.MergeRequest
-	11, // 33: mellifera.metadata.v1.MetadataSource.SearchSpecs:input_type -> mellifera.metadata.v1.SearchSpecsRequest
-	13, // 34: mellifera.metadata.v1.MetadataSource.SearchResults:input_type -> mellifera.metadata.v1.SearchResultsRequest
-	1,  // 35: mellifera.metadata.v1.MetadataSource.Match:output_type -> mellifera.metadata.v1.MatchResult
-	3,  // 36: mellifera.metadata.v1.MetadataSource.BuildRequest:output_type -> mellifera.metadata.v1.BuildRequestResponse
-	6,  // 37: mellifera.metadata.v1.MetadataSource.Convert:output_type -> mellifera.metadata.v1.ConvertResult
-	10, // 38: mellifera.metadata.v1.MetadataSource.Merge:output_type -> mellifera.metadata.v1.MergeResult
-	12, // 39: mellifera.metadata.v1.MetadataSource.SearchSpecs:output_type -> mellifera.metadata.v1.SearchSpecsResult
-	14, // 40: mellifera.metadata.v1.MetadataSource.SearchResults:output_type -> mellifera.metadata.v1.SearchResultsResult
-	35, // [35:41] is the sub-list for method output_type
-	29, // [29:35] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	18, // 14: mellifera.metadata.v1.FetchedResponse.headers:type_name -> mellifera.metadata.v1.FetchedResponse.HeadersEntry
+	22, // 15: mellifera.metadata.v1.ConvertResult.metadata:type_name -> google.protobuf.Struct
+	19, // 16: mellifera.metadata.v1.ConvertResult.provenance:type_name -> mellifera.metadata.v1.ConvertResult.ProvenanceEntry
+	8,  // 17: mellifera.metadata.v1.ConvertResult.error:type_name -> mellifera.metadata.v1.Error
+	7,  // 18: mellifera.metadata.v1.ConvertResult.episode_titles:type_name -> mellifera.metadata.v1.EpisodeTitle
+	22, // 19: mellifera.metadata.v1.EpisodeTitle.metadata:type_name -> google.protobuf.Struct
+	22, // 20: mellifera.metadata.v1.MergeRequest.incoming:type_name -> google.protobuf.Struct
+	25, // 21: mellifera.metadata.v1.MergeRequest.document:type_name -> mellifera.common.v1.MediaDocument
+	10, // 22: mellifera.metadata.v1.MergeRequest.policy:type_name -> mellifera.metadata.v1.MergePolicy
+	20, // 23: mellifera.metadata.v1.MergePolicy.field_source_overrides:type_name -> mellifera.metadata.v1.MergePolicy.FieldSourceOverridesEntry
+	25, // 24: mellifera.metadata.v1.MergeResult.document:type_name -> mellifera.common.v1.MediaDocument
+	26, // 25: mellifera.metadata.v1.MergeResult.conflicts:type_name -> mellifera.common.v1.MergeConflict
+	27, // 26: mellifera.metadata.v1.MergeResult.view:type_name -> mellifera.common.v1.ViewBinding
+	24, // 27: mellifera.metadata.v1.SearchSpecsResult.spec:type_name -> mellifera.metadata.v1.RequestSpec
+	5,  // 28: mellifera.metadata.v1.SearchResultsRequest.fetched:type_name -> mellifera.metadata.v1.FetchedResponse
+	16, // 29: mellifera.metadata.v1.SearchResultsResult.candidates:type_name -> mellifera.metadata.v1.SearchCandidate
+	28, // 30: mellifera.metadata.v1.ConvertResult.ProvenanceEntry.value:type_name -> mellifera.common.v1.Provenance
+	0,  // 31: mellifera.metadata.v1.MetadataSource.Match:input_type -> mellifera.metadata.v1.MatchRequest
+	2,  // 32: mellifera.metadata.v1.MetadataSource.BuildRequest:input_type -> mellifera.metadata.v1.BuildRequestRequest
+	4,  // 33: mellifera.metadata.v1.MetadataSource.Convert:input_type -> mellifera.metadata.v1.ConvertRequest
+	9,  // 34: mellifera.metadata.v1.MetadataSource.Merge:input_type -> mellifera.metadata.v1.MergeRequest
+	12, // 35: mellifera.metadata.v1.MetadataSource.SearchSpecs:input_type -> mellifera.metadata.v1.SearchSpecsRequest
+	14, // 36: mellifera.metadata.v1.MetadataSource.SearchResults:input_type -> mellifera.metadata.v1.SearchResultsRequest
+	1,  // 37: mellifera.metadata.v1.MetadataSource.Match:output_type -> mellifera.metadata.v1.MatchResult
+	3,  // 38: mellifera.metadata.v1.MetadataSource.BuildRequest:output_type -> mellifera.metadata.v1.BuildRequestResponse
+	6,  // 39: mellifera.metadata.v1.MetadataSource.Convert:output_type -> mellifera.metadata.v1.ConvertResult
+	11, // 40: mellifera.metadata.v1.MetadataSource.Merge:output_type -> mellifera.metadata.v1.MergeResult
+	13, // 41: mellifera.metadata.v1.MetadataSource.SearchSpecs:output_type -> mellifera.metadata.v1.SearchSpecsResult
+	15, // 42: mellifera.metadata.v1.MetadataSource.SearchResults:output_type -> mellifera.metadata.v1.SearchResultsResult
+	37, // [37:43] is the sub-list for method output_type
+	31, // [31:37] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_mellifera_metadata_v1_metadata_proto_init() }
@@ -1372,14 +1449,14 @@ func file_mellifera_metadata_v1_metadata_proto_init() {
 		return
 	}
 	file_mellifera_metadata_v1_request_spec_proto_init()
-	file_mellifera_metadata_v1_metadata_proto_msgTypes[15].OneofWrappers = []any{}
+	file_mellifera_metadata_v1_metadata_proto_msgTypes[16].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mellifera_metadata_v1_metadata_proto_rawDesc), len(file_mellifera_metadata_v1_metadata_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   20,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

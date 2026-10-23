@@ -27,8 +27,11 @@ var errNoCandidates = errors.New("shikimori returned no candidates")
 // the preference score and picks ONE candidate. The resolved shikimori_id
 // rides inside the metadata under resolved_ids (the core lifts it into
 // doc.identifiers; Merge strips it). Provenance carries hints only — the core
-// stamps _provenance authoritatively. A non-run (empty list, unparsable body)
-// sets Error and leaves metadata empty; Convert never errors the chain.
+// stamps _provenance authoritatively. On an anchored run the plan's episodes
+// extra (extras[1]) additionally decodes into per-episode EpisodeTitle
+// entries (episode-titles) outside the run namespace. A non-run (empty list,
+// unparsable body) sets Error and leaves metadata empty; Convert never errors
+// the chain.
 func (*sourceImpl) Convert(_ context.Context, req *metadatav1.ConvertRequest) (*metadatav1.ConvertResult, error) {
 	entry, err := decodeEntry(req.GetRawResponse(), req.GetQuery())
 	if err != nil {
@@ -39,19 +42,29 @@ func (*sourceImpl) Convert(_ context.Context, req *metadatav1.ConvertRequest) (*
 	m := namespaceFields(entry)
 	m[resolvedIDsKey] = map[string]any{idKey: int64(entry.ID)}
 	// The request plan's extras are aligned by position (proto D4) and this
-	// plugin declares exactly one: the roles fetch (source.go BuildRequest).
-	// An unfetched extra (soft-failed) or an unusable body simply leaves the
-	// cast field absent — honest absence, never an empty array.
+	// plugin declares two: extras[0] the roles fetch (the convention cast,
+	// source.go BuildRequest), extras[1] the episodes fetch (episode-titles).
+	// An unfetched extra (soft-failed) or an unusable body simply leaves its
+	// contribution absent — honest absence, never an empty entry.
 	if extras := req.GetExtraResponses(); len(extras) > 0 && extras[0].GetFetched() {
 		if cast := castField(extras[0].GetBody()); len(cast) > 0 {
 			m[castKey] = cast
 		}
 	}
+	// The episodes leg contributes ONLY the per-episode EpisodeTitle entries
+	// (episode-titles D2): the series namespace mapping above — the title
+	// object, cast, provenance hints — is untouched by it. Search plans
+	// declare no extras, so a search payload produces no entries.
+	var episodeTitles []*metadatav1.EpisodeTitle
+	if extras := req.GetExtraResponses(); len(extras) > 1 && extras[1].GetFetched() {
+		episodeTitles = episodeTitleEntries(extras[1].GetBody())
+	}
 	sourceURL, _ := m["url"].(string)
 	meta := toStruct(m)
 	return &metadatav1.ConvertResult{
-		Metadata:   meta,
-		Provenance: provenanceHints(meta, sourceURL),
+		Metadata:      meta,
+		Provenance:    provenanceHints(meta, sourceURL),
+		EpisodeTitles: episodeTitles,
 	}, nil
 }
 
@@ -247,6 +260,48 @@ func seiyuuCredit(seyu []roleSeiyuu) string {
 		}
 	}
 	return strings.Join(names, ", ")
+}
+
+// episodesEntry mirrors one entry of the shikimori episodes payload
+// (GET /api/animes/{id}/episodes, v1): the episode number — numbered within
+// the matched season, shikimori anime ids being per-season entries — and the
+// names the upstream serves for it. The `russian` name is preferred
+// (RU-first, design D4); `name` is the other served name and the fallback.
+// The upstream's description field is deliberately NOT decoded: it serves
+// none for episodes, and this source contributes the convention title ONLY.
+type episodesEntry struct {
+	Episode int    `json:"episode"`
+	Name    string `json:"name"`
+	Russian string `json:"russian"`
+}
+
+// episodeTitleEntries decodes an episodes payload into the per-episode
+// EpisodeTitle contributions (episode-titles D2): one entry per usable
+// payload entry — episode the served episode number, metadata exactly
+// {"title": the russian name when the entry serves one, else the other
+// served name} — NEVER a description. Entries without a usable name are
+// skipped, an unparsable body decodes to nil: honest absence — no empty
+// entries, no placeholders, the payload's own order preserved.
+func episodeTitleEntries(body []byte) []*metadatav1.EpisodeTitle {
+	var entries []episodesEntry
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return nil
+	}
+	out := make([]*metadatav1.EpisodeTitle, 0, len(entries))
+	for _, e := range entries {
+		title := displayFirst(e.Russian, e.Name)
+		if title == "" {
+			continue
+		}
+		out = append(out, &metadatav1.EpisodeTitle{
+			Episode:  int64(e.Episode),
+			Metadata: toStruct(map[string]any{"title": title}),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // displayFirst prefers the first non-empty string (the RU-first idiom the

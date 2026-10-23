@@ -153,6 +153,24 @@ message ConvertResult {
   // If Convert could not run (http 404, parse failure), set error and leave
   // metadata empty. The core records this; the document is not corrupted.
   Error error = 4;
+
+  // Episode-title contributions (episode-titles): per-episode namespace
+  // fields the core routes onto the enriched series' episode documents.
+  // NEVER part of the run document's own namespace.
+  repeated EpisodeTitle episode_titles = 5;
+}
+
+// One per-episode contribution (episode-titles): the namespace fields for
+// THAT episode only (the convention episode fields: title, description),
+// keyed by the source's episode number within the matched series' season.
+// Sources contribute entries only for episodes they can actually name —
+// honest absence, never a placeholder entry.
+message EpisodeTitle {
+  // The source's episode number within the matched series' season.
+  int64 episode = 1;
+
+  // The namespace fields for THAT episode (convention episode fields only).
+  google.protobuf.Struct metadata = 2;
 }
 
 message Error {

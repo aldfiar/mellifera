@@ -173,9 +173,12 @@ func (*sourceImpl) BuildRequest(_ context.Context, req *metadatav1.BuildRequestR
 		template = anchoredTemplate
 		vars[idKey] = intVar(id)
 		// The request plan (media-data convention, design Interfaces §5):
-		// an anchored run also fetches the anime's roles so Convert can
-		// compose the convention cast. A search stays single-fetch.
-		res.ExtraSpecs = []*metadatav1.RequestSpec{rolesSpec(id)}
+		// an anchored run also fetches the anime's roles (the convention
+		// cast) and the anime's episodes (episode-titles) so Convert can
+		// compose both. The extras are POSITIONAL — extras[0] roles,
+		// extras[1] episodes — and Convert reads them by position. A search
+		// stays single-fetch.
+		res.ExtraSpecs = []*metadatav1.RequestSpec{rolesSpec(id), episodesSpec(id)}
 	} else {
 		title := req.GetQuery().GetFields()[titleKey].GetStringValue()
 		vars[titleKey] = stringVar(title)
@@ -203,6 +206,22 @@ func rolesSpec(id int64) *metadatav1.RequestSpec {
 	return &metadatav1.RequestSpec{
 		Method:        "GET",
 		UrlTemplate:   rolesTemplate,
+		Headers:       map[string]string{"User-Agent": userAgent},
+		Variables:     map[string]*metadatav1.VariableValue{idKey: intVar(id)},
+		MinIntervalMs: minIntervalMS,
+	}
+}
+
+// episodesSpec shapes the companion episodes fetch (episode-titles): GET
+// /api/animes/{id}/episodes under the SAME anonymous-tier contract as the
+// primary and the roles fetch — the app-named User-Agent (never omitted) and
+// the 700 ms pacing. It rides the anchored plan SECOND (extras[1], behind the
+// roles fetch) and carries no variables beyond the {shikimori_id} placeholder
+// substitution the primary already declares — no secret variables, ever.
+func episodesSpec(id int64) *metadatav1.RequestSpec {
+	return &metadatav1.RequestSpec{
+		Method:        "GET",
+		UrlTemplate:   episodesTemplate,
 		Headers:       map[string]string{"User-Agent": userAgent},
 		Variables:     map[string]*metadatav1.VariableValue{idKey: intVar(id)},
 		MinIntervalMs: minIntervalMS,
@@ -279,6 +298,12 @@ var (
 	// rolesTemplate is the companion roles endpoint (media-data convention
 	// D1): the cast source for an anchored run.
 	rolesTemplate = apiBase + "/api/animes/{shikimori_id}/roles"
+
+	// episodesTemplate is the companion episodes endpoint (episode-titles):
+	// the per-episode title source for an anchored run. Shikimori anime ids
+	// are PER-SEASON entries, so this endpoint numbers episodes within the
+	// matched season — the same season the local directory names.
+	episodesTemplate = apiBase + "/api/animes/{shikimori_id}/episodes"
 
 	// searchTemplate is var-built only to bake the bounded page size into the
 	// endpoint block.

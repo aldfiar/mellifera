@@ -120,15 +120,15 @@ func TestBuildRequest(t *testing.T) {
 		buildSpec(t, spec)
 	})
 
-	t.Run("anchored plan attaches the roles fetch as the extra spec", func(t *testing.T) {
+	t.Run("anchored plan attaches the roles fetch as the first extra spec", func(t *testing.T) {
 		res, err := p.BuildRequest(context.Background(),
 			buildReq(t, map[string]any{"shikimori_id": int64(123)}))
 		if err != nil {
 			t.Fatalf("BuildRequest: %v", err)
 		}
 		extras := res.GetExtraSpecs()
-		if len(extras) != 1 {
-			t.Fatalf("extra_specs = %d, want exactly the roles fetch", len(extras))
+		if len(extras) != 2 {
+			t.Fatalf("extra_specs = %d, want the anchored pair (roles first, episodes second)", len(extras))
 		}
 		rolesSpec := extras[0]
 		if got := rolesSpec.GetMethod(); got != "GET" {
@@ -148,5 +148,76 @@ func TestBuildRequest(t *testing.T) {
 		// The SAME anonymous-tier contract: app-named User-Agent, 700 ms
 		// pacing, no auth, no secret variables.
 		buildSpec(t, rolesSpec)
+	})
+}
+
+// TestBuildRequestEpisodeExtra pins the episodes leg of the anchored request
+// plan (box 1.2): the id-anchored plan declares TWO extras in fixed order —
+// the roles fetch first (unchanged), the episodes fetch second, under the
+// exact rolesSpec posture (app-named User-Agent, 700 ms pacing, {shikimori_id}
+// placeholder substitution only, no secret variables) — while a search plan
+// stays single-fetch with zero extras.
+func TestBuildRequestEpisodeExtra(t *testing.T) {
+	p := &sourceImpl{}
+
+	t.Run("anchored plan carries roles then episodes in order", func(t *testing.T) {
+		res, err := p.BuildRequest(context.Background(),
+			buildReq(t, map[string]any{"shikimori_id": int64(123)}))
+		if err != nil {
+			t.Fatalf("BuildRequest: %v", err)
+		}
+		extras := res.GetExtraSpecs()
+		if len(extras) != 2 {
+			t.Fatalf("extra_specs = %d, want exactly two (roles, episodes)", len(extras))
+		}
+		if got := extras[0].GetUrlTemplate(); got != rolesTemplate {
+			t.Errorf("extras[0].url_template = %q, want the roles endpoint (unchanged)", got)
+		}
+		if got := extras[1].GetUrlTemplate(); got != episodesTemplate {
+			t.Errorf("extras[1].url_template = %q, want %q (the episodes endpoint)", got, episodesTemplate)
+		}
+	})
+
+	t.Run("episodes spec rides the rolesSpec posture", func(t *testing.T) {
+		res, err := p.BuildRequest(context.Background(),
+			buildReq(t, map[string]any{"shikimori_id": int64(123)}))
+		if err != nil {
+			t.Fatalf("BuildRequest: %v", err)
+		}
+		extras := res.GetExtraSpecs()
+		if len(extras) != 2 {
+			t.Fatalf("extra_specs = %d, want exactly two", len(extras))
+		}
+		ep := extras[1]
+		if got := ep.GetMethod(); got != "GET" {
+			t.Errorf("episodes method = %q, want GET", got)
+		}
+		// Placeholder/variable agreement by NAME: the core rejects a
+		// template placeholder with no declared variable (terminal spec
+		// error), so a one-sided rename can never reappear.
+		if !strings.Contains(ep.GetUrlTemplate(), "{shikimori_id}") {
+			t.Errorf("episodes url_template = %q, want the {shikimori_id} placeholder", ep.GetUrlTemplate())
+		}
+		if got := ep.GetVariables()["shikimori_id"].GetIntValue(); got != 123 {
+			t.Errorf("episodes variables[shikimori_id] = %d, want 123 (the anchored id)", got)
+		}
+		if got := len(ep.GetVariables()); got != 1 {
+			t.Errorf("episodes variables = %d entries, want only the anchor id (no new variables)", got)
+		}
+		// The SAME anonymous-tier contract as the roles fetch: app-named
+		// User-Agent (never omitted — shikimori.io bans default/library UAs),
+		// 700 ms pacing, no auth, no secret variables.
+		buildSpec(t, ep)
+	})
+
+	t.Run("search plan stays single-fetch with zero extras", func(t *testing.T) {
+		res, err := p.BuildRequest(context.Background(),
+			buildReq(t, map[string]any{"title": "Во все тяжкие", "season": int64(1)}))
+		if err != nil {
+			t.Fatalf("BuildRequest: %v", err)
+		}
+		if got := len(res.GetExtraSpecs()); got != 0 {
+			t.Errorf("extra_specs = %d, want 0 (a search run is a single fetch — no roles, no episodes)", got)
+		}
 	})
 }
