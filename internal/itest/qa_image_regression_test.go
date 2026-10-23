@@ -37,8 +37,10 @@ import (
 // split repo: its tree predates root-level proto/, so a diff against it reports
 // the directory as all-insertions (13 files, +4057) — vacuously failing on
 // every run. Re-baselining to f2dc2e8 preserves the guard's semantics: empty
-// diff in the no_seam trees = additive holds.
-const b2MergeBase = "6f7a612" // re-baselined by identify-match-override 1.1 (the MetadataSource search RPCs); was 13e441a
+// diff in the no_seam trees = additive holds. Re-baselined to bb61ca5 by
+// episode-titles 1.1 (the additive ConvertResult EpisodeTitle/episode_titles
+// field pair).
+const b2MergeBase = "bb61ca5" // re-baselined by episode-titles 1.1 (the ConvertResult episode_titles field); was 6f7a612
 
 // b2Token is the admin bearer for the TV regression server.
 const b2Token = "qa-b2-regression-token"
