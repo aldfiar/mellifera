@@ -243,6 +243,10 @@ func mountV1Routes(r chi.Router, h *app) {
 		// footer group order and the enrichment queue priority. Identity fields
 		// (root_path/module_id) are rejected here, unchanged.
 		r.Patch("/libraries/{id}", h.patchLibrary)
+		// Delete: removes the library row AND every dependent row in one
+		// store transaction (items, series, control rows, scan jobs) —
+		// media files on disk are never touched.
+		r.Delete("/libraries/{id}", h.deleteLibrary)
 		r.Post("/libraries/{id}/scan", h.scanLibrary)
 		// Element-only parser attachment (element-pages 3.3): full-replacement
 		// PUT and clearing DELETE over one item's parser attachments — operator
