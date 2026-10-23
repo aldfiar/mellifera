@@ -98,6 +98,58 @@ WHERE id = ?`,
 	return s.GetLibrary(ctx, id)
 }
 
+// DeleteLibrary removes a library and every dependent row in ONE transaction:
+// the scan results (items, series), their identity-keyed control rows
+// (playback_progress, item_parsers, enrichment_failures, and the
+// title_overrides of BOTH id spaces — item ids and the series' ser_ ids),
+// and the library-scope control rows (scan_jobs, library_parsers,
+// metadata_source_prefs — library_id 0 module-scope prefs are another
+// library's concern and stay). The libraries row goes last; a missing row
+// (0 affected) yields a wrapped sql.ErrNoRows (the api layer maps it to 404).
+// The control-table readers are orphan-tolerant (their JOINs skip rows whose
+// entity is gone), so a narrower delete could never surface a broken read —
+// the delete is total on purpose: a library re-created at the same root
+// starts from a clean slate. Files on disk are NEVER touched: store owns
+// rows, not media.
+func (s *Store) DeleteLibrary(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: delete library %d begin: %w", id, err)
+	}
+	defer tx.Rollback()
+	for _, stmt := range []string{
+		`DELETE FROM playback_progress    WHERE item_id IN (SELECT id FROM items  WHERE library_id = ?)`,
+		`DELETE FROM item_parsers         WHERE item_id IN (SELECT id FROM items  WHERE library_id = ?)`,
+		`DELETE FROM enrichment_failures  WHERE item_id IN (SELECT id FROM items  WHERE library_id = ?)`,
+		`DELETE FROM title_overrides      WHERE entity_id IN (SELECT id FROM items  WHERE library_id = ?)`,
+		`DELETE FROM title_overrides      WHERE entity_id IN (SELECT id FROM series WHERE library_id = ?)`,
+		`DELETE FROM items        WHERE library_id = ?`,
+		`DELETE FROM series       WHERE library_id = ?`,
+		`DELETE FROM scan_jobs    WHERE library_id = ?`,
+		`DELETE FROM library_parsers     WHERE library_id = ?`,
+		`DELETE FROM metadata_source_prefs WHERE library_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt, id); err != nil {
+			return fmt.Errorf("store: delete library %d: %w", id, err)
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM libraries WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("store: delete library %d: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete library %d affected: %w", id, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("store: delete library %d: %w", id, sql.ErrNoRows)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: delete library %d commit: %w", id, err)
+	}
+	return nil
+}
+
 // LibrarySummary aggregates a library's persisted, non-deleted items in ONE
 // constant-time SQL pass: the count plus the most recent item update stamp
 // (the RFC3339Nano TEXT as persisted; "" when the library has no items). A

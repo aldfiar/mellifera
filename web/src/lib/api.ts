@@ -1060,6 +1060,16 @@ export async function deleteLibrarySource(
   });
 }
 
+// deleteLibrary — DELETE /api/v1/libraries/{id} (handlers.go deleteLibrary).
+// 204 on success; the server removed the library AND every dependent row
+// (items, series, control rows, scan jobs) in one transaction — media files
+// on disk are untouched. NOT idempotent (unlike the gate clears): an unknown
+// id answers 404, so a repeated delete surfaces as an error instead of
+// silently succeeding. The caller invalidates ["libraries"] on success.
+export async function deleteLibrary(id: number): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.library(id), { method: "DELETE" });
+}
+
 // postSourcePreview — POST /api/v1/admin/sources/preview
 // (source_admin.go adminSourcePreview): the composition preview. The
 // production composer runs TWICE over the same rows — under the live gates

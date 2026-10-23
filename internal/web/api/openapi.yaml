@@ -1199,6 +1199,32 @@ paths:
       tags:
       - libraries
   /libraries/{id}:
+    delete:
+      operationId: delete-library
+      parameters:
+      - description: library id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: library deleted (rows only; media files on disk untouched)
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Delete a library and its scan results
+      tags:
+      - libraries
     get:
       operationId: get-library
       parameters:

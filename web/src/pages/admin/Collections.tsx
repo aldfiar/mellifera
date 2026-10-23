@@ -11,6 +11,7 @@ import type {
 } from "@/lib/api";
 import {
   useCreateLibrary,
+  useDeleteLibrary,
   useLibraries,
   useLibrarySummary,
   useScanLibrary,
@@ -46,7 +47,9 @@ import {
 // Three surfaces:
 //  - the collections table: name + description, pastel type badge, root folder
 //    (monospace), Items/Updated from GET /libraries/{id}/summary, per-row Scan
-//    (result inline on the scanned row only) and Edit; the header row is
+//    (result inline on the scanned row only), Edit, and Delete (two-step
+//    inline confirm — Confirm delete/No — hitting DELETE /libraries/{id});
+//    the header row is
 //    position:sticky so it stays visible while 20+ rows scroll
 //    (.collections-scroll in index.css owns the scroll container).
 //  - the add-collection form: type, name, description, root folder POSTing
@@ -71,7 +74,20 @@ import {
 //
 // Network paths: NFS/network roots MUST be OS-mounted (local or NFS); the Go
 // process reads them like local paths (no SMB/HTTP fetch). Documented inline.
-type ModuleId = "tv" | "image";
+//
+// Module types: tv (one card per file), image, and serial (one card per
+// series directory — grouped episodes, the /collections serial body). The
+// module registry owns the wire values; this list mirrors the shipped
+// modules (TypeBadge accepts the same set plus the badge-other fallback).
+type ModuleId = "tv" | "image" | "serial";
+
+// MODULE_OPTIONS — the create-form type options, id ASC like every module
+// listing. serial is the serials library: one directory = one series.
+const MODULE_OPTIONS: ReadonlyArray<{ id: ModuleId; hint: string }> = [
+  { id: "tv", hint: "one card per file" },
+  { id: "image", hint: "photos" },
+  { id: "serial", hint: "one card per series" },
+];
 
 export default function Collections(): ReactElement {
   const { data, isLoading, error } = useLibraries();
@@ -135,15 +151,20 @@ export default function Collections(): ReactElement {
                 <Select
                   value={moduleId}
                   onValueChange={(v: string) =>
-                    v === "tv" || v === "image" ? setModuleId(v) : undefined
+                    MODULE_OPTIONS.some((m) => m.id === v)
+                      ? setModuleId(v as ModuleId)
+                      : undefined
                   }
                 >
                   <SelectTrigger id="coll-module">
                     <SelectValue placeholder="Select type" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="tv">tv</SelectItem>
-                    <SelectItem value="image">image</SelectItem>
+                    {MODULE_OPTIONS.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.id} — {m.hint}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -410,7 +431,13 @@ function CollectionsTable(props: {
 
 // CollectionRow — one library row. Owns the per-library summary hook
 // (["library-summary", id]) for the Items/Updated cells, so each row fetches
-// its count independently and asynchronously (never blocking the table).
+// its count independently and asynchronously (never blocking the table), and
+// the per-row delete mutation: DELETE /libraries/{id} removes the row and
+// every dependent server-side row; media files on disk are untouched. The
+// delete is a TWO-STEP inline confirm (INV-no-native-confirm): the first
+// click only arms the row (Delete → Confirm/No), so a misclick can never
+// drop a library. A delete error renders inline on the row (INV-per-row-state
+// shape) and the armed state STAYS so the operator can retry or back out.
 function CollectionRow(props: {
   lib: LibraryDTO;
   scan: {
@@ -424,12 +451,15 @@ function CollectionRow(props: {
 }): ReactElement {
   const { lib, scan, onEdit } = props;
   const summary = useLibrarySummary(lib.id);
+  const del = useDeleteLibrary();
+  const [confirming, setConfirming] = useState(false);
 
   const rowPending = scan.isPending && scan.variables === lib.id;
   const rowResult =
     scan.data && scan.data.library_id === lib.id ? scan.data : null;
   const scanErr = scan.error instanceof Error ? (scan.error as ApiError) : null;
   const rowError = scanErr && scan.variables === lib.id ? scanErr : null;
+  const delErr = del.error instanceof Error ? (del.error as ApiError) : null;
 
   return (
     <TableRow data-library-id={lib.id}>
@@ -469,6 +499,35 @@ function CollectionRow(props: {
             >
               Edit
             </Button>
+            {confirming ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={del.isPending}
+                  onClick={() => del.mutate(lib.id)}
+                >
+                  {del.isPending ? "Deleting…" : "Confirm delete"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={del.isPending}
+                  onClick={() => setConfirming(false)}
+                >
+                  No
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={del.isPending}
+                onClick={() => setConfirming(true)}
+              >
+                Delete
+              </Button>
+            )}
           </div>
           {rowResult ? (
             <div className="text-xs">
@@ -489,6 +548,14 @@ function CollectionRow(props: {
             <Alert variant="destructive" className="py-2">
               <AlertTitle>{rowError.code}</AlertTitle>
               <AlertDescription>{rowError.message}</AlertDescription>
+            </Alert>
+          ) : null}
+          {delErr ? (
+            <Alert variant="destructive" className="py-2">
+              <AlertTitle>{delErr.code}</AlertTitle>
+              <AlertDescription>
+                {delErr.message} — the collection was NOT deleted.
+              </AlertDescription>
             </Alert>
           ) : null}
         </div>
