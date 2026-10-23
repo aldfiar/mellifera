@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -155,22 +156,32 @@ type Deps struct {
 	// ErrUnknownPlugin → 400 at the handler); any other error is a real
 	// failure (→ 500). Nil-safe (503 when nil), mirroring PluginConfigs.
 	PluginLogs func(ctx context.Context, pluginID string) ([]string, error)
+	// Pairing is the device-pairing minting service (device-pairing D1/D3):
+	// the pairing handlers delegate to it and the auth middleware's
+	// RoleClient branch consults its LookupToken. Not a closure but the
+	// service value itself — pairing is plain domain logic over the store
+	// (api already imports store), so the anti-corruption closure indirection
+	// buys nothing here. Nil-safe (the pairing routes 503 when nil and no
+	// device token ever resolves), mirroring Status/Playback. Built in
+	// cmd/mellifera over pairing.NewService.
+	Pairing *pairing.Service
 }
 
-// Role is the authorization role resolved from the credential. MVP issues
-// only RoleAdmin (the admin token); RoleClient is gated but not yet minted
-// (the future Phase-2 client resolver swap point). Values are lower-snake to
+// Role is the authorization role resolved from the credential. The admin
+// token issues RoleAdmin; device pairing mints RoleClient (the auth
+// middleware resolves it from a valid device token). Values are lower-snake to
 // match the existing status literals. Handlers never fork on Role; authz lives
 // in the route group via requireRole (Task 04/08) — arch §11.5.
 type Role string
 
 const (
-	// RoleAdmin is the role every valid admin token resolves to today (both the
+	// RoleAdmin is the role every valid admin token resolves to (both the
 	// admin and the browse panels work for it).
 	RoleAdmin Role = "admin"
-	// RoleClient is the client-panel role. It is defined but NOT minted by any
-	// resolver yet — it exists so Phase 2 can issue client principals behind
-	// the same middleware without a signature change (INV3).
+	// RoleClient is the client-panel role, minted by device pairing: the auth
+	// middleware resolves it from a valid device token (Deps.Pairing's
+	// LookupToken), giving a paired TV read-only browse access behind the
+	// same middleware (INV3).
 	RoleClient Role = "client"
 )
 
@@ -189,9 +200,11 @@ type Principal struct {
 // route group); do not branch on p.Role inside a handler.
 func (p Principal) IsAdmin() bool { return p.Role == RoleAdmin }
 
-// New builds the chi router: authMiddleware (authN — resolves the Principal
-// from the admin token) wraps EVERY /api/v1/* route, then the routes are
-// grouped by authorization role (authZ) under /api/v1 via mountV1Routes. The
+// New builds the chi router: the routes are grouped under /api/v1 via
+// mountV1Routes into the unauthenticated pair group plus the two authed
+// groups — authN (authMiddleware) lives INSIDE the authed groups, next to
+// authZ (requireRole), because the pair group must run without it (chi
+// panics on Use after routes; the pair group is declared first, bare). The
 // browse group admits admin+client (read-only views); the admin group admits
 // admin only (mutating + liveness). authN precedes authZ: a bad token 401s
 // before any requireRole runs; a good token with the wrong role 403s
@@ -200,20 +213,31 @@ func (p Principal) IsAdmin() bool { return p.Role == RoleAdmin }
 func New(deps Deps) http.Handler {
 	h := &app{deps: deps}
 	r := chi.NewRouter()
-	r.Use(authMiddleware(deps.AdminToken))
 	r.Route("/api/v1", func(r chi.Router) { mountV1Routes(r, h) })
 	return r
 }
 
-// mountV1Routes wires the /api/v1 route table into two requireRole groups:
-// browse (admin+client — read-only library/item views) and admin (admin only —
-// library mutation, scan trigger, system status). Extracted so New (production,
-// behind authMiddleware) and the role-gating test (behind a synthetic-principal
-// injector) exercise the SAME wiring — the test proves the real group
-// composition, not a duplicate. No handler forks on Role here; the group is the
-// only authZ gate (INV-no-handler-fork; arch §11.5).
+// mountV1Routes wires the /api/v1 route table into THREE groups: pair (NO
+// authN/authZ — POST /pair and GET /pair/{id}/wait are the only
+// unauthenticated API surface, the device-pairing bootstrap), browse
+// (admin+client — read-only library/item views) and admin (admin only —
+// library mutation, scan trigger, system status, pairing adjudication).
+// authMiddleware (authN) is mounted inside the two authed groups, before
+// requireRole (authZ). Extracted so New (production, real authN) and the
+// role-gating test (behind a synthetic-principal injector) exercise the SAME
+// wiring — the test proves the real group composition, not a duplicate. No
+// handler forks on Role here; the group is the only authZ gate
+// (INV-no-handler-fork; arch §11.5).
 func mountV1Routes(r chi.Router, h *app) {
+	// Pair group (device-pairing D2): NO authN — an unpaired device has no
+	// credential yet, so the bootstrap must be open. The pairing_id (128-bit
+	// capability) is the route's protection, not a bearer token.
 	r.Group(func(r chi.Router) {
+		r.Post("/pair", h.createPairing)
+		r.Get("/pair/{id}/wait", h.waitPairing)
+	})
+	r.Group(func(r chi.Router) {
+		r.Use(authMiddleware(h.deps.AdminToken, h.deps.Pairing))
 		r.Use(requireRole(RoleAdmin, RoleClient))
 		r.Get("/libraries", h.listLibraries)
 		// Library detail (element-pages 3.4): the row plus the additive module
@@ -251,6 +275,7 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Put("/progress/{item_id}", h.putProgress)
 	})
 	r.Group(func(r chi.Router) {
+		r.Use(authMiddleware(h.deps.AdminToken, h.deps.Pairing))
 		r.Use(requireRole(RoleAdmin))
 		r.Post("/libraries", h.createLibrary)
 		// Library mutation: present display_name/description/streams_enabled
@@ -330,5 +355,14 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Get("/admin/plugins", h.adminPlugins)
 		r.Get("/admin/plugins/{plugin_id}/logs", h.adminPluginLogs)
 		r.Get("/admin/status", h.adminStatus)
+		// Device-pairing admin surface (device-pairing D2): the operator
+		// review of pending pairing requests (list/approve/deny) and the
+		// paired-device registry (list/revoke). Operator mutations and
+		// observability, so the admin group beside /admin/plugins.
+		r.Get("/admin/pairings", h.listPairings)
+		r.Post("/admin/pairings/{id}/approve", h.approvePairing)
+		r.Post("/admin/pairings/{id}/deny", h.denyPairing)
+		r.Get("/admin/devices", h.listDevices)
+		r.Delete("/admin/devices/{id}", h.revokeDevice)
 	})
 }

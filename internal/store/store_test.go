@@ -41,6 +41,7 @@ func TestOpen(t *testing.T) {
 		for _, table := range []string{
 			"modules", "plugins", "libraries", "items", "drafts",
 			"scan_jobs", "enrichment_failures", "playback_progress",
+			"pairing_requests", "device_tokens",
 		} {
 			var name string
 			err := s.db.QueryRowContext(context.Background(),
@@ -474,7 +475,7 @@ func TestStore_DeleteLibrary(t *testing.T) {
 		return Item{
 			ID: id, ModuleID: "tv", LibraryID: lib, FileID: fileID,
 			RelativePath: fileID + ".mkv", MediaType: "video",
-			Document: json.RawMessage(`{"_view":{"title":{"value":"` + id + `"}}}`),
+			Document:      json.RawMessage(`{"_view":{"title":{"value":"` + id + `"}}}`),
 			SchemaVersion: 1,
 		}
 	}

@@ -151,6 +151,22 @@ definitions:
       root_path:
         type: string
     type: object
+  api.deviceDTO:
+    properties:
+      code:
+        type: string
+      created_at:
+        type: string
+      device_id:
+        type: string
+    type: object
+  api.devicesResponse:
+    properties:
+      devices:
+        items:
+          $ref: '#/definitions/api.deviceDTO'
+        type: array
+    type: object
   api.enrichFailureDTO:
     properties:
       attempts:
@@ -323,6 +339,45 @@ definitions:
         type: integer
       updated_at:
         type: string
+    type: object
+  api.pairCreateResponse:
+    properties:
+      code:
+        type: string
+      pairing_id:
+        type: string
+    type: object
+  api.pairWaitResponse:
+    properties:
+      device_token:
+        type: string
+      status:
+        type: string
+    type: object
+  api.pairingActionResponse:
+    properties:
+      pairing_id:
+        type: string
+      status:
+        type: string
+    type: object
+  api.pairingDTO:
+    properties:
+      code:
+        type: string
+      created_at:
+        type: string
+      expires_at:
+        type: string
+      pairing_id:
+        type: string
+    type: object
+  api.pairingsResponse:
+    properties:
+      pairings:
+        items:
+          $ref: '#/definitions/api.pairingDTO'
+        type: array
     type: object
   api.playRequest:
     properties:
@@ -663,6 +718,135 @@ info:
   title: Mellifera API
   version: "1.0"
 paths:
+  /admin/devices:
+    get:
+      operationId: admin-devices
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.devicesResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List every paired device
+      tags:
+      - admin
+  /admin/devices/{id}:
+    delete:
+      operationId: admin-devices-revoke
+      parameters:
+      - description: device id
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: revoked
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Revoke a paired device's token
+      tags:
+      - admin
+  /admin/pairings:
+    get:
+      operationId: admin-pairings
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.pairingsResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List pending device pairing requests
+      tags:
+      - admin
+  /admin/pairings/{id}/approve:
+    post:
+      operationId: admin-pairings-approve
+      parameters:
+      - description: pairing id
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.pairingActionResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Approve a pending pairing request
+      tags:
+      - admin
+  /admin/pairings/{id}/deny:
+    post:
+      operationId: admin-pairings-deny
+      parameters:
+      - description: pairing id
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: empty body
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Deny a pending pairing request
+      tags:
+      - admin
   /admin/plugins:
     get:
       operationId: admin-plugins
@@ -1528,6 +1712,58 @@ paths:
       summary: Item count and last-update stamp for a library
       tags:
       - libraries
+  /pair:
+    post:
+      operationId: pair-create
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.pairCreateResponse'
+        "429":
+          description: per-IP rate limit exceeded
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Create a device pairing request
+      tags:
+      - pair
+  /pair/{id}/wait:
+    get:
+      operationId: pair-wait
+      parameters:
+      - description: pairing id
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.pairWaitResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Poll a pairing request's status and pick up the device token once
+      tags:
+      - pair
   /progress:
     get:
       operationId: list-progress

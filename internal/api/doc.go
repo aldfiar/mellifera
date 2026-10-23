@@ -20,13 +20,13 @@
 // domain package (scan, store, module); api/ only routes to it.
 //
 // The auth middleware resolves a Principal from the Authorization header and
-// puts it in the request context (Q15/D18). For MVP every valid token resolves
-// to RoleAdmin; the Role type exists now so Phase 2 can add a client/user
-// resolver behind the same middleware without changing handler signatures
+// puts it in the request context (Q15/D18). The admin token resolves
+// RoleAdmin; a device token minted by device pairing resolves RoleClient
+// through the same middleware without changing handler signatures
 // (architecture §11.5). The role abstraction is a TYPE, not a bool gate:
 // handlers never fork on the role — authz lives in the route group via
-// requireRole (Task 04/08). RoleClient is defined but gated (not minted by any
-// resolver yet; the Phase-2 swap point).
+// requireRole (Task 04/08). RoleClient is minted by device pairing (the
+// Deps.Pairing LookupToken branch in authMiddleware).
 //
 // # Public API (8 symbols — at the 8-symbol target)
 //
@@ -34,7 +34,8 @@
 //     including the Playback and Play playback-verb closures, D-7).
 //   - Principal: the authenticated caller resolved by the middleware.
 //   - New: builds the chi router with the auth middleware + routes.
-//   - Role: the authorization role (RoleAdmin minted; RoleClient gated).
+//   - Role: the authorization role (RoleAdmin from the admin token;
+//     RoleClient minted by device pairing).
 //   - AdminStatus: the api-local liveness aggregate the Deps.Status closure returns.
 //   - PluginHealth: one plugin's liveness (exported seam input; built by the closure).
 //   - EnrichStats: the enrich-queue snapshot (exported seam input; built by the closure).
@@ -45,15 +46,17 @@
 //
 //   - INV1: PURE DELEGATION. Each handler is parse → ONE domain call → write. No
 //     branching, no orchestration. funlen ≤60, gocognit ≤15 (golangci-lint).
-//   - INV2: api MAY import internal/store, internal/scan, and stdlib + chi. It
+//   - INV2: api MAY import internal/store, internal/scan, internal/pairing,
+//     and stdlib + chi. It
 //     MAY NOT import internal/plugin, internal/enrich, internal/module, or
 //     internal/web (api talks to enrich/plugin only via the Deps.Status
 //     closure — contracts.md §10 import map; web composes api, never the
 //     reverse).
 //   - INV3: Principal is a TYPE (not a bool gate). Handlers read it via the
-//     unexported context helper; Phase 2 enriches it without a signature
-//     change. New roles are added as a Role constant + a requireRole(...)
-//     member, NEVER as a handler fork on p.Role (arch §11.5).
+//     unexported context helper; RoleClient is minted by device pairing
+//     (the middleware's LookupToken branch), and future roles arrive without
+//     a signature change. New roles are added as a Role constant + a
+//     requireRole(...) member, NEVER as a handler fork on p.Role (arch §11.5).
 //   - INV4: No store.Item/plugin.Health/enrich.Stats over the wire. Handlers
 //     convert store types to unexported DTOs at the boundary; the
 //     Deps.Status closure converts plugin.Health + enrich.Stats into the

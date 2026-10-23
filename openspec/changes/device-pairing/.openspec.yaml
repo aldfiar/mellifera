@@ -1,0 +1,124 @@
+schema: lite
+created: 2026-10-23
+goal: Playback on Android TV without typing the admin token — one-tap admin
+events:
+  - seq: 1
+    box: 2.1
+    kind: amend
+    by: session
+    at: 2026-10-23T17:03:52Z
+    note: 'self-review gap: the composition root must build the service or the feature ships dead (nil Deps.Pairing degrades to 503)'
+    field: text
+  - seq: 2
+    box: 3.3
+    kind: amend
+    by: session
+    at: 2026-10-23T17:14:11Z
+    note: 'Gate 1 amendment: the dist rebuild must follow the new pairing-entry box, so the web-group DAG orders 3.4 before 3.3'
+    field: deps
+  - seq: 3
+    box: 1.1
+    kind: claim
+    by: session
+    at: 2026-10-23T17:29:49Z
+    cmd: 'go test ./internal/store -run ''TestPairingRequests|TestDeviceTokens'' -count=1 || exit 1'
+    exit: 0
+    duration_ms: 479
+  - seq: 4
+    box: 1.2
+    kind: claim
+    by: session
+    at: 2026-10-23T17:34:49Z
+    cmd: 'go test ./internal/pairing -count=1 || exit 1'
+    exit: 0
+    duration_ms: 766
+  - seq: 5
+    box: 2.1
+    kind: claim
+    by: session
+    at: 2026-10-23T17:56:28Z
+    cmd: 'go test ./internal/api -run ''TestAdminMiddleware|TestRequireRole|TestNew_Routes|TestNew_RoleGating'' -count=1 || exit 1'
+    exit: 0
+    duration_ms: 1951
+  - seq: 6
+    box: 2.2
+    kind: claim
+    by: session
+    at: 2026-10-23T17:58:31Z
+    cmd: 'go test ./internal/api -run ''TestPairVerbs|TestPairingAdminVerbs'' -count=1 || exit 1'
+    exit: 0
+    duration_ms: 938
+  - seq: 7
+    box: 2.3
+    kind: claim
+    by: session
+    at: 2026-10-23T17:59:08Z
+    cmd: 'grep -q ''"/pair"'' internal/web/api/openapi.json || exit 1'
+    exit: 0
+    duration_ms: 7
+  - seq: 8
+    box: 3.1
+    kind: claim
+    by: session
+    at: 2026-10-23T18:22:28Z
+    cmd: 'cd web && npm test -- src/lib/api.test.ts src/lib/queries.test.tsx || exit 1'
+    exit: 0
+    duration_ms: 2894
+  - seq: 9
+    box: 3.2
+    kind: claim
+    by: session
+    at: 2026-10-23T18:26:21Z
+    cmd: 'cd web && npm test -- src/pages/admin/Pairing.test.tsx || exit 1'
+    exit: 0
+    duration_ms: 1382
+  - seq: 10
+    box: 3.4
+    kind: claim
+    by: session
+    at: 2026-10-23T18:29:01Z
+    cmd: 'cd web && npm test -- src/pages/pair/PairingEntry.test.tsx || exit 1'
+    exit: 0
+    duration_ms: 1266
+  - seq: 11
+    box: 3.3
+    kind: claim
+    by: session
+    at: 2026-10-23T18:30:45Z
+    cmd: 'cd web && npm run build && git -C .. diff --exit-code -- internal/web/dist >/dev/null || exit 1'
+    exit: 0
+    duration_ms: 4904
+  - seq: 12
+    box: 4.1
+    kind: claim
+    by: session
+    at: 2026-10-23T18:43:29Z
+    cmd: 'go test ./internal/itest -run TestPairingJointFlow -count=1 || exit 1'
+    exit: 0
+    duration_ms: 1697
+  - seq: 13
+    box: 3.4
+    kind: withdraw
+    by: session
+    at: 2026-10-23T19:11:30Z
+  - seq: 14
+    box: 3.3
+    kind: withdraw
+    by: session
+    at: 2026-10-23T19:11:30Z
+  - seq: 15
+    box: 3.4
+    kind: claim
+    by: session
+    at: 2026-10-23T19:20:47Z
+    cmd: 'cd web && npm test -- src/pages/pair/PairingEntry.test.tsx || exit 1'
+    exit: 0
+    duration_ms: 1041
+  - seq: 16
+    box: 3.3
+    kind: claim
+    by: session
+    at: 2026-10-23T19:21:25Z
+    cmd: 'cd web && npm run build && git -C .. diff --exit-code -- internal/web/dist >/dev/null || exit 1'
+    exit: 0
+    duration_ms: 4679

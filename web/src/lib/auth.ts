@@ -17,6 +17,11 @@ import { useCallback, useState } from "react";
 // INV-fixed-key: matches contracts.md §Constants MELLIFERA_TOKEN_KEY. Drift = bug.
 export const TOKEN_KEY = "mellifera.token";
 
+// INV-fixed-key: the paired device's token slot beside the admin token
+// (device-pairing D8). Same storage posture, same exceptions — a paired TV
+// enters its token once via the pairing flow and keeps it per browser.
+export const DEVICE_TOKEN_KEY = "mellifera.device_token";
+
 // getToken reads the stored token (null when absent or localStorage throws).
 export function getToken(): string | null {
   try {
@@ -40,6 +45,37 @@ export function setToken(token: string): void {
 export function clearToken(): void {
   try {
     localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // see setToken
+  }
+}
+
+// getDeviceToken reads the stored device token (null when absent or
+// localStorage throws) — the device-side twin of getToken.
+export function getDeviceToken(): string | null {
+  try {
+    return localStorage.getItem(DEVICE_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+// setDeviceToken persists the device token verbatim (lossless round-trip) —
+// written exactly once, by the pairing entry's approved poll.
+export function setDeviceToken(token: string): void {
+  try {
+    localStorage.setItem(DEVICE_TOKEN_KEY, token);
+  } catch {
+    // see setToken
+  }
+}
+
+// clearDeviceToken removes the stored device token — the 401 interceptor
+// clears it alongside the admin token so a revoked device lands back on the
+// pairing entry (lib/api.ts handle401).
+export function clearDeviceToken(): void {
+  try {
+    localStorage.removeItem(DEVICE_TOKEN_KEY);
   } catch {
     // see setToken
   }

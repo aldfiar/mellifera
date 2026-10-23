@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/subtle"
 	"net/http"
+
+	"github.com/mellifera/mellifera/internal/pairing"
 )
 
 // principalKey is the unexported context key for the resolved Principal. It is
@@ -14,26 +16,48 @@ import (
 type principalKey struct{}
 
 // principalFromContext returns the Principal the middleware recorded, if any.
-// Handlers call this when they need the caller downstream; for MVP none do
-// (every call is admin-scoped), but the seam exists for Phase 2 (INV3).
+// authMiddleware reads it to skip already-authenticated requests (the
+// synthetic-principal injector seam); handlers call it when they need the
+// caller downstream (INV3).
 func principalFromContext(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(principalKey{}).(Principal)
 	return p, ok
 }
 
 // authMiddleware returns a chi-style middleware that resolves a Principal from
-// an `Authorization: Bearer <admin_token>` header. On a match it records
-// Principal{Role: RoleAdmin} in the context and calls next; on any miss (no
-// header, wrong scheme, wrong token) it writes a 401 canonical body and does
-// NOT invoke next — so no handler ever runs without a resolved Principal
-// (authN; S-roles). authMiddleware is the authN layer; per-route authZ lives in
-// requireRole (run after authMiddleware, inside the route group). Today every
-// valid token resolves to RoleAdmin; RoleClient is gated but not minted.
-func authMiddleware(token string) func(http.Handler) http.Handler {
+// an `Authorization: Bearer <credential>` header in two branches: the admin
+// token (constant-time compare) resolves Principal{Role: RoleAdmin}; on that
+// miss, devices.LookupToken (device pairing's SHA-256 store lookup) resolves
+// Principal{Role: RoleClient}. On a full miss (no header, wrong scheme, wrong
+// token, nil service) it writes a 401 canonical body and does NOT invoke next —
+// so no handler ever runs without a resolved Principal (authN; S-roles).
+// authMiddleware is the authN layer; per-route authZ lives in requireRole (run
+// after authMiddleware, inside the route group). A request that already
+// carries a Principal skips authN — the seam the role-gating test's
+// synthetic-principal injector rides (mounted ahead of this middleware on the
+// test router; no production chain sets a Principal before authN runs).
+func authMiddleware(token string, devices *pairing.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, ok := principalFromContext(r.Context()); ok {
+				next.ServeHTTP(w, r)
+				return
+			}
 			creds := bearerCredentials(r.Header.Get("Authorization"))
 			if creds == "" || subtle.ConstantTimeCompare([]byte(creds), []byte(token)) != 1 {
+				// Not the admin token: is it a minted device token?
+				if devices != nil {
+					ok, err := devices.LookupToken(r.Context(), creds)
+					if err != nil {
+						writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+						return
+					}
+					if ok {
+						ctx := context.WithValue(r.Context(), principalKey{}, Principal{Role: RoleClient})
+						next.ServeHTTP(w, r.WithContext(ctx))
+						return
+					}
+				}
 				writeError(w, http.StatusUnauthorized, "unauthenticated",
 					"missing or invalid admin token", false)
 				return

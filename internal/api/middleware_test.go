@@ -8,26 +8,53 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/mellifera/mellifera/internal/pairing"
 )
 
 // TestAdminMiddleware_TokenMatrix is the S8 / AC-5 joint: the auth middleware
-// resolves Principal{Role: RoleAdmin} only for a correct Bearer token and
-// short-circuits with a 401 canonical body otherwise — without ever invoking
-// the wrapped handler. Asserting the dummy next handler's call count proves the
-// side-effect gating (no handler, hence no domain call, runs on a miss). The
-// matrix name is retained for test-stability across the admin->auth middleware
-// rename (S-roles).
+// resolves Principal{Role: RoleAdmin} for a correct Bearer admin token and
+// Principal{Role: RoleClient} for a minted device token (device-pairing D3),
+// and short-circuits with a 401 canonical body otherwise — without ever
+// invoking the wrapped handler. Asserting the dummy next handler's call count
+// proves the side-effect gating (no handler, hence no domain call, runs on a
+// miss). The matrix name is retained for test-stability across the
+// admin->auth middleware rename (S-roles).
 func TestAdminMiddleware_TokenMatrix(t *testing.T) {
+	// One real device credential: mint → approve → pick up through the real
+	// pairing service, so the middleware's LookupToken branch is exercised
+	// against the hash the store actually holds.
+	st := openAPIStore(t)
+	devices := pairing.NewService(st, nil)
+	ctx := context.Background()
+	reqRow, err := devices.CreateRequest(ctx, "10.0.0.1")
+	if err != nil {
+		t.Fatalf("CreateRequest: %v", err)
+	}
+	if _, err := devices.Approve(ctx, reqRow.ID); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	out, err := devices.Wait(ctx, reqRow.ID)
+	if err != nil || out.Token == "" {
+		t.Fatalf("Wait: outcome=%+v err=%v (want the raw device token once)", out, err)
+	}
+	deviceToken := out.Token
+
 	cases := []struct {
 		name       string
 		auth       string
+		devices    *pairing.Service
 		wantStatus int
 		wantCalled bool
+		wantRole   Role
 	}{
-		{"no_header", "", http.StatusUnauthorized, false},
-		{"wrong_scheme", "Basic dXNlcjpwYXNz", http.StatusUnauthorized, false},
-		{"wrong_token", "Bearer " + adminToken + "-wrong", http.StatusUnauthorized, false},
-		{"correct_token", "Bearer " + adminToken, http.StatusOK, true},
+		{"no_header", "", nil, http.StatusUnauthorized, false, ""},
+		{"wrong_scheme", "Basic dXNlcjpwYXNz", nil, http.StatusUnauthorized, false, ""},
+		{"wrong_token", "Bearer " + adminToken + "-wrong", nil, http.StatusUnauthorized, false, ""},
+		{"correct_token", "Bearer " + adminToken, nil, http.StatusOK, true, RoleAdmin},
+		{"device_token_hit", "Bearer " + deviceToken, devices, http.StatusOK, true, RoleClient},
+		{"device_token_nil_service", "Bearer " + deviceToken, nil, http.StatusUnauthorized, false, ""},
+		{"unknown_device_token", "Bearer " + deviceToken + "-wrong", devices, http.StatusUnauthorized, false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -39,7 +66,7 @@ func TestAdminMiddleware_TokenMatrix(t *testing.T) {
 				principal, hasPrincipal = principalFromContext(r.Context())
 				w.WriteHeader(http.StatusOK)
 			})
-			wrapped := authMiddleware(adminToken)(next)
+			wrapped := authMiddleware(adminToken, tc.devices)(next)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/items", nil)
 			if tc.auth != "" {
@@ -55,8 +82,8 @@ func TestAdminMiddleware_TokenMatrix(t *testing.T) {
 				t.Fatalf("wrapped handler called = %v, want %v", called, tc.wantCalled)
 			}
 			if tc.wantCalled {
-				if !hasPrincipal || !principal.IsAdmin() {
-					t.Fatalf("expected Principal{Role:RoleAdmin} in context; got %+v (present=%v)", principal, hasPrincipal)
+				if !hasPrincipal || principal.Role != tc.wantRole {
+					t.Fatalf("expected Principal{Role:%s} in context; got %+v (present=%v)", tc.wantRole, principal, hasPrincipal)
 				}
 				return
 			}

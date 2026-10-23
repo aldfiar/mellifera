@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { ItemDocument } from "@/lib/document";
-import { clearToken, getToken } from "@/lib/auth";
+import { clearDeviceToken, clearToken, getToken } from "@/lib/auth";
 
 // TS mirrors of the Go wire DTOs (internal/api/handlers.go). Field names match
 // the JSON tags EXACTLY (module_id, not moduleId) — these ARE the JSON shape;
@@ -572,6 +572,66 @@ export interface SeriesIdentifyResult {
   deferred: number;
 }
 
+// pairing.go wire shapes (device-pairing) — the seven-route pairing surface
+// mirrored verbatim. Field names match the JSON tags EXACTLY
+// (INV-verbatim-field-names): pairing_id / code / device_token / status.
+// created_at / expires_at are raw RFC3339 stamps as persisted.
+
+// pairing.go pairCreateResponse — the POST /api/v1/pair 200 body: the
+// capability id the device polls against and the code the admin compares on
+// screen (the code itself authenticates nothing — the pairing_id is the
+// capability).
+export interface PairingRequest {
+  pairing_id: string;
+  code: string;
+}
+
+// pairing.go pairWaitResponse — the GET /api/v1/pair/{id}/wait 200 body.
+// device_token is present ONLY on the approved-and-unconsumed poll — the
+// token's single ride over the wire (the pickup read consumes the request).
+// Optional in TS like every omitempty field: absence means "no token yet",
+// never a type hole.
+export interface PairingWait {
+  status: string; // "pending" | "approved" | "denied" | "expired" | "consumed"
+  device_token?: string;
+}
+
+// pairing.go pairingDTO — one pending pairing request as the admin list sees
+// it: id, code, and the TTL stamps. Status is implicit — the list is
+// pending-only.
+export interface AdminPairing {
+  pairing_id: string;
+  code: string;
+  created_at: string;
+  expires_at: string;
+}
+
+// pairing.go pairingsResponse — empty array, never null
+export interface AdminPairingsResponse {
+  pairings: AdminPairing[];
+}
+
+// pairing.go pairingActionResponse — the approve endpoint's 200 body (the
+// new status verbatim). Deny answers a bare 200 with no body; revoke a 204.
+export interface PairingActionResponse {
+  pairing_id: string;
+  status: string;
+}
+
+// pairing.go deviceDTO — one paired device as the admin list sees it. The
+// token itself is hash-at-rest and NEVER rendered here (pairing INV3); code
+// is the approval code, kept for recognition.
+export interface AdminDevice {
+  device_id: string;
+  code: string;
+  created_at: string;
+}
+
+// pairing.go devicesResponse — empty array, never null
+export interface AdminDevicesResponse {
+  devices: AdminDevice[];
+}
+
 // Canonical error body inner object (handlers.go:364-385; arch §11.6).
 export interface ApiErrorBody {
   code: string;
@@ -709,6 +769,19 @@ export const ENDPOINTS = {
   // progressItem — PUT /api/v1/progress/{item_id} (the player's position
   // reporting channel; same browse bearer posture as every other call).
   progressItem: (id: string): string => `/api/v1/progress/${id}`,
+  // Pairing verbs (device-pairing, pairing.go): POST /pair and GET
+  // /pair/{id}/wait are the UNAUTHENTICATED device bootstrap (the 128-bit
+  // pairing_id is the capability — the pair group runs without the auth
+  // middleware); the admin adjudication and registry verbs ride the admin
+  // token like every other admin surface.
+  pair: "/api/v1/pair",
+  pairWait: (id: string): string => `/api/v1/pair/${id}/wait`,
+  adminPairings: "/api/v1/admin/pairings",
+  adminPairingApprove: (id: string): string =>
+    `/api/v1/admin/pairings/${id}/approve`,
+  adminPairingDeny: (id: string): string => `/api/v1/admin/pairings/${id}/deny`,
+  adminDevices: "/api/v1/admin/devices",
+  adminDevice: (id: string): string => `/api/v1/admin/devices/${id}`,
 } as const;
 
 // updateLibrary — PATCH /api/v1/libraries/{id} (handlers.go updateLibrary).
@@ -1109,6 +1182,72 @@ export async function getAdminPluginLogs(
   return apiRequest<PluginLogsResponse>(ENDPOINTS.adminPluginLogs(pluginId));
 }
 
+// startPairing — POST /api/v1/pair (pairing.go createPairing, device-pairing):
+// mints one pending pairing request. UNAUTHENTICATED by design — an unpaired
+// device has no credential yet (the pair group runs without the auth
+// middleware); the 128-bit pairing_id is the capability, the code is only the
+// human comparison string. 429 rate_limited when the per-IP window is
+// exceeded, 503 when pairing is unwired — canonical, surfaced inline (the
+// mutation is retry:0).
+export async function startPairing(): Promise<PairingRequest> {
+  return apiRequest<PairingRequest>(ENDPOINTS.pair, { method: "POST" });
+}
+
+// waitPairing — GET /api/v1/pair/{id}/wait (pairing.go waitPairing): the
+// device's status poll. device_token is present ONLY on the
+// approved-and-unconsumed poll — the token's single ride over the wire; the
+// pickup read consumes the request. 404 not_found for an unknown id, 503
+// unwired — canonical, surfaced inline.
+export async function waitPairing(pairingId: string): Promise<PairingWait> {
+  return apiRequest<PairingWait>(ENDPOINTS.pairWait(pairingId));
+}
+
+// getAdminPairings — GET /api/v1/admin/pairings (pairing.go listPairings):
+// the still-pending pairing requests, oldest first — the operator review
+// list. 503 unwired — canonical, surfaced by the caller.
+export async function getAdminPairings(): Promise<AdminPairingsResponse> {
+  return apiRequest<AdminPairingsResponse>(ENDPOINTS.adminPairings);
+}
+
+// approvePairing — POST /api/v1/admin/pairings/{id}/approve (pairing.go
+// approvePairing): pending → approved, mints the device token (hash at
+// rest). 404 unknown id, 409 conflict (expired/consumed), 503 unwired —
+// canonical, surfaced inline (adjudication is retry:0 — no auto-retry).
+export async function approvePairing(
+  pairingId: string,
+): Promise<PairingActionResponse> {
+  return apiRequest<PairingActionResponse>(
+    ENDPOINTS.adminPairingApprove(pairingId),
+    { method: "POST" },
+  );
+}
+
+// denyPairing — POST /api/v1/admin/pairings/{id}/deny (pairing.go
+// denyPairing): pending → terminal denied; the waiting device polls "denied"
+// and never receives a token. Answers a bare 200 with an EMPTY body, so the
+// void wrapper (no JSON parse) is the right channel. Same canonical errors
+// as approvePairing, surfaced inline.
+export async function denyPairing(pairingId: string): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminPairingDeny(pairingId), {
+    method: "POST",
+  });
+}
+
+// getAdminDevices — GET /api/v1/admin/devices (pairing.go listDevices): the
+// paired-device registry. The token itself is hash-at-rest and never
+// rendered (pairing INV3); code is the approval code.
+export async function getAdminDevices(): Promise<AdminDevicesResponse> {
+  return apiRequest<AdminDevicesResponse>(ENDPOINTS.adminDevices);
+}
+
+// revokeDevice — DELETE /api/v1/admin/devices/{id} (pairing.go revokeDevice):
+// deletes the device's token row; every later call with that token 401s.
+// NOT idempotent on purpose — a twice-issued revoke is a 404 (fail loudly),
+// surfaced inline (retry:0).
+export async function revokeDevice(deviceId: string): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminDevice(deviceId), { method: "DELETE" });
+}
+
 // getItem — GET /api/v1/items/{id} (handlers.go:266-278). The id is the item's
 // string UUID, passed through verbatim. A missing item 404s with the canonical
 // not_found body (surfaced as ApiError{code:"not_found"}).
@@ -1163,9 +1302,9 @@ export function isVideoItem(item: ItemDTO): boolean {
 // bearer posture as every other /api/v1 call and converted into ONE blob
 // object URL. The caller owns revoking it (useItemMedia revokes on unmount /
 // URL change). `path` is an itemMedia() URL — the parameter name also matches
-// the wrapper-chokepoint idiom apiRequest uses. A 401 still rotates to /login
-// (INV-401-source-of-truth); any other non-2xx rejects ApiError so consumers
-// fall back to the placeholder (never a broken-image state).
+// the wrapper-chokepoint idiom apiRequest uses. A 401 still routes through
+// handle401 (INV-401-source-of-truth); any other non-2xx rejects ApiError so
+// consumers fall back to the placeholder (never a broken-image state).
 export async function fetchItemMediaObjectUrl(
   path: string,
   signal?: AbortSignal,
@@ -1190,7 +1329,7 @@ export async function fetchItemMediaObjectUrl(
 // 5.1): a <track src> cannot carry the Authorization header, so the sidecar
 // bytes are fetched through the same bearer posture as every other /api/v1
 // call and returned as text for the client-side conversion (lib/subtitles).
-// `path` is an itemSidecar() URL. A 401 still rotates to /login
+// `path` is an itemSidecar() URL. A 401 still routes through handle401
 // (INV-401-source-of-truth); any other non-2xx rejects the canonical ApiError
 // so the caller degrades the selection inline — never a crash.
 export async function fetchSidecarText(
@@ -1212,20 +1351,33 @@ export async function fetchSidecarText(
   return res.text();
 }
 
-// redirectToLogin — the 401 rotation. Factored so the redirect is a single
-// chokepoint (and overridable in tests). INV-401-source-of-truth: a 401 is the
-// SOLE signal that rotates the client to /login.
-function redirectToLogin(): void {
-  window.location.assign("/login");
+// redirectTo — the 401 rotation chokepoint. Factored so the navigation is a
+// single call site (and observable in tests via a window.location stub).
+// INV-401-source-of-truth: a 401 is the SOLE signal that rotates the client;
+// the TARGET is decided by handle401 (credential-aware, device-pairing F1).
+function redirectTo(path: string): void {
+  window.location.assign(path);
 }
 
-// handle401 — the shared 401 rotation sequence (reviewer FLAG S1): clearToken +
-// redirectToLogin + reject with the canonical session-expired ApiError. Both
-// channels (apiRequest, fetchItemMediaObjectUrl) route their 401s here so the
-// sequence exists exactly once and cannot drift.
+// handle401 — the shared 401 rotation sequence (reviewer FLAG S1): clear the
+// credentials + redirect + reject with the canonical session-expired ApiError.
+// Every channel (apiRequest, the media/sidecar fetchers) routes its 401s here
+// so the sequence exists exactly once and cannot drift. The rotation target
+// keys on the credential actually in play (device-pairing F1): every wrapper
+// channel rides the ADMIN token when one is stored, so an admin-credentialed
+// 401 rotates to /login exactly as before (INV-401-source-of-truth, operator
+// path unchanged). With NO admin token in storage the request rode the device
+// posture (device-only browser or unauthenticated bootstrap) — the device
+// credential is the one that died (D8), so the rotation lands on "/" where
+// the ROOT gate re-mounts the pairing entry; a full-page /login would bypass
+// the ROOT route entirely and strand the revoked device on the admin token
+// prompt. Clearing BOTH credentials stays unconditional: each is either the
+// one that 401'd or already absent from storage.
 function handle401(): never {
+  const adminAuthed = getToken() !== null;
   clearToken();
-  redirectToLogin();
+  clearDeviceToken();
+  redirectTo(adminAuthed ? "/login" : "/");
   throw new ApiError(401, {
     code: "unauthorized",
     message: "session expired",
@@ -1270,7 +1422,7 @@ async function errorBody(res: Response): Promise<ApiErrorBody> {
 //   JSON.stringify(body) for requests with a body (POST).
 // - on 2xx: JSON.parse(await res.text()) verbatim — NEVER rounds/averages/
 //   collapses document values (INV-no-rounding; arch §3.4/§11.2).
-// - on 401: clearToken() + redirectToLogin() + reject.
+// - on 401: clear credentials + credential-aware rotation (handle401) + reject.
 // - on other non-2xx: parse the canonical {"error":{code,message,retryable}}
 //   body and reject ApiError; if the body is not canonical, reject ApiError
 //   carrying the HTTP status text (fail-fast, no silent success).

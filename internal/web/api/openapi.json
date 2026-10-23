@@ -12,6 +12,202 @@
     "host": "localhost:8080",
     "basePath": "/api/v1",
     "paths": {
+        "/admin/devices": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List every paired device",
+                "operationId": "admin-devices",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.devicesResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/devices/{id}": {
+            "delete": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Revoke a paired device's token",
+                "operationId": "admin-devices-revoke",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "device id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "revoked"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/pairings": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List pending device pairing requests",
+                "operationId": "admin-pairings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.pairingsResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/pairings/{id}/approve": {
+            "post": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Approve a pending pairing request",
+                "operationId": "admin-pairings-approve",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "pairing id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.pairingActionResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/pairings/{id}/deny": {
+            "post": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Deny a pending pairing request",
+                "operationId": "admin-pairings-deny",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "pairing id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "empty body"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/admin/plugins": {
             "get": {
                 "tags": [
@@ -1321,6 +1517,85 @@
                 }
             }
         },
+        "/pair": {
+            "post": {
+                "tags": [
+                    "pair"
+                ],
+                "summary": "Create a device pairing request",
+                "operationId": "pair-create",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.pairCreateResponse"
+                        }
+                    },
+                    "429": {
+                        "description": "per-IP rate limit exceeded",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/pair/{id}/wait": {
+            "get": {
+                "tags": [
+                    "pair"
+                ],
+                "summary": "Poll a pairing request's status and pick up the device token once",
+                "operationId": "pair-wait",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "pairing id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.pairWaitResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/progress": {
             "get": {
                 "tags": [
@@ -1880,6 +2155,31 @@
                 }
             }
         },
+        "api.deviceDTO": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "device_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.devicesResponse": {
+            "type": "object",
+            "properties": {
+                "devices": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.deviceDTO"
+                    }
+                }
+            }
+        },
         "api.enrichFailureDTO": {
             "type": "object",
             "properties": {
@@ -2139,6 +2439,67 @@
                 },
                 "updated_at": {
                     "type": "string"
+                }
+            }
+        },
+        "api.pairCreateResponse": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "pairing_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.pairWaitResponse": {
+            "type": "object",
+            "properties": {
+                "device_token": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.pairingActionResponse": {
+            "type": "object",
+            "properties": {
+                "pairing_id": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.pairingDTO": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "pairing_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.pairingsResponse": {
+            "type": "object",
+            "properties": {
+                "pairings": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.pairingDTO"
+                    }
                 }
             }
         },

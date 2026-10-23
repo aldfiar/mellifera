@@ -9,9 +9,13 @@ import {
 } from "@tanstack/react-query";
 
 import {
+  approvePairing,
   apiRequest,
   deleteLibrary,
+  denyPairing,
   fetchItemMediaObjectUrl,
+  getAdminDevices,
+  getAdminPairings,
   getItem,
   getLibrary,
   getLibraryFolders,
@@ -20,7 +24,12 @@ import {
   getSeriesEpisodes,
   listItems,
   listProgress,
+  revokeDevice,
+  startPairing,
   updateLibrary,
+  waitPairing,
+  type AdminDevicesResponse,
+  type AdminPairingsResponse,
   type AdminStatus,
   type ApiError,
   type CreateLibraryRequest,
@@ -31,6 +40,9 @@ import {
   type LibraryFoldersResponse,
   type LibrarySummary,
   type ListItemsParams,
+  type PairingActionResponse,
+  type PairingRequest,
+  type PairingWait,
   type ProgressListResponse,
   type ScanResponse,
   type SeriesListResponse,
@@ -293,6 +305,113 @@ export function useSeriesEpisodes(
     queryKey: ["series-episodes", seriesId],
     queryFn: () => getSeriesEpisodes(seriesId),
     enabled: seriesId !== "",
+  });
+}
+
+// usePairings — GET /api/v1/admin/pairings via getAdminPairings
+// (device-pairing): the still-pending pairing requests, oldest first — the
+// Pairing admin panel's review list. Keyed ["admin-pairings"] like the other
+// admin surfaces; the approve/deny hooks invalidate it on success.
+export function usePairings(): UseQueryResult<AdminPairingsResponse> {
+  return useQuery({
+    queryKey: ["admin-pairings"],
+    queryFn: () => getAdminPairings(),
+  });
+}
+
+// useApprovePairing — POST /api/v1/admin/pairings/{id}/approve via
+// approvePairing (device-pairing). Non-idempotent adjudication → retry:0
+// (INV-no-mutation-retry); success invalidates ["admin-pairings"] so the
+// approved row leaves the pending list from a server re-read, never from the
+// write's body.
+export function useApprovePairing(): UseMutationResult<
+  PairingActionResponse,
+  ApiError,
+  string /* pairing id */
+> {
+  return useMutation({
+    mutationFn: (pairingId: string) => approvePairing(pairingId),
+    retry: 0,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-pairings"] });
+    },
+  });
+}
+
+// useDenyPairing — POST /api/v1/admin/pairings/{id}/deny via denyPairing:
+// the deny side of useApprovePairing (terminal state, no token minted),
+// same retry:0 + invalidation contract.
+export function useDenyPairing(): UseMutationResult<
+  void,
+  ApiError,
+  string /* pairing id */
+> {
+  return useMutation({
+    mutationFn: (pairingId: string) => denyPairing(pairingId),
+    retry: 0,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-pairings"] });
+    },
+  });
+}
+
+// useDevices — GET /api/v1/admin/devices via getAdminDevices
+// (device-pairing): the paired-device registry (hash-at-rest tokens are
+// never rendered; the row carries the approval code). Keyed
+// ["admin-devices"]; the revoke hook invalidates it on success.
+export function useDevices(): UseQueryResult<AdminDevicesResponse> {
+  return useQuery({
+    queryKey: ["admin-devices"],
+    queryFn: () => getAdminDevices(),
+  });
+}
+
+// useRevokeDevice — DELETE /api/v1/admin/devices/{id} via revokeDevice:
+// deletes the token row (later calls with that token 401). NOT idempotent
+// (a twice-issued revoke is a 404) → retry:0; success invalidates
+// ["admin-devices"] so the revoked row disappears from the server re-read.
+export function useRevokeDevice(): UseMutationResult<
+  void,
+  ApiError,
+  string /* device id */
+> {
+  return useMutation({
+    mutationFn: (deviceId: string) => revokeDevice(deviceId),
+    retry: 0,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-devices"] });
+    },
+  });
+}
+
+// useStartPairing — POST /api/v1/pair via startPairing (device-pairing): the
+// entry screen's mint. UNAUTHENTICATED by design (an unpaired device has no
+// credential) and fire-once per pairing attempt — retry:0 so a 429
+// rate_limited surfaces inline instead of hammering the per-IP window. No
+// invalidation: the request is the device's own, no cached list carries it.
+export function useStartPairing(): UseMutationResult<
+  PairingRequest,
+  ApiError,
+  void
+> {
+  return useMutation({
+    mutationFn: () => startPairing(),
+    retry: 0,
+  });
+}
+
+// usePairingWait — GET /api/v1/pair/{id}/wait via waitPairing: the device's
+// approval poll, refetched on a ~2.5s interval until the admin adjudicates
+// (device-pairing D8). Keyed ["pairing-wait", id]: one cache entry per
+// pairing request. `enabled` guards the empty id (the start request has not
+// landed yet — the hook must not fire a malformed /pair//wait request). GET
+// keeps the default retry.
+export function usePairingWait(pairingId: string): UseQueryResult<PairingWait> {
+  return useQuery({
+    queryKey: ["pairing-wait", pairingId],
+    queryFn: () => waitPairing(pairingId),
+    enabled: pairingId !== "",
+    refetchInterval: 2500,
   });
 }
 

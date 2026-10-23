@@ -1,0 +1,82 @@
+schema: plan/2
+lane: loop
+groups:
+  - id: 'domain'
+    goal: durable pairing state + the minting service (store tables, internal/pairing)
+  - id: 'api'
+    goal: pairing wire surface: three-group mount, RoleClient branch, handlers, committed OpenAPI
+  - id: 'web'
+    goal: admin pairing panel in the SPA + committed dist
+  - id: 'qa'
+    goal: joint pairing contract: create, approve, wait, client playback, admin 403, revoke 401
+boxes:
+  - id: '1.1'
+    group: domain
+    title: Pairing persistence in internal/store
+    text: Two new control tables in internal/store/open.go schemaSQL (idempotent CREATE IF NOT EXISTS, the playback_progress/title_overrides pattern): pairing_requests (id TEXT PK, code TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending' CHECK in pending|approved|denied|expired|consumed, created_at TEXT NOT NULL, expires_at TEXT NOT NULL) and device_tokens (id TEXT PK, token_hash TEXT NOT NULL UNIQUE, code TEXT NOT NULL, created_at TEXT NOT NULL). RFC3339Nano timestamps via the existing formatTime/parseTime. Row structs PairingRequest + DeviceToken (the exported PlaybackProgress precedent; store exported count 10 -> 12, check.sh gate-green). Store methods (internal/store/pairing.go): CreatePairingRequest, GetPairingRequest, SetPairingStatus, ListPendingPairings, InsertDeviceToken, LookupDeviceTokenByHash, ListDevices, DeleteDevice. Table-driven tests in pairing_test.go: TestPairingRequests (create/get/status transitions, expiry read-through, unknown id -> sql.ErrNoRows) and TestDeviceTokens (insert, hash-unique lookup, list, delete = revoke).
+    duty:
+      verify: go test ./internal/store -run 'TestPairingRequests|TestDeviceTokens' -count=1 || exit 1
+  - id: '1.2'
+    group: domain
+    title: internal/pairing minting service
+    deps: ['1.1']
+    text: NEW package internal/pairing (doc.go contract-first; 6 exported symbols: Service, NewService, Pairing, Device, WaitOutcome, ErrUnknownPairing — methods excluded by the check.sh count). NewService(st *store.Store, now func() time.Time) — the now func is the test clock. Methods: CreateRequest(ctx, ip) — mints an 8-char single-use code from crypto/rand over an unambiguous uppercase alphabet (no 0/O/1/I/L) plus a 128-bit random pairing_id, 5-minute TTL (constants, no config), guarded by an in-memory per-IP fixed-window rate limiter (excess -> error the handler maps to 429). Wait(ctx, pairingID) — lazy expiry on read (expired overrides pending), returns WaitOutcome{Status, Token} where Token is non-empty ONLY for approved-and-unconsumed, and reading it consumes the request (status -> consumed; single-use). ListPending, Approve (refuses expired/consumed/denied -> conflict error; mints a 32-byte crypto/rand base64url token, persists ONLY its SHA-256 hash, status -> approved), Deny (pending -> denied), Devices, Revoke (DELETE the token row), LookupToken(ctx, raw) (hash + store lookup; false on miss). Unknown ids -> ErrUnknownPairing (handler maps to 404). Table-driven tests (service_test.go, now-func injected): TestServiceCreateRequest (mint + rate limit), TestServiceApproveWait (approve -> wait returns token once -> second poll consumed), TestServiceDenyAndExpiry, TestServiceLookupToken, TestServiceRevoke.
+    duty:
+      verify: go test ./internal/pairing -count=1 || exit 1
+  - id: '2.1'
+    group: api
+    title: Auth wiring: three-group mount + RoleClient branch
+    deps: ['1.2']
+    text: internal/api/router.go: mountV1Routes restructures into THREE groups (design D2): (a) a pair group with NO authN — POST /pair, GET /pair/{id}/wait (the only unauthenticated API surface); (b) the browse group — authMiddleware + requireRole(RoleAdmin, RoleClient), existing routes byte-identical; (c) the admin group — authMiddleware + requireRole(RoleAdmin), existing routes byte-identical. authMiddleware MOVES from New's router root into the two authed groups (chi panics on Use after routes — the pair group must be declared without it; New keeps r.Route(/api/v1, mountV1Routes) only). internal/api/middleware.go: authMiddleware(adminToken string, devices *pairing.Service) grows the second branch (design D3): admin constant-time compare miss -> devices.LookupToken(raw); hit -> context Principal{Role: RoleClient}; miss or nil service -> today's 401 canonical body. api imports internal/pairing (new Deps field Pairing *pairing.Service — ZERO new exported symbols, INV5 intact). COMPOSITION ROOT: cmd/mellifera/main.go builds pairing.NewService(st, time.Now) beside the other api.Deps wiring (~line 278) and passes it into api.Deps{...} — a nil field would leave every pairing route 503-ing in production. Update internal/api/doc.go comments: INV2 may-list gains internal/pairing; INV3 + the RoleClient doc line in router.go now read 'minted by device pairing' (was 'gated but not minted'). Tests: extend middleware_test.go TestAdminMiddleware_TokenMatrix with device-token branches; router_test.go TestNew_Routes asserts the pair routes answer WITHOUT a token and everything else still 401s; role_gating_test.go TestNew_RoleGating keeps proving the group composition through its synthetic-principal injector (mountV1Routes stays the single wiring point).
+    duty:
+      verify: go test ./internal/api -run 'TestAdminMiddleware|TestRequireRole|TestNew_Routes|TestNew_RoleGating' -count=1 || exit 1
+  - id: '2.2'
+    group: api
+    title: Pairing handlers + swag annotations
+    deps: ['2.1']
+    text: Pure-delegation handlers (parse -> ONE pairing.Service call -> write; canonical writeError envelope; 503 when Deps.Pairing is nil, the Status/Playback convention) in internal/api/pairing.go, mounted by 2.1's groups: createPairing (POST /pair -> 200 {pairing_id, code}; rate-limit error -> 429 rate_limited), waitPairing (GET /pair/{id}/wait -> 200 {status, device_token?}; ErrUnknownPairing -> 404 not_found), and the ADMIN-group five: listPairings (GET /admin/pairings -> 200 {pairings: [{pairing_id, code, created_at, expires_at}]}, pending only), approvePairing (POST /admin/pairings/{id}/approve -> 200 {pairing_id, status}; expired/consumed -> 409 conflict), denyPairing (POST /admin/pairings/{id}/deny -> 200), listDevices (GET /admin/devices -> 200 {devices: [{device_id, code, created_at}]}), revokeDevice (DELETE /admin/devices/{id} -> 204). Swag annotations on every handler (the wire shapes feed the committed OpenAPI; BasePath /api/v1). Handlers never return the raw device token anywhere except waitPairing. Table-driven tests pairing_test.go: TestPairVerbs (create 200 shape + 429 path; wait pending -> approved-with-token-once -> consumed; unknown id 404; both reachable with NO Authorization header) and TestPairingAdminVerbs (admin token: list/approve/deny/devices/revoke happy paths; device-token principal gets 403 on all five; unknown ids 404).
+    duty:
+      verify: go test ./internal/api -run 'TestPairVerbs|TestPairingAdminVerbs' -count=1 || exit 1
+  - id: '2.3'
+    group: api
+    title: Committed OpenAPI regen
+    deps: ['2.2']
+    text: Regenerate the committed contract from the new swag annotations — the swag lines of make web-build (Makefile:73-75): export PATH="$PATH:$(go env GOPATH)/bin" (swag lives in GOPATH/bin), then swag init -d internal/api -g doc.go -o internal/web/api -ot json,yaml --parseDependencyLevel 1, then mv internal/web/api/swagger.json internal/web/api/openapi.json && mv internal/web/api/swagger.yaml internal/web/api/openapi.yaml. Commit the regenerated internal/web/api/openapi.{json,yaml} — they must carry /pair, /pair/{id}/wait, /admin/pairings, /admin/pairings/{id}/approve, /admin/pairings/{id}/deny, /admin/devices, /admin/devices/{id}. (Existence-grep duty: the artifact is a dev-tool output outside the Go gate — the strongest cheap check on the committed bytes.)
+    duty:
+      verify: grep -q '"/pair"' internal/web/api/openapi.json || exit 1
+  - id: '3.1'
+    group: web
+    title: SPA wire types + query hooks
+    deps: ['2.2']
+    text: web/src/lib/api.ts hand-mirrors the seven pairing wire shapes verbatim (field names match the Go JSON tags EXACTLY — INV-verbatim-field-names, the CreateLibraryRequest pattern): PairingRequest {pairing_id, code}, PairingWait {status, device_token?}, AdminPairing {pairing_id, code, created_at, expires_at}, AdminDevice {device_id, code, created_at}, plus the request-less mutation helpers for approve/deny/revoke. web/src/lib/queries.ts gains TanStack Query v5 hooks in the existing pattern: usePairings (pending list), useApprovePairing, useDenyPairing, useDevices, useRevokeDevice (invalidations mirror the existing admin hooks). FIRST box of the web group in a fresh worktree: run npm ci in web/ (node_modules absent). Tests: extend web/src/lib/api.test.ts (shape + endpoint paths) and web/src/lib/queries.test.tsx (hook behaviors incl. approve/deny/revoke invalidation).
+    duty:
+      verify: cd web && npm test -- src/lib/api.test.ts src/lib/queries.test.tsx || exit 1
+  - id: '3.2'
+    group: web
+    title: Admin pairing panel
+    deps: ['3.1']
+    text: web/src/pages/admin/Pairing.tsx mounted at /admin/pairing (route registration beside the other admin surfaces) + AdminTabs.tsx gains the tab (label 'Pairing'). Two sections, the Sources.tsx/Plugins.tsx panel pattern (loading/error/empty states, shadcn/ui primitives, TanStack Query hooks from 3.1): (a) PENDING PAIRINGS — rows showing the code prominently (the admin matches it against the TV screen) with one-tap Approve and Deny buttons; (b) DEVICES — rows with the approval code and created date + a Revoke action. No device-management UI beyond list + revoke (out of scope). Tests web/src/pages/admin/Pairing.test.tsx: renders pending code, approve tap fires the mutation and clears the row, deny fires, revoke fires and the device row disappears.
+    duty:
+      verify: cd web && npm test -- src/pages/admin/Pairing.test.tsx || exit 1
+  - id: '3.3'
+    group: web
+    title: Rebuild committed SPA dist
+    deps: ['3.2', '3.4']
+    text: cd web && npm run build (tsc --noEmit + vite build -> internal/web/dist, the go:embed INPUT) and COMMIT internal/web/dist so the embedded SPA carries the pairing panel. The committed dist must be REPRODUCIBLE: a fresh npm run build over the committed sources leaves git diff on internal/web/dist clean (Vite content-hashes are deterministic for identical input). Memory note: make web-build needs GOPATH/bin on PATH for swag, but this box runs only the npm half.
+    duty:
+      verify: cd web && npm run build && git -C .. diff --exit-code -- internal/web/dist >/dev/null || exit 1
+  - id: '4.1'
+    group: qa
+    title: Joint pairing contract (api+store+pairing, SPA dist)
+    deps: ['2.3', '3.3']
+    text: internal/itest/qa_pairing_joint_test.go (the qa_identify_joint_test.go pattern; Tier 1 joint: real store + real api.New, no mocks). TestPairingJointFlow boots api.New over a temp-store pairing service and walks the WHOLE contract: unauthenticated POST /api/v1/pair -> 200 {pairing_id, code}; admin GET /admin/pairings lists the request with that code; POST approve -> 200; GET /pair/{id}/wait returns the device token EXACTLY once (second poll = consumed, no token); the device token calls GET /items/{id}/playback and the browse group 200 (RoleClient minted through the real middleware) while POST /libraries (admin verb) 403s; DELETE /admin/devices/{id} -> the same browse call 401s. Plus the committed-contract assertions: internal/web/api/openapi.json contains all seven pairing paths. This is the api<->web pairing contract the qa group exists for.
+    duty:
+      verify: go test ./internal/itest -run TestPairingJointFlow -count=1 || exit 1
+  - id: '3.4'
+    group: web
+    title: Unauthenticated pairing entry screen
+    deps: ['3.1']
+    text: The device-side SPA surface (Gate 1 amendment): when the SPA holds NO stored credential (neither a device token nor the admin token), the ROOT route renders web/src/pages/pair/PairingEntry.tsx instead of the admin login — three-state auth gate (design D8): no credential -> pairing entry; stored device OR admin credential -> app shell as today; 401 -> clear + back to the entry. auth.ts gains device-token storage beside the existing admin TOKEN_KEY (DEVICE_TOKEN_KEY = 'mellifera.device_token', same fixed-key INV style, same localStorage exceptions). PairingEntry: on mount fires a new useStartPairing mutation (POST /api/v1/pair, consuming the PairingRequest shape from 3.1), displays the returned code prominently for the admin to match, then polls a new usePairingWait query (GET /api/v1/pair/{id}/wait, refetchInterval ~2500ms, PairingWait shape) — on approved it stores the device token and navigates to the library main screen (no token pasting anywhere). The 401 interceptor in lib/api.ts ALSO clears the device token so a revoked device lands back on the entry (the admin-token clear behavior is unchanged; /login stays reachable for operator deep links — web-ui 'SPA token authentication' is untouched for protected routes). Tests web/src/pages/pair/PairingEntry.test.tsx: render with no stored credential shows a code; approved poll result stores the device token and routes to libraries; a 401 while polling clears storage and re-renders the entry; hook tests ride queries.test.tsx.
+    duty:
+      verify: cd web && npm test -- src/pages/pair/PairingEntry.test.tsx || exit 1
+probes: []
