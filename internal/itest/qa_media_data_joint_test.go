@@ -639,13 +639,16 @@ func TestQAMediaDataJoint(t *testing.T) {
 		t.Fatalf("anchored sources.shikimori cast = %v, want the composed array (the roles body landed)", ns["cast"])
 	}
 	qaMediaAssertCast(t, "stored", storedCast, qaMediaWantCast(up.baseURL))
+	// episode-titles (shikimori-enrichment delta) sanctions the /episodes
+	// companion: the anchored plan now carries by-id + roles + episodes.
 	tail := up.requests()
-	if len(tail) != 3 {
-		t.Fatalf("upstream saw %d requests total, want 3 (search + by-id + roles): %+v", len(tail), tail)
+	if len(tail) != 4 {
+		t.Fatalf("upstream saw %d requests total, want 4 (search + by-id + roles + episodes): %+v", len(tail), tail)
 	}
 	paths := map[string]bool{
-		qaSerialUpstreamSearch + "/" + strconv.Itoa(qaMediaID):            false,
-		qaSerialUpstreamSearch + "/" + strconv.Itoa(qaMediaID) + "/roles": false,
+		qaSerialUpstreamSearch + "/" + strconv.Itoa(qaMediaID):               false,
+		qaSerialUpstreamSearch + "/" + strconv.Itoa(qaMediaID) + "/roles":    false,
+		qaSerialUpstreamSearch + "/" + strconv.Itoa(qaMediaID) + "/episodes": false,
 	}
 	for _, r := range tail[1:] {
 		if r.method != http.MethodGet {
@@ -654,12 +657,12 @@ func TestQAMediaDataJoint(t *testing.T) {
 		if _, hit := paths[r.path]; hit {
 			paths[r.path] = true
 		} else {
-			t.Errorf("anchored request hit %s, want one of the by-id/roles endpoints %v", r.path, paths)
+			t.Errorf("anchored request hit %s, want one of the by-id/roles/episodes endpoints %v", r.path, paths)
 		}
 	}
 	for path, hit := range paths {
 		if !hit {
-			t.Errorf("no anchored fetch for %s (the anchor must drive the by-id + roles plan)", path)
+			t.Errorf("no anchored fetch for %s (the anchor must drive the by-id + roles + episodes plan)", path)
 		}
 	}
 

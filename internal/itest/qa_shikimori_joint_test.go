@@ -321,7 +321,10 @@ func TestShikimoriJoint(t *testing.T) {
 	qaShikAssertLedger(t, j, map[string]bool{})
 	qaShikAssertNamespace(t, j, qaShikAwaitNamespace(t, j, qaShikDirA), qaShikWantA)
 	qaShikAssertNamespace(t, j, qaShikAwaitNamespace(t, j, qaShikDirB), qaShikWantB)
-	qaShikAssertAnchoredLeg(t, j, 6, qaShikIDa, qaShikIDb)
+	// want-total 8 = 2 ids x 3 requests (by-id + /roles + /episodes): the
+	// second anchored extra (/episodes) is sanctioned by openspec change
+	// episode-titles (shikimori-enrichment delta).
+	qaShikAssertAnchoredLeg(t, j, 8, qaShikIDa, qaShikIDb)
 }
 
 // qaShikAwaitNamespace polls the series rows until the dir's row settles
@@ -481,21 +484,23 @@ func qaShikAssertSearchLeg(t *testing.T, j *qaShikJoint, wantTotal int, titles [
 }
 
 // qaShikAssertAnchoredLeg pins the second leg's upstream contract: the tail
-// requests after the sweep are GETs on the BY-ID endpoints — two per id (the
-// by-id fetch plus its /roles request-plan companion), as a set (rows drain
-// concurrently) — proving identifiers.shikimori_id anchored the second Match
-// (the search endpoint is never hit again).
+// requests after the sweep are GETs on the BY-ID endpoints — three per id (the
+// by-id fetch, its /roles request-plan companion, and its /episodes fetch —
+// the extra episodes request sanctioned by openspec change episode-titles),
+// as a set (rows drain concurrently) — proving identifiers.shikimori_id
+// anchored the second Match (the search endpoint is never hit again).
 func qaShikAssertAnchoredLeg(t *testing.T, j *qaShikJoint, wantTotal int, ids ...int) {
 	t.Helper()
 	reqs := j.stub.requests()
 	if len(reqs) != wantTotal {
 		t.Fatalf("upstream saw %d requests, want %d: %+v", len(reqs), wantTotal, reqs)
 	}
-	tail := reqs[len(reqs)-2*len(ids):]
+	tail := reqs[len(reqs)-3*len(ids):]
 	paths := map[string]bool{}
 	for _, id := range ids {
 		paths[qaShikAPI+"/"+strconv.Itoa(id)] = false
 		paths[qaShikAPI+"/"+strconv.Itoa(id)+"/roles"] = false
+		paths[qaShikAPI+"/"+strconv.Itoa(id)+"/episodes"] = false
 	}
 	for i, r := range tail {
 		if r.method != http.MethodGet {

@@ -1,0 +1,77 @@
+schema: plan/2
+lane: loop
+groups:
+  - id: 'g1'
+    goal: Plugin + contract: additive ConvertResult episode titles; shikimori anchored episodes fetch + ru-first contributions
+  - id: 'g2'
+    goal: Core routing: series-run episode-title routing onto episode docs, strip cascade, guard re-pin
+  - id: 'g3'
+    goal: QA joint: plugin to core refresh to episode documents over the real graph
+boxes:
+  - id: '1.1'
+    group: g1
+    title: Additive proto: ConvertResult episode_titles + EpisodeTitle, regenerated
+    text: Additive proto on ConvertResult: `repeated EpisodeTitle episode_titles = 5;` and `message EpisodeTitle { int64 episode = 1; google.protobuf.Struct metadata = 2; }` — episode is the source episode number within the matched series season; metadata carries the namespace fields for THAT episode only (the convention episode fields: title, description). Regenerated with the existing protoc flow; NO existing message, RPC, or field changes meaning; the additive guards stay untouched until box 2.3 (the proto commit lands in this box, the re-pin names it); `go build ./proto/... ./pkg/sdk/... ./plugins/shikimori/...` green after regen.
+    duty:
+      verify: grep -q "episode_titles" proto/mellifera/metadata/v1/metadata.proto && grep -q "message EpisodeTitle" proto/mellifera/metadata/v1/metadata.proto && go build ./proto/... ./pkg/sdk/... ./plugins/shikimori/...
+  - id: '1.2'
+    group: g1
+    title: shikimori BuildRequest: the anchored plan attaches the episodes fetch after roles
+    deps: ['1.1']
+    text: shikimori BuildRequest: the id-anchored plan extras become TWO — rolesSpec(id) stays first (extras[0], unchanged) and a new episodesSpec(id) rides second (extras[1]): GET /api/animes/{id}/episodes, the application User-Agent header, min_interval_ms = 700, {shikimori_id} placeholder substitution only, no secret variables — the exact rolesSpec posture at the episodes endpoint. Search plans stay single-fetch (primary only, zero extras). Table-driven `TestBuildRequestEpisodeExtra` under plugins/shikimori covering the anchored two-extra order, the episodes template/headers/pacing/placeholder, and the search zero-extra path.
+    duty:
+      verify: grep -rq "func TestBuildRequestEpisodeExtra(" plugins/shikimori/ && go test ./plugins/shikimori -run TestBuildRequestEpisodeExtra -count=1
+  - id: '1.3'
+    group: g1
+    title: shikimori Convert: the episodes payload maps into ru-first per-episode contributions
+    deps: ['1.1']
+    text: shikimori Convert: the request plan extras are positional and this plugin now declares two — extras[0] stays the roles fetch (cast), extras[1] is the episodes fetch. Convert decodes the episodes body into `EpisodeTitle` entries on ConvertResult: one entry per usable payload entry — episode = the entry served episode number, metadata = {"title": the russian name when the entry serves one, else the entry other served name} — NEVER a description (upstream serves none for episodes). An unfetched extra, an unparsable body, or entries without usable names contribute NOTHING (honest absence — no empty entries, no placeholders); the series namespace mapping (title object, cast, provenance hints) is untouched by the episodes leg; search payloads (no anchor) produce no entries. Table-driven `TestConvertEpisodeTitles` under plugins/shikimori covering named entries, the unfetched extra, an unparsable body, nameless entries, and the search no-entries path.
+    duty:
+      verify: grep -rq "func TestConvertEpisodeTitles(" plugins/shikimori/ && go test ./plugins/shikimori -run TestConvertEpisodeTitles -count=1
+  - id: '2.1'
+    group: g2
+    title: enrich routing: a series run writes its episode-title entries onto matching episode documents
+    deps: ['1.3']
+    text: enrich routing (unexported Queue method — no new exported symbols in the package): after a SERIES row source run succeeds with ConvertResult.EpisodeTitles non-empty, the worker routes each entry onto the series episode documents — load them via QueryItemsBySeries (directory backing; a file-backed series has no episodes and the route is a no-op), read episode facts namespace-agnostic (any sources namespace carrying BOTH season and episode as integers — the display composer episodeFacts rule) and the series own season fact the same way from the series doc, and match entry when episode-doc season == series season fact AND episode number == entry.episode. The matched episode doc gains sources.<plugin> = entry.metadata plus _provenance and _view stamps (buildProvenanceView over the entry fields, the run hints and confidence), written under THAT episode row own lease (the workers primitive, non-blocking); lease-held rows are counted and re-attempted once after a short delay (the reenrichRetryDelay posture), a row that stays held keeps its document byte-identical. No matching entry — the doc is untouched; no entries — routing does nothing; the series run result, lifecycle states, derivation predicates, and Match are untouched (episode docs still never match at Match). Table-driven `TestEpisodeTitleRouting` under internal/enrich covering matched writes with stamps, the season/number mismatch untouched path, the lease-held defer-and-retry, and the no-entries no-op.
+    duty:
+      verify: grep -rq "func TestEpisodeTitleRouting(" internal/enrich/ && go test ./internal/enrich -run TestEpisodeTitleRouting -count=1
+  - id: '2.2'
+    group: g2
+    title: enrich reenrichScope: explicit series-row strips cascade to their episode items
+    deps: ['2.1']
+    text: enrich ReenrichSource scope cascade: explicit rowIDs naming a SERIES row scope that row episode items too (QueryItemsBySeries, same backing read the routing uses) — a routed sources.<plugin> on an episode doc is the series run side-output and must refresh with the series strip or it goes stale forever (the pair gate skips on namespace presence). The strip itself is the unchanged per-row purge (sources + _provenance + _view, never identifiers, never other namespaces); whole-library sweeps are untouched (reenrichScope already covers every item and series row carrying the namespace); stripped episodes count in stripped and follow the existing held-row retry/deferred path. Table-driven `TestReenrichSourceSeriesCascade` under internal/enrich covering the cascade (series + its episodes stripped, a non-episode item and other plugins namespaces intact) and that item-only explicit scopes stay exactly as before.
+    duty:
+      verify: grep -rq "func TestReenrichSourceSeriesCascade(" internal/enrich/ && go test ./internal/enrich -run TestReenrichSourceSeriesCascade -count=1
+  - id: '2.3'
+    group: g2
+    title: Guard re-pin to this change proto commit
+    deps: ['1.1']
+    text: Guard re-pin (precedent 32daa76; identify-match-override box 2.4): after box 1.1 proto edit has landed in its commit, re-pin every additive baseline anchor across internal/itest — qa_pipeline_regression_test.go (TestQA_AdditiveContract_ProtoAndDepsUnchanged), qa_image_regression_test.go (b2MergeBase), and integration_web_test.go additive probe — to THAT commit, each comment naming episode-titles as the sanction (the red window is one group boundary; the DAG runs g1 then g2 back-to-back and TestWeb_Integration re-verifies the third anchor at the gate).
+    duty:
+      verify: grep -q "episode-titles" internal/itest/qa_pipeline_regression_test.go && grep -q "episode-titles" internal/itest/qa_image_regression_test.go && go test ./internal/itest -run "TestQA_AdditiveContract_ProtoAndDepsUnchanged|TestB2_Ac3Additive" -count=1
+  - id: '3.1'
+    group: g3
+    title: QA joint: TestQAEpisodeTitlesJoint — series run routes titles onto episode docs over the real graph
+    deps: ['2.2', '2.3']
+    text: internal/itest/qa_episode_titles_joint_test.go (`TestQAEpisodeTitlesJoint`), Tier-1 joint per the qa_shikimori_joint pattern — real store, real queue, the serial seed registry, shikimori subprocess over a stub upstream serving /api/animes/{id} AND /api/animes/{id}/roles AND /api/animes/{id}/episodes: a serial library scans, the series row drains anchored (UA + pacing asserted on the recorded requests), the episode documents gain sources.shikimori titles (season + number matched; an episode of another season stays untouched), and the served episode block names shikimori through the element surface; then PUT /series/{id}/identify with the stub OTHER anime id strips the series AND its routed episode titles (the cascade) and the fresh anchored run rewrites the titles from the picked anime — the plugin to core refresh to episode documents contract, end to end, no mocks of the units under test.
+    duty:
+      verify: grep -q "func TestQAEpisodeTitlesJoint(" internal/itest/qa_episode_titles_joint_test.go && go test ./internal/itest -run TestQAEpisodeTitlesJoint -count=1
+  - id: '2.4'
+    group: g2
+    title: Reconcile TestShikimoriJoint anchored-leg pin to the two-extra plan
+    text: internal/itest/qa_shikimori_joint_test.go only: the shikimori-enrichment delta sanctions a SECOND anchored extra (episodes), so the pre-existing joint pin is stale — update the two pin sites in TestShikimoriJoint: the want-total 6 becomes 8 (2 ids x [by-id, roles, episodes]) and qaShikAssertAnchoredLeg tail-slice/path-set accepts 3 requests per id (by-id + /roles + /episodes) instead of 2; comments name episode-titles as the sanction; ZERO behavioral assertion changes (UA/pacing/ordering/facts assertions stay as they are). No other test or source file.
+    duty:
+      verify: go test ./internal/itest -run TestShikimoriJoint -count=1
+  - id: '2.5'
+    group: g2
+    title: Reconcile TestIdentifyMatchJoint request pin to the episodes extra
+    text: internal/itest/qa_identify_joint_test.go only: the shikimori-enrichment delta sanctions a second anchored extra (episodes), so the joint pin at qa_identify_joint_test.go:121 is stale — the anchored leg now issues by-id + /roles + /episodes (3 per id, was 2). Update the want-total (4 to 5) and any per-id path expectations to accept the /episodes companion; comment names episode-titles as the sanction; ZERO behavioral assertion changes; no other file.
+    duty:
+      verify: go test ./internal/itest -run TestIdentifyMatchJoint -count=1
+  - id: '2.6'
+    group: g2
+    title: Reconcile TestQAMediaDataJoint request pin to the episodes extra
+    text: internal/itest/qa_media_data_joint_test.go only: the shikimori-enrichment delta sanctions a second anchored extra (episodes), so the joint pin at qa_media_data_joint_test.go:644 is stale — the anchored leg now issues by-id + /roles + /episodes (3, was 2). Update the want-total (3 to 4) and the named composition '(search + by-id + roles)' to include /episodes; comment names episode-titles as the sanction; ZERO behavioral assertion changes; no other file.
+    duty:
+      verify: go test ./internal/itest -run TestQAMediaDataJoint -count=1
+probes: []

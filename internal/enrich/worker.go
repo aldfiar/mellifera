@@ -277,6 +277,10 @@ type driveResult struct {
 	succeeded int   // sources that committed a namespace
 	hardAbort bool  // ctx cancelled mid-chain (the only hard failure)
 	err       error // cause on hardAbort
+	// episodeRuns collects the successful source results that carried
+	// ConvertResult.EpisodeTitles (episode-titles): on a series row the driver
+	// routes them onto the series' episode documents after the run commits.
+	episodeRuns []sourceResult
 }
 
 // driveSources runs every queueable source that still has pending work for the
@@ -313,6 +317,9 @@ func (q *Queue) driveSources(
 		if sr.kind == outcomeSucceeded && len(sr.namespace) > 0 {
 			applyContribution(doc, sr)
 			res.succeeded++
+		}
+		if sr.kind == outcomeSucceeded && len(sr.episodeTitles) > 0 {
+			res.episodeRuns = append(res.episodeRuns, sr) // routed after the run commits (episode_titles.go)
 		}
 	}
 	return res
