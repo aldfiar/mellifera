@@ -2,7 +2,7 @@
 import type { ReactElement, ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
-import { getToken } from "@/lib/auth";
+import { getBearerToken } from "@/lib/auth";
 
 // <RequireAuth> — route guard. Renders children iff a token is present in
 // localStorage; otherwise redirects to /login, preserving the attempted
@@ -16,7 +16,13 @@ import { getToken } from "@/lib/auth";
 //
 // Must be rendered inside <BrowserRouter> (uses useLocation).
 export function RequireAuth({ children }: { children: ReactNode }): ReactElement {
-  const token = getToken();
+  // Either credential counts as authN here (presence-only, mirroring the Go
+  // authMiddleware, which resolves BOTH): a paired device rides its
+  // RoleClient token into the browse routes; authZ stays server-side —
+  // requireRole 403s RoleClient off the admin routes and the canonical body
+  // surfaces inline. Checking the admin token alone bounced a paired TV to
+  // /login the moment it left Home.
+  const token = getBearerToken();
   const location = useLocation();
   if (!token) {
     return <Navigate to="/login" state={{ from: location }} replace />;

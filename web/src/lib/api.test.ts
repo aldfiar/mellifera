@@ -105,6 +105,80 @@ describe("apiRequest — Bearer + verbatim parse (S4 joint)", () => {
   });
 });
 
+// Bearer selection (the paired-device fix): the channels attach
+// getBearerToken() — admin token when stored, else the device token. Before
+// this, a device-only browser sent every shell call with NO header: the
+// shell 401'd, handle401 cleared the just-minted token, and the device
+// bounced back to a fresh pairing code — approved forever, never entered.
+describe("bearer selection — the paired device's credential rides the wire", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("a device-only browser sends the DEVICE token as the bearer (the paired TV's RoleClient credential)", async () => {
+    setDeviceToken("dev-token-1");
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [] }));
+
+    await apiRequest<LibrariesResponse>(ENDPOINTS.libraries);
+
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect((init?.headers as Record<string, string>).Authorization).toBe(
+      "Bearer dev-token-1",
+    );
+  });
+
+  it("with both credentials stored the admin token wins (the operator path is unchanged)", async () => {
+    setToken("t1");
+    setDeviceToken("dev-token-1");
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [] }));
+
+    await apiRequest<LibrariesResponse>(ENDPOINTS.libraries);
+
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect((init?.headers as Record<string, string>).Authorization).toBe(
+      "Bearer t1",
+    );
+  });
+
+  it("with no credential stored no Authorization header is sent (the pairing bootstrap posture)", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [] }));
+
+    await apiRequest<LibrariesResponse>(ENDPOINTS.libraries);
+
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect((init?.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it("the media blob channel rides the device token too (a paired TV's posters)", async () => {
+    setDeviceToken("dev-token-1");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("jpeg-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+    );
+    Object.defineProperty(URL, "createObjectURL", {
+      value: vi.fn(() => "blob:mocked"),
+      configurable: true,
+      writable: true,
+    });
+
+    await fetchItemMediaObjectUrl("/api/v1/items/itm_7_abc/media?variant=thumb");
+
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect((init?.headers as Record<string, string>).Authorization).toBe(
+      "Bearer dev-token-1",
+    );
+  });
+});
+
 describe("items client — S4 joint (listItems/getItem <-> Go /api/v1/items)", () => {
   beforeEach(() => {
     localStorage.clear();
