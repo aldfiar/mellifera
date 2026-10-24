@@ -101,10 +101,12 @@ WHERE id = ?`,
 // DeleteLibrary removes a library and every dependent row in ONE transaction:
 // the scan results (items, series), their identity-keyed control rows
 // (playback_progress, item_parsers, enrichment_failures, and the
-// title_overrides of BOTH id spaces — item ids and the series' ser_ ids),
-// and the library-scope control rows (scan_jobs, library_parsers,
-// metadata_source_prefs — library_id 0 module-scope prefs are another
-// library's concern and stay). The libraries row goes last; a missing row
+// title_overrides + art_overrides of BOTH id spaces — item ids and the
+// series' ser_ ids), and the library-scope control rows (scan_jobs,
+// library_parsers, metadata_source_prefs — library_id 0 module-scope prefs
+// are another library's concern and stay). The art_fetches fetch cache is
+// url-keyed, not entity-keyed, so it survives and is reaped by artwork GC.
+// The libraries row goes last; a missing row
 // (0 affected) yields a wrapped sql.ErrNoRows (the api layer maps it to 404).
 // The control-table readers are orphan-tolerant (their JOINs skip rows whose
 // entity is gone), so a narrower delete could never surface a broken read —
@@ -123,6 +125,8 @@ func (s *Store) DeleteLibrary(ctx context.Context, id int64) error {
 		`DELETE FROM enrichment_failures  WHERE item_id IN (SELECT id FROM items  WHERE library_id = ?)`,
 		`DELETE FROM title_overrides      WHERE entity_id IN (SELECT id FROM items  WHERE library_id = ?)`,
 		`DELETE FROM title_overrides      WHERE entity_id IN (SELECT id FROM series WHERE library_id = ?)`,
+		`DELETE FROM art_overrides        WHERE entity_id IN (SELECT id FROM items  WHERE library_id = ?)`,
+		`DELETE FROM art_overrides        WHERE entity_id IN (SELECT id FROM series WHERE library_id = ?)`,
 		`DELETE FROM items        WHERE library_id = ?`,
 		`DELETE FROM series       WHERE library_id = ?`,
 		`DELETE FROM scan_jobs    WHERE library_id = ?`,

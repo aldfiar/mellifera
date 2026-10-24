@@ -9,6 +9,8 @@ import type { ListItemsParams } from "@/lib/api";
 import {
   queryClient,
   useAdminStatus,
+  usePosterCandidates,
+  usePosterMutations,
   useApprovePairing,
   useCreateLibrary,
   useDenyPairing,
@@ -323,5 +325,80 @@ describe("pairing hooks — device-pairing (admin verbs + device bootstrap)", ()
     });
     await waitFor(() => expect(polling.result.current.isSuccess).toBe(true));
     expect(waitSpy).toHaveBeenCalledWith("p1");
+  });
+});
+
+describe("poster hooks — the useTitleOverride pattern (artwork 3.1)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it('usePosterCandidates reads the posters read key through posterCandidates', async () => {
+    const spy = vi.spyOn(apiModule, "posterCandidates").mockResolvedValue({
+      current: "src:shikimori",
+      candidates: [
+        { source: "shikimori", url: "/api/v1/art/object/art_" + "c".repeat(64), current: true },
+      ],
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(() => usePosterCandidates("series", "ser_1"), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(spy).toHaveBeenCalledWith("series", "ser_1");
+    expect(result.current.data?.current).toBe("src:shikimori");
+  });
+
+  it("usePosterMutations.put PUTs the selection and invalidates the family read", async () => {
+    const putSpy = vi.spyOn(apiModule, "putPoster").mockResolvedValue({
+      entity_id: "ser_1",
+      entity_kind: "series",
+      selection: "src:shikimori",
+      updated_at: "",
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const { result } = renderHook(() => usePosterMutations("series", "ser_1"), {
+      wrapper: wrapper(queryClient),
+    });
+
+    result.current.put.mutate("src:shikimori");
+    await waitFor(() => expect(result.current.put.isSuccess).toBe(true));
+    expect(putSpy).toHaveBeenCalledWith("series", "ser_1", "src:shikimori");
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["posters", "series", "ser_1"] });
+    invalidateSpy.mockRestore();
+  });
+
+  it("usePosterMutations.upload uploads the file and invalidates the family read", async () => {
+    const uploadSpy = vi.spyOn(apiModule, "uploadPoster").mockResolvedValue({
+      entity_id: "ser_1",
+      entity_kind: "series",
+      selection: "user:art_" + "c".repeat(64),
+      updated_at: "",
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const { result } = renderHook(() => usePosterMutations("series", "ser_1"), {
+      wrapper: wrapper(queryClient),
+    });
+
+    const file = new File(["jpeg-bytes"], "a.jpg", { type: "image/jpeg" });
+    result.current.upload.mutate(file);
+    await waitFor(() => expect(result.current.upload.isSuccess).toBe(true));
+    expect(uploadSpy).toHaveBeenCalledWith("series", "ser_1", file);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["posters", "series", "ser_1"] });
+    invalidateSpy.mockRestore();
+  });
+
+  it("usePosterMutations.reset DELETEs and invalidates the family read", async () => {
+    const deleteSpy = vi.spyOn(apiModule, "deletePoster").mockResolvedValue(undefined);
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const { result } = renderHook(() => usePosterMutations("item", "itm_1_9"), {
+      wrapper: wrapper(queryClient),
+    });
+
+    result.current.reset.mutate();
+    await waitFor(() => expect(result.current.reset.isSuccess).toBe(true));
+    expect(deleteSpy).toHaveBeenCalledWith("item", "itm_1_9");
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["posters", "item", "itm_1_9"] });
+    invalidateSpy.mockRestore();
   });
 });

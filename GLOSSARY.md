@@ -2,6 +2,7 @@
 
 Canonical vocabulary for mellifera. Definitions only — design notes live in specs and proposals.
 
+- **Artwork** — the image a surface shows for an element or series: the stored artwork override, else the composed poster, else the frame-grabber thumbnail, else the placeholder. The served `artwork` field composes the first two legs server-side; the thumbnail leg composes client-side (the detail surface's hero fallback). Composed at read time, never persisted. The override may pin a source poster, the thumbnail, or an uploaded image; Refresh never touches it.
 - **Client (enrichment context)** — an HTTP consumer of the mellifera API (the SPA or any REST caller) that can *trigger* enrichment of an entity. The server always executes enrichment fetches (fetch mode A). Not the go-plugin host (that is always mellifera core), and not a mode B credential holder.
 - **Dormant source** — a metadata source whose operator gate (module- or Collection-scope preference) disables it: it derives nothing (excluded from the enrichment chain and its extras) and composes nothing (excluded from the display title walk), while its stored namespace, provenance and view entries stay byte-identical and are never purged. Re-enabling restores derivation through the enrichment queue's wake — no rescan, no lifecycle transition.
 - **Fetch mode A / mode B** — who executes a plugin-built RequestSpec: A = the server; B = a client holding the upstream credentials (contract-supported, not built).

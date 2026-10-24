@@ -1,0 +1,40 @@
+{
+  "samples": [
+    {
+      "url": "https://shikimori.one/assets/globals/missing_original.jpg",
+      "plugin_drop": true,
+      "walk_skip": true,
+      "note": "the observed missing-art poster asset shikimori serves for entries without artwork"
+    },
+    {
+      "url": "https://shikimori.one/assets/globals/missing.jpg",
+      "plugin_drop": true,
+      "walk_skip": true,
+      "note": "prefix variant: a different missing asset under the same /assets/globals/missing prefix"
+    },
+    {
+      "url": "/assets/globals/missing_original.jpg",
+      "plugin_drop": true,
+      "walk_skip": true,
+      "note": "relative form: rows enriched before the absolute-URL helper must skip identically (the path prefix, not the host, is the rule)"
+    },
+    {
+      "url": "https://shikimori.one/images/animes/1/original.jpg",
+      "plugin_drop": false,
+      "walk_skip": false,
+      "note": "a real poster URL passes through both sides unchanged"
+    },
+    {
+      "url": "https://shikimori.one/assets/favicon.ico",
+      "plugin_drop": false,
+      "walk_skip": false,
+      "note": "a non-missing /assets/ path: the prefix rule matches /assets/globals/missing only"
+    },
+    {
+      "url": "https://shikimori.one/images/characters/7/7.original.jpg",
+      "plugin_drop": false,
+      "walk_skip": false,
+      "note": "a real cast portrait URL keeps its photo_url on both sides"
+    }
+  ]
+}
