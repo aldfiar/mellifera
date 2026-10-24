@@ -78,6 +78,13 @@
 //     ListDevices/DeleteDevice: the pairing control-table CRUD set (methods —
 //     outside the symbol budget).
 //
+//   - UpsertArtOverride/GetArtOverride/DeleteArtOverride: the per-entity
+//     artwork-selection set, and InsertArtFetch/LookupArtFetch/DeleteArtFetch/
+//     ListArtFetchRefs: the url-hash fetch-record set whose ListArtFetchRefs
+//     is the artwork GC reference union (artwork). Methods — outside the
+//     symbol budget; primitive string signatures only (no new exported
+//     types), the store never parses an art value.
+//
 // # Invariants
 //
 //   - INV1: PARAMETERIZED SQL ONLY. Every value flows through ? placeholders;

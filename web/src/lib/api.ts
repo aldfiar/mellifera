@@ -241,6 +241,13 @@ export interface ItemDTO {
   // additive; absent when the source chain is unwired or no group has a
   // carrier). Optional in TS: absence means no block, never an empty one.
   metadata?: ElementMetadata;
+  // artwork — the SERVED resolved poster proxy (artwork, additive;
+  // omitempty: absent = no art → the surface renders the generated
+  // fallback). A same-origin /api/v1/art/object/art_<64hex> proxy URL when
+  // the tiers hit; the SPA reads ONLY this field and never touches
+  // sources.*.poster. Optional in TS like display_name — an absent field
+  // means no art, never a type hole.
+  artwork?: string;
 }
 
 // handlers.go itemsResponse — empty array, never null
@@ -321,6 +328,10 @@ export interface SeriesDTO {
   // resolution rule, both wire nouns). Optional in TS: absence means no
   // block, never an empty one.
   metadata?: ElementMetadata;
+  // artwork — the SERVED resolved poster proxy (artwork, additive; the same
+  // read-time stamp ItemDTO carries — one shape, one resolution rule, both
+  // wire nouns). Optional in TS: absence means no art, never an empty one.
+  artwork?: string;
 }
 
 // handlers.go seriesListResponse — empty array, never null. GET /series is NOT
@@ -782,6 +793,18 @@ export const ENDPOINTS = {
   adminPairingDeny: (id: string): string => `/api/v1/admin/pairings/${id}/deny`,
   adminDevices: "/api/v1/admin/devices",
   adminDevice: (id: string): string => `/api/v1/admin/devices/${id}`,
+  // Art object + poster override family (artwork): GET /art/object/{oid}
+  // serves the stored poster bytes through the authenticated channel (an
+  // <img src> cannot carry the bearer header — the fetchItemMediaObjectUrl
+  // posture); the series/items poster routes are the candidates read (GET
+  // …/posters), the selection pin (PUT …/poster {selection}), the multipart
+  // upload (POST …/poster, part "file") and the chain reset (DELETE,
+  // idempotent 204).
+  artObject: (oid: string): string => `/api/v1/art/object/${oid}`,
+  seriesPosters: (id: string): string => `/api/v1/series/${id}/posters`,
+  seriesPoster: (id: string): string => `/api/v1/series/${id}/poster`,
+  itemPosters: (id: string): string => `/api/v1/items/${id}/posters`,
+  itemPoster: (id: string): string => `/api/v1/items/${id}/poster`,
 } as const;
 
 // updateLibrary — PATCH /api/v1/libraries/{id} (handlers.go updateLibrary).
@@ -1457,4 +1480,132 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   // 2xx — verbatim parse (INV-no-rounding).
   const raw = await res.text();
   return JSON.parse(raw) as T;
+}
+
+// ---- Artwork: the poster family's client half (artwork 3.1) ----------------
+
+// art.go posterCandidate — one candidate card of GET
+// /{series|items}/{id}/posters. source is the bare plugin id for a namespace
+// poster, "user" for the operator's upload, "thumb" for the frame-grabber
+// variant; url is the SERVED proxy URL (/api/v1/art/object/art_<64hex>) when
+// the candidate is staged, the RAW remote URL when it is not (the admin-only
+// overlay's contractual exception to the zero-external-requests rule);
+// current marks the active selection. Field names match the JSON tags
+// EXACTLY.
+export interface PosterCandidate {
+  source: string; // plugin_id | "user" | "thumb"
+  url: string;
+  current: boolean;
+}
+
+// art.go posterCandidatesResponse — the GET …/posters envelope: the
+// effective current selection in the PUT vocabulary ("" = the chain
+// composes) plus one candidate per usable source. Field names match the
+// JSON tags EXACTLY.
+export interface PosterCandidatesDTO {
+  current: string; // "src:<plugin_id>" | "user:art_<64hex>" | "thumb" | ""
+  candidates: PosterCandidate[];
+}
+
+// art.go posterOverrideResponse — the stored override record, the
+// PUT/upload 200 body (the titleOverrideDTO precedent). Field names match
+// the JSON tags EXACTLY.
+export interface PosterOverrideDTO {
+  entity_id: string;
+  entity_kind: string;
+  selection: string;
+  updated_at: string;
+}
+
+// isServedArtPath — the library-surface guard on a served `artwork` value:
+// ONLY a same-origin served art object path rides the authenticated byte
+// channel. A raw remote URL (the composition's transient form while a
+// winner is still unmaterialized) is NEVER fetched — it would leak the
+// bearer token to a third-party host and break the zero-external-requests
+// rule (artwork AC5); the surface floors it to the generated fallback until
+// the proxy form lands. Pure; exported for tests.
+export function isServedArtPath(
+  url: string | null | undefined,
+): url is string {
+  return (
+    typeof url === "string" && url.startsWith(ENDPOINTS.artObject(""))
+  );
+}
+
+// posterCandidates — GET /api/v1/{series|items}/{id}/posters: the overlay's
+// candidates read.
+export function posterCandidates(
+  kind: "series" | "item",
+  id: string,
+): Promise<PosterCandidatesDTO> {
+  return apiRequest<PosterCandidatesDTO>(
+    kind === "series"
+      ? ENDPOINTS.seriesPosters(id)
+      : ENDPOINTS.itemPosters(id),
+  );
+}
+
+// putPoster — PUT /api/v1/{series|items}/{id}/poster: pins ONE selection
+// from the vocabulary ("src:<plugin_id>" | "user:art_<64hex>" | "thumb").
+// 200 with the stored record; 400 unknown/malformed selection, 404 ghost id
+// — canonical, surfaced inline by the caller (retry:0 at the hook).
+export function putPoster(
+  kind: "series" | "item",
+  id: string,
+  selection: string,
+): Promise<PosterOverrideDTO> {
+  return apiRequest<PosterOverrideDTO>(
+    kind === "series" ? ENDPOINTS.seriesPoster(id) : ENDPOINTS.itemPoster(id),
+    {
+      method: "PUT",
+      // The RequestInit.body bridge every JSON-body caller shares (see
+      // updateLibrary): apiRequest stringifies non-string bodies itself.
+      body: { selection } as unknown as BodyInit,
+    },
+  );
+}
+
+// uploadPoster — POST /api/v1/{series|items}/{id}/poster: the small
+// multipart twin of apiRequest (a multipart body cannot ride the JSON
+// wrapper — apiRequest would JSON.stringify it and stamp the wrong
+// Content-Type). The part is named "file" — the Go handler's
+// r.FormFile("file"), the served contract verbatim; the browser sets the
+// multipart boundary Content-Type, so the twin sets none. Same bearer
+// posture, same 401 rotation, same canonical ApiError parsing as apiRequest.
+export async function uploadPoster(
+  kind: "series" | "item",
+  id: string,
+  file: File,
+): Promise<PosterOverrideDTO> {
+  const token = getToken();
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const form = new FormData();
+  form.append("file", file);
+  const res: Response = await fetch(
+    kind === "series" ? ENDPOINTS.seriesPoster(id) : ENDPOINTS.itemPoster(id),
+    { method: "POST", headers, body: form },
+  );
+  if (res.status === 401) {
+    handle401();
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status, await errorBody(res));
+  }
+  const raw = await res.text();
+  return JSON.parse(raw) as PosterOverrideDTO;
+}
+
+// deletePoster — DELETE /api/v1/{series|items}/{id}/poster: resets to the
+// chain, idempotent 204 every time.
+export async function deletePoster(
+  kind: "series" | "item",
+  id: string,
+): Promise<void> {
+  await apiRequestVoid(
+    kind === "series" ? ENDPOINTS.seriesPoster(id) : ENDPOINTS.itemPoster(id),
+    { method: "DELETE" },
+  );
 }

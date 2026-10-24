@@ -225,6 +225,13 @@ definitions:
     type: object
   api.itemDTO:
     properties:
+      artwork:
+        description: |-
+          Artwork is the additive composed poster URL (artwork) — the same
+          read-time resolution seriesDTO carries: see the field comment there;
+          one shape, one precedence, both wire nouns. The thumbnail leg stays
+          client-side by design.
+        type: string
       display_name:
         type: string
       document:
@@ -475,6 +482,40 @@ definitions:
       plugin_id:
         type: string
     type: object
+  api.posterCandidate:
+    properties:
+      current:
+        type: boolean
+      source:
+        type: string
+      url:
+        type: string
+    type: object
+  api.posterCandidatesResponse:
+    properties:
+      candidates:
+        items:
+          $ref: '#/definitions/api.posterCandidate'
+        type: array
+      current:
+        type: string
+    type: object
+  api.posterOverrideResponse:
+    properties:
+      entity_id:
+        type: string
+      entity_kind:
+        type: string
+      selection:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  api.posterSelectionRequest:
+    properties:
+      selection:
+        type: string
+    type: object
   api.progressDTO:
     properties:
       item_id:
@@ -519,6 +560,15 @@ definitions:
     type: object
   api.seriesDTO:
     properties:
+      artwork:
+        description: |-
+          Artwork is the additive composed poster URL (artwork): the stored
+          override's value (a staged blob rides the object route's proxy URL),
+          else the first non-placeholder chain poster's URL — proxied when
+          materialized, the raw remote URL while unstaged — else absent
+          (omitempty): honest absence, never a placeholder URL, never an empty
+          one. Read-time only, never persisted into the document.
+        type: string
       display_name:
         type: string
       document:
@@ -1053,6 +1103,35 @@ paths:
       summary: Admin liveness snapshot (plugins + enrich queue)
       tags:
       - admin
+  /art/object/{oid}:
+    get:
+      operationId: get-art-object
+      parameters:
+      - description: art object id (art_<sha256 hex>)
+        in: path
+        name: oid
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "304":
+          description: Not Modified
+          schema:
+            type: string
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Serve an art object's bytes
+      tags:
+      - art
   /enrich/failures:
     get:
       operationId: enrich-failures
@@ -1287,6 +1366,125 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: Playback descriptor for one item
+      tags:
+      - items
+  /items/{id}/poster:
+    delete:
+      operationId: delete-item-poster
+      parameters:
+      - description: item id (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Reset the poster to the chain
+      tags:
+      - items
+    post:
+      operationId: upload-item-poster
+      parameters:
+      - description: item id (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: image bytes (JPEG/PNG/WebP, ≤8 MiB)
+        in: formData
+        name: file
+        required: true
+        type: file
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.posterOverrideResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Upload and pin a poster image
+      tags:
+      - items
+    put:
+      operationId: put-item-poster
+      parameters:
+      - description: item id (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: the selection (src:<plugin_id> | user:art_<64hex> | thumb)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.posterSelectionRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.posterOverrideResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Pin a poster selection
+      tags:
+      - items
+  /items/{id}/posters:
+    get:
+      operationId: list-item-posters
+      parameters:
+      - description: item id (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.posterCandidatesResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List an element's poster candidates
       tags:
       - items
   /items/{id}/title:
@@ -1963,6 +2161,125 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: Re-anchor a series' identity to a picked metadata match
+      tags:
+      - series
+  /series/{id}/poster:
+    delete:
+      operationId: delete-series-poster
+      parameters:
+      - description: series id (ser_...)
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Reset the poster to the chain
+      tags:
+      - series
+    post:
+      operationId: upload-series-poster
+      parameters:
+      - description: series id (ser_...)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: image bytes (JPEG/PNG/WebP, ≤8 MiB)
+        in: formData
+        name: file
+        required: true
+        type: file
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.posterOverrideResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Upload and pin a poster image
+      tags:
+      - series
+    put:
+      operationId: put-series-poster
+      parameters:
+      - description: series id (ser_...)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: the selection (src:<plugin_id> | user:art_<64hex> | thumb)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.posterSelectionRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.posterOverrideResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Pin a poster selection
+      tags:
+      - series
+  /series/{id}/posters:
+    get:
+      operationId: list-series-posters
+      parameters:
+      - description: series id (ser_...)
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.posterCandidatesResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List an element's poster candidates
       tags:
       - series
   /series/{id}/title:

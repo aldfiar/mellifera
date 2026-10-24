@@ -228,6 +228,32 @@ var schemaSQL = []string{
   code       TEXT NOT NULL,
   created_at TEXT NOT NULL
 )`,
+	// art_fetches is the artwork fetch-record control table (artwork): ONE row
+	// per fetched upstream (url, kind), keyed by url_hash — the caller's
+	// opaque hash; the store never parses an art value (INV3 discipline). It
+	// is the url→blob dedup cache: sha256 names the content-addressed blob
+	// dir under <data>/art, kind ('poster' default) rides along as an opaque
+	// string. It doubles as the reference set artwork GC reconciles against
+	// that tree (ListArtFetchRefs).
+	`CREATE TABLE IF NOT EXISTS art_fetches (
+  url_hash   TEXT PRIMARY KEY,
+  sha256     TEXT NOT NULL,
+  kind       TEXT NOT NULL DEFAULT 'poster',
+  created_at TEXT NOT NULL
+)`,
+	// art_overrides is the per-entity artwork selection control table
+	// (artwork): ONE row per (entity_id, entity_kind) — the composite PK —
+	// whose selection is the opaque art reference the entity currently pins.
+	// Control state BESIDE the document, the title_overrides pattern: a
+	// selection never rewrites any document namespace, and the store neither
+	// parses the selection nor reads a document to derive one.
+	`CREATE TABLE IF NOT EXISTS art_overrides (
+  entity_id   TEXT NOT NULL,
+  entity_kind TEXT NOT NULL,
+  selection   TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (entity_id, entity_kind)
+)`,
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
 	// series_library backs the per-library series listing/sweep paths

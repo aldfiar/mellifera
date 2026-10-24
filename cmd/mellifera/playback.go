@@ -82,21 +82,6 @@ func newSweep(st *store.Store, root string, validate func(itemID, nonce string) 
 	}
 }
 
-// runSweepTicker drives the sweep every sweepInterval until the process
-// context is cancelled (the boot sweep runs separately, before serving).
-func runSweepTicker(ctx context.Context, sweep func(context.Context)) {
-	ticker := time.NewTicker(sweepInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			sweep(ctx)
-		}
-	}
-}
-
 // sweepFrontier builds the frontier's input snapshot from the store — every
 // library's serials with their gate, the watched set, the cooldown map —
 // and executes the returned jobs through the streams lane's enqueue seam.

@@ -9,6 +9,7 @@ import {
   getEnrichPreview,
   hasFrameGrabberThumb,
   hasOriginalFile,
+  isServedArtPath,
   postLibraryRefresh,
   putProgress,
   type ApiError,
@@ -24,6 +25,7 @@ import {
   type SeriesDTO,
 } from "@/lib/api";
 import {
+  useArtworkObjectUrl,
   useItemMedia,
   useItems,
   useLibraries,
@@ -53,6 +55,8 @@ import {
 } from "@/components/manage/ManageActions";
 import { seriesIdentifyGate } from "@/components/manage/IdentifySeries";
 import { Synopsis } from "@/components/metadata/Synopsis";
+import { PosterFrame } from "@/components/Artwork";
+import { PosterOverlay } from "@/components/manage/PosterOverlay";
 
 // Collection — the per-collection page at /collections/:id (web-ui-phase-3
 // group 5, boxes 5.1–5.3). The header comes from GET /api/v1/libraries +
@@ -1558,6 +1562,17 @@ function SeriesCard(props: {
   const { sr } = props;
   const season = seriesSeason(sr.document);
   const backing = seriesBacking(sr.document);
+  // The card poster (artwork 3.3): ONLY the served artwork field, and only
+  // its served proxy form rides the authenticated byte channel — a raw
+  // remote URL (an unmaterialized winner's transient) floors to the
+  // generated fallback. Zero external image requests, never a blank span.
+  const artSrc = useArtworkObjectUrl(
+    isServedArtPath(sr.artwork) ? sr.artwork : null,
+  );
+  // The poster management entry (artwork 3.4): a CardActions menu row
+  // opening the overlay — the overlay state is LOCAL to the card, the ⋯
+  // menu stays the one entry surface.
+  const [posterOpen, setPosterOpen] = useState(false);
   const { set, clear } = useTitleOverride("series", sr.id, [
     "series",
     props.libraryId,
@@ -1582,7 +1597,11 @@ function SeriesCard(props: {
         className="block"
         aria-label={`Open ${seriesTitle(sr)}`}
       >
-        <span className="scard-poster" aria-hidden="true" />
+        <PosterFrame
+          src={artSrc}
+          name={seriesTitle(sr)}
+          className="scard-poster"
+        />
         <span className="scard-body">
           <span className="scard-title">{seriesTitle(sr)}</span>
           {season !== null ? (
@@ -1595,6 +1614,15 @@ function SeriesCard(props: {
       <CardActions
         triggerLabel={`Actions for ${seriesTitle(sr)}`}
         pending={pending}
+        rows={
+          <button
+            type="button"
+            className="cardact-row"
+            onClick={() => setPosterOpen(true)}
+          >
+            Постер…
+          </button>
+        }
         // The Identify… row (identify-match-override): gated on the wired
         // module — the served chain (absent/empty → no row, the designed
         // empty state) and the refresh_sources vocabulary — opening the
@@ -1625,6 +1653,15 @@ function SeriesCard(props: {
           />
         )}
       />
+      <PosterOverlay
+        open={posterOpen}
+        kind="series"
+        entityId={sr.id}
+        name={seriesTitle(sr)}
+        provenance={sr.document._provenance?.poster}
+        invalidate={["series", props.libraryId]}
+        onClose={() => setPosterOpen(false)}
+      />
     </div>
   );
 }
@@ -1650,6 +1687,12 @@ function EpisodesView(props: {
   const series =
     (seriesList.data?.items ?? []).find((s) => s.id === props.seriesId) ??
     null;
+  // The flow header's poster (artwork 3.3): the served artwork through the
+  // authenticated channel; absence → the generated fallback, so the header
+  // never collapses to a blank slot.
+  const flowPoster = useArtworkObjectUrl(
+    series !== null && isServedArtPath(series.artwork) ? series.artwork : null,
+  );
 
   if (episodes.isLoading) {
     return <LoadingState label="Loading episodes…" />;
@@ -1674,9 +1717,16 @@ function EpisodesView(props: {
         ← All series
       </button>
       {series !== null ? (
-        <header className="flex flex-col gap-2">
-          <h2 className="text-xl font-semibold">{seriesTitle(series)}</h2>
-          <Synopsis about={series.metadata?.about} />
+        <header className="flex items-start gap-3">
+          <PosterFrame
+            src={flowPoster}
+            name={seriesTitle(series)}
+            className="w-24 shrink-0 rounded-md border object-cover"
+          />
+          <div className="flex min-w-0 flex-col gap-2">
+            <h2 className="text-xl font-semibold">{seriesTitle(series)}</h2>
+            <Synopsis about={series.metadata?.about} />
+          </div>
         </header>
       ) : null}
       {items.length === 0 ? (

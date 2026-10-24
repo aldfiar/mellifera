@@ -1598,3 +1598,144 @@ describe("ItemDetail — display name heading + on-page rename", () => {
     ).toBeDefined();
   });
 });
+
+// Artwork 3.3: the identity column's lead image reads ONLY the served
+// `artwork` field, through the authenticated art channel; absent artwork
+// keeps the frame-grab hero fallback exactly as before; the Player's poster
+// prop stays the thumb — artwork never rides the <video>.
+describe("ItemDetail — served artwork lead image (artwork 3.3)", () => {
+  const HEX = "b".repeat(64);
+  const ART_PATH = `/api/v1/art/object/art_${HEX}`;
+
+  const EPISODE_WITH_ART: ItemResponse = {
+    item: {
+      ...ITEM_RESPONSE.item,
+      id: "itm_art_ep",
+      relative_path: "shows/Оська/s01e01.mkv",
+      media_type: "serial",
+      status: "ready",
+      // The base document's served _view title keeps the identity heading
+      // "Оська"; frame-grabber joins the namespaces for the thumb leg.
+      document: {
+        ...ITEM_RESPONSE.item.document,
+        sources: {
+          ...ITEM_RESPONSE.item.document.sources,
+          "frame-grabber": { thumbnail_path: "/data/thumbs/ep1.jpg" },
+        },
+      },
+      artwork: ART_PATH,
+    },
+  };
+
+  function stubObjectUrls(): { create: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> } {
+    const create = vi.fn(
+      (blob: Blob) => `blob:art-${String(blob.size)}-${String(create.mock.calls.length)}`,
+    );
+    const revoke = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revoke, configurable: true, writable: true });
+    return { create, revoke };
+  }
+
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.removeItem(TOKEN_KEY);
+  });
+
+  function renderEpisode(item: ItemResponse): ReturnType<typeof render> {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(item);
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+    vi.spyOn(apiModule, "getPlayback").mockResolvedValue(HLS_PLAYBACK);
+    vi.spyOn(apiModule, "putProgress").mockResolvedValue({
+      item_id: item.item.id,
+      position_seconds: 0,
+      updated_at: "",
+    });
+    return renderAtId2(item.item.id);
+  }
+
+  // renderAtId2 — renderAtId plus the fetch seam the art bytes ride: art
+  // object URLs answer JPEG bytes, media URLs thumb bytes, everything else
+  // (the progress list) an empty list.
+  function renderAtId2(id: string): ReturnType<typeof render> {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/art/object/")) {
+        return new Response("art-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } });
+      }
+      if (url.includes("/media")) {
+        return new Response("jpeg-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } });
+      }
+      return new Response('{"items":[]}', { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    return render(
+      <QueryClientProvider client={freshClient()}>
+        <MemoryRouter initialEntries={[`/items/${id}`]}>
+          <Routes>
+            <Route path="/items/:id" element={<ItemDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("served artwork wins as the identity lead image, fetched through the authenticated channel", async () => {
+    stubObjectUrls();
+    localStorage.setItem(TOKEN_KEY, "tok-art");
+    renderEpisode(EPISODE_WITH_ART);
+
+    // The video lane mounts the player; the identity column carries the
+    // lead poster from the served artwork field.
+    expect(await screen.findByRole("region", { name: "Player" })).toBeDefined();
+    const lead = await screen.findByRole("img", { name: "Оська" });
+    await waitFor(() => expect(lead.getAttribute("src")).toMatch(/^blob:art-/));
+
+    const artCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => String(c[0]).includes("/art/object/"),
+    );
+    expect(artCalls).toHaveLength(1);
+    expect(String(artCalls[0][0])).toBe(ART_PATH);
+    expect((artCalls[0][1] as RequestInit).headers).toMatchObject({ Authorization: "Bearer tok-art" });
+  });
+
+  it("absent artwork keeps the hero thumb — no lead img, no art fetch", async () => {
+    const { revoke } = stubObjectUrls();
+    renderEpisode({
+      item: { ...EPISODE_WITH_ART.item, artwork: undefined },
+    });
+
+    expect(await screen.findByRole("region", { name: "Player" })).toBeDefined();
+    await waitFor(() => expect(theVideo().getAttribute("poster")).toMatch(/^blob:art-/));
+    // No lead image in the identity column and no request to the art route —
+    // the frame-grab hero fallback covers the page exactly as before.
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(
+      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+        String(c[0]).includes("/art/object/"),
+      ),
+    ).toHaveLength(0);
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it("the player poster prop stays the thumb — artwork never rides the <video>", async () => {
+    const { create } = stubObjectUrls();
+    localStorage.setItem(TOKEN_KEY, "tok-art");
+    renderEpisode(EPISODE_WITH_ART);
+
+    expect(await screen.findByRole("region", { name: "Player" })).toBeDefined();
+    await waitFor(() => expect(theVideo().getAttribute("poster")).toMatch(/^blob:art-/));
+    const poster = theVideo().getAttribute("poster") as string;
+    const lead = screen.getByRole("img", { name: "Оська" });
+    await waitFor(() => expect(lead.getAttribute("src")).toMatch(/^blob:art-/));
+    // Two distinct blobs: the video poster is the THUMB's, the lead img the
+    // art object's — the player poster behavior is byte-identical to the
+    // pre-artwork contract.
+    expect(poster).not.toBe(lead.getAttribute("src"));
+    const mediaCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes("/media"));
+    expect(mediaCalls).toEqual(["/api/v1/items/itm_art_ep/media?variant=thumb"]);
+    expect(create).toHaveBeenCalled();
+  });
+});

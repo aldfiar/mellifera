@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -172,7 +173,10 @@ func airedYear(airedOn string) int64 {
 
 // namespaceFields builds the sources.shikimori namespace map (RU-first):
 // genres prefer the Russian genre names, relative upstream paths become
-// absolute against the API base.
+// absolute against the API base. A poster whose absolute URL is a known
+// missing-art asset writes NO poster key at all (artwork, write-side drop):
+// upstream-placeholder = upstream not providing the field, the honest-absence
+// convention.
 func namespaceFields(e animeEntry) map[string]any {
 	m := map[string]any{
 		"title":       map[string]any{"romaji": e.Name, "russian": e.Russian},
@@ -183,12 +187,34 @@ func namespaceFields(e animeEntry) map[string]any {
 		"description": e.Description,
 		"genres":      genreNames(e.Genres),
 		"url":         absoluteURL(e.URL),
-		"poster":      absoluteURL(e.Image.Original),
+	}
+	if poster := absoluteURL(e.Image.Original); !missingArtURL(poster) {
+		m["poster"] = poster
 	}
 	if s, err := e.Score.Float64(); err == nil && s > 0 {
 		m["score"] = s
 	}
 	return m
+}
+
+// missingArtPrefix is the shikimori missing-art asset path prefix (artwork):
+// any URL under it is the upstream's "no art" placeholder, never real data.
+const missingArtPrefix = "/assets/globals/missing"
+
+// missingArtURL reports whether u's PATH carries the known missing-art asset
+// prefix — the prefix rule, not an exact-URL list. Callers run absoluteURL
+// first, so the check sees the absolute path whether the payload carried a
+// relative API path or an absolute URL. The predicate is deliberately
+// duplicated across the plugin boundary (design D9) and pinned by the
+// committed golden fixture internal/api/testdata/golden/missing_art.json,
+// which the core walk-side test consumes too — one side drifting alone
+// fails its own suite.
+func missingArtURL(u string) bool {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(parsed.Path, missingArtPrefix)
 }
 
 // genreNames renders genres RU-first (russian name, falling back to the
@@ -239,7 +265,10 @@ func castField(body []byte) []any {
 		if credit := seiyuuCredit(r.Seiyuu); credit != "" {
 			entry["role"] = credit
 		}
-		if portrait := absoluteURL(r.Image.Original); portrait != "" {
+		// A known missing-art portrait path is upstream not providing the
+		// photo (artwork write-side drop): the entry stays, the field is
+		// honestly absent.
+		if portrait := absoluteURL(r.Image.Original); portrait != "" && !missingArtURL(portrait) {
 			entry["photo_url"] = portrait
 		}
 		out = append(out, entry)
