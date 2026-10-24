@@ -19,6 +19,7 @@ import type {
 } from "@/lib/api";
 import type { ItemDocument } from "@/lib/document";
 import { queryClient as sharedQueryClient } from "@/lib/queries";
+import { TOKEN_KEY } from "@/lib/auth";
 
 // Group-5 slice (boxes 5.1–5.4) + ui-management pass 1: the collection page's
 // OWN behavior, asserted at the fetch seam (the same idiom as Home.test.tsx).
@@ -996,13 +997,16 @@ describe("Collection — CardActions shell (ui-management pass 1)", () => {
     const renameRow = within(dialog).getByRole("button", { name: "Rename…" });
     await waitFor(() => expect(document.activeElement).toBe(renameRow));
 
-    // Sentinel wraps: bottom → first focusable, top → last focusable.
+    // Sentinel wraps: bottom → first focusable, top → last focusable. The
+    // poster row (artwork 3.4) rides the menu's rows slot AFTER the built-in
+    // views, so it IS the last focusable the top sentinel wraps to.
+    const posterRow = within(dialog).getByRole("button", { name: "Постер…" });
     const sentinels = dialog.querySelectorAll<HTMLElement>(".cardact-sentinel");
     expect(sentinels.length).toBe(2);
     fireEvent.focus(sentinels[sentinels.length - 1]);
     expect(document.activeElement).toBe(renameRow);
     fireEvent.focus(sentinels[0]);
-    expect(document.activeElement).toBe(renameRow);
+    expect(document.activeElement).toBe(posterRow);
 
     // Scrim click-away closes all and returns focus to the trigger.
     const backdrop = document.querySelector(".overlay-backdrop");
@@ -2757,5 +2761,103 @@ describe("Collection — Manage overlay (ui-management pass 3)", () => {
       within(section).queryByRole("button", { name: "Refresh metadata" }),
     ).toBeNull();
     expect(within(section).queryByRole("combobox")).toBeNull();
+  });
+});
+
+describe("Collection — series artwork (artwork 3.3)", () => {
+  // artRow — a /series wire row carrying the SERVED artwork field the
+  // composition stamps (the SPA reads only this field — sources.*.poster
+  // never rides a surface).
+  function artRow(parts: { id: string; displayName: string; artwork?: string }): SeriesDTO {
+    return {
+      id: parts.id,
+      module_id: "serial",
+      library_id: 1,
+      relative_path: parts.id,
+      document: {},
+      schema_version: 1,
+      status: "ready",
+      display_name: parts.displayName,
+      ...(parts.artwork !== undefined ? { artwork: parts.artwork } : {}),
+    };
+  }
+
+  function stubObjectUrls(): { create: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> } {
+    const create = vi.fn(
+      (blob: Blob) => `blob:art-${String(blob.size)}-${String(create.mock.calls.length)}`,
+    );
+    const revoke = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revoke, configurable: true, writable: true });
+    return { create, revoke };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    localStorage.setItem(TOKEN_KEY, "tok-3");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.removeItem(TOKEN_KEY);
+  });
+
+  it("a series with artwork renders the binary art URL through the authenticated channel", async () => {
+    stubObjectUrls();
+    const fetchSpy = fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              artRow({
+                id: "ser_1_art",
+                displayName: "С Ветром",
+                artwork: `/api/v1/art/object/art_${"a".repeat(64)}`,
+              }),
+            ],
+          }),
+        ),
+      "/api/v1/art/object/": () =>
+        Promise.resolve(
+          new Response("jpeg-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+        ),
+    });
+    renderCollection("1");
+
+    const link = await screen.findByRole("link", { name: "Open С Ветром" });
+    // The bytes ride the authenticated blob channel into the card's img.
+    await waitFor(() => {
+      expect(within(link).getByRole("img", { name: "С Ветром" }).getAttribute("src")).toMatch(
+        /^blob:art-/,
+      );
+    });
+    const artCalls = fetchSpy.mock.calls.filter((c) => String(c[0]).includes("/art/object/"));
+    expect(artCalls).toHaveLength(1);
+    expect(String(artCalls[0][0])).toBe(`/api/v1/art/object/art_${"a".repeat(64)}`);
+    expect((artCalls[0][1] as RequestInit).headers).toMatchObject({ Authorization: "Bearer tok-3" });
+  });
+
+  it("a placeholder-only series renders the fallback card — never a blank span, never an external request", async () => {
+    const { revoke } = stubObjectUrls();
+    const fetchSpy = fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            // The server floors the missing-art placeholder to an ABSENT
+            // artwork field — the row arrives poster-less by contract.
+            items: [artRow({ id: "ser_1_bare", displayName: "Оська" })],
+          }),
+        ),
+    });
+    renderCollection("1");
+
+    const link = await screen.findByRole("link", { name: "Open Оська" });
+    const fallback = within(link).getByRole("img", { name: "Оська" });
+    expect(fallback.tagName).toBe("SPAN"); // the generated card, not <img>
+    expect(fallback.style.background).toContain("hsl("); // the name-derived gradient
+    expect(link.querySelector("img")).toBeNull(); // never a broken-image glyph
+    expect(fetchSpy.mock.calls.filter((c) => String(c[0]).includes("/art/"))).toHaveLength(0);
+    expect(revoke).not.toHaveBeenCalled(); // nothing was created, nothing revoked
   });
 });

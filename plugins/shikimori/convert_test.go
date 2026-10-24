@@ -5,6 +5,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"google.golang.org/protobuf/types/known/structpb"
@@ -406,6 +409,58 @@ func TestMerge(t *testing.T) {
 	for _, vb := range res.GetView() {
 		if vb.GetSource() != pluginID {
 			t.Errorf("view[%q].source = %q, want %q", vb.GetFieldPath(), vb.GetSource(), pluginID)
+		}
+	}
+}
+
+// TestConvertDropsMissingArt pins the write-side missing-art drop (artwork):
+// the committed golden fixture internal/api/testdata/golden/missing_art.json
+// drives BOTH predicates this plugin owns — the namespace poster and the cast
+// photo_url. Every sample with plugin_drop=true must yield a namespace
+// without the poster key (and cast entries without photo_url); samples with
+// false pass through unchanged. The api walk-side test consumes the SAME
+// fixture, so either side changing its predicate alone fails this suite.
+func TestConvertDropsMissingArt(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "internal", "api", "testdata", "golden", "missing_art.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	var fixture struct {
+		Samples []struct {
+			URL        string `json:"url"`
+			PluginDrop bool   `json:"plugin_drop"`
+			WalkSkip   bool   `json:"walk_skip"`
+		} `json:"samples"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode golden fixture: %v", err)
+	}
+	if len(fixture.Samples) < 3 {
+		t.Fatalf("golden fixture carries %d samples, want >= 3", len(fixture.Samples))
+	}
+	for _, s := range fixture.Samples {
+		// The poster leg: namespaceFields drops the key on a missing-art URL,
+		// keeps it otherwise. absoluteURL runs first, so the relative-form
+		// sample (an absolute check on a relative payload path) drops too.
+		m := namespaceFields(animeEntry{ID: 1, Name: "Test", Image: animeImage{Original: s.URL}})
+		_, hasPoster := m["poster"]
+		if hasPoster == s.PluginDrop {
+			t.Errorf("poster %q: key present = %v, want !plugin_drop(%v)", s.URL, hasPoster, !s.PluginDrop)
+		}
+		// The cast leg: the entry SURVIVES (its name is real data), the
+		// photo_url field is the dropped one.
+		body, err := json.Marshal([]rolesEntry{{Name: "Spike", Image: animeImage{Original: s.URL}}})
+		if err != nil {
+			t.Fatalf("marshal roles: %v", err)
+		}
+		cast := castField(body)
+		if len(cast) != 1 {
+			t.Fatalf("cast for %q: %d entries, want 1 (the entry survives the drop)", s.URL, len(cast))
+		}
+		entry, _ := cast[0].(map[string]any)
+		_, hasPhoto := entry["photo_url"]
+		if hasPhoto == s.PluginDrop {
+			t.Errorf("cast photo_url %q: present = %v, want !plugin_drop(%v)", s.URL, hasPhoto, !s.PluginDrop)
 		}
 	}
 }

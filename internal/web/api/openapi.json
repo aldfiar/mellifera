@@ -521,6 +521,50 @@
                 }
             }
         },
+        "/art/object/{oid}": {
+            "get": {
+                "tags": [
+                    "art"
+                ],
+                "summary": "Serve an art object's bytes",
+                "operationId": "get-art-object",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "art object id (art_\u003csha256 hex\u003e)",
+                        "name": "oid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "304": {
+                        "description": "Not Modified",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/enrich/failures": {
             "get": {
                 "tags": [
@@ -866,6 +910,185 @@
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/poster": {
+            "put": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "Pin a poster selection",
+                "operationId": "put-item-poster",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "the selection (src:\u003cplugin_id\u003e | user:art_\u003c64hex\u003e | thumb)",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.posterSelectionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.posterOverrideResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "Upload and pin a poster image",
+                "operationId": "upload-item-poster",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "image bytes (JPEG/PNG/WebP, ≤8 MiB)",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.posterOverrideResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "Reset the poster to the chain",
+                "operationId": "delete-item-poster",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/posters": {
+            "get": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "List an element's poster candidates",
+                "operationId": "list-item-posters",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.posterCandidatesResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/api.errorBody"
                         }
@@ -1901,6 +2124,185 @@
                 }
             }
         },
+        "/series/{id}/poster": {
+            "put": {
+                "tags": [
+                    "series"
+                ],
+                "summary": "Pin a poster selection",
+                "operationId": "put-series-poster",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "series id (ser_...)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "the selection (src:\u003cplugin_id\u003e | user:art_\u003c64hex\u003e | thumb)",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.posterSelectionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.posterOverrideResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "series"
+                ],
+                "summary": "Upload and pin a poster image",
+                "operationId": "upload-series-poster",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "series id (ser_...)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "image bytes (JPEG/PNG/WebP, ≤8 MiB)",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.posterOverrideResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "series"
+                ],
+                "summary": "Reset the poster to the chain",
+                "operationId": "delete-series-poster",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "series id (ser_...)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/series/{id}/posters": {
+            "get": {
+                "tags": [
+                    "series"
+                ],
+                "summary": "List an element's poster candidates",
+                "operationId": "list-series-posters",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "series id (ser_...)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.posterCandidatesResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/series/{id}/title": {
             "put": {
                 "tags": [
@@ -2270,6 +2672,10 @@
         "api.itemDTO": {
             "type": "object",
             "properties": {
+                "artwork": {
+                    "description": "Artwork is the additive composed poster URL (artwork) — the same\nread-time resolution seriesDTO carries: see the field comment there;\none shape, one precedence, both wire nouns. The thumbnail leg stays\nclient-side by design.",
+                    "type": "string"
+                },
                 "display_name": {
                     "type": "string"
                 },
@@ -2650,6 +3056,59 @@
                 }
             }
         },
+        "api.posterCandidate": {
+            "type": "object",
+            "properties": {
+                "current": {
+                    "type": "boolean"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.posterCandidatesResponse": {
+            "type": "object",
+            "properties": {
+                "candidates": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.posterCandidate"
+                    }
+                },
+                "current": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.posterOverrideResponse": {
+            "type": "object",
+            "properties": {
+                "entity_id": {
+                    "type": "string"
+                },
+                "entity_kind": {
+                    "type": "string"
+                },
+                "selection": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.posterSelectionRequest": {
+            "type": "object",
+            "properties": {
+                "selection": {
+                    "type": "string"
+                }
+            }
+        },
         "api.progressDTO": {
             "type": "object",
             "properties": {
@@ -2718,6 +3177,10 @@
         "api.seriesDTO": {
             "type": "object",
             "properties": {
+                "artwork": {
+                    "description": "Artwork is the additive composed poster URL (artwork): the stored\noverride's value (a staged blob rides the object route's proxy URL),\nelse the first non-placeholder chain poster's URL — proxied when\nmaterialized, the raw remote URL while unstaged — else absent\n(omitempty): honest absence, never a placeholder URL, never an empty\none. Read-time only, never persisted into the document.",
+                    "type": "string"
+                },
                 "display_name": {
                     "type": "string"
                 },

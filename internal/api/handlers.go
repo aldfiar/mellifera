@@ -297,6 +297,13 @@ type seriesDTO struct {
 	Status        string          `json:"status"`
 	TitleOverride string          `json:"title_override"`
 	Display       string          `json:"display_name"`
+	// Artwork is the additive composed poster URL (artwork): the stored
+	// override's value (a staged blob rides the object route's proxy URL),
+	// else the first non-placeholder chain poster's URL — proxied when
+	// materialized, the raw remote URL while unstaged — else absent
+	// (omitempty): honest absence, never a placeholder URL, never an empty
+	// one. Read-time only, never persisted into the document.
+	Artwork string `json:"artwork,omitempty"`
 	// Metadata is the additive convention projection (media-data-convention
 	// D5): the about / cast / episode blocks resolved at read from the
 	// document's sources.* namespaces over the gate-resolved source_chain —
@@ -403,7 +410,12 @@ type itemDTO struct {
 	Status        string          `json:"status"`
 	TitleOverride string          `json:"title_override"`
 	Display       string          `json:"display_name"`
-	ExtraParsers  []string        `json:"extra_parsers,omitempty"`
+	// Artwork is the additive composed poster URL (artwork) — the same
+	// read-time resolution seriesDTO carries: see the field comment there;
+	// one shape, one precedence, both wire nouns. The thumbnail leg stays
+	// client-side by design.
+	Artwork      string   `json:"artwork,omitempty"`
+	ExtraParsers []string `json:"extra_parsers,omitempty"`
 	// Metadata is the additive convention projection (media-data-convention
 	// D5) — the same read-time block seriesDTO carries: see the field comment
 	// there; one shape, one resolution rule, both wire nouns.
@@ -999,11 +1011,6 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	override, err := a.storedTitle(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
-		return
-	}
 	// Display-naming namer (display-naming 3.1): built off the item's own
 	// library so the detail view carries the same composed display_name the
 	// list serves. A read failure is a real failure → 500.
@@ -1017,7 +1024,16 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dto := toItemDTO(it, override, n)
+	// The same batched conversion the listings run — one row through it —
+	// so the detail view's display_name, artwork, and metadata compose
+	// EXACTLY what the grid served. The override read above feeds the namer;
+	// the conversion re-reads its own (the per-row posture itemDTOs owns).
+	dtos, err := a.itemDTOs(r.Context(), []store.Item{it}, n)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dto := dtos[0]
 	extras, err := a.deps.Store.ListItemParsers(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1275,11 +1291,6 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	override, err := a.storedTitle(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
-		return
-	}
 	// Display-naming namer (display-naming 3.1): built off the series' own
 	// library so the detail view carries the same display_name the list
 	// serves. A read failure is a real failure → 500.
@@ -1288,7 +1299,14 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusOK, seriesResponse{Series: toSeriesDTO(sr, override, n)})
+	// The same batched conversion the listing runs — one row through it —
+	// so the detail view composes exactly what the grid served.
+	dtos, err := a.seriesDTOs(r.Context(), []store.Series{sr}, n)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	writeJSON(w, http.StatusOK, seriesResponse{Series: dtos[0]})
 }
 
 // seriesEpisodes: parse {id} → store.GetSeries → store.QueryItemsBySeries →
@@ -1394,6 +1412,14 @@ func parsePagination(r *http.Request) (limit, offset int) {
 // rename reaches the composed name while the item's own override still wins.
 // A store failure on any override read propagates (500 at the call site).
 func (a *app) itemDTOs(ctx context.Context, items []store.Item, n namer) ([]itemDTO, error) {
+	rows := make([]artRow, len(items))
+	for i, it := range items {
+		rows[i] = artRow{id: it.ID, doc: it.Document}
+	}
+	artwork, err := a.artworkFor(ctx, artKindItem, rows, n)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]itemDTO, len(items))
 	for i, it := range items {
 		override, err := a.storedTitle(ctx, it.ID)
@@ -1404,16 +1430,17 @@ func (a *app) itemDTOs(ctx context.Context, items []store.Item, n namer) ([]item
 		if err != nil {
 			return nil, err
 		}
-		out[i] = toItemDTO(it, override, n)
+		out[i] = toItemDTO(it, override, artwork[it.ID], n)
 	}
 	return out, nil
 }
 
 // toItemDTO maps a single store.Item to its wire shape; override is the
-// entity's stored title override ("" when unset) and n the request's namer,
+// entity's stored title override ("" when unset), artwork its composed
+// poster URL ("" = absent, the field omitted), and n the request's namer,
 // whose itemName chain stamps Display (display-naming 3.1). Factored out so
 // the list and detail handlers share one conversion (DRY).
-func toItemDTO(it store.Item, override string, n namer) itemDTO {
+func toItemDTO(it store.Item, override, artwork string, n namer) itemDTO {
 	return itemDTO{
 		ID:            it.ID,
 		ModuleID:      it.ModuleID,
@@ -1426,6 +1453,7 @@ func toItemDTO(it store.Item, override string, n namer) itemDTO {
 		Status:        it.Status,
 		TitleOverride: override,
 		Display:       n.itemName(it, override),
+		Artwork:       artwork,
 		Metadata:      n.metadataFor(it.Document),
 	}
 }
@@ -1463,22 +1491,31 @@ func toLibraryDTO(l store.Library) libraryDTO {
 // row). A store failure on any override read propagates (500 at the call
 // site).
 func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n namer) ([]seriesDTO, error) {
+	rows := make([]artRow, len(srs))
+	for i, sr := range srs {
+		rows[i] = artRow{id: sr.ID, doc: sr.Document}
+	}
+	artwork, err := a.artworkFor(ctx, artKindSeries, rows, n)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]seriesDTO, len(srs))
 	for i, sr := range srs {
 		override, err := a.storedTitle(ctx, sr.ID)
 		if err != nil {
 			return nil, err
 		}
-		out[i] = toSeriesDTO(sr, override, n)
+		out[i] = toSeriesDTO(sr, override, artwork[sr.ID], n)
 	}
 	return out, nil
 }
 
 // toSeriesDTO maps a single store.Series to its wire shape; override is the
-// entity's stored title override ("" when unset) and n the request's namer,
-// whose seriesName chain stamps Display (display-naming 3.1). Factored out so
-// the list and detail responses share one conversion (DRY).
-func toSeriesDTO(sr store.Series, override string, n namer) seriesDTO {
+// entity's stored title override ("" when unset), artwork its composed
+// poster URL ("" = absent, the field omitted), and n the request's namer,
+// whose seriesName chain stamps Display (display-naming 3.1). Factored out
+// so the list and detail responses share one conversion (DRY).
+func toSeriesDTO(sr store.Series, override, artwork string, n namer) seriesDTO {
 	return seriesDTO{
 		ID:            sr.ID,
 		ModuleID:      sr.ModuleID,
@@ -1489,6 +1526,7 @@ func toSeriesDTO(sr store.Series, override string, n namer) seriesDTO {
 		Status:        sr.Status,
 		TitleOverride: override,
 		Display:       n.seriesName(sr, override),
+		Artwork:       artwork,
 		Metadata:      n.metadataFor(sr.Document),
 	}
 }

@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/mellifera/mellifera/internal/api"
+	"github.com/mellifera/mellifera/internal/art"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/pairing"
@@ -284,10 +285,18 @@ func main() {
 	// constructor's production contract).
 	pairingSvc := pairing.NewService(st, time.Now)
 
+	// Artwork service (artwork): the content-addressed blob tree under the
+	// data dir over the store's art tables. One instance for the whole
+	// process — the api Deps.Art seam below (object route, staged lookups,
+	// upload/override handlers) and the janitor's art task (Settle) share its
+	// in-process cooldown/pending state.
+	artSvc := art.NewService(st, cfg.artRoot)
+
 	apiHandler := api.New(api.Deps{
 		AdminToken: cfg.adminToken,
 		Store:      st,
 		Pairing:    pairingSvc,
+		Art:        artSvc,
 		Scan: func(ctx context.Context, libraryID int64) (scan.Result, error) {
 			return scan.Run(ctx, scanDeps, libraryID)
 		},
@@ -533,16 +542,35 @@ func main() {
 	})
 
 	// Packaged-playback orchestrator (D-8/D-9/D4): the watch-driven frontier +
-	// budget eviction + build-integrity sweep. Boot sweep FIRST (a restarted
-	// server resumes its frontier and heals its broken builds before
-	// serving), then the ≥60 s ticker for the process lifetime; both execute
-	// the policies' decisions through the streams lane's EnqueuePack seam and
-	// the filesystem. validate rides in as the stream Service's own
-	// ValidateBuild method value (the enqueue seam's func-injection pattern);
-	// the budget knob is GiB (default 32; 0 = off — see loadConfig).
+	// budget eviction + build-integrity sweep — the janitor registry's
+	// streams task, executing the policies' decisions through the streams
+	// lane's EnqueuePack seam and the filesystem. validate rides in as the
+	// stream Service's own ValidateBuild method value (the enqueue seam's
+	// func-injection pattern); the budget knob is GiB (default 32; 0 = off —
+	// see loadConfig).
 	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30)
-	sweep(ctx)
-	go runSweepTicker(ctx, sweep)
+	// artSettle is the registry's art task (artwork): ONE settle+GC pass per
+	// tick — the shared document walk acquires every live non-placeholder
+	// poster URL and reclaims blobs on reference loss. Errors are logged,
+	// never fatal — best-effort background work like the sweep; the next
+	// tick retries.
+	artSettle := func(ctx context.Context) {
+		if err := artSvc.Settle(ctx); err != nil {
+			slog.Warn("art: settle pass failed", "error", err)
+		}
+	}
+	// The janitor registry (artwork D8): the boot-run executes every enabled
+	// task once BEFORE serving (a restarted server resumes its sweep and its
+	// settle), then each task ticks at its own interval for the process
+	// lifetime. MELLIFERA_ART_INTERVAL ≤ 0 disables the art task alone — the
+	// streams task keeps its 60 s cadence either way (the janitor's off
+	// position never touches the other tasks).
+	jan := newJanitor(
+		janitorTask{name: "streams", interval: sweepInterval, fn: sweep},
+		janitorTask{name: "art", interval: cfg.artInterval, fn: artSettle},
+	)
+	jan.runBoot(ctx)
+	go jan.run(ctx)
 
 	// Single top-level http.Handler: web.Handler composes the api router
 	// (mounted at /api/* inside web.Handler) with the token-gated /media
@@ -589,6 +617,8 @@ func main() {
 type config struct {
 	dsn               string
 	streamsRoot       string
+	artRoot           string
+	artInterval       time.Duration
 	mediaSecret       []byte
 	orchBudgetGB      int
 	adminToken        string
@@ -627,6 +657,15 @@ func loadConfig() config {
 		// logged.
 		streamsRoot: filepath.Join(dataDir, "streams"),
 		mediaSecret: mediaSecret(),
+		// Artwork (artwork): the content-addressed blob tree — again the
+		// server's own data space, never a library directory — and the
+		// janitor art task's settle+GC interval. envDuration parses "0" and
+		// negatives, so MELLIFERA_ART_INTERVAL=0 is the knob's documented off
+		// position (the janitor disables the art task alone). The 6 h default
+		// keeps the one-walk settle a rare background cost while bounding how
+		// long a reference-lost blob lingers.
+		artRoot:     filepath.Join(dataDir, "art"),
+		artInterval: envDuration("MELLIFERA_ART_INTERVAL", 6*time.Hour),
 		// Packaged-playback budget knob (D-9): the artifact budget in GiB,
 		// default 32; `0` disables the cap entirely. Non-positive reads as
 		// off (the orchestrator's Evictions contract), so the knob can never

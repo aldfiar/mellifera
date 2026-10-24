@@ -1,0 +1,120 @@
+schema: plan/2
+lane: loop
+groups:
+  - id: 'store-art'
+    goal: art foundation: store tables + internal/art store service (acquire, ingest, path-serve)
+  - id: 'serve'
+    goal: janitor registry + api composition/routes + shikimori write-side drop
+  - id: 'web'
+    goal: SPA: art data layer + LRU, PosterFrame, three surfaces, PosterOverlay
+  - id: 'qa-closeout'
+    goal: joint art itest, committed OpenAPI + dist regen, GLOSSARY amendment
+boxes:
+  - id: '1.1'
+    group: store-art
+    title: Art tables + methods in internal/store
+    text: Two new VALUE-AGNOSTIC control tables ride internal/store schemaSQL additively (idempotent CREATE TABLE IF NOT EXISTS, the title_overrides pattern at open.go:179): art_fetches (url_hash TEXT PK, sha256 TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'poster', created_at TEXT NOT NULL) and art_overrides (entity_id TEXT NOT NULL, entity_kind TEXT NOT NULL, selection TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (entity_id, entity_kind)). The store never parses art values and never reads document JSON. Primitive-signature methods in new internal/store/art.go — ZERO new exported symbols (the 12/12 check budget holds; the budget-dodging idiom of series.go:299-329): override upsert/get/delete (idempotent) keyed by (entity_id, entity_kind), and fetch insert/lookup-by-url-hash/delete/list-refs for the GC union. Table-driven tests in art_test.go named TestArtOverrideMethods and TestArtFetchMethods (round-trip, upsert-overwrite, delete idempotence, unknown-id miss).
+    duty:
+      verify: grep -q 'func TestArtOverrideMethods' internal/store/art_test.go || exit 1 && go test ./internal/store -run 'TestArtOverrideMethods|TestArtFetchMethods' -count=1 || exit 1
+  - id: '1.2'
+    group: store-art
+    title: internal/art: Service, Acquire, Ingest, path-serve
+    deps: ['1.1']
+    text: NEW leaf package internal/art over the store (imports internal/store, stdlib, golang.org/x/sync/singleflight — promote it to a direct require in go.mod, it is already in go.sum — and golang.org/x/image for WebP decode-only, genuinely new). Dependency direction api → art → store; art never imports enrich/plugin/module — the chain and pacing arrive as values wired into Service at the composition root. Exported surface ≤8 symbols INCLUDING exactly the two sentinels ErrNotImage and ErrTooLarge (methods excluded by the check count; the duty asserts the ceiling). Acquire(ctx, url, kind): singleflight per url_hash so concurrent producers collapse into one upstream fetch, ≤2 concurrent upstream, 15s timeout, ≤8MB read cap, every fetched byte through the same image guard as uploads, and an in-process per-hash failure cooldown (~10 min, the bounded-map pattern of cmd/mellifera/thumb.go:51-79; no negative rows). Disk layout <data>/art/<sha256-hex>/original.<ext> content-addressed, written temp+rename. Ingest: magic-byte sniff JPEG/PNG/WebP, ≤8MB re-check, real decode, center crop-once 2:3 without upscaling, original stored verbatim + cropped always-JPEG q85 beside it, cropped referenced; replacing an upload deletes the old pair. Path-serve support: resolve art_<full-64-hex> to the bytes file with a format guard. Tests internal/art/*_test.go with an httptest upstream: hit counters prove fetch-once + singleflight collapse + cooldown skip, guard rejections, crop geometry.
+    duty:
+      verify: test -n "$(find internal/art -maxdepth 1 -name '*_test.go' 2>/dev/null)" || exit 1 && go test ./internal/art -count=1 || exit 1 && [ "$(find internal/art -maxdepth 1 -name '*.go' ! -name '*_test.go' -exec grep -hE '^[[:space:]]*(func|type|var|const) [A-Z]' {} + | wc -l | tr -d ' ')" -le 8 ] || exit 1
+  - id: '2.1'
+    group: serve
+    title: Golden missing-art fixture
+    text: Create the committed cross-pinning fixture internal/api/testdata/golden/missing_art.json (the title_vectors.json convention): a JSON object with a samples array, each row {url, plugin_drop, walk_skip} — real observed missing-art asset URLs verbatim (shikimori .../assets/globals/missing_original.jpg) plus boundary cases: a real poster URL (both false), a /assets/globals/missing prefix variant (both true), and a non-missing /assets/ path (both false). The contract is the PREFIX rule (not an exact-URL list): plugin_drop = the shikimori write-side drops the field; walk_skip = the api composition walk treats the URL as absent. Both predicates in the serve group consume this exact file, so either side changing its predicate without the other fails its own suite.
+    duty:
+      verify: python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["samples"]; assert len(s)>=3 and all(("url" in x and "plugin_drop" in x and "walk_skip" in x) for x in s)' internal/api/testdata/golden/missing_art.json || exit 1
+  - id: '2.2'
+    group: serve
+    title: Janitor registry + art task (settle + GC)
+    deps: ['1.2']
+    text: Generalize the cmd-side sweep ticker (cmd/mellifera/playback.go runSweepTicker :87, boot-run + 60s tick) into a named multi-task registry — NO new package. Day-one tasks: streams (the existing sweep folded in unchanged — same sweepFrontier snapshot including series+episodes) and art (the art settle+GC walk from internal/art: ONE shared document walk for settle and GC covering series AND non-series items — films and TV included; the boot-run is the same settle pass, not a bulk path; the walk yields to the process ctx). An env knob disables the art task only — 0 turns it off without touching the other tasks. GC reclaims on reference LOSS, never time: referenced set = every stored override selection UNION every live document kind-field URL (conservative — gate flips and chain reorders never delete; art_fetches own sha256 column is NOT in the union); an entry whose URL is in neither set is deleted together with its sha-dir; repair legs delete a row whose file is missing and a file with no row. Tests cmd/mellifera/janitor_test.go: TestJanitorRegistry (tasks registered with intervals; knob-off skips only art while streams still ticks) and TestArtTaskOrphanSweep (replace-by-re-enrich reclaims the old sha-dir; delete-upload sweeps the pair; gate-flip survival; both repair legs).
+    duty:
+      verify: grep -q 'func TestJanitorRegistry' cmd/mellifera/janitor_test.go || exit 1 && go test ./cmd/mellifera -run 'TestJanitorRegistry|TestArtTaskOrphanSweep' -count=1 || exit 1
+  - id: '2.3'
+    group: serve
+    title: internal/api composition + art routes
+    deps: ['1.2', '2.1']
+    text: internal/api composition + routes with ZERO new exported symbols (api stays 12/12 — the titles.go unexported-handler idiom and unexported wire structs): add Deps.Art *art.Service (the Deps.Pairing service-value precedent, router.go:167) and compose at the display.go seam — stamp Artwork string json:"artwork,omitempty" onto the served series/item DTOs at READ time: override → first non-placeholder poster walking the gate-resolved chain → absent; a corrupt document floors to absent, never errors the read; lookups batched for the page ids; the thumbnail leg stays client-side. Routes (swag annotations on each): browse group GET/HEAD /api/v1/art/object/{oid} (pure path resolution from art_<full-64-hex>, strong ETag from the hex, Cache-Control private immutable, 404 canonical when bytes absent, serving never fetches); admin group GET /api/v1/series/{id}/posters + PUT/POST/DELETE /api/v1/series/{id}/poster, mirrored on /api/v1/items/{id}/... — selection vocabulary src:<plugin_id> | user:art_<64hex> | thumb with 400 bad_request on unknown; POST multipart with http.MaxBytesReader delegating to art Ingest (the store re-checks size); DELETE idempotent 204; candidates = usable namespace posters + user + thumb (items only, when the frame-grabber fact exists, candidate URL pointing at /items/{id}/media?variant=thumb); staged candidates carry served proxy URLs, unstaged the raw remote URL; placeholder URLs are excluded from candidates by the walk predicate; refresh never touches overrides. Tests internal/api/art_test.go: TestArtComposition (override/chain/absent tiers + corrupt floor), TestArtObjectRoute (401 unauth / client+admin 200, ETag 304 + immutable HEAD, 404 without any upstream contact), TestPosterOverrideFamily (pin flips composition, reset idempotent 204, unknown selection 400, upload replace deletes the old pair), TestArtWalkSkipGolden (placeholder fall-through driven by the committed fixture internal/api/testdata/golden/missing_art.json).
+    duty:
+      verify: grep -q 'func TestArtComposition' internal/api/art_test.go || exit 1 && go test ./internal/api -run 'TestArt|TestPosterOverrideFamily' -count=1 || exit 1
+  - id: '2.4'
+    group: serve
+    title: shikimori write-side missing-art drop
+    deps: ['2.1']
+    text: plugins/shikimori write-side drop: the conversion drops the namespace poster field (convert.go:186) and the cast photo_url (convert.go:243) when the URL path prefix is a known missing-art asset — the PREFIX rule, not an exact-URL list (run the absoluteURL helper at source.go:363 first so the prefix check sees the absolute path). Upstream placeholder = upstream not providing the field: this strengthens the honest-absence rule of media-data-convention on the write side; fresh enrichment never writes a placeholder URL. Tests in convert_test.go: TestConvertDropsMissingArt — driven by the committed fixture internal/api/testdata/golden/missing_art.json (the same file the api walk-side test consumes): every sample with plugin_drop=true must yield a namespace without the poster key (and cast entries without photo_url), samples with false pass through unchanged — either side changing its predicate alone fails this suite.
+    duty:
+      verify: grep -q 'func TestConvertDropsMissingArt' plugins/shikimori/convert_test.go || exit 1 && go test ./plugins/shikimori -run 'TestConvertDropsMissingArt' -count=1 || exit 1
+  - id: '3.1'
+    group: web
+    title: SPA data layer: art client + object-URL LRU
+    deps: ['2.3']
+    text: web/src/lib/api.ts gains ENDPOINTS.artObject(oid), posterCandidates(kind, id), and the poster mutations putPoster/uploadPoster/deletePoster — uploadPoster is the small multipart twin of apiRequest (field names mirror the Go JSON tags EXACTLY: the {current, candidates:[{source, url, current}]} envelope; source is plugin_id | user | thumb). web/src/lib/queries.ts gains the candidates read hook + mutation hooks (invalidation keys mirror the useTitleOverride pattern) and a MODULE-SCOPE LRU of art object URLs (~64 entries, ~40 lines): consulted before any art fetch, and the LRU OWNS revocation (on eviction and on URL change) so it can never hand out a dead URL — insurance for RFC 9111 3.5 MAY on caching Authorization-bearing responses (TV webkits). Art bytes reuse fetchItemMediaObjectUrl (api.ts:1308) + the object-URL channel unchanged. Tests: new web/src/lib/artwork.test.ts (endpoint paths, multipart request shape, LRU consult/evict/revoke-on-URL-change); hook invalidation rides the existing queries.test.tsx pattern.
+    duty:
+      verify: cd web && npm test -- src/lib/artwork.test.ts || exit 1
+  - id: '3.2'
+    group: web
+    title: PosterFrame + generated fallback
+    text: web/src/components/Artwork.tsx: PosterFrame({src, name}) renders a blob <img> when src resolves, else the deterministic generated fallback — fallbackGradient(name) is a PURE function: hash(display_name) to two pastel HSL stops with the first grapheme as the initial (Cyrillic verbatim); never a broken-image glyph, never a blank span. Tests web/src/components/Artwork.test.tsx: golden-vector determinism (same name → same gradient vector, distinct names → distinct vectors), blob img renders when src present, fallback renders name-derived gradient + initial when absent.
+    duty:
+      verify: cd web && npm test -- src/components/Artwork.test.tsx || exit 1
+  - id: '3.3'
+    group: web
+    title: Surfaces: series cards, flow header, item lead image
+    deps: ['3.1', '3.2']
+    text: Three surfaces adopt PosterFrame, all reading ONLY the served artwork field (never sources.*.poster; zero external image requests on library surfaces): (a) web/src/pages/collections/Collection.tsx series card — the blank scard-poster span (:1585) becomes PosterFrame with artwork ?? the generated fallback; (b) the series-flow header in the same file (:1677-1685) gains the series poster beside Synopsis, and the header never collapses; (c) web/src/pages/browse/ItemDetail.tsx identity-column lead image becomes item.artwork ?? heroUrl (:332-337 — the existing frame-grab hero fallback covers absence) and the player poster behavior stays untouched. Tests extend Collection.test.tsx (a series with artwork renders the binary art URL through the authenticated channel; a placeholder-only series renders the fallback card, not a blank span) and ItemDetail.test.tsx (served artwork wins as the lead image; absent artwork keeps the hero thumb; the player poster prop unchanged).
+    duty:
+      verify: cd web && npm test -- src/pages/collections/Collection.test.tsx src/pages/browse/ItemDetail.test.tsx || exit 1
+  - id: '3.4'
+    group: web
+    title: Poster management overlay
+    deps: ['3.1']
+    text: web/src/components/manage/PosterOverlay.tsx in the DialogShell idiom (scrim + click-away, focus trap, escape matrix, awaited-mutation collapse, role=alert inline canonical error with the overlay STAYING OPEN): one candidate card per served candidate («Текущий» on the active one, «Сделать главным» on the rest, selection = color); staged candidates render served proxy URLs, UNSTAGED candidates render the raw remote URL hotlinked only inside this admin-only overlay (lazy load + onError-hide — the contractual exception to the zero-external-requests rule); provenance footer reads the served document _provenance.poster. Selecting a candidate PUTs the selection then short-polls the candidates read until current flips — browse surfaces keep the previous artwork until the flip (no flash). Upload: drop zone (drag + file picker) with a client-side pre-check mirroring the server guard for fast feedback (the server stays authoritative), an in-flight quiet line, inline error on rejection. «Сбросить к источнику» DELETEs the override (reset to chain). Entry: a CardActions row «Постер…» on series cards and the item-page ⋯ menu (the identify prop pattern). Tests web/src/components/manage/PosterOverlay.test.tsx covering the overlay states: single-source series shows «Текущий» + reset, no-posters honest hint, upload in-flight line, rejected file inline error without closing, and select polls until current flips.
+    duty:
+      verify: cd web && npm test -- src/components/manage/PosterOverlay.test.tsx || exit 1
+  - id: '4.1'
+    group: qa-closeout
+    title: Joint art contract itest
+    deps: ['2.2', '2.3', '2.4']
+    text: internal/itest/qa_artwork_joint_test.go (the qa pairing joint pattern; Tier 1 joint: real store + real api.New + the real plugin binaries, no mocks): TestArtworkJointFlow walks the whole cross-module contract — scan a library, shikimori-enrich against an httptest upstream serving a REAL poster for one series and the missing_original asset for another → the grid document serves artwork through the binary for the first series and omits it (honest absence) for the placeholder series → GET /api/v1/art/object/... answers 200 through the browse gate (device-token client 200, no token 401) with immutable cache headers → PUT pins an override and the pin SURVIVES a metadata refresh → DELETE resets to the chain (idempotent) → a re-enrichment to a new poster URL followed by an art-task pass reclaims the orphaned sha-dir (GC on reference loss).
+    duty:
+      verify: grep -q 'func TestArtworkJointFlow' internal/itest/qa_artwork_joint_test.go || exit 1 && go test ./internal/itest -run 'TestArtworkJointFlow' -count=1 || exit 1
+  - id: '4.2'
+    group: qa-closeout
+    title: Swagger regen: committed OpenAPI
+    deps: ['2.3']
+    text: Regenerate the committed OpenAPI from the new swag annotations — the swag lines of make web-build (Makefile:73-76): export PATH="$PATH:$(go env GOPATH)/bin" (swag lives in GOPATH/bin — project memory; make web-build needs it on PATH), then swag init -d internal/api -g doc.go -o internal/web/api -ot json,yaml --parseDependencyLevel 1, then mv internal/web/api/swagger.json internal/web/api/openapi.json && mv internal/web/api/swagger.yaml internal/web/api/openapi.yaml. Commit the regenerated internal/web/api/openapi.{json,yaml} — they must carry /art/object/{oid}, /series/{id}/posters, /series/{id}/poster, /items/{id}/posters, /items/{id}/poster. (Existence-grep duty: dev-tool output outside the Go gate — the strongest cheap check on the committed bytes, the device-pairing regen precedent.)
+    duty:
+      verify: grep -q '"/art/object/{oid}"' internal/web/api/openapi.json || exit 1 && grep -q '"/series/{id}/posters"' internal/web/api/openapi.json || exit 1
+  - id: '4.3'
+    group: qa-closeout
+    title: Rebuild committed SPA dist
+    deps: ['3.4']
+    text: cd web && npm run build (tsc --noEmit + vite build → internal/web/dist, the go:embed INPUT) and COMMIT internal/web/dist so the embedded SPA carries PosterFrame + the overlay. The committed dist must be REPRODUCIBLE: a fresh npm run build over the committed sources leaves git diff on internal/web/dist clean (Vite content-hashes are deterministic for identical input). This box runs only the npm half of make web-build — the swag/OpenAPI half is the separate regen box in this group.
+    duty:
+      verify: cd web && npm run build && git -C .. diff --exit-code -- internal/web/dist >/dev/null || exit 1
+  - id: '4.4'
+    group: qa-closeout
+    title: GLOSSARY Artwork amendment
+    text: GLOSSARY.md gains the amended Artwork term (the change carries the amendment; insert beside the Client (enrichment context) entry). EXACT wording: **Artwork** — the image a surface shows for an element or series: the stored artwork override, else the composed poster, else the frame-grabber thumbnail, else the placeholder. The served `artwork` field composes the first two legs server-side; the thumbnail leg composes client-side (the detail surface's hero fallback). Composed at read time, never persisted. The override may pin a source poster, the thumbnail, or an uploaded image; Refresh never touches it.
+    duty:
+      verify: grep -q 'the stored artwork override, else the composed poster' GLOSSARY.md || exit 1
+  - id: '2.5'
+    group: serve
+    title: main.go wiring: Deps.Art, janitor art task, env knob
+    deps: ['2.2', '2.3']
+    text: Wire the art capability into the binary so the feature exists outside tests. In cmd/mellifera/main.go: assemble artRoot = filepath.Join(dataDir, "art") beside the streamsRoot line (main.go:628 pattern); construct internal/art.NewService(st, artRoot) near the pairing service construction (main.go:285 pattern); pass it into the api Deps.Art field (exists since box 2.3). Register the janitor's second task at the registry construction site (cmd/mellifera/playback.go:91 — currently wires only the streams task): the art settle+GC fn is internal/art's Settle (internal/art/settle.go), interval read from MELLIFERA_ART_INTERVAL (0/negative disables the art task only — janitor.go:14 semantics; parse with the existing env helper pattern, main.go:667). Keep flat-main wiring style; ZERO new exported symbols anywhere. The verify duty asserts wiring presence (structural: build + greps); behavior is the qa group's joint itest.
+    duty:
+      verify: go build ./... || exit 1 && grep -q 'Art' cmd/mellifera/main.go || exit 1 && grep -qi 'janitor' cmd/mellifera/main.go || exit 1
+  - id: '4.5'
+    group: qa-closeout
+    title: Pin the vanishing-namespace floor
+    text: Reviewer finding S1; delta scenario 'Pinned namespace vanishes'. In TestPosterOverrideFamily (internal/api/art_test.go) add subtest named EXACTLY VanishingNamespaceFloor: PUT selection src:<ns> on a series; rewrite the stored doc WITHOUT that namespace; assert composition floors artwork to the remaining chain value (never the pinned URL); GET posters retains current (the override row survives) but drops the vanished namespace from candidates. Table-driven like its siblings.
+    duty:
+      verify: go test ./internal/api/ -run TestPosterOverrideFamily -count=1 || exit 1 && grep -q "VanishingNamespaceFloor" internal/api/art_test.go || exit 1
+probes: []

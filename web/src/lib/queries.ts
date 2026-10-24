@@ -4,6 +4,7 @@ import {
   QueryClient,
   useMutation,
   useQuery,
+  useQueryClient,
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
@@ -23,7 +24,11 @@ import {
   getSeries,
   getSeriesEpisodes,
   listItems,
+  posterCandidates,
   listProgress,
+  putPoster,
+  uploadPoster,
+  deletePoster,
   revokeDevice,
   startPairing,
   updateLibrary,
@@ -41,6 +46,8 @@ import {
   type LibrarySummary,
   type ListItemsParams,
   type PairingActionResponse,
+  type PosterCandidatesDTO,
+  type PosterOverrideDTO,
   type PairingRequest,
   type PairingWait,
   type ProgressListResponse,
@@ -462,4 +469,180 @@ export function useItemMedia(mediaUrl: string | null): string | null {
   }, [mediaUrl]);
 
   return objectUrl;
+}
+// ---- Artwork: the object-URL LRU + the poster hooks (artwork 3.1) ----------
+
+// ART_LRU_LIMIT — the object-URL cache bound (~a grid page plus change
+// room): entries evicted least-recently-used have their blob URLs revoked,
+// so the cache never grows unbounded and never hands out a dead URL.
+const ART_LRU_LIMIT = 64;
+
+// artLru — the MODULE-SCOPE LRU of art object URLs (art URL → blob URL).
+// The LRU OWNS revocation (artwork 3.1): consulted before any art fetch (a
+// warm entry costs zero network), on EVICTION the least-recently-used blob
+// is revoked, and storing a second blob under one URL revokes the first
+// (the URL-change case — an invalidated read re-fetching the same art).
+// Insurance for RFC 9111 §3.5's MAY on caching Authorization-bearing
+// responses (TV webkits): the SPA refetches art bytes through its own
+// bearer channel, never trusting a shared HTTP cache. consult/store/reset
+// are exported PURE as the test seam (the naming.ts accessor posture); the
+// hook below is the only production consumer.
+const artLruMap = new Map<string, string>();
+
+export const artLru = {
+  consult(key: string): string | undefined {
+    const url = artLruMap.get(key);
+    if (url === undefined) {
+      return undefined;
+    }
+    artLruMap.delete(key); // refresh recency
+    artLruMap.set(key, url);
+    return url;
+  },
+  store(key: string, objectUrl: string): void {
+    const prior = artLruMap.get(key);
+    if (prior !== undefined && prior !== objectUrl) {
+      URL.revokeObjectURL(prior); // URL change — the LRU owns revocation
+    }
+    artLruMap.delete(key);
+    artLruMap.set(key, objectUrl);
+    while (artLruMap.size > ART_LRU_LIMIT) {
+      const oldest = artLruMap.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      const evicted = artLruMap.get(oldest);
+      artLruMap.delete(oldest);
+      if (evicted !== undefined) {
+        URL.revokeObjectURL(evicted); // eviction — the LRU owns revocation
+      }
+    }
+  },
+  // reset — the test seam's drain: revoke every cached blob and clear.
+  reset(): void {
+    for (const url of artLruMap.values()) {
+      URL.revokeObjectURL(url);
+    }
+    artLruMap.clear();
+  },
+};
+
+// artInFlight — one fetch per art URL while in flight (two grid cards and
+// the flow header can ask for the same series art in one tick): the losers
+// ride the winner's promise, so ONE blob is created per URL and the LRU
+// never stores twice under one key.
+const artInFlight = new Map<string, Promise<string>>();
+
+function fetchArtObjectUrl(url: string, signal: AbortSignal): Promise<string> {
+  const pending = artInFlight.get(url);
+  if (pending !== undefined) {
+    return pending;
+  }
+  const flight = fetchItemMediaObjectUrl(url, signal)
+    .then((objectUrl) => {
+      artLru.store(url, objectUrl);
+      return objectUrl;
+    })
+    .finally(() => {
+      artInFlight.delete(url);
+    });
+  artInFlight.set(url, flight);
+  return flight;
+}
+
+// useArtworkObjectUrl — the authenticated art byte channel with the LRU in
+// front (artwork 3.1): consult → a hit hands the cached blob URL (no
+// fetch); a miss fetches through fetchItemMediaObjectUrl and parks the blob
+// in the LRU. The hook NEVER revokes what it hands out — the LRU owns
+// revocation (eviction + URL change) — so a consumer's URL stays alive
+// while its entry is cached. ANY failure (404 serve miss, network, abort) →
+// null, so the surface keeps its generated fallback — never a
+// broken-image state.
+export function useArtworkObjectUrl(url: string | null): string | null {
+  const [resolved, setResolved] = useState<string | null>(() =>
+    url === null ? null : (artLru.consult(url) ?? null),
+  );
+
+  useEffect(() => {
+    if (url === null) {
+      setResolved(null);
+      return;
+    }
+    const hit = artLru.consult(url);
+    if (hit !== undefined) {
+      setResolved(hit);
+      return;
+    }
+    let disposed = false;
+    const controller = new AbortController();
+    fetchArtObjectUrl(url, controller.signal)
+      .then((objectUrl) => {
+        if (disposed) {
+          return; // the LRU entry outlives this consumer by design
+        }
+        setResolved(objectUrl);
+      })
+      .catch(() => {
+        if (!disposed) {
+          setResolved(null); // any art error → the generated fallback
+        }
+      });
+    return () => {
+      disposed = true;
+      controller.abort();
+    };
+  }, [url]);
+
+  return resolved;
+}
+
+// usePosterCandidates — the poster overlay's read (GET …/posters, key
+// ["posters", kind, id]). An empty id (a not-yet-resolved entity) disables
+// the read — the conditional-query idiom the item page uses.
+export function usePosterCandidates(
+  kind: "series" | "item",
+  entityId: string,
+): UseQueryResult<PosterCandidatesDTO> {
+  return useQuery({
+    queryKey: ["posters", kind, entityId],
+    queryFn: () => posterCandidates(kind, entityId),
+    enabled: entityId !== "",
+  });
+}
+
+// usePosterMutations — the poster write family for ONE entity (the
+// useTitleOverride pattern): every mutation runs retry:0
+// (INV-no-mutation-retry — a 400/404 surfaces inline, never auto-retried)
+// and invalidates the family's own read on success. The CALLER owns the
+// display-key invalidation policy: select defers it until the candidates
+// read reports the flipped current (browse surfaces keep the previous
+// artwork until the flip — no flash), upload/reset invalidate right away.
+export function usePosterMutations(
+  kind: "series" | "item",
+  entityId: string,
+): {
+  put: UseMutationResult<PosterOverrideDTO, ApiError, string>;
+  upload: UseMutationResult<PosterOverrideDTO, ApiError, File>;
+  reset: UseMutationResult<void, ApiError, void>;
+} {
+  const qc = useQueryClient();
+  const invalidateRead = (): void => {
+    void qc.invalidateQueries({ queryKey: ["posters", kind, entityId] });
+  };
+  const put = useMutation<PosterOverrideDTO, ApiError, string>({
+    mutationFn: (selection: string) => putPoster(kind, entityId, selection),
+    retry: 0,
+    onSuccess: invalidateRead,
+  });
+  const upload = useMutation<PosterOverrideDTO, ApiError, File>({
+    mutationFn: (file: File) => uploadPoster(kind, entityId, file),
+    retry: 0,
+    onSuccess: invalidateRead,
+  });
+  const reset = useMutation<void, ApiError, void>({
+    mutationFn: () => deletePoster(kind, entityId),
+    retry: 0,
+    onSuccess: invalidateRead,
+  });
+  return { put, upload, reset };
 }

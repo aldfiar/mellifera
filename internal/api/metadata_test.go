@@ -141,14 +141,14 @@ func TestMetadataProjection(t *testing.T) {
 			ID: "itm_1", ModuleID: "tv", LibraryID: 1, FileID: "f1",
 			RelativePath: "a/f1.mkv", MediaType: "tv", Document: doc, SchemaVersion: 1,
 		}
-		if got := toItemDTO(it, "", n).Metadata; !reflect.DeepEqual(got, want) {
+		if got := toItemDTO(it, "", "", n).Metadata; !reflect.DeepEqual(got, want) {
 			t.Fatalf("itemDTO.metadata =\n\t%#v\nwant\n\t%#v", got, want)
 		}
 		sr := store.Series{
 			ID: "ser_1", ModuleID: "tv", LibraryID: 1,
 			RelativePath: "a", Document: doc, SchemaVersion: 1, Status: "ready",
 		}
-		if got := toSeriesDTO(sr, "", n).Metadata; !reflect.DeepEqual(got, want) {
+		if got := toSeriesDTO(sr, "", "", n).Metadata; !reflect.DeepEqual(got, want) {
 			t.Fatalf("seriesDTO.metadata =\n\t%#v\nwant\n\t%#v", got, want)
 		}
 	})
@@ -160,7 +160,7 @@ func TestMetadataProjection(t *testing.T) {
 			RelativePath: "a/f1.mkv", MediaType: "tv",
 			Document: json.RawMessage(`{"sources":{"alpha":{"score":5}}}`), SchemaVersion: 1,
 		}
-		b, err := json.Marshal(toItemDTO(it, "", n))
+		b, err := json.Marshal(toItemDTO(it, "", "", n))
 		if err != nil {
 			t.Fatalf("marshal itemDTO: %v", err)
 		}

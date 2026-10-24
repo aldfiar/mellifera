@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/mellifera/mellifera/internal/art"
 	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
@@ -165,6 +166,15 @@ type Deps struct {
 	// device token ever resolves), mirroring Status/Playback. Built in
 	// cmd/mellifera over pairing.NewService.
 	Pairing *pairing.Service
+	// Art is the artwork facade (artwork): the composition's staged lookups
+	// and non-blocking acquisition handoffs, the object route's path
+	// resolution, and the upload ingest all delegate to it. Not a closure
+	// but the service value itself — art is a leaf over the store (art →
+	// store), the Pairing precedent. Nil-safe (the art routes 503 when nil
+	// and the composed artwork field simply omits — the additive field
+	// degrades to absence), mirroring Pairing. Built in cmd/mellifera over
+	// art.NewService.
+	Art *art.Service
 }
 
 // Role is the authorization role resolved from the credential. The admin
@@ -256,6 +266,13 @@ func mountV1Routes(r chi.Router, h *app) {
 		// the handler answers it headers-only via http.ServeContent.
 		r.Get("/items/{id}/media", h.itemMedia)
 		r.Head("/items/{id}/media", h.itemMedia)
+		// Art object (artwork D5): the stored poster bytes through the same
+		// authenticated channel — read-only, so the browse group beside the
+		// item media route. HEAD is mounted explicitly (chi does not fold
+		// HEAD into Get); the same handler answers it headers-only via
+		// http.ServeContent, ETag 304s included.
+		r.Get("/art/object/{oid}", h.artObject)
+		r.Head("/art/object/{oid}", h.artObject)
 		// Series routes (serials-library): read-only serial-level views, same
 		// browse group as items — the serial document is opaque on the wire,
 		// exactly like an item document.
@@ -305,6 +322,19 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Delete("/series/{id}/title", h.deleteSeriesTitle)
 		r.Put("/items/{id}/title", h.putItemTitle)
 		r.Delete("/items/{id}/title", h.deleteItemTitle)
+		// Poster override family (artwork): the candidates read plus the
+		// pin/upload/reset verbs, symmetric to the title overrides above —
+		// operator mutations/observability, so the admin group. Refresh
+		// never touches the override; DELETE never touches the bytes (the
+		// GC reclaims on reference loss).
+		r.Get("/series/{id}/posters", h.seriesPosters)
+		r.Put("/series/{id}/poster", h.putSeriesPoster)
+		r.Post("/series/{id}/poster", h.uploadSeriesPoster)
+		r.Delete("/series/{id}/poster", h.deleteSeriesPoster)
+		r.Get("/items/{id}/posters", h.itemPosters)
+		r.Put("/items/{id}/poster", h.putItemPoster)
+		r.Post("/items/{id}/poster", h.uploadItemPoster)
+		r.Delete("/items/{id}/poster", h.deleteItemPoster)
 		// Re-enrichment admin surface (enrichment design Interfaces, D-6):
 		// the explicit refresh kickoff (202 + strip counts; 409 only on a
 		// whole-library sweep collision), the on-demand drift preview, and

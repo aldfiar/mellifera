@@ -24,10 +24,17 @@ import {
   hasFrameGrabberThumb,
   hasOriginalFile,
   isPhotoItem,
+  isServedArtPath,
   isVideoItem,
   playItem,
 } from "@/lib/api";
-import { useItem, useItemMedia, useLibrary, useProgressList } from "@/lib/queries";
+import {
+  useArtworkObjectUrl,
+  useItem,
+  useItemMedia,
+  useLibrary,
+  useProgressList,
+} from "@/lib/queries";
 import {
   convertToVtt,
   subtitleSidecars,
@@ -50,6 +57,8 @@ import {
 } from "@/components/metadata/ParserFooter";
 import { JsonValue } from "@/components/metadata/JsonValue";
 import { Synopsis } from "@/components/metadata/Synopsis";
+import { PosterFrame } from "@/components/Artwork";
+import { PosterOverlay } from "@/components/manage/PosterOverlay";
 import { ProvenanceBadge } from "@/components/metadata/ProvenanceBadge";
 import { SourceCard } from "@/components/metadata/SourceCard";
 import { StagesProgress } from "@/components/metadata/StagesProgress";
@@ -831,6 +840,16 @@ function IdentityBlock(props: {
   const slotRenamePending =
     slotRename.set.isPending || slotRename.clear.isPending;
 
+  // The identity column's lead image (artwork 3.3): ONLY the served
+  // artwork field, and only its served proxy form rides the authenticated
+  // byte channel (a raw remote URL — an unmaterialized winner's transient —
+  // floors to no lead image: zero external requests, no bearer-token leak).
+  // Absent artwork → no lead image at all: the frame-grab hero fallback
+  // (player poster / photo stage) covers the page exactly as before, and
+  // the Player's poster prop is untouched.
+  const leadArtwork = isServedArtPath(item.artwork) ? item.artwork : null;
+  const leadSrc = useArtworkObjectUrl(leadArtwork);
+
   // The serial case: resolve the episode's series row through the shared
   // series cache (keyed ["series", library] — the same entry the collection
   // page reads), matched BY PATH on the parsed series anchor — never on a
@@ -888,6 +907,14 @@ function IdentityBlock(props: {
       <p className="break-all font-mono text-xs text-muted-foreground">
         {item.relative_path}
       </p>
+
+      {leadArtwork !== null ? (
+        <PosterFrame
+          src={leadSrc}
+          name={heading}
+          className="w-40 rounded-md border object-cover"
+        />
+      ) : null}
 
       {identityFields.length > 0 ? (
         <div className="flex flex-col gap-2">
@@ -1011,6 +1038,9 @@ function ItemActions(props: {
     props.item.id,
   ]);
   const unidentified = !present(props.item.display_name);
+  // The poster management entry (artwork 3.4): a ⋯ menu row opening the
+  // overlay — local state, the menu stays the one entry surface.
+  const [posterOpen, setPosterOpen] = useState(false);
 
   // The series row arrives RESOLVED from the identity block (matched BY
   // PATH on the parsed series anchor through the shared series cache —
@@ -1025,79 +1055,99 @@ function ItemActions(props: {
   const qc = useQueryClient();
 
   return (
-    <CardActions
-      triggerLabel={`Actions for ${props.heading}`}
-      triggerClassName="cardact-trigger--inline"
-      pending={
-        set.isPending ||
-        clear.isPending ||
-        seriesRename.set.isPending ||
-        seriesRename.clear.isPending
-      }
-      identifyFirst={unidentified}
-      identify={
-        chain !== undefined
-          ? (ctl) => (
-              <IdentifyView
-                itemId={props.item.id}
-                chain={chain}
-                invalidate={["item", props.item.id]}
-                onCollapse={ctl.collapse}
-                onBack={ctl.back}
-              />
-            )
-          : undefined
-      }
-      refresh={
-        refreshSources !== undefined
-          ? (ctl) => (
-              <RefreshView
-                libraryId={props.item.library_id}
-                rowId={props.item.id}
-                sources={refreshSources}
-                onBack={ctl.back}
-              />
-            )
-          : undefined
-      }
-      rename={(ctl) => (
-        <RenameTitle
-          entityLabel={props.heading}
-          initial={props.item.title_override ?? ""}
-          set={set}
-          clear={clear}
-          onCollapse={ctl.collapse}
-          onBack={ctl.back}
-        />
-      )}
-      renameSeries={
-        series !== null
-          ? (ctl) => (
-              <RenameTitle
-                entityLabel={
-                  present(series.display_name)
-                    ? String(series.display_name)
-                    : series.relative_path
-                }
-                initial={series.title_override ?? ""}
-                set={seriesRename.set}
-                clear={seriesRename.clear}
-                onCollapse={() => {
-                  // The series override recomposes names everywhere the
-                  // show surfaces — the series cards and every items list
-                  // follow the item read the hook already invalidates.
-                  void qc.invalidateQueries({
-                    queryKey: ["series", props.item.library_id],
-                  });
-                  void qc.invalidateQueries({ queryKey: ["items"] });
-                  ctl.collapse();
-                }}
-                onBack={ctl.back}
-              />
-            )
-          : undefined
-      }
-    />
+    <>
+      <CardActions
+        triggerLabel={`Actions for ${props.heading}`}
+        triggerClassName="cardact-trigger--inline"
+        pending={
+          set.isPending ||
+          clear.isPending ||
+          seriesRename.set.isPending ||
+          seriesRename.clear.isPending
+        }
+        identifyFirst={unidentified}
+        identify={
+          chain !== undefined
+            ? (ctl) => (
+                <IdentifyView
+                  itemId={props.item.id}
+                  chain={chain}
+                  invalidate={["item", props.item.id]}
+                  onCollapse={ctl.collapse}
+                  onBack={ctl.back}
+                />
+              )
+            : undefined
+        }
+        refresh={
+          refreshSources !== undefined
+            ? (ctl) => (
+                <RefreshView
+                  libraryId={props.item.library_id}
+                  rowId={props.item.id}
+                  sources={refreshSources}
+                  onBack={ctl.back}
+                />
+              )
+            : undefined
+        }
+        rename={(ctl) => (
+          <RenameTitle
+            entityLabel={props.heading}
+            initial={props.item.title_override ?? ""}
+            set={set}
+            clear={clear}
+            onCollapse={ctl.collapse}
+            onBack={ctl.back}
+          />
+        )}
+        renameSeries={
+          series !== null
+            ? (ctl) => (
+                <RenameTitle
+                  entityLabel={
+                    present(series.display_name)
+                      ? String(series.display_name)
+                      : series.relative_path
+                  }
+                  initial={series.title_override ?? ""}
+                  set={seriesRename.set}
+                  clear={seriesRename.clear}
+                  onCollapse={() => {
+                    // The series override recomposes names everywhere the
+                    // show surfaces — the series cards and every items list
+                    // follow the item read the hook already invalidates.
+                    void qc.invalidateQueries({
+                      queryKey: ["series", props.item.library_id],
+                    });
+                    void qc.invalidateQueries({ queryKey: ["items"] });
+                    ctl.collapse();
+                  }}
+                  onBack={ctl.back}
+                />
+              )
+            : undefined
+        }
+        rows={
+          <button
+            type="button"
+            className="cardact-row"
+            onClick={() => setPosterOpen(true)}
+          >
+            Постер…
+          </button>
+        }
+      />
+      <PosterOverlay
+        open={posterOpen}
+        kind="item"
+        entityId={props.item.id}
+        name={props.heading}
+        provenance={props.item.document._provenance?.poster}
+        invalidate={["item", props.item.id]}
+        onClose={() => setPosterOpen(false)}
+      />
+    </>
   );
 }
 
