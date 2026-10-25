@@ -57,6 +57,7 @@ import {
 } from "@/components/metadata/ParserFooter";
 import { JsonValue } from "@/components/metadata/JsonValue";
 import { Synopsis } from "@/components/metadata/Synopsis";
+import InfoColumn from "@/components/watch/InfoColumn";
 import { PosterFrame } from "@/components/Artwork";
 import { PosterOverlay } from "@/components/manage/PosterOverlay";
 import { ProvenanceBadge } from "@/components/metadata/ProvenanceBadge";
@@ -481,13 +482,26 @@ function ItemLoadedView(props: {
       {isVideoItem(item) ? (
         // Media-first, video lane: the player IS the media stage (the
         // thumb rides the <video> as its poster — no separate hero image,
-        // fix-episode-playback R4); the identity column sits RIGHT.
+        // fix-episode-playback R4); the identity column sits RIGHT, headed
+        // by the watch info column (watch-flow-polish 3.2) — the episode's
+        // served narrative (heading, «Серия», «В ролях», the About panel)
+        // above the identity/management block, whose own About panel is
+        // suppressed there (showAbout=false) so the served block renders
+        // exactly once on the watch lane.
         <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
           <section aria-label="Media stage" className="flex min-w-0 flex-col gap-3">
             {player}
             {watchControls}
           </section>
-          <IdentityBlock item={item} doc={doc} presentation={presentation} />
+          <div className="flex min-w-0 flex-col gap-6">
+            <InfoColumn item={item} />
+            <IdentityBlock
+              item={item}
+              doc={doc}
+              presentation={presentation}
+              showAbout={false}
+            />
+          </div>
         </div>
       ) : (
         // Media-first, photo lane: the photo IS the page — full width, the
@@ -792,8 +806,13 @@ function IdentityBlock(props: {
   item: ItemDTO;
   doc: ItemDocument;
   presentation?: ModulePresentation;
+  // showAbout — the Synopsis About panel's mount gate (default true). The
+  // WATCH lane passes false: the watch info column (watch-flow-polish 3.2)
+  // owns the About panel there, and a second identical panel would render
+  // the same served block twice on one page.
+  showAbout?: boolean;
 }): ReactElement {
-  const { item, doc, presentation } = props;
+  const { item, doc, presentation, showAbout = true } = props;
   const identityFields = presentation?.identity_fields ?? [];
 
   // Season/episode eyebrow — config-driven: derived only when the module
@@ -972,12 +991,15 @@ function IdentityBlock(props: {
           user-locked 2026-10-21): an EPISODE shows its SHOW's about (the
           series' SERVED metadata block — the episode's own never carries the
           show's), any other element its own served block. No block on the
-          row → no panel (noise, not information). */}
-      <Synopsis
-        about={
-          series !== null ? series.metadata?.about : item.metadata?.about
-        }
-      />
+          row → no panel (noise, not information). Suppressed on the watch
+          lane — the info column above carries the panel there. */}
+      {showAbout ? (
+        <Synopsis
+          about={
+            series !== null ? series.metadata?.about : item.metadata?.about
+          }
+        />
+      ) : null}
 
       {isVideoItem(item) ? (
         <p className="text-sm text-muted-foreground">

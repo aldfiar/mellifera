@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -1737,5 +1737,140 @@ describe("ItemDetail — served artwork lead image (artwork 3.3)", () => {
       .filter((u) => u.includes("/media"));
     expect(mediaCalls).toEqual(["/api/v1/items/itm_art_ep/media?variant=thumb"]);
     expect(create).toHaveBeenCalled();
+  });
+});
+
+// Watch-flow-polish 3.2 — the watch view's info column: the video lane
+// composes the player LEFT and the watch info column RIGHT, the column
+// carries the episode's blocks from the served ElementMetadata projection,
+// and the About panel lives there EXACTLY once (the identity block's own
+// panel is suppressed on the watch lane — it remains the photo lane's).
+// getItem/getPlayback/getSeries are mocked at the api seam; the bytes travel
+// the global fetch as in the artwork tests above.
+describe("ItemDetail — watch view info column (watch-flow-polish 3.2)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.removeItem(TOKEN_KEY);
+  });
+
+  const INFO_EPISODE: ItemResponse = {
+    item: {
+      ...ITEM_RESPONSE.item,
+      id: "itm_info_ep",
+      status: "ready",
+      display_name: "Проснись, Ария! · S01E02",
+      document: {
+        parsed: { series_relative_path: "Ария (2005)" },
+        sources: { "serial-parser": { season: 1, episode: 2 } },
+      },
+      metadata: {
+        episode: {
+          title: "Пробуждение",
+          description: "Аста просыпается в хижине.",
+        },
+        cast: [{ name: "Аста", role: "Главный герой" }],
+      },
+    },
+  };
+
+  // The series row the episode's PATH anchor resolves to — its served about
+  // block is the About panel's source for an episode.
+  const INFO_SERIES = {
+    id: "ser_1_aria",
+    module_id: "serial",
+    library_id: 1,
+    relative_path: "Ария (2005)",
+    document: {},
+    schema_version: 1,
+    status: "ready",
+    title_override: "",
+    display_name: "Проснись, Ария!",
+    metadata: {
+      about: {
+        source: "shikimori",
+        description: "Действие разворачивается на Аквамарине.",
+      },
+    },
+  };
+
+  it("watch_view_composes_player_and_info_column", async () => {
+    localStorage.setItem(TOKEN_KEY, "tok-info");
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(INFO_EPISODE);
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+    vi.spyOn(apiModule, "getPlayback").mockResolvedValue(HLS_PLAYBACK);
+    // The progress PUT is Player-internal and irrelevant here.
+    vi.spyOn(apiModule, "putProgress").mockResolvedValue({
+      item_id: "itm_info_ep",
+      position_seconds: 0,
+      updated_at: "",
+    });
+    vi.spyOn(apiModule, "getSeries").mockResolvedValue({
+      items: [INFO_SERIES],
+    });
+    // The thumb bytes ride the global fetch; everything else (the progress
+    // list) answers an empty JSON body — no cast photo is served here, so
+    // no art-channel request is expected.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/media")) {
+        return new Response("jpeg-bytes", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        });
+      }
+      return new Response('{"items":[]}', {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    renderAtId("itm_info_ep", freshClient());
+
+    // The player mounts in the Media stage section (the lane's LEFT cell)
+    // and the watch info column in the RIGHT cell — the lane's grid carries
+    // media stage first, info column second.
+    const stage = await screen.findByRole("region", { name: "Media stage" });
+    expect(await screen.findByRole("region", { name: "Player" })).toBeDefined();
+    const column = screen.getByRole("region", { name: "Watch info" });
+    const lane = stage.parentElement as HTMLElement;
+    expect(lane).not.toBeNull();
+    expect(lane.firstElementChild).toBe(stage);
+    expect(
+      stage.compareDocumentPosition(column) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // The column's blocks come from the served projection: the SxxEyy
+    // eyebrow with the served episode title, the «Серия» description, and
+    // the «В ролях» entry.
+    expect(within(column).getByText("S01E02")).toBeDefined();
+    expect(
+      within(column).getByRole("heading", { name: "Пробуждение" }),
+    ).toBeDefined();
+    expect(within(column).getByText("Серия")).toBeDefined();
+    expect(
+      within(column).getByText("Аста просыпается в хижине."),
+    ).toBeDefined();
+    expect(within(column).getByText("В ролях")).toBeDefined();
+    expect(within(column).getByText("Аста")).toBeDefined();
+    expect(within(column).getByText("Главный герой")).toBeDefined();
+
+    // The About panel stands in the info column — the series row's served
+    // block — and renders EXACTLY once on the watch lane: the identity
+    // block no longer duplicates it.
+    const abouts = within(column).getAllByRole("region", { name: "About" });
+    expect(abouts).toHaveLength(1);
+    expect(screen.getAllByRole("region", { name: "About" })).toHaveLength(1);
+    expect(abouts[0].textContent).toContain("Аквамарине");
+
+    // The identity/management block still lives in the same column beneath
+    // (the page's h1 and the resume row) — extended, not restructured.
+    expect(
+      screen.getByRole("heading", {
+        level: 1,
+        name: "Проснись, Ария! · S01E02",
+      }),
+    ).toBeDefined();
+    expect(screen.getByText("Play from the start.")).toBeDefined();
   });
 });
