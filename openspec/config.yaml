@@ -17,6 +17,6 @@ schema: lite
 operations:
   apply:
     guidance:
-      - Do not tick checkboxes in tasks.md; wf owns ticks — `wf change tick <change> <id>` re-runs the box's probe and writes the tick only on probe success.
-      - Never hand-edit or remove `<!-- wf: ... -->` markers (source_fingerprint front matter, wf:probe blocks) in tasks.md or spec deltas.
-      - If your observation disagrees with a recorded tick, re-derivation wins — fix the code or the probe, re-run, and let wf re-tick; never force a tick to match your expectation.
+      - 'The plan is DERIVED, never hand-written: author proposal.md + tasks.md (the pinned register grammar), then wf pipeline init + wf pipeline register --from — pipeline.yaml under .tmp/<feature>/ is machine state; never edit it.'
+      - 'wf owns execution: wf pipeline verify <feature> <task-id> runs the task verify duty once (full stdout live, receipt appended); green AND red both journal — fix the code and re-run, never trust an old receipt.'
+      - 'If your observation disagrees with a recorded green, re-derive — the cmd-match rule de-greens a drifted duty; re-authored work takes a new task id, never a hand edit.'
