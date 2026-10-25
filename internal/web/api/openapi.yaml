@@ -757,6 +757,11 @@ definitions:
       streams_enabled:
         type: boolean
     type: object
+  api.watchDefaultsResponse:
+    properties:
+      auto_next_countdown_seconds:
+        type: integer
+    type: object
 host: localhost:8080
 info:
   contact: {}
@@ -2335,4 +2340,15 @@ paths:
       summary: Set a manual display-title override
       tags:
       - series
+  /watch-defaults:
+    get:
+      operationId: get-watch-defaults
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.watchDefaultsResponse'
+      summary: Watch defaults (auto-next countdown)
+      tags:
+      - watch
 swagger: "2.0"
