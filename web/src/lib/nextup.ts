@@ -173,3 +173,42 @@ export function nextUpEntries(
   }
   return out;
 }
+
+// nextEpisodeAfter — the watch page's sibling pick (watch-flow-polish 2.2):
+// given the episode item being watched and that series' episode items, the
+// LOWEST parsed episode facts strictly AFTER the current item's — the same
+// (season, episode) tuple ordering nextUpEntries establishes — as a
+// NextUpEntry-like pair: the item to deep-link into plus its SxxEyy label
+// (the series row stays with the caller, which composes the served title).
+// null when the current item carries no parseable episode facts (a film
+// never advances) or nothing is strictly after it — no later episode, or
+// the rest carry no parseable facts (the same fallback nextUpEntries
+// omits a series by).
+export function nextEpisodeAfter(
+  current: ItemDTO,
+  items: ItemDTO[],
+): Pick<NextUpEntry, "item" | "label"> | null {
+  const currentFacts = episodeFacts(current);
+  if (!currentFacts) {
+    return null;
+  }
+  let best: EpisodeFacts | null = null;
+  let bestItem: ItemDTO | null = null;
+  for (const item of items) {
+    const facts = episodeFacts(item);
+    if (!facts || !tupleGt(facts, currentFacts)) {
+      continue;
+    }
+    if (!best || tupleGt(best, facts)) {
+      best = facts;
+      bestItem = item;
+    }
+  }
+  if (!best || !bestItem) {
+    return null;
+  }
+  return {
+    item: bestItem,
+    label: `S${String(best.season).padStart(2, "0")}E${String(best.episode).padStart(2, "0")}`,
+  };
+}

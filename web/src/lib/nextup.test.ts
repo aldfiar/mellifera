@@ -5,6 +5,7 @@ import type { ItemDTO, ProgressDTO, SeriesDTO } from "@/lib/api";
 import type { ItemDocument } from "@/lib/document";
 import {
   episodeFacts,
+  nextEpisodeAfter,
   nextUpEntries,
   seriesKey,
   startedSeries,
@@ -303,4 +304,50 @@ describe("moved_core_parity", () => {
       );
     },
   );
+});
+
+// watch-flow-polish 2.2 — table-driven vectors over the watch page's sibling
+// pick: the lowest parsed episode facts strictly AFTER the current item's,
+// on the same (season, episode) tuple ordering the moved core establishes.
+describe("next_episode_after_picks_lowest_strictly_after", () => {
+  it.each([
+    {
+      name: "adjacent pick — watching S01E02, the list's S01E03 is next",
+      current: SHOW(1, 1, 2),
+      items: [SHOW(1, 1, 1), SHOW(1, 1, 2), SHOW(1, 1, 3)],
+      want: { item: SHOW(1, 1, 3), label: "S01E03" },
+    },
+    {
+      name: "skip-across ordering — the lowest strictly-after wins, not the first seen",
+      current: SHOW(1, 1, 4),
+      items: [SHOW(1, 1, 2), SHOW(1, 2, 3), SHOW(1, 2, 1), SHOW(1, 3, 9)],
+      want: { item: SHOW(1, 2, 1), label: "S02E01" },
+    },
+    {
+      name: "equal facts are not strictly after — the current item itself never wins",
+      current: SHOW(1, 1, 2),
+      items: [SHOW(1, 1, 1), SHOW(1, 1, 2)],
+      want: null,
+    },
+    {
+      name: "last episode — nothing strictly after, null",
+      current: SHOW(1, 2, 1),
+      items: [SHOW(1, 1, 3), SHOW(1, 2, 1)],
+      want: null,
+    },
+    {
+      name: "current without episode facts (a film) — null, never guessed",
+      current: item("itm_film", 1, doc({})),
+      items: [SHOW(1, 1, 2)],
+      want: null,
+    },
+    {
+      name: "facts-less candidates are skipped, never fatal",
+      current: SHOW(1, 1, 1),
+      items: [item("itm_x", 1, doc({ seriesPath: "Show" })), SHOW(1, 1, 2)],
+      want: { item: SHOW(1, 1, 2), label: "S01E02" },
+    },
+  ])("nextEpisodeAfter: $name", ({ current, items, want }) => {
+    expect(nextEpisodeAfter(current, items)).toEqual(want);
+  });
 });
