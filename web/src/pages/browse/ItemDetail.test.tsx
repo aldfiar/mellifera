@@ -1874,3 +1874,289 @@ describe("ItemDetail — watch view info column (watch-flow-polish 3.2)", () => 
     expect(screen.getByText("Play from the start.")).toBeDefined();
   });
 });
+
+// ---- Player keyboard control + legend (watch-flow-polish 3.4) --------------
+//
+// The watch view's ONE keydown listener drives the pure playerShortcuts
+// table onto the Player's native <video> (the DOM route — the player owns
+// no imperative handle): Space/←/→/↑/↓/F transport, 0-9 tenths, N/P the
+// series' adjacent episode items in the episodeFacts tuple order (films and
+// unresolved series are no-ops). Text-entry focus silences the table, and
+// the parent's browse arrows stand down on the watch lane. getItem /
+// getPlayback / getSeries / getSeriesEpisodes are mocked at the api seam;
+// the media state (duration, volume, paused) is stamped onto the real jsdom
+// video element per test.
+
+function keyboardEpisode(id: string, season: number, episode: number): ItemResponse {
+  const tag = `s${String(season).padStart(2, "0")}e${String(episode).padStart(2, "0")}`;
+  return {
+    item: {
+      ...ITEM_RESPONSE.item,
+      id,
+      status: "ready",
+      relative_path: `shows/Ария (2005)/${tag}.mkv`,
+      document: {
+        parsed: { series_relative_path: "Ария (2005)" },
+        sources: { "serial-parser": { season, episode } },
+      },
+    },
+  };
+}
+
+const KB_EP1 = keyboardEpisode("kb_ep1", 1, 1);
+const KB_EP2 = keyboardEpisode("kb_ep2", 1, 2);
+const KB_EP3 = keyboardEpisode("kb_ep3", 2, 1); // the season boundary case
+
+const KB_SERIES = {
+  id: "ser_kb_aria",
+  module_id: "serial",
+  library_id: 1,
+  relative_path: "Ария (2005)",
+  document: {},
+  schema_version: 1,
+  status: "ready",
+  title_override: "",
+  display_name: "Проснись, Ария!",
+};
+
+function mockKeyboardWatch(...episodes: ItemResponse[]): void {
+  vi.spyOn(apiModule, "getItem").mockImplementation(async (id: string) => {
+    const hit = episodes.find((candidate) => candidate.item.id === id);
+    if (hit) {
+      return hit;
+    }
+    throw new apiModule.ApiError(404, {
+      code: "not_found",
+      message: "item not found",
+      retryable: false,
+    });
+  });
+  vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+  vi.spyOn(apiModule, "getPlayback").mockResolvedValue(HLS_PLAYBACK);
+  // The progress PUT is Player-internal and irrelevant here.
+  vi.spyOn(apiModule, "putProgress").mockResolvedValue({
+    item_id: episodes[0]?.item.id ?? "",
+    position_seconds: 0,
+    updated_at: "",
+  });
+  vi.spyOn(apiModule, "getSeries").mockResolvedValue({ items: [KB_SERIES] });
+  vi.spyOn(apiModule, "getSeriesEpisodes").mockResolvedValue({
+    items: episodes.map((episode) => episode.item),
+  });
+  // The progress list (the resume row) rides the global fetch.
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    async () =>
+      new Response('{"items":[]}', {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+  );
+}
+
+// stampMedia — pin the media state the transport reads onto the jsdom video
+// element (the accessors live on the prototype; instance own-properties
+// shadow them, the same observable the Player tests read currentTime by).
+function stampMedia(
+  video: HTMLVideoElement,
+  state: { duration?: number; paused?: boolean; volume?: number },
+): void {
+  if (state.duration !== undefined) {
+    Object.defineProperty(video, "duration", {
+      value: state.duration,
+      configurable: true,
+    });
+  }
+  if (state.paused !== undefined) {
+    Object.defineProperty(video, "paused", {
+      value: state.paused,
+      configurable: true,
+    });
+  }
+  if (state.volume !== undefined) {
+    video.volume = state.volume;
+  }
+}
+
+async function renderKeyboardWatch(id: string): Promise<HTMLVideoElement> {
+  renderAtId(id, freshClient());
+  expect(await screen.findByRole("region", { name: "Player" })).toBeDefined();
+  return theVideo();
+}
+
+describe("ItemDetail — player keyboard control (watch-flow-polish 3.4)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("drives the player's video: ±10 s with clamped edges, volume steps, fullscreen, play/pause, digit tenths", async () => {
+    mockKeyboardWatch(KB_EP1, KB_EP2, KB_EP3);
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockResolvedValue(undefined);
+    const pause = vi
+      .spyOn(HTMLMediaElement.prototype, "pause")
+      .mockImplementation(() => {});
+    const video = await renderKeyboardWatch("kb_ep2");
+    stampMedia(video, { duration: 100 });
+    const fullscreen = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(video, "requestFullscreen", {
+      value: fullscreen,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(document, "fullscreenElement", {
+      value: null,
+      configurable: true,
+    });
+
+    // → / ← step ±10 s, clamped at the media's edges: 0% steps left to 0,
+    // and from deep past 90% right clamps onto the duration.
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(video.currentTime).toBe(10);
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(video.currentTime).toBe(0);
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(video.currentTime).toBe(0); // the 0% edge — no negative
+    video.currentTime = 95;
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(video.currentTime).toBe(100); // the >90% edge — never past end
+
+    // Digits seek to the matching tenth of the duration.
+    fireEvent.keyDown(window, { key: "3" });
+    expect(video.currentTime).toBe(30);
+    fireEvent.keyDown(window, { key: "0" });
+    expect(video.currentTime).toBe(0);
+
+    // Volume steps over the native [0, 1] model, clamped both ways.
+    stampMedia(video, { volume: 0.2 });
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    expect(video.volume).toBeCloseTo(0.3);
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    video.volume = 1;
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    expect(video.volume).toBe(1); // clamped high
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    expect(video.volume).toBeCloseTo(0.9);
+
+    // F toggles fullscreen (the enter leg — nothing is fullscreen here).
+    fireEvent.keyDown(window, { key: "f" });
+    expect(fullscreen).toHaveBeenCalledTimes(1);
+
+    // Space toggles playback along the element's paused state.
+    fireEvent.keyDown(window, { key: " " });
+    expect(play).toHaveBeenCalledTimes(1);
+    stampMedia(video, { paused: false });
+    fireEvent.keyDown(window, { key: " " });
+    expect(pause).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores transport keys while a form field owns focus", async () => {
+    mockKeyboardWatch(KB_EP1, KB_EP2, KB_EP3);
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockResolvedValue(undefined);
+    const video = await renderKeyboardWatch("kb_ep2");
+    stampMedia(video, { duration: 100 });
+
+    // The page's own Voiceover <select> is the focused form field: Space
+    // and digits fired ON it bubble to the window listener, but the guard
+    // silences the table.
+    const select = screen.getByLabelText("Voiceover");
+    fireEvent.keyDown(select, { key: " " });
+    fireEvent.keyDown(select, { key: "5" });
+    expect(play).not.toHaveBeenCalled();
+    expect(video.currentTime).toBe(0);
+
+    // Control: the same Space outside the form field toggles playback.
+    fireEvent.keyDown(window, { key: " " });
+    expect(play).toHaveBeenCalledTimes(1);
+  });
+
+  it("steps N/P through the series' episode facts with no wrap at the edges", async () => {
+    mockKeyboardWatch(KB_EP1, KB_EP2, KB_EP3);
+
+    // From S01E02, N takes the season boundary to S02E01 — the (season,
+    // episode) tuple order nextup.ts establishes.
+    await renderKeyboardWatch("kb_ep2");
+    fireEvent.keyDown(window, { key: "n" });
+    expect(
+      (await screen.findAllByText("shows/Ария (2005)/s02e01.mkv")).length,
+    ).toBeGreaterThan(0);
+    // The stepped-to page's own listener arms with its player — wait for it
+    // before the next keystroke.
+    await screen.findByRole("region", { name: "Player" });
+
+    // P mirrors back onto the highest episode strictly before S02E01.
+    fireEvent.keyDown(window, { key: "p" });
+    expect(
+      (await screen.findAllByText("shows/Ария (2005)/s01e02.mkv")).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("leaves N a no-op on the last episode — no wrap", async () => {
+    mockKeyboardWatch(KB_EP1, KB_EP2, KB_EP3);
+
+    await renderKeyboardWatch("kb_ep3");
+    fireEvent.keyDown(window, { key: "n" });
+    await act(async () => {});
+    expect(
+      screen.getAllByText("shows/Ария (2005)/s02e01.mkv").length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("leaves P a no-op on the first episode — no wrap", async () => {
+    mockKeyboardWatch(KB_EP1, KB_EP2, KB_EP3);
+
+    await renderKeyboardWatch("kb_ep1");
+    fireEvent.keyDown(window, { key: "p" });
+    await act(async () => {});
+    expect(
+      screen.getAllByText("shows/Ария (2005)/s01e01.mkv").length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("renders the legend row under the player and keeps watch-lane arrows out of the browse stepper", async () => {
+    mockKeyboardWatch(KB_EP1, KB_EP2, KB_EP3);
+    const HANDOFF: BrowseHandoff = {
+      items: ["kb_ep1", "kb_ep2"],
+      position: 0,
+      backTo: "/collections/1",
+    };
+    render(
+      <QueryClientProvider client={freshClient()}>
+        <MemoryRouter
+          initialEntries={[
+            { pathname: "/items/kb_ep1", state: HANDOFF },
+            HANDOFF.backTo,
+          ]}
+          initialIndex={0}
+        >
+          <Routes>
+            <Route path="/items/:id" element={<ItemDetail />} />
+            <Route path="/collections/:id" element={<p>Collection page</p>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    // The player mounts when the descriptor resolves; the legend rides it.
+    const playerRegion = await screen.findByRole("region", { name: "Player" });
+    const stage = screen.getByRole("region", { name: "Media stage" });
+    const video = theVideo();
+    stampMedia(video, { duration: 100 });
+
+    // The legend mounts under the player inside the media stage.
+    const legend = screen.getByTestId("player-legend");
+    expect(stage.contains(legend)).toBe(true);
+    expect(
+      playerRegion.compareDocumentPosition(legend) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // The watch lane's ←/→ seek the player; the handed-off browse view does
+    // NOT step (the parent's arrows stand down here — the photo lane's
+    // stepping is pinned by the browse tests above).
+    expect(screen.getByText("Position 1 / 2")).toBeDefined();
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(video.currentTime).toBe(10);
+    expect(screen.getByText("Position 1 / 2")).toBeDefined();
+  });
+});

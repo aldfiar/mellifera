@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactElement,
 } from "react";
@@ -34,6 +35,8 @@ import {
   useItemMedia,
   useLibrary,
   useProgressList,
+  useSeries,
+  useSeriesEpisodes,
 } from "@/lib/queries";
 import {
   convertToVtt,
@@ -41,7 +44,17 @@ import {
   type SubtitleSidecar,
 } from "@/lib/subtitles";
 import type { ItemDocument } from "@/lib/document";
+import {
+  episodeFacts,
+  nextEpisodeAfter,
+  type EpisodeFacts,
+} from "@/lib/nextup";
+import {
+  applyShortcut,
+  type PlayerShortcutActions,
+} from "@/lib/playerShortcuts";
 import Player from "@/components/playback/Player";
+import PlayerLegend from "@/components/playback/PlayerLegend";
 import {
   provenanceEntries,
   sourcesOf,
@@ -224,17 +237,21 @@ export default function ItemDetail(): ReactElement {
 
   // Keyboard — ←/→ browse; S toggles the slideshow (photos); Esc stops a
   // RUNNING slideshow first and only navigates back when it is not running
-  // (6.4). No handoff state → no listeners at all.
+  // (6.4). No handoff state → no listeners at all. The arrows keep the
+  // PHOTO/browse lane only: on the watch view (a video item) ←/→ belong to
+  // the player transport (watch-flow-polish 3.4) — the watch view's own
+  // listener scopes itself, this one stands down there. Esc stays shared.
   const isPhoto = item !== undefined && isPhotoItem(item);
+  const isVideo = item !== undefined && isVideoItem(item);
   useEffect(() => {
     if (!view) {
       return;
     }
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === "ArrowRight") {
+      if (!isVideo && event.key === "ArrowRight") {
         event.preventDefault();
         step(1);
-      } else if (event.key === "ArrowLeft") {
+      } else if (!isVideo && event.key === "ArrowLeft") {
         event.preventDefault();
         step(-1);
       } else if (event.key === "Escape") {
@@ -249,7 +266,7 @@ export default function ItemDetail(): ReactElement {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [view, step, slideshowRunning, isPhoto, navigate]);
+  }, [view, step, slideshowRunning, isPhoto, isVideo, navigate]);
 
   if (isLoading) {
     return <LoadingState label="Loading item…" />;
@@ -317,6 +334,11 @@ function ItemLoadedView(props: {
   const { item, view, step, slideshowRunning, onToggleSlideshow } = props;
   const doc = item.document;
   const isPhoto = isPhotoItem(item);
+  // The watch-view scope (watch-flow-polish 3.4): a video item's page owns
+  // the player transport — the browse hint and the parent's arrow handler
+  // both stand down on it.
+  const isVideo = isVideoItem(item);
+  const navigate = useNavigate();
   const identifiers = Object.entries(doc.identifiers ?? {});
   const sources = sourcesOf(doc);
   const provenance = provenanceEntries(doc);
@@ -383,6 +405,36 @@ function ItemLoadedView(props: {
   const voiceovers: VoiceoverDTO[] = playback.data?.voiceovers ?? [];
   const [voiceover, setVoiceover] = useState(0); // 0 = embedded audio
 
+  // The series' episode list (watch-flow-polish 3.4): the same cached pair
+  // of reads AutoNext warms — the series row matched BY PATH on the parsed
+  // anchor (never a title; serial episodes carry none), then the episode
+  // list keyed ["series-episodes", seriesId]. N/P ride the adjacent
+  // (season, episode) tuple neighbors — the ordering nextup.ts establishes;
+  // a film (no facts) or an unresolved series leaves both picks null —
+  // calm no-ops, never a wrap and never a guessed id.
+  const mediaStageRef = useRef<HTMLElement | null>(null);
+  const facts = episodeFacts(item);
+  const seriesList = useSeries(facts === null ? Number.NaN : item.library_id);
+  const series = useMemo(
+    () =>
+      facts === null
+        ? null
+        : (seriesList.data?.items.find(
+              (candidate) => candidate.relative_path === facts.seriesPath,
+            ) ?? null),
+    [facts, seriesList.data],
+  );
+  const seriesEpisodes = useSeriesEpisodes(series === null ? "" : series.id);
+  const episodeItems = seriesEpisodes.data?.items ?? [];
+  const nextAdjacent = useMemo(
+    () => (series === null ? null : nextEpisodeAfter(item, episodeItems)),
+    [series, item, episodeItems],
+  );
+  const prevAdjacent = useMemo(
+    () => (series === null ? null : prevEpisodeBefore(item, episodeItems)),
+    [series, item, episodeItems],
+  );
+
   // Footer groups — the parser-ordered metadata footer (element-pages 5.3):
   // the collection chain in its configured order (module presentation), then
   // the element-attached parsers (extra_parsers) marked element-only. A chain
@@ -404,6 +456,11 @@ function ItemLoadedView(props: {
         elementOnly: true,
       })),
   ];
+
+  // watchReady — the watch view is live: the video lane mounts its Player
+  // (the descriptor resolved). The keyboard listener and the legend gate on
+  // it — no player, no transport surface to drive.
+  const watchReady = isVideoItem(item) && playback.data !== undefined;
 
   const mediaStage = hero !== null ? (
     <HeroImage src={hero} alt={item.relative_path} />
@@ -432,6 +489,112 @@ function ItemLoadedView(props: {
         onVoiceoverSelect={setVoiceover}
       />
     ) : null;
+
+  // The transport actions (watch-flow-polish 3.4): the DOM route onto the
+  // Player's native <video> — the player owns no imperative handle, the
+  // standard media element IS the surface — clamped to the media's real
+  // duration and the native [0, 1] volume; N/P navigate like any other
+  // view step. No video mounted → every action is a calm no-op.
+  const actions: PlayerShortcutActions = useMemo(() => {
+    const video = (): HTMLVideoElement | null =>
+      mediaStageRef.current?.querySelector("video") ?? null;
+    const clamp = (value: number, low: number, high: number): number =>
+      Math.min(Math.max(value, low), high);
+    return {
+      togglePlay: () => {
+        const media = video();
+        if (media === null) {
+          return;
+        }
+        if (media.paused) {
+          void media.play().catch(() => {
+            // autoplay refusal — the native controls remain the path
+          });
+        } else {
+          media.pause();
+        }
+      },
+      seekBy: (deltaSeconds) => {
+        const media = video();
+        if (media === null) {
+          return;
+        }
+        const duration = Number.isFinite(media.duration)
+          ? media.duration
+          : null;
+        media.currentTime =
+          duration !== null
+            ? clamp(media.currentTime + deltaSeconds, 0, duration)
+            : media.currentTime + deltaSeconds;
+      },
+      stepVolume: (delta) => {
+        const media = video();
+        if (media === null) {
+          return;
+        }
+        if (delta > 0) {
+          media.muted = false; // raising the volume restores an audible voice
+        }
+        media.volume = clamp(media.volume + delta, 0, 1);
+      },
+      toggleFullscreen: () => {
+        const media = video();
+        if (media === null) {
+          return;
+        }
+        if (document.fullscreenElement !== null) {
+          void document.exitFullscreen().catch(() => {
+            // exit refusal — nothing to fall back to
+          });
+        } else {
+          void media.requestFullscreen().catch(() => {
+            // request refusal (user-gesture rules) — native controls remain
+          });
+        }
+      },
+      nextEpisode: () => {
+        if (nextAdjacent !== null) {
+          navigate(`/items/${nextAdjacent.item.id}`);
+        }
+      },
+      prevEpisode: () => {
+        if (prevAdjacent !== null) {
+          navigate(`/items/${prevAdjacent.id}`);
+        }
+      },
+      seekToFraction: (fraction) => {
+        const media = video();
+        if (media === null) {
+          return;
+        }
+        if (Number.isFinite(media.duration) && media.duration > 0) {
+          media.currentTime = clamp(
+            media.duration * fraction,
+            0,
+            media.duration,
+          );
+        }
+      },
+    };
+  }, [nextAdjacent, prevAdjacent, navigate]);
+
+  // ONE keydown listener for the watch view (watch-flow-polish 3.4): the
+  // pure table normalizes the key, these actions act, and a handled key
+  // drops its browser default (Space's scroll, the arrows'). The text-entry
+  // guard lives inside applyShortcut; cleanup on unmount — the per-item key
+  // above re-arms the listener per episode.
+  useEffect(() => {
+    if (!watchReady) {
+      return;
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (applyShortcut(event, actions)) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [watchReady, actions]);
 
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6">
@@ -473,9 +636,11 @@ function ItemLoadedView(props: {
             </button>
           ) : null}
           <span className="text-xs text-muted-foreground">
-            {`←/→ browse${isPhoto ? " · S slideshow" : ""} · Esc ${
-              isPhoto ? "stop / back" : "back"
-            }`}
+            {isVideo
+              ? "Esc back"
+              : `←/→ browse${isPhoto ? " · S slideshow" : ""} · Esc ${
+                  isPhoto ? "stop / back" : "back"
+                }`}
           </span>
         </nav>
       ) : null}
@@ -489,8 +654,13 @@ function ItemLoadedView(props: {
         // suppressed there (showAbout=false) so the served block renders
         // exactly once on the watch lane.
         <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-          <section aria-label="Media stage" className="flex min-w-0 flex-col gap-3">
+          <section
+            aria-label="Media stage"
+            ref={mediaStageRef}
+            className="flex min-w-0 flex-col gap-3"
+          >
             {player}
+            {watchReady ? <PlayerLegend /> : null}
             {watchControls}
           </section>
           <div className="flex min-w-0 flex-col gap-6">
@@ -1184,6 +1354,42 @@ function seriesAnchor(item: ItemDTO): string | null {
   }
   const value = (parsed as Record<string, unknown>).series_relative_path;
   return typeof value === "string" && value !== "" ? value : null;
+}
+
+// prevEpisodeBefore — the P key's sibling pick (watch-flow-polish 3.4): the
+// mirror of nextup.ts's nextEpisodeAfter — the HIGHEST parsed episode facts
+// strictly BEFORE the current item's, on the same (season, episode) tuple
+// ordering nextup.ts establishes. null when the current item carries no
+// parseable facts (a film never steps) or nothing is strictly before it —
+// no wrap. Local because nextup.ts is the moved Home core, not a growing
+// grab-bag; the N/P wiring tests pin the ordering parity with nextEpisodeAfter.
+function prevEpisodeBefore(current: ItemDTO, items: ItemDTO[]): ItemDTO | null {
+  const currentFacts = episodeFacts(current);
+  if (currentFacts === null) {
+    return null;
+  }
+  let best: EpisodeFacts | null = null;
+  let bestItem: ItemDTO | null = null;
+  for (const candidate of items) {
+    const facts = episodeFacts(candidate);
+    if (
+      facts === null ||
+      facts.season > currentFacts.season ||
+      (facts.season === currentFacts.season &&
+        facts.episode >= currentFacts.episode)
+    ) {
+      continue;
+    }
+    if (
+      best === null ||
+      facts.season > best.season ||
+      (facts.season === best.season && facts.episode > best.episode)
+    ) {
+      best = facts;
+      bestItem = candidate;
+    }
+  }
+  return bestItem;
 }
 
 // HeroImage — the media stage's lead image, filling its column with its
