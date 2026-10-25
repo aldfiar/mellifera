@@ -78,6 +78,7 @@ every other malformed/missing value falls back to its default with a warning
 | `MELLIFERA_FRAME_GRABBER` | `bin/frame-grabber` | Plugin binary path (needs `ffmpeg` at runtime). |
 | `MELLIFERA_SHIKIMORI` | `bin/shikimori` | Plugin binary path (fetches shikimori.io anonymously — needs outbound HTTPS). |
 | `MELLIFERA_ART_INTERVAL` | `6h` | The janitor `art` task's settle+GC cadence (art-store housekeeping — staged lookups materialize, stale fetch rows + orphaned blobs GC; artwork). `0` or negative disables the art task ALONE — the `streams` task keeps its fixed 60 s cadence. |
+| `MELLIFERA_AUTO_NEXT_COUNTDOWN_SECONDS` | `10` | The auto-next card countdown the SPA reads from `GET /api/v1/watch-defaults` (watch-flow-polish) — seconds until the next episode auto-starts. Floored at 1 (a non-positive value must never make auto-next an instant jump); malformed falls back to 10 with a warning. |
 | `MELLIFERA_ENRICH_WORKERS` | `4` | Async worker-pool size (§5). |
 | `MELLIFERA_ENRICH_MAX_ATTEMPTS` | `3` | In-memory retries per source before terminal `exhausted`. |
 | `MELLIFERA_ENRICH_LEASE_TTL` | `60s` | Per-item in-memory lease lifetime (lazy expiry). |
