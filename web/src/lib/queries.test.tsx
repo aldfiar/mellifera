@@ -3,6 +3,9 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import * as apiModule from "@/lib/api";
 import type { ListItemsParams } from "@/lib/api";
@@ -417,5 +420,68 @@ describe("poster hooks — the useTitleOverride pattern (artwork 3.1)", () => {
     expect(deleteSpy).toHaveBeenCalledWith("item", "itm_1_9");
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["posters", "item", "itm_1_9"] });
     invalidateSpy.mockRestore();
+  });
+});
+
+// ---- the golden wire joint (watch-flow-polish 4.1) ----------------------------
+// ONE committed fixture — internal/api/testdata/golden/watch_defaults.json —
+// IS the exact wire body of GET /api/v1/watch-defaults, and BOTH halves of the
+// joint read it. The Go half is TestWatchDefaultsGolden
+// (internal/api/watchdefaults_golden_test.go): the handler wired with the
+// fixture's value must serve those bytes verbatim. This block is the SPA half:
+// the REAL client path — fetchWatchDefaults → apiRequest, and the
+// useWatchDefaults query — parses THE SAME committed bytes (only the fetch
+// transport is stubbed; the bytes are the producer's own fixture, the
+// naming.test.ts reading idiom). A one-sided change — the handler reshapes or
+// defaults, the client renames or bakes a fallback, the fixture edited for one
+// suite alone — fails the other side's suite by construction.
+
+const goldenModuleDir = path.dirname(
+  import.meta.url.startsWith("file:") ? fileURLToPath(import.meta.url) : import.meta.url,
+);
+const WATCH_DEFAULTS_GOLDEN_PATH = path.resolve(
+  goldenModuleDir,
+  "../../../internal/api/testdata/golden/watch_defaults.json",
+);
+const watchDefaultsGoldenText = readFileSync(WATCH_DEFAULTS_GOLDEN_PATH, "utf8");
+const watchDefaultsGolden = JSON.parse(watchDefaultsGoldenText) as Record<string, unknown>;
+
+describe("watch_defaults_wire_contract_golden", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("fetchWatchDefaults parses the committed wire body verbatim — the served shape and nothing else", async () => {
+    // The wire contract itself, pinned on the committed bytes: exactly ONE
+    // key, spelled exactly as watch_defaults.go's json tag, holding an
+    // integer — the shape WatchDefaultsDTO mirrors.
+    expect(Object.keys(watchDefaultsGolden)).toEqual(["auto_next_countdown_seconds"]);
+    expect(Number.isInteger(watchDefaultsGolden.auto_next_countdown_seconds)).toBe(true);
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(watchDefaultsGoldenText, {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await expect(apiModule.fetchWatchDefaults()).resolves.toEqual(watchDefaultsGolden);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("/api/v1/watch-defaults");
+  });
+
+  it("useWatchDefaults surfaces the served countdown unchanged — no reshaping, no baked default", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(watchDefaultsGoldenText, {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(() => useWatchDefaults(), { wrapper: wrapper(client) });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(watchDefaultsGolden);
+    expect(result.current.data?.auto_next_countdown_seconds).toBe(
+      watchDefaultsGolden.auto_next_countdown_seconds,
+    );
   });
 });

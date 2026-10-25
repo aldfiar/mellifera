@@ -1,0 +1,129 @@
+{
+  "note": "watch-flow-polish 4.1 golden joint: ONE fixture pins BOTH halves of the chapters-to-chip contract. Each vector carries a verbatim ffprobe chapters blob (the projector's production input — cmd/mellifera decodes the stored document with plain json.Unmarshal, so numbers are float64), the sections internal/stream/describe.go projectChapters MUST emit (the served descriptor shape), and the expected skip classification per section — intro | credits | null — that web/src/lib/skipSections.ts must reproduce. Go half: TestSectionsGolden (internal/stream/sections_golden_test.go). SPA half: sections_projection_golden (web/src/lib/skipSections.test.ts). A change on either side alone fails that side's suite.",
+  "vectors": [
+    {
+      "name": "served_lexicons_classify_both_languages",
+      "note": "the full intro/credits lexicon on real ffprobe chapter shapes (titles nested under tags.title, boundaries from the primary *_time strings): every lexicon word — intro: intro/opening/опенинг; credits: credits/ending/ed/титры — classifies, Cyrillic included",
+      "ffprobe": {
+        "chapters": [
+          { "id": 0, "time_base": "1/1000", "start": 0, "start_time": "0.000000", "end": 90000, "end_time": "90.000000", "tags": { "title": "Intro" } },
+          { "id": 1, "time_base": "1/1000", "start": 90000, "start_time": "90.000000", "end": 180000, "end_time": "180.000000", "tags": { "title": "Opening" } },
+          { "id": 2, "time_base": "1/1000", "start": 180000, "start_time": "180.000000", "end": 268000, "end_time": "268.000000", "tags": { "title": "опенинг" } },
+          { "id": 3, "time_base": "1/1000", "start": 1380000, "start_time": "1380.000000", "end": 1470000, "end_time": "1470.000000", "tags": { "title": "Credits" } },
+          { "id": 4, "time_base": "1/1000", "start": 1470000, "start_time": "1470.000000", "end": 1530000, "end_time": "1530.000000", "tags": { "title": "Ending" } },
+          { "id": 5, "time_base": "1/1000", "start": 1530000, "start_time": "1530.000000", "end": 1590000, "end_time": "1590.000000", "tags": { "title": "ED" } },
+          { "id": 6, "time_base": "1/1000", "start": 1590000, "start_time": "1590.000000", "end": 1680000, "end_time": "1680.000000", "tags": { "title": "Титры" } }
+        ]
+      },
+      "expected_sections": [
+        { "kind": "chapter", "start": 0, "end": 90, "title": "Intro" },
+        { "kind": "chapter", "start": 90, "end": 180, "title": "Opening" },
+        { "kind": "chapter", "start": 180, "end": 268, "title": "опенинг" },
+        { "kind": "chapter", "start": 1380, "end": 1470, "title": "Credits" },
+        { "kind": "chapter", "start": 1470, "end": 1530, "title": "Ending" },
+        { "kind": "chapter", "start": 1530, "end": 1590, "title": "ED" },
+        { "kind": "chapter", "start": 1590, "end": 1680, "title": "Титры" }
+      ],
+      "expected_skip": ["intro", "intro", "intro", "credits", "credits", "credits", "credits"]
+    },
+    {
+      "name": "unclassifiable_titles_project_but_classify_to_nothing",
+      "note": "story chapters — Russian and English, muxer-styled — project with their titles carried through and classify to nothing: the lexicon never stretches",
+      "ffprobe": {
+        "chapters": [
+          { "id": 0, "time_base": "1/1000", "start": 0, "start_time": "0.000000", "end": 120000, "end_time": "120.000000", "tags": { "title": "Пролог" } },
+          { "id": 1, "time_base": "1/1000", "start": 120000, "start_time": "120.000000", "end": 1380000, "end_time": "1380.000000", "tags": { "title": "Chapter 02" } }
+        ]
+      },
+      "expected_sections": [
+        { "kind": "chapter", "start": 0, "end": 120, "title": "Пролог" },
+        { "kind": "chapter", "start": 120, "end": 1380, "title": "Chapter 02" }
+      ],
+      "expected_skip": [null, null]
+    },
+    {
+      "name": "end_less_and_degenerate_chapters_carry_no_end",
+      "note": "an end-less chapter (no end/end_time facts) and a degenerate zero-width chapter (end == start) both project WITHOUT an end key — the classifier requires a real range, so neither may fabricate a chip",
+      "ffprobe": {
+        "chapters": [
+          { "id": 0, "time_base": "1/1000", "start": 0, "start_time": "0.000000", "end": 90000, "end_time": "90.000000", "tags": { "title": "Intro" } },
+          { "id": 1, "time_base": "1/1000", "start": 90000, "start_time": "90.000000", "tags": { "title": "Opening" } },
+          { "id": 2, "time_base": "1/1000", "start": 1500000, "start_time": "1500.000000", "end": 1500000, "end_time": "1500.000000", "tags": { "title": "Титры" } }
+        ]
+      },
+      "expected_sections": [
+        { "kind": "chapter", "start": 0, "end": 90, "title": "Intro" },
+        { "kind": "chapter", "start": 90, "title": "Opening" },
+        { "kind": "chapter", "start": 1500, "title": "Титры" }
+      ],
+      "expected_skip": ["intro", null, null]
+    },
+    {
+      "name": "untitled_chapter_classifies_to_nothing",
+      "note": "a chapter whose tags carry no title projects untitled — the descriptor omits the key, the classifier answers nothing",
+      "ffprobe": {
+        "chapters": [
+          { "id": 0, "time_base": "1/1000", "start": 0, "start_time": "0.000000", "end": 120000, "end_time": "120.000000", "tags": { "language": "und" } }
+        ]
+      },
+      "expected_sections": [
+        { "kind": "chapter", "start": 0, "end": 120 }
+      ],
+      "expected_skip": [null]
+    },
+    {
+      "name": "unordered_input_projects_sorted_by_start",
+      "note": "the descriptor's served order is start-ascending no matter the blob's order — the same order skipSections must preserve when it compacts the classified ranges",
+      "ffprobe": {
+        "chapters": [
+          { "id": 2, "time_base": "1/1000", "start": 1410000, "start_time": "1410.000000", "end": 1500000, "end_time": "1500.000000", "tags": { "title": "Титры" } },
+          { "id": 0, "time_base": "1/1000", "start": 0, "start_time": "0.000000", "end": 90000, "end_time": "90.000000", "tags": { "title": "опенинг" } },
+          { "id": 1, "time_base": "1/1000", "start": 300000, "start_time": "300.000000", "end": 1410000, "end_time": "1410.000000", "tags": { "title": "Глава 2" } }
+        ]
+      },
+      "expected_sections": [
+        { "kind": "chapter", "start": 0, "end": 90, "title": "опенинг" },
+        { "kind": "chapter", "start": 300, "end": 1410, "title": "Глава 2" },
+        { "kind": "chapter", "start": 1410, "end": 1500, "title": "Титры" }
+      ],
+      "expected_skip": ["intro", null, "credits"]
+    },
+    {
+      "name": "unusable_chapter_is_dropped",
+      "note": "a chapter without a usable start (unparseable *_time, no numeric raw) never reaches the descriptor — a section the SPA cannot seek to must not be served at all",
+      "ffprobe": {
+        "chapters": [
+          { "id": 0, "time_base": "1/1000", "start_time": "n/a", "end_time": "90.000000", "tags": { "title": "broken" } },
+          { "id": 1, "time_base": "1/1000", "start": 0, "start_time": "0.000000", "end": 90000, "end_time": "90.000000", "tags": { "title": "Intro" } }
+        ]
+      },
+      "expected_sections": [
+        { "kind": "chapter", "start": 0, "end": 90, "title": "Intro" }
+      ],
+      "expected_skip": ["intro"]
+    },
+    {
+      "name": "raw_time_base_boundaries_convert",
+      "note": "the raw fallback: chapters without *_time strings convert their integer boundaries through time_base (1/1000 and 1/90000) — the converted seconds classify like any other",
+      "ffprobe": {
+        "chapters": [
+          { "id": 0, "time_base": "1/1000", "start": 45000, "end": 135000, "tags": { "title": "Intro" } },
+          { "id": 1, "time_base": "1/90000", "start": 4050000, "end": 12150000, "tags": { "title": "ED" } }
+        ]
+      },
+      "expected_sections": [
+        { "kind": "chapter", "start": 45, "end": 135, "title": "Intro" },
+        { "kind": "chapter", "start": 45, "end": 135, "title": "ED" }
+      ],
+      "expected_skip": ["intro", "credits"]
+    }
+  ],
+  "web_defensive": {
+    "note": "The projection never produces these kinds (marker is reserved, v1) — this block pins the classifier's kind-guard on served-typed shapes; the Go golden does not run projectChapters over it.",
+    "sections": [
+      { "kind": "marker", "start": 0, "end": 90, "title": "Intro" },
+      { "kind": "intro", "start": 0, "end": 90, "title": "Intro" }
+    ],
+    "expected_skip": [null, null]
+  }
+}
