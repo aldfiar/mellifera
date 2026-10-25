@@ -175,6 +175,15 @@ type Deps struct {
 	// degrades to absence), mirroring Pairing. Built in cmd/mellifera over
 	// art.NewService.
 	Art *art.Service
+	// WatchDefaults is the auto-next countdown seconds (watch-flow-polish
+	// D1): resolved ONCE at the composition root from
+	// MELLIFERA_AUTO_NEXT_COUNTDOWN_SECONDS (default 10, floored at 1 — a
+	// zero/negative knob would make auto-next an instant jump) and served
+	// VERBATIM by GET /watch-defaults. A plain int, not a closure: there is
+	// no domain call behind it, the configured value IS the answer — api
+	// never reads env or config itself (INV1 pure delegation; the floor is
+	// the composition root's job, not the handler's).
+	WatchDefaults int
 }
 
 // Role is the authorization role resolved from the credential. The admin
@@ -290,6 +299,11 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Get("/progress", h.listProgress)
 		r.Get("/progress/{item_id}", h.getProgress)
 		r.Put("/progress/{item_id}", h.putProgress)
+		// Watch defaults (watch-flow-polish D1): the auto-next countdown the
+		// SPA reads before offering the next episode — the wired Deps int
+		// served verbatim (never env-read here). Read-only viewer data, so
+		// the browse group beside progress.
+		r.Get("/watch-defaults", h.watchDefaults)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(authMiddleware(h.deps.AdminToken, h.deps.Pairing))
