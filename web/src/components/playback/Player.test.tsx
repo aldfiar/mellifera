@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
+import type { ReactElement } from "react";
 
 import * as apiModule from "@/lib/api";
-import type { PlaybackDescriptor } from "@/lib/api";
+import type { ItemDTO, PlaybackDescriptor } from "@/lib/api";
 import Player from "@/components/playback/Player";
 
 // Box 3.4 — the player's Vitest floor, one describe per acceptance axis:
@@ -58,6 +61,41 @@ function hlsDescriptor(overrides: Partial<PlaybackDescriptor>): PlaybackDescript
   return { ...HLS_DESCRIPTOR, ...overrides };
 }
 
+// FILM_ITEM — the benign AutoNext read answer (watch-flow-polish 3.3): a
+// film-shaped item carries no episode facts, so the auto-next card never
+// renders in these player-scoped vectors, whatever the ended edge does.
+const FILM_ITEM: ItemDTO = {
+  id: "itm_1_9",
+  module_id: "tv",
+  library_id: 1,
+  file_id: "file-9",
+  relative_path: "Film.mkv",
+  media_type: "tv",
+  document: {},
+  schema_version: 1,
+  status: "ready",
+};
+
+// wrap — the harness every render in this file rides: AutoNext (mounted
+// inside the Player overlay since watch-flow-polish 3.3) needs a
+// QueryClient and a Router context. The client is pre-seeded with the
+// benign film-shape answers at staleTime Infinity, so the overlay's reads
+// resolve synchronously from the cache — no network, no async updates.
+function wrap(ui: ReactElement): ReactElement {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  });
+  client.setQueryData(["item", "itm_1_9"], { item: FILM_ITEM });
+  client.setQueryData(["watch-defaults"], {
+    auto_next_countdown_seconds: 10,
+  });
+  return (
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={["/items/itm_1_9"]}>{ui}</MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
 function renderPlayer(
   descriptor: PlaybackDescriptor,
   props?: {
@@ -68,7 +106,7 @@ function renderPlayer(
     poster?: string | null;
   },
 ): void {
-  render(<Player itemId="itm_1_9" descriptor={descriptor} {...props} />);
+  render(wrap(<Player itemId="itm_1_9" descriptor={descriptor} {...props} />));
 }
 
 function theVideo(): HTMLVideoElement {
@@ -82,6 +120,15 @@ beforeEach(() => {
     item_id: "itm_1_9",
     position_seconds: 0,
     updated_at: "",
+  });
+  // AutoNext's overlay reads (watch-flow-polish 3.3): wrap() normally
+  // serves them from its seeds; these spies are the backstop so a refetch
+  // can never reach the network in a player vector.
+  vi.spyOn(apiModule, "getItem").mockResolvedValue({ item: FILM_ITEM });
+  vi.spyOn(apiModule, "getSeries").mockResolvedValue({ items: [] });
+  vi.spyOn(apiModule, "getSeriesEpisodes").mockResolvedValue({ items: [] });
+  vi.spyOn(apiModule, "fetchWatchDefaults").mockResolvedValue({
+    auto_next_countdown_seconds: 10,
   });
 });
 
@@ -102,8 +149,8 @@ describe("Player — packaged attach (hls.js over the stream playlist)", () => {
   });
 
   it("destroys the loader when the play URL changes (repack / re-mint)", () => {
-    const { rerender } = render(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} />);
-    rerender(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ play_url: "/media/itm_1_9/def456/index.m3u8?token=t2" })} />);
+    const { rerender } = render(wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} />));
+    rerender(wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ play_url: "/media/itm_1_9/def456/index.m3u8?token=t2" })} />));
 
     expect(hls.instances).toHaveLength(2);
     expect(hls.instances[0].destroy).toHaveBeenCalled();
@@ -222,29 +269,29 @@ describe("Player — progress reporting (PUT /progress)", () => {
 describe("Player — retry affordance (pack_failed → POST /play retry)", () => {  it("renders the affordance only for a failed run with a wired callback", () => {
     const onRetry = vi.fn();
     const { rerender } = render(
-      <Player itemId="itm_1_9" descriptor={hlsDescriptor({ state: "failed" })} onRetry={onRetry} />,
+      wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ state: "failed" })} onRetry={onRetry} />),
     );
     expect(screen.getByRole("button", { name: /Retry packaging/ })).toBeDefined();
 
     // Not failed → no affordance, even with the callback wired.
-    rerender(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} onRetry={onRetry} />);
+    rerender(wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} onRetry={onRetry} />));
     expect(screen.queryByRole("button", { name: /Retry packaging/ })).toBeNull();
 
     // Failed but no callback wired → no affordance (the page owns the POST).
-    rerender(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ state: "failed" })} />);
+    rerender(wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ state: "failed" })} />));
     expect(screen.queryByRole("button", { name: /Retry packaging/ })).toBeNull();
   });
 
   it("invokes the wired retry callback on click and disables while retrying", () => {
     const onRetry = vi.fn();
     const { rerender } = render(
-      <Player itemId="itm_1_9" descriptor={hlsDescriptor({ state: "failed" })} onRetry={onRetry} />,
+      wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ state: "failed" })} onRetry={onRetry} />),
     );
     fireEvent.click(screen.getByRole("button", { name: /Retry packaging/ }));
     expect(onRetry).toHaveBeenCalledTimes(1);
 
     rerender(
-      <Player itemId="itm_1_9" descriptor={hlsDescriptor({ state: "failed" })} onRetry={onRetry} retrying />,
+      wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ state: "failed" })} onRetry={onRetry} retrying />),
     );
     const button = screen.getByRole("button", { name: /Retrying/ }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
@@ -270,15 +317,15 @@ describe("Player — subtitle track (serial-watch-flow 5.1)", () => {
 
   it("swaps the track per URL change and drops it when subtitles turn off", () => {
     const { rerender } = render(
-      <Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} subtitleTrackUrl="blob:a" />,
+      wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} subtitleTrackUrl="blob:a" />),
     );
     rerender(
-      <Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} subtitleTrackUrl="blob:b" />,
+      wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} subtitleTrackUrl="blob:b" />),
     );
     expect(theVideo().querySelector("track")!.getAttribute("src")).toBe("blob:b");
 
     rerender(
-      <Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} subtitleTrackUrl={null} />,
+      wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} subtitleTrackUrl={null} />),
     );
     expect(theVideo().querySelector("track")).toBeNull();
   });
@@ -299,10 +346,10 @@ describe("Player — voiceover selection (serial-watch-flow 5.3)", () => {
 
   it("switches the audioTrack in place when the selection changes — no re-attach", () => {
     const { rerender } = render(
-      <Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} voiceoverTrack={0} />,
+      wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} voiceoverTrack={0} />),
     );
     rerender(
-      <Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} voiceoverTrack={1} />,
+      wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} voiceoverTrack={1} />),
     );
 
     // Exactly one loader for the same play URL: the switch is the native

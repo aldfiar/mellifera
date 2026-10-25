@@ -23,6 +23,7 @@ import {
   useRevokeDevice,
   useScanLibrary,
   useStartPairing,
+  useWatchDefaults,
 } from "@/lib/queries";
 
 // S5 joint contract: query hooks -> Go /api/v1/{libraries,scan,admin/status}.
@@ -325,6 +326,22 @@ describe("pairing hooks — device-pairing (admin verbs + device bootstrap)", ()
     });
     await waitFor(() => expect(polling.result.current.isSuccess).toBe(true));
     expect(waitSpy).toHaveBeenCalledWith("p1");
+  });
+});
+
+describe("useWatchDefaults — the served countdown shape (watch-flow-polish 3.3)", () => {
+  it("use_watch_defaults_reads_served_shape", async () => {
+    const spy = vi
+      .spyOn(apiModule, "fetchWatchDefaults")
+      .mockResolvedValue({ auto_next_countdown_seconds: 12 });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(() => useWatchDefaults(), { wrapper: wrapper(client) });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(spy).toHaveBeenCalledTimes(1);
+    // The served shape read verbatim: the ONLY countdown source the card
+    // has — no client-side default exists to fall back to (Q5/D5).
+    expect(result.current.data).toEqual({ auto_next_countdown_seconds: 12 });
   });
 });
 
