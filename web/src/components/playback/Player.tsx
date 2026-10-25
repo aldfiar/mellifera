@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import Hls from "hls.js/light";
 
 import type { PlaybackDescriptor } from "@/lib/api";
 import { putProgress } from "@/lib/api";
+import { skipSections } from "@/lib/skipSections";
+import SkipChip from "@/components/playback/SkipChip";
 
 // Player — the packaged-playback surface for ONE item (spec "Playback
 // descriptor and verb split" consumer side). Two lanes, zero client logic:
@@ -21,7 +23,11 @@ import { putProgress } from "@/lib/api";
 //
 // Sections: the descriptor's chapter-kind list, each a click-to-seek onto
 // video.currentTime — a STANDARD media seek, so a TV remote's transport keys
-// behave identically. Progress: best-effort PUT /progress/{item_id} reporting
+// behave identically. Skip chip (watch-flow-polish 3.1): the descriptor's
+// classified intro/credits ranges (lib/skipSections, D2 — SPA-side on served
+// data) surface a soft chip over the video's bottom-right while the playhead
+// is inside one; activation is the same standard seek, a beat past the
+// range's end. Progress: best-effort PUT /progress/{item_id} reporting
 // (throttled to ≥5 s of drift, plus pause/ended/unmount) — a progress
 // failure never interrupts playback.
 //
@@ -61,8 +67,20 @@ export default function Player(props: PlayerProps): ReactElement {
   const hlsRef = useRef<InstanceType<typeof Hls> | null>(null);
   const reportedRef = useRef(0);
   const [fatal, setFatal] = useState(false);
+  // Playhead read for the overlay chip: `timeupdate` is the standard
+  // position signal — the chip itself decides in-range rendering, no
+  // throttling here (the progress reporting throttle below is separate).
+  const [playhead, setPlayhead] = useState(0);
 
   const isHls = descriptor.mode === "hls";
+
+  // The classified intro/credits ranges (watch-flow-polish 3.1, D2): pure
+  // SPA-side classification of the served sections — re-derived only when
+  // the descriptor's section list changes.
+  const skipRanges = useMemo(
+    () => skipSections(descriptor.sections),
+    [descriptor.sections],
+  );
 
   // Attach — keyed on the play URL (a repack or re-mint swaps it). The hls
   // loader is destroyed on change/unmount; the direct lane resets the src.
@@ -163,6 +181,19 @@ export default function Player(props: PlayerProps): ReactElement {
     };
   }, [itemId]);
 
+  // Playhead tracking — the skip chip's in-range input (watch-flow-polish
+  // 3.1): every timeupdate re-reads currentTime; the chip renders only while
+  // the position sits inside a classified range.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    const onTime = (): void => setPlayhead(video.currentTime);
+    video.addEventListener("timeupdate", onTime);
+    return () => video.removeEventListener("timeupdate", onTime);
+  }, []);
+
   // seekTo — a standard media seek onto video.currentTime (section jumps and
   // TV-remote transport keys are the same mechanism, structurally segment
   // fetches on the hls lane).
@@ -180,27 +211,36 @@ export default function Player(props: PlayerProps): ReactElement {
           Playback failed — the stream could not be played to the end.
         </p>
       ) : null}
-      <video
-        ref={videoRef}
-        controls
-        playsInline
-        poster={props.poster ?? undefined}
-        className="w-full rounded-lg border bg-black"
-        aria-label={descriptor.mode === "hls" ? "Streamed playback" : "Original playback"}
-      >
-        {/* Subtitles (serial-watch-flow 5.1): the client-converted WebVTT as
-            a standard timed track — keyed per URL so a selection change
-            remounts the track and the browser loads the new bytes. */}
-        {props.subtitleTrackUrl ? (
-          <track
-            key={props.subtitleTrackUrl}
-            kind="subtitles"
-            src={props.subtitleTrackUrl}
-            label="Subtitles"
-            default
-          />
+      <div className="relative">
+        <video
+          ref={videoRef}
+          controls
+          playsInline
+          poster={props.poster ?? undefined}
+          className="w-full rounded-lg border bg-black"
+          aria-label={descriptor.mode === "hls" ? "Streamed playback" : "Original playback"}
+        >
+          {/* Subtitles (serial-watch-flow 5.1): the client-converted WebVTT as
+              a standard timed track — keyed per URL so a selection change
+              remounts the track and the browser loads the new bytes. */}
+          {props.subtitleTrackUrl ? (
+            <track
+              key={props.subtitleTrackUrl}
+              kind="subtitles"
+              src={props.subtitleTrackUrl}
+              label="Subtitles"
+              default
+            />
+          ) : null}
+        </video>
+
+        {/* Skip chip (watch-flow-polish 3.1): over the video's bottom-right,
+            rendered only inside a classified range; activation rides the
+            standard seekTo above. */}
+        {skipRanges.length > 0 ? (
+          <SkipChip sections={skipRanges} currentTime={playhead} onSkip={seekTo} />
         ) : null}
-      </video>
+      </div>
 
       {descriptor.state === "partial" ? (
         <p className="text-sm text-muted-foreground">
