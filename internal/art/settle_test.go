@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -311,5 +312,58 @@ func TestSettleRepairKeepsRealURLsByteIdentical(t *testing.T) {
 
 	if got := hits.Load(); got != 2 {
 		t.Fatalf("upstream hits = %d, want 2 (the two real URLs, once each)", got)
+	}
+}
+
+// TestPosterRepairGolden drives the repair strip from the committed golden
+// fixture internal/art/testdata/golden/poster_repair.json (poster-backfill
+// 1.2, the internal/api/testdata/golden/ idiom): every vector's expected
+// document IS stripMissingPosters' spec — placeholder key stripped with every
+// other field surviving, a real-URL document returned byte for byte
+// (changed=false), a mixed-source document half-repaired, and the
+// relative-form placeholder (rows enriched before the absolute-URL helper)
+// stripped by the path-prefix rule alone. The comparison is SEMANTIC JSON
+// equality — the strip re-marshals through maps, so key order is not
+// identity — and the changed=false contract additionally pins raw byte
+// identity, because the caller writes back only on an actual removal.
+func TestPosterRepairGolden(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "golden", "poster_repair.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	var fixture struct {
+		Vectors []struct {
+			Name     string          `json:"name"`
+			Input    json.RawMessage `json:"input"`
+			Expected json.RawMessage `json:"expected"`
+			Changed  bool            `json:"changed"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode golden fixture: %v", err)
+	}
+	if len(fixture.Vectors) < 3 {
+		t.Fatalf("golden fixture carries %d vectors, want >= 3", len(fixture.Vectors))
+	}
+	for _, v := range fixture.Vectors {
+		t.Run(v.Name, func(t *testing.T) {
+			got, changed := stripMissingPosters(v.Input)
+			if changed != v.Changed {
+				t.Fatalf("changed = %v, want %v\ngot: %s", changed, v.Changed, got)
+			}
+			if !v.Changed && !bytes.Equal(got, v.Input) {
+				t.Fatalf("unchanged vector must return raw byte for byte:\nhave %s\nwant %s", got, v.Input)
+			}
+			var gotAny, wantAny any
+			if err := json.Unmarshal(got, &gotAny); err != nil {
+				t.Fatalf("repaired document does not parse: %v\n%s", err, got)
+			}
+			if err := json.Unmarshal(v.Expected, &wantAny); err != nil {
+				t.Fatalf("expected document does not parse: %v\n%s", err, v.Expected)
+			}
+			if !reflect.DeepEqual(gotAny, wantAny) {
+				t.Fatalf("semantic mismatch:\nhave %s\nwant %s", got, v.Expected)
+			}
+		})
 	}
 }
