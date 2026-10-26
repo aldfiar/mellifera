@@ -61,6 +61,11 @@ const (
 	// predicate against that copy (TestArtWalkSkipGolden), so one side
 	// drifting alone fails its own suite.
 	missingArtPathPrefix = "/assets/globals/missing"
+
+	// posterReasonNoUpstreamArt is the posters envelope's reason verdict for
+	// a document whose namespaces all produced placeholders — upstream has
+	// no art (the served literal the SPA keys its copy split on).
+	posterReasonNoUpstreamArt = "no_upstream_art"
 )
 
 // placeholderPoster reports whether u's PATH carries the missing-art asset
@@ -134,6 +139,34 @@ func usablePosters(n namer, doc map[string]any) []posterRef {
 		out = append(out, posterRef{source: b.ID, url: u})
 	}
 	return out
+}
+
+// noUpstreamArt is the posters envelope's reason verdict (artwork D3): true
+// exactly when the document carries at least one namespace poster key and
+// EVERY such key is a missing-art placeholder — upstream produced something,
+// but none of it is usable (present-but-unusable is not never-produced). A
+// namespace without a poster key (or with an empty one — the walk's absent
+// form) is never produced; any non-placeholder poster key — even on a
+// namespace outside the gate chain — is usable enough to refuse the verdict:
+// the predicate reads the document, never the chain or the gate.
+func noUpstreamArt(doc map[string]any) bool {
+	sources, _ := doc["sources"].(map[string]any)
+	had := false
+	for _, v := range sources {
+		ns, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		u, ok := ns["poster"].(string)
+		if !ok || u == "" {
+			continue
+		}
+		had = true
+		if !placeholderPoster(u) {
+			return false
+		}
+	}
+	return had
 }
 
 // thumbFact reads the item document's frame-grabber thumbnail fact — the
@@ -266,10 +299,15 @@ type posterCandidate struct {
 
 // posterCandidatesResponse is the GET …/posters envelope (artwork): the
 // effective current selection in the PUT vocabulary ("" = the chain
-// composes) plus the candidates.
+// composes) plus the candidates, plus the additive reason verdict —
+// "no_upstream_art" exactly when the document carries at least one
+// namespace poster key and every such key is a placeholder (the upstream
+// has no art); omitempty in every other case (a chain that never produced
+// a poster key is NOT that state).
 type posterCandidatesResponse struct {
 	Current    string            `json:"current"`
 	Candidates []posterCandidate `json:"candidates"`
+	Reason     string            `json:"reason,omitempty"`
 }
 
 // posterSelectionRequest is the body of PUT …/poster (artwork): one
@@ -408,7 +446,9 @@ func (a *app) artObject(w http.ResponseWriter, r *http.Request) {
 // active selection, plus "thumb" for items carrying the frame-grabber fact
 // — pointing at the existing media thumb variant. Staged candidates carry
 // their served proxy URLs; unstaged the raw remote URL, with a non-blocking
-// acquisition handoff so selecting one is instant.
+// acquisition handoff so selecting one is instant. The envelope's reason
+// verdict distinguishes a placeholder-only document (no_upstream_art) from
+// a chain that never produced a poster key (the field omits).
 func (a *app) posters(w http.ResponseWriter, r *http.Request, kind string) {
 	if a.deps.Art == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "art endpoint disabled", false)
@@ -472,9 +512,14 @@ func (a *app) posters(w http.ResponseWriter, r *http.Request, kind string) {
 			Current: sel == artSelectionThumb,
 		})
 	}
+	reason := ""
+	if noUpstreamArt(doc) {
+		reason = posterReasonNoUpstreamArt
+	}
 	writeJSON(w, http.StatusOK, posterCandidatesResponse{
 		Current:    wireSelection(sel),
 		Candidates: cands,
+		Reason:     reason,
 	})
 }
 

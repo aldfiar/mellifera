@@ -810,3 +810,106 @@ func TestArtWalkSkipGolden(t *testing.T) {
 		t.Fatalf("candidates = %+v, want exactly the real serial-parser poster (the placeholder excluded)", cands.Candidates)
 	}
 }
+
+// TestPostersNoUpstreamArtReason pins the posters envelope's additive reason
+// verdict (artwork D3): "no_upstream_art" exactly when the document carries
+// at least one namespace poster key and EVERY such key is a missing-art
+// placeholder — present-but-unusable is not never-produced. A chain that
+// never produced a poster key (no key, or an empty one), a document with any
+// usable poster, and a real poster on a chain-blind namespace all OMIT the
+// field: the verdict reads the document, never the gate chain, and rides the
+// wire as omitempty (key absent, never an empty string).
+func TestPostersNoUpstreamArtReason(t *testing.T) {
+	st := openAPIStore(t)
+	svc := art.NewService(st, t.TempDir())
+	up := newArtUpstream(t, map[string][]byte{"/real.jpg": artJPEG(t, 0x6B)})
+	real := up.server.URL + "/real.jpg"
+	placeholder := up.server.URL + missingArtPathPrefix + "/na.jpg"
+
+	lib, err := st.CreateLibrary(context.Background(), "serial", "/media/reason", "Reason")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	app := newArtTestApp(t, st, svc, []titleSourceBinding{
+		{ID: "shikimori", Enabled: true},
+		{ID: "serial-parser", Enabled: true},
+	})
+
+	tests := []struct {
+		name       string
+		relPath    string
+		doc        json.RawMessage
+		wantReason string // "" = the reason key must be ABSENT on the wire
+		wantCands  int
+	}{
+		{
+			name:       "placeholder_only_serves_the_reason",
+			relPath:    "PlaceholderOnly",
+			doc:        artSeriesDoc("shikimori", placeholder),
+			wantReason: posterReasonNoUpstreamArt,
+			wantCands:  0,
+		},
+		{
+			name:      "never_produced_omits",
+			relPath:   "NeverProduced",
+			doc:       json.RawMessage(`{"sources":{"shikimori":{}}}`),
+			wantCands: 0,
+		},
+		{
+			name:      "empty_poster_key_omits",
+			relPath:   "EmptyPoster",
+			doc:       artSeriesDoc("shikimori", ""),
+			wantCands: 0,
+		},
+		{
+			name:      "usable_poster_omits",
+			relPath:   "Usable",
+			doc:       artSeriesDoc("shikimori", real),
+			wantCands: 1,
+		},
+		{
+			name:    "placeholder_plus_usable_omits",
+			relPath: "Mixed",
+			doc: json.RawMessage(`{"sources":{` +
+				jsonQuote("shikimori") + `:{"poster":` + jsonQuote(placeholder) + `},` +
+				jsonQuote("serial-parser") + `:{"poster":` + jsonQuote(real) + `}}}`),
+			wantCands: 1,
+		},
+		{
+			name:      "chain_blind_real_poster_omits",
+			relPath:   "ChainBlind",
+			doc:       artSeriesDoc("unlisted", real),
+			wantCands: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			putArtSeries(t, st, lib, tc.relPath, tc.doc)
+			id := seriesIDOf(t, st, lib, tc.relPath)
+			resp := doRequest(t, app.handler, http.MethodGet, "/api/v1/series/"+id+"/posters", "", adminToken)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			// The pointer probe: key presence IS the omitempty verdict.
+			var got struct {
+				Current    string            `json:"current"`
+				Candidates []posterCandidate `json:"candidates"`
+				Reason     *string           `json:"reason"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decode candidates: %v", err)
+			}
+			if tc.wantReason == "" {
+				if got.Reason != nil {
+					t.Fatalf("reason = %q, want the key omitted (this document is not no_upstream_art)", *got.Reason)
+				}
+			} else if got.Reason == nil || *got.Reason != tc.wantReason {
+				t.Fatalf("reason = %v, want %q", got.Reason, tc.wantReason)
+			}
+			if len(got.Candidates) != tc.wantCands {
+				t.Fatalf("candidates = %+v, want %d", got.Candidates, tc.wantCands)
+			}
+		})
+	}
+}
