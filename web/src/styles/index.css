@@ -398,7 +398,7 @@ body.side-open .app-content {
   justify-content: space-between;
   gap: 6px;
   padding: 6px 8px;
-  font-size: 11px;
+  font-size: 14px;
   color: hsl(var(--muted-foreground));
 }
 
@@ -446,7 +446,7 @@ body.side-open .app-content {
   padding: 8px;
 }
 .scard .scard-title {
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
