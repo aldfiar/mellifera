@@ -1404,19 +1404,34 @@ func parsePagination(r *http.Request) (limit, offset int) {
 // itemDTOs performs the boundary struct conversion (INV4): every store.Item
 // becomes an itemDTO before it leaves the package, each row carrying its
 // stored title override (serial-watch-flow 2.1 — the per-row read is the
-// MVP posture; design defers batching to implementation latitude) and its
+// MVP posture; design defers batching to implementation latitude), its
 // server-composed display name through the namer threaded in from the
 // handler (display-naming 3.1 — the same seam stamps title_override per
-// row). When a template is active and the row resolves to a series, the
-// series' stored override is point-read beside the row's own, so a series
-// rename reaches the composed name while the item's own override still wins.
-// A store failure on any override read propagates (500 at the call site).
+// row), and its composed artwork — an item resolving neither an override
+// nor an own poster inherits its owning series' (artwork, the lazy
+// series-fallback leg below). When a template is active and the row
+// resolves to a series, the series' stored override is point-read beside
+// the row's own, so a series rename reaches the composed name while the
+// item's own override still wins. A store failure on any override read
+// propagates (500 at the call site).
 func (a *app) itemDTOs(ctx context.Context, items []store.Item, n namer) ([]itemDTO, error) {
 	rows := make([]artRow, len(items))
 	for i, it := range items {
-		rows[i] = artRow{id: it.ID, doc: it.Document}
+		rows[i] = artRow{id: it.ID, path: it.RelativePath, doc: it.Document}
 	}
-	artwork, err := a.artworkFor(ctx, artKindItem, rows, n)
+	// The artwork compose's lazy series-fallback leg: ONE library-scoped
+	// series read per call, made by artworkFor only when some item actually
+	// resolved absent. Every itemDTOs caller addresses one library (the
+	// list's ?library=, the detail's own row, the episodes route's series),
+	// so the first row's library keys the read.
+	libID := int64(0)
+	if len(items) > 0 {
+		libID = items[0].LibraryID
+	}
+	seriesOf := func(ctx context.Context) ([]store.Series, error) {
+		return a.deps.Store.QuerySeries(ctx, libID, "")
+	}
+	artwork, err := a.artworkFor(ctx, artKindItem, rows, n, seriesOf)
 	if err != nil {
 		return nil, err
 	}
@@ -1495,7 +1510,7 @@ func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n namer) ([]se
 	for i, sr := range srs {
 		rows[i] = artRow{id: sr.ID, doc: sr.Document}
 	}
-	artwork, err := a.artworkFor(ctx, artKindSeries, rows, n)
+	artwork, err := a.artworkFor(ctx, artKindSeries, rows, n, nil) // the series leg owns no fallback — absence is honest
 	if err != nil {
 		return nil, err
 	}
