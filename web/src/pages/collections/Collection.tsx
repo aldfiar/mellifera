@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import type { ReactElement, ReactNode, RefObject } from "react";
+import type { CSSProperties, ReactElement, ReactNode, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
@@ -57,6 +57,7 @@ import { seriesIdentifyGate } from "@/components/manage/IdentifySeries";
 import { Synopsis } from "@/components/metadata/Synopsis";
 import { PosterFrame } from "@/components/Artwork";
 import { PosterOverlay } from "@/components/manage/PosterOverlay";
+import { posterCardMaxWidth, posterTrackColumns, SERIES_GRID_CHROME_PX } from "@/lib/density";
 
 // Collection — the per-collection page at /collections/:id (web-ui-phase-3
 // group 5, boxes 5.1–5.3). The header comes from GET /api/v1/libraries +
@@ -318,7 +319,7 @@ export default function Collection(): ReactElement {
   }
 
   return (
-    <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6">
+    <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6">
       <CollectionHeader
         lib={lib}
         itemCount={summary.data?.items}
@@ -1486,7 +1487,27 @@ function SeriesGrid(props: {
   }
 
   return (
-    <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+    <ul
+      className="series-poster-grid grid gap-3"
+      /* Height-aware tracks (density-contract 2.1, GATE 2 follow-up): both
+         tier budgets are emitted here; the index.css height media query picks
+         --poster-track-max (one-row tier below SERIES_GRID_TWO_ROW_MIN_VH,
+         two-row tier above), and posterTrackColumns sizes the tracks by it.
+         Custom properties are not in CSSProperties, hence the cast. */
+      style={{
+        gridTemplateColumns: posterTrackColumns(),
+        "--poster-track-w-1": posterCardMaxWidth({
+          chromeH: SERIES_GRID_CHROME_PX,
+          rows: 1,
+          cardBodyH: 60,
+        }),
+        "--poster-track-w-2": posterCardMaxWidth({
+          chromeH: SERIES_GRID_CHROME_PX,
+          rows: 2,
+          cardBodyH: 60,
+        }),
+      } as CSSProperties}
+    >
       {rows.map((sr) => (
         <li key={sr.id}>
           <SeriesCard

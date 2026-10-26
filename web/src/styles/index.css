@@ -398,7 +398,7 @@ body.side-open .app-content {
   justify-content: space-between;
   gap: 6px;
   padding: 6px 8px;
-  font-size: 11px;
+  font-size: 14px;
   color: hsl(var(--muted-foreground));
 }
 
@@ -406,7 +406,9 @@ body.side-open .app-content {
 
 /* One series card: a poster-ratio placeholder (media serving is a deferred
    capability) over the display title + fact chips, token-bordered like the
-   other cards. position:relative anchors the CardActions ⋯ trigger. */
+   other cards. position:relative anchors the CardActions ⋯ trigger.
+   The card fills its grid track — track widths are height-aware (see
+   .series-poster-grid below), so no per-card clamp lives here. */
 .scard {
   position: relative;
   display: block;
@@ -415,6 +417,21 @@ body.side-open .app-content {
   border-radius: var(--radius);
   background: hsl(var(--card));
   transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+/* Height-aware poster tracks (density-contract 2.1, GATE 2 follow-up): the
+   component emits both tier budgets (--poster-track-w-1/2 from the pure
+   density core); this media query picks the active one. Below 662px tall
+   (SERIES_GRID_TWO_ROW_MIN_VH, pinned by density.test.ts) the two-row budget
+   would floor at 120px — so the one-row tier runs instead and cards keep
+   real width. Track sizing itself is inline on the ul (posterTrackColumns). */
+.series-poster-grid {
+  --poster-track-max: var(--poster-track-w-1);
+}
+@media (min-height: 662px) {
+  .series-poster-grid {
+    --poster-track-max: var(--poster-track-w-2);
+  }
 }
 .scard:hover {
   background: hsl(var(--accent));
@@ -446,7 +463,7 @@ body.side-open .app-content {
   padding: 8px;
 }
 .scard .scard-title {
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
