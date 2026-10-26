@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactElement,
 } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
@@ -43,6 +44,7 @@ import {
   subtitleSidecars,
   type SubtitleSidecar,
 } from "@/lib/subtitles";
+import { PHOTO_STAGE_CHROME_PX, photoStageMaxH } from "@/lib/density";
 import type { ItemDocument } from "@/lib/document";
 import {
   episodeFacts,
@@ -463,7 +465,11 @@ function ItemLoadedView(props: {
   const watchReady = isVideoItem(item) && playback.data !== undefined;
 
   const mediaStage = hero !== null ? (
-    <HeroImage src={hero} alt={item.relative_path} />
+    <HeroImage
+      src={hero}
+      alt={item.relative_path}
+      style={{ maxHeight: photoStageMaxH(PHOTO_STAGE_CHROME_PX) }}
+    />
   ) : null;
   const player = isVideoItem(item) && playback.data ? (
     <Player
@@ -1393,11 +1399,16 @@ function prevEpisodeBefore(current: ItemDTO, items: ItemDTO[]): ItemDTO | null {
 }
 
 // HeroImage — the media stage's lead image, filling its column with its
-// aspect preserved (object-contain; 80vh caps tall photos so the identity
-// stays reachable). Same error contract as the collection tiles' <img>: a
+// aspect preserved (object-contain; the caller's style — the photo lane passes
+// photoStageMaxH — caps tall photos so image + identity fit the viewport).
+// Same error contract as the collection tiles' <img>: a
 // decode failure hides the element (fetch failures already null the URL
 // inside useItemMedia) — never a broken-image glyph.
-function HeroImage(props: { src: string; alt: string }): ReactElement | null {
+function HeroImage(props: {
+  src: string;
+  alt: string;
+  style?: CSSProperties;
+}): ReactElement | null {
   const [failed, setFailed] = useState(false);
   if (failed) {
     return null;
@@ -1406,7 +1417,8 @@ function HeroImage(props: { src: string; alt: string }): ReactElement | null {
     <img
       src={props.src}
       alt={props.alt}
-      className="max-h-[80vh] w-full rounded-lg border bg-card object-contain"
+      className="w-full rounded-lg border bg-card object-contain"
+      style={props.style}
       onError={() => setFailed(true)}
     />
   );
