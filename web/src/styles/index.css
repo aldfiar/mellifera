@@ -408,6 +408,8 @@ body.side-open .app-content {
    capability) over the display title + fact chips, token-bordered like the
    other cards. position:relative anchors the CardActions ⋯ trigger. */
 .scard {
+  max-width: var(--poster-card-max-w, none);
+  margin-inline: auto;
   position: relative;
   display: block;
   overflow: hidden;

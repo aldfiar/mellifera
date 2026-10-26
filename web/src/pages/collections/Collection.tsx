@@ -57,6 +57,8 @@ import { seriesIdentifyGate } from "@/components/manage/IdentifySeries";
 import { Synopsis } from "@/components/metadata/Synopsis";
 import { PosterFrame } from "@/components/Artwork";
 import { PosterOverlay } from "@/components/manage/PosterOverlay";
+import type { CSSProperties } from 'react';
+import { posterCardMaxWidth, SERIES_GRID_CHROME_PX } from '../../lib/density';
 
 // Collection — the per-collection page at /collections/:id (web-ui-phase-3
 // group 5, boxes 5.1–5.3). The header comes from GET /api/v1/libraries +
@@ -1486,7 +1488,7 @@ function SeriesGrid(props: {
   }
 
   return (
-    <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+    <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4" style={{ '--poster-card-max-w': posterCardMaxWidth({ chromeH: SERIES_GRID_CHROME_PX, rows: 2, cardBodyH: 60 }) } as CSSProperties}>
       {rows.map((sr) => (
         <li key={sr.id}>
           <SeriesCard
