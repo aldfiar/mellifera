@@ -11,11 +11,21 @@
 // integers ever escape into the emitted strings. web/src/lib/density.test.ts
 // pins the exact emitted strings — any formatting drift fails there.
 
-// SERIES_GRID_CHROME_PX — the fixed vertical chrome around a full series-grid
-// row: 182px collection header + 2x60px card bodies = 302px. MEASURED
-// 2026-10-24 — a parameter, not a decision: re-check visually at apply and
-// tune the value; the posterCardMaxWidth arithmetic never changes with it.
-export const SERIES_GRID_CHROME_PX = 302;
+// SERIES_GRID_CHROME_PX — the fixed vertical chrome AROUND the poster rows:
+// the 182px collection header. MEASURED 2026-10-24 (the original 302 figure
+// double-counted the 2x60px card bodies — GATE 2 flag 3: they also ride the
+// rows*cardBodyH leg of posterCardMaxWidth, which overstated the reserve by
+// 120px). A parameter, not a decision: re-check visually at apply and tune
+// the value; the posterCardMaxWidth arithmetic never changes with it.
+export const SERIES_GRID_CHROME_PX = 182;
+
+// SERIES_GRID_TWO_ROW_MIN_VH — the viewport height at which the rows=2 budget
+// meets the 120px floor: chrome 182 + 2x60px bodies + 3x120px floor = 662.
+// Above it the two-row tier applies (two full rows + header fit 100vh); below
+// it the grid drops to the one-row tier (one full row + header fits, cards
+// keep real width instead of collapsing to the floor). The height media
+// query in index.css carries the same 662 — density.test.ts pins the pair.
+export const SERIES_GRID_TWO_ROW_MIN_VH = 662;
 
 // PHOTO_STAGE_CHROME_PX — the fixed vertical chrome above the photo stage:
 // 136px. MEASURED 2026-10-24 in the same pass as SERIES_GRID_CHROME_PX —
@@ -42,6 +52,22 @@ export function posterCardMaxWidth(opts: {
   const divisor = (opts.rows * 3) / 2;
   const minCardW = opts.minCardW ?? 120;
   return `min(100%, max(${minCardW}px, calc((100vh - ${chromeTotal}px) / ${divisor})))`;
+}
+
+// posterTrackColumns — the grid-template-columns for the poster grid: as many
+// FIXED tracks as fit, each sized by the height budget var (picked per tier
+// by the index.css height media query) capped at half the container minus
+// half a gap, so narrow containers (phones) still get two columns instead of
+// one oversized card. Tracks follow the budget — cards fill their tracks, so
+// the old clamp-inside-a-wide-track raggedness (120px card in a 267px cell)
+// cannot recur. Emits:
+//   repeat(auto-fill, min(var(--poster-track-max), calc(50% - <rowGap/2>px)))
+export function posterTrackColumns(opts: { rowGapPx?: number } = {}): string {
+  const halfGap = (opts.rowGapPx ?? 12) / 2;
+  if (!Number.isInteger(halfGap)) {
+    throw new Error(`rowGapPx must be even, got ${opts.rowGapPx}`);
+  }
+  return `repeat(auto-fill, min(var(--poster-track-max), calc(50% - ${halfGap}px)))`;
 }
 
 // photoStageMaxH — the CSS max-height for the photo stage: the viewport
