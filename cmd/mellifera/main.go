@@ -362,6 +362,11 @@ func main() {
 		// every executor failure is log-and-skip — progress is never
 		// load-bearing and the PUT response never carries it.
 		OnProgress: newThumbRegrab(st, mgr),
+		// Watch defaults (watch-flow-polish): the auto-next countdown seconds
+		// GET /api/v1/watch-defaults serves verbatim. The env knob follows the
+		// envInt pattern — default 10, floored at 1 so a non-positive value can
+		// never turn auto-next into an instant jump (autoNextCountdownSeconds).
+		WatchDefaults: autoNextCountdownSeconds(),
 		// Module presentation (element-pages 3.4/3.1; widened per
 		// plugin-title-enrichment D5): the library-surface block —
 		// identity_fields plus the ordered parser bindings (scanner slot, then
@@ -713,6 +718,17 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// autoNextCountdownSeconds resolves the watch-flow-polish auto-next countdown
+// knob over the envInt pattern: MELLIFERA_AUTO_NEXT_COUNTDOWN_SECONDS verbatim
+// when set and integral, the default 10 when unset/empty, and the default + a
+// logged warning when malformed (envInt's INV-env-defaults contract). The
+// result is floored at 1 — a zero or negative knob must never make auto-next
+// an instant jump. Wired into api.Deps.WatchDefaults; the handler serves
+// exactly what this returns.
+func autoNextCountdownSeconds() int {
+	return max(1, envInt("MELLIFERA_AUTO_NEXT_COUNTDOWN_SECONDS", 10))
 }
 
 // envDuration reads a duration env var (time.ParseDuration syntax), falling back

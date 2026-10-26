@@ -780,6 +780,12 @@ export const ENDPOINTS = {
   // progressItem — PUT /api/v1/progress/{item_id} (the player's position
   // reporting channel; same browse bearer posture as every other call).
   progressItem: (id: string): string => `/api/v1/progress/${id}`,
+  // watchDefaults — GET /api/v1/watch-defaults (watch_defaults.go,
+  // watch-flow-polish D1): the served auto-next countdown seconds — the
+  // layer's one env-wired shape (MELLIFERA_AUTO_NEXT_COUNTDOWN_SECONDS,
+  // default 10, floored at 1, resolved server-side). AutoNext reads it via
+  // useWatchDefaults; the SPA never bakes a fallback value (Q5).
+  watchDefaults: "/api/v1/watch-defaults",
   // Pairing verbs (device-pairing, pairing.go): POST /pair and GET
   // /pair/{id}/wait are the UNAUTHENTICATED device bootstrap (the 128-bit
   // pairing_id is the capability — the pair group runs without the auth
@@ -1024,6 +1030,27 @@ export async function putProgress(
     method: "PUT",
     body: { position_seconds: positionSeconds } as unknown as BodyInit,
   });
+}
+
+// ---- Watch defaults: the served auto-next countdown (watch-flow-polish) ----
+
+// watch_defaults.go watchDefaultsResponse — the ONE wire shape of GET
+// /api/v1/watch-defaults (D1): the auto-next countdown seconds, resolved
+// server-side from the MELLIFERA_AUTO_NEXT_COUNTDOWN_SECONDS knob (default
+// 10, floored at 1) and served exactly as wired. Field names match the JSON
+// tags EXACTLY (INV-verbatim-field-names). The SPA bakes NO countdown value
+// of its own (Q5): when this shape is unavailable the auto-next card simply
+// renders without a countdown and never autoplays (design.md D5).
+export interface WatchDefaultsDTO {
+  auto_next_countdown_seconds: number;
+}
+
+// fetchWatchDefaults — GET /api/v1/watch-defaults (watch_defaults.go,
+// watch-flow-polish 1.1/3.3): the authenticated browse-group read the
+// auto-next card's countdown starts from. Pure delegation through the shared
+// wrapper — same bearer posture, same canonical-error rejection.
+export function fetchWatchDefaults(): Promise<WatchDefaultsDTO> {
+  return apiRequest<WatchDefaultsDTO>(ENDPOINTS.watchDefaults);
 }
 
 // postLibraryRefresh — POST /api/v1/libraries/{id}/refresh (enrich_admin.go

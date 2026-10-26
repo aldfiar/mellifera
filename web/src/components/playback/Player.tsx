@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import Hls from "hls.js/light";
 
 import type { PlaybackDescriptor } from "@/lib/api";
 import { putProgress } from "@/lib/api";
+import { skipSections } from "@/lib/skipSections";
+import SkipChip from "@/components/playback/SkipChip";
+import AutoNext from "@/components/playback/AutoNext";
 
 // Player — the packaged-playback surface for ONE item (spec "Playback
 // descriptor and verb split" consumer side). Two lanes, zero client logic:
@@ -21,7 +24,15 @@ import { putProgress } from "@/lib/api";
 //
 // Sections: the descriptor's chapter-kind list, each a click-to-seek onto
 // video.currentTime — a STANDARD media seek, so a TV remote's transport keys
-// behave identically. Progress: best-effort PUT /progress/{item_id} reporting
+// behave identically. Skip chip (watch-flow-polish 3.1): the descriptor's
+// classified intro/credits ranges (lib/skipSections, D2 — SPA-side on served
+// data) surface a soft chip over the video's bottom-right while the playhead
+// is inside one; activation is the same standard seek, a beat past the
+// range's end. Auto-next (watch-flow-polish 3.3): the video's ended edge
+// opens the «Следующая серия» card over the overlay (AutoNext — episodes only,
+// session-cancellable, served countdown); the card's reads run for the whole
+// playback so they are warm before any episode can end.
+// Progress: best-effort PUT /progress/{item_id} reporting
 // (throttled to ≥5 s of drift, plus pause/ended/unmount) — a progress
 // failure never interrupts playback.
 //
@@ -61,8 +72,24 @@ export default function Player(props: PlayerProps): ReactElement {
   const hlsRef = useRef<InstanceType<typeof Hls> | null>(null);
   const reportedRef = useRef(0);
   const [fatal, setFatal] = useState(false);
+  // Playhead read for the overlay chip: `timeupdate` is the standard
+  // position signal — the chip itself decides in-range rendering, no
+  // throttling here (the progress reporting throttle below is separate).
+  const [playhead, setPlayhead] = useState(0);
+  // The ended edge (watch-flow-polish 3.3): the auto-next card's open
+  // window, tracked here so the card never outlives it (see the effect
+  // below).
+  const [ended, setEnded] = useState(false);
 
   const isHls = descriptor.mode === "hls";
+
+  // The classified intro/credits ranges (watch-flow-polish 3.1, D2): pure
+  // SPA-side classification of the served sections — re-derived only when
+  // the descriptor's section list changes.
+  const skipRanges = useMemo(
+    () => skipSections(descriptor.sections),
+    [descriptor.sections],
+  );
 
   // Attach — keyed on the play URL (a repack or re-mint swaps it). The hls
   // loader is destroyed on change/unmount; the direct lane resets the src.
@@ -163,6 +190,42 @@ export default function Player(props: PlayerProps): ReactElement {
     };
   }, [itemId]);
 
+  // Playhead tracking — the skip chip's in-range input (watch-flow-polish
+  // 3.1): every timeupdate re-reads currentTime; the chip renders only while
+  // the position sits inside a classified range.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    const onTime = (): void => setPlayhead(video.currentTime);
+    video.addEventListener("timeupdate", onTime);
+    return () => video.removeEventListener("timeupdate", onTime);
+  }, []);
+
+  // Ended edge tracking (watch-flow-polish 3.3): the video's ended event
+  // opens the auto-next window; a replay (`play`) or a seek (`seeking` —
+  // any seek clears the media element's ended state) closes it, so the card
+  // never lingers over live playback. Re-armed per play URL: a re-attach
+  // (repack / re-mint) starts fresh.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    setEnded(false);
+    const onEnded = (): void => setEnded(true);
+    const onLive = (): void => setEnded(false);
+    video.addEventListener("ended", onEnded);
+    video.addEventListener("play", onLive);
+    video.addEventListener("seeking", onLive);
+    return () => {
+      video.removeEventListener("ended", onEnded);
+      video.removeEventListener("play", onLive);
+      video.removeEventListener("seeking", onLive);
+    };
+  }, [descriptor.play_url, isHls]);
+
   // seekTo — a standard media seek onto video.currentTime (section jumps and
   // TV-remote transport keys are the same mechanism, structurally segment
   // fetches on the hls lane).
@@ -180,27 +243,43 @@ export default function Player(props: PlayerProps): ReactElement {
           Playback failed — the stream could not be played to the end.
         </p>
       ) : null}
-      <video
-        ref={videoRef}
-        controls
-        playsInline
-        poster={props.poster ?? undefined}
-        className="w-full rounded-lg border bg-black"
-        aria-label={descriptor.mode === "hls" ? "Streamed playback" : "Original playback"}
-      >
-        {/* Subtitles (serial-watch-flow 5.1): the client-converted WebVTT as
-            a standard timed track — keyed per URL so a selection change
-            remounts the track and the browser loads the new bytes. */}
-        {props.subtitleTrackUrl ? (
-          <track
-            key={props.subtitleTrackUrl}
-            kind="subtitles"
-            src={props.subtitleTrackUrl}
-            label="Subtitles"
-            default
-          />
+      <div className="relative">
+        <video
+          ref={videoRef}
+          controls
+          playsInline
+          poster={props.poster ?? undefined}
+          className="w-full rounded-lg border bg-black"
+          aria-label={descriptor.mode === "hls" ? "Streamed playback" : "Original playback"}
+        >
+          {/* Subtitles (serial-watch-flow 5.1): the client-converted WebVTT as
+              a standard timed track — keyed per URL so a selection change
+              remounts the track and the browser loads the new bytes. */}
+          {props.subtitleTrackUrl ? (
+            <track
+              key={props.subtitleTrackUrl}
+              kind="subtitles"
+              src={props.subtitleTrackUrl}
+              label="Subtitles"
+              default
+            />
+          ) : null}
+        </video>
+
+        {/* Skip chip (watch-flow-polish 3.1): over the video's bottom-right,
+            rendered only inside a classified range; activation rides the
+            standard seekTo above. */}
+        {skipRanges.length > 0 ? (
+          <SkipChip sections={skipRanges} currentTime={playhead} onSkip={seekTo} />
         ) : null}
-      </video>
+
+        {/* Auto-next card (watch-flow-polish 3.3): mounted for the WHOLE
+            playback so its reads warm long before an episode can end; the
+            card itself renders only on the ended edge tracked above — the
+            component gates internally (films and session-cancelled sessions
+            never see it). */}
+        <AutoNext itemId={itemId} ended={ended} />
+      </div>
 
       {descriptor.state === "partial" ? (
         <p className="text-sm text-muted-foreground">

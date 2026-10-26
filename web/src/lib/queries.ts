@@ -15,6 +15,7 @@ import {
   deleteLibrary,
   denyPairing,
   fetchItemMediaObjectUrl,
+  fetchWatchDefaults,
   getAdminDevices,
   getAdminPairings,
   getItem,
@@ -54,6 +55,7 @@ import {
   type ScanResponse,
   type SeriesListResponse,
   type UpdateLibraryRequest,
+  type WatchDefaultsDTO,
 } from "@/lib/api";
 
 // TanStack Query hooks over the 4 pre-existing Go endpoints
@@ -312,6 +314,21 @@ export function useSeriesEpisodes(
     queryKey: ["series-episodes", seriesId],
     queryFn: () => getSeriesEpisodes(seriesId),
     enabled: seriesId !== "",
+  });
+}
+
+// useWatchDefaults — GET /api/v1/watch-defaults via fetchWatchDefaults
+// (watch-flow-polish 3.3, D1/D5): the SERVED auto-next countdown seconds.
+// Keyed ["watch-defaults"]: one app-wide entry — the shape is deployment
+// config, identical for every view, so the always-mounted warm read (the
+// contract's handoff note: the query warms on watch-view mount, long before
+// an episode can end) shares one cache entry across navigations. D5: a
+// pending or failed read is NOT a fallback — the auto-next card renders
+// without a countdown and never autoplays; the SPA never bakes a value (Q5).
+export function useWatchDefaults(): UseQueryResult<WatchDefaultsDTO> {
+  return useQuery({
+    queryKey: ["watch-defaults"],
+    queryFn: () => fetchWatchDefaults(),
   });
 }
 

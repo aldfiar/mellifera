@@ -2382,6 +2382,23 @@
                     }
                 }
             }
+        },
+        "/watch-defaults": {
+            "get": {
+                "tags": [
+                    "watch"
+                ],
+                "summary": "Watch defaults (auto-next countdown)",
+                "operationId": "get-watch-defaults",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.watchDefaultsResponse"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -3459,6 +3476,14 @@
                 },
                 "streams_enabled": {
                     "type": "boolean"
+                }
+            }
+        },
+        "api.watchDefaultsResponse": {
+            "type": "object",
+            "properties": {
+                "auto_next_countdown_seconds": {
+                    "type": "integer"
                 }
             }
         }

@@ -26,6 +26,12 @@ import {
 } from "@/lib/queries";
 import type { ItemDocument } from "@/lib/document";
 import { viewEntries } from "@/lib/document";
+import {
+  nextUpEntries,
+  seriesKey,
+  startedSeries,
+  type NextUpEntry,
+} from "@/lib/nextup";
 import { cn } from "@/lib/utils";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 
@@ -49,11 +55,13 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 //      started tuple is the max (season, episode) across the series' progress
 //      items, and the offered episode is the lowest strictly after it from
 //      GET /series/{id}/episodes (one cached fetch per started series)
-//      (episodeFacts/startedSeries/nextUpEntries below — the derivation's
-//      pure core, unit-tested in Home.test.tsx). Card titles carry the
-//      SERVED series `display_name`; the SxxEyy chip still composes from the
-//      raw episode facts, which remain on the wire. Films never enter Next
-//      up — it is an episode concept; films surface via Continue.
+//      (episodeFacts/startedSeries/nextUpEntries — the derivation's pure
+//      core, moved verbatim to lib/nextup.ts and re-exported below;
+//      unit-tested in Home.test.tsx and lib/nextup.test.ts). Card titles
+//      carry the SERVED series `display_name`; the SxxEyy chip still
+//      composes from the raw episode facts, which remain on the wire. Films
+//      never enter Next up — it is an episode concept; films surface via
+//      Continue.
 //
 // No root folders and no enrich-lifecycle pills ever render here, and the
 // surface never guesses: an episode whose series row does not resolve is
@@ -116,106 +124,21 @@ export function formatPosition(seconds: number): string {
 
 // ---- Next up derivation (pure core) ----------------------------------------
 
-// EpisodeFacts — the parsed episode identity the Next up derivation runs on
-// (D-8): the (season, episode) pair out of the source namespaces plus the
-// series anchor parsed.series_relative_path the serial-scanner stamps — the
-// series row is matched on the PATH fact, never on a title (serial episodes
-// carry no title fact).
-export interface EpisodeFacts {
-  libraryId: number;
-  seriesPath: string;
-  season: number;
-  episode: number;
-}
+// The derivation's pure core (EpisodeFacts/episodeFacts,
+// StartedSeries/startedSeries, NextUpEntry/nextUpEntries and the private
+// helpers they carry) moved VERBATIM to lib/nextup.ts (watch-flow D3 —
+// moves, not forks); Home re-exports the moved symbols so the existing
+// named imports keep resolving untouched. matchSeries stays here: the page
+// matches series rows itself before the episode lists load.
 
-// numberField — an integer field out of a dynamic source namespace, or null.
-function numberField(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) ? value : null;
-}
-
-// stringField — a non-empty string field out of a dynamic namespace, or null
-// (same contract as Collection's local copy).
-function stringField(value: unknown): string | null {
-  return typeof value === "string" && value !== "" ? value : null;
-}
-
-// episodeFacts — the item's (library, series path, season, episode) facts, or
-// null when the document carries no parsed.series_relative_path anchor or no
-// parseable episode numbers (the caller omits it rather than guessing).
-export function episodeFacts(item: ItemDTO): EpisodeFacts | null {
-  const parsed = item.document.parsed;
-  if (!parsed || typeof parsed !== "object") {
-    return null;
-  }
-  const seriesPath = stringField(
-    (parsed as Record<string, unknown>).series_relative_path,
-  );
-  if (seriesPath === null) {
-    return null;
-  }
-  const sources = item.document.sources;
-  if (!sources || typeof sources !== "object") {
-    return null;
-  }
-  for (const namespace of Object.values(sources)) {
-    if (!namespace || typeof namespace !== "object") {
-      continue;
-    }
-    const season = numberField(namespace.season);
-    const episode = numberField(namespace.episode);
-    if (season !== null && episode !== null) {
-      return { libraryId: item.library_id, seriesPath, season, episode };
-    }
-  }
-  return null;
-}
-
-// seriesKey — the (library, series path) grouping key.
-function seriesKey(facts: { libraryId: number; seriesPath: string }): string {
-  return `${String(facts.libraryId)}|${facts.seriesPath}`;
-}
-
-// tupleGt — (season, episode) ordering: a later season wins; within a season,
-// the later episode.
-function tupleGt(a: EpisodeFacts, b: EpisodeFacts): boolean {
-  return a.season > b.season || (a.season === b.season && a.episode > b.episode);
-}
-
-// StartedSeries — one touched series: the HIGHEST started (season, episode)
-// across its progress items (recency order comes from the progress list,
-// which the server returns newest-first).
-export interface StartedSeries {
-  libraryId: number;
-  seriesPath: string;
-  season: number;
-  episode: number;
-}
-
-// startedSeries — groups the progress list into touched series. tv-module
-// items (films) never enter — Next up is an episode concept; records whose
-// item has no parseable episode facts are skipped (the Next up fallback).
-export function startedSeries(
-  progress: ProgressDTO[],
-  itemById: Map<string, ItemDTO>,
-): StartedSeries[] {
-  const byKey = new Map<string, StartedSeries>();
-  for (const record of progress) {
-    const item = itemById.get(record.item_id);
-    if (!item || item.module_id === "tv") {
-      continue;
-    }
-    const facts = episodeFacts(item);
-    if (!facts) {
-      continue;
-    }
-    const key = seriesKey(facts);
-    const existing = byKey.get(key);
-    if (!existing || tupleGt(facts, existing)) {
-      byKey.set(key, facts);
-    }
-  }
-  return [...byKey.values()];
-}
+export {
+  type EpisodeFacts,
+  episodeFacts,
+  type StartedSeries,
+  startedSeries,
+  type NextUpEntry,
+  nextUpEntries,
+} from "@/lib/nextup";
 
 // matchSeries — the series row for one episode's series anchor: the row whose
 // relative_path equals parsed.series_relative_path. Deleted rows (the
@@ -232,65 +155,6 @@ export function matchSeries(
     }
   }
   return null;
-}
-
-// NextUpEntry — one Play-able suggestion: the episode item to deep-link into,
-// the series record that owns it, its SERVED display title and the "S02E06"
-// label composed from the episode's raw facts (facts stay on the wire; only
-// the naming moved server-side).
-export interface NextUpEntry {
-  item: ItemDTO;
-  seriesId: string;
-  title: string;
-  label: string;
-}
-
-// nextUpEntries — per started series (progress recency order), the
-// lowest-numbered episode strictly AFTER the highest started one, taken from
-// the series record's episode list (GET /series/{id}/episodes — one cached
-// fetch per started series). A series whose row did not resolve (the
-// episode-without-series fallback) or that has no later episode — none
-// exists, or its items carry no parseable facts — is omitted.
-export function nextUpEntries(
-  started: StartedSeries[],
-  seriesByKey: Map<string, SeriesDTO>,
-  episodesBySeriesId: Map<string, ItemDTO[]>,
-): NextUpEntry[] {
-  const out: NextUpEntry[] = [];
-  for (const s of started) {
-    const series = seriesByKey.get(seriesKey(s));
-    if (!series) {
-      continue;
-    }
-    const episodes = episodesBySeriesId.get(series.id);
-    if (!episodes) {
-      continue;
-    }
-    let best: EpisodeFacts | null = null;
-    let bestItem: ItemDTO | null = null;
-    for (const item of episodes) {
-      const facts = episodeFacts(item);
-      if (!facts || !tupleGt(facts, s)) {
-        continue;
-      }
-      if (!best || tupleGt(best, facts)) {
-        best = facts;
-        bestItem = item;
-      }
-    }
-    if (best && bestItem) {
-      out.push({
-        item: bestItem,
-        seriesId: series.id,
-        // The SERVED series name VERBATIM (display-naming) — a floor-empty ""
-        // renders empty, never a client-side file-name fallback; the `?? ""`
-        // only normalizes the optional TS field's absence.
-        title: series.display_name ?? "",
-        label: `S${String(best.season).padStart(2, "0")}E${String(best.episode).padStart(2, "0")}`,
-      });
-    }
-  }
-  return out;
 }
 
 // durationSeconds — the item's total whole-second duration, read from the
