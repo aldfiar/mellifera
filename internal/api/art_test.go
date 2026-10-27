@@ -810,3 +810,228 @@ func TestArtWalkSkipGolden(t *testing.T) {
 		t.Fatalf("candidates = %+v, want exactly the real serial-parser poster (the placeholder excluded)", cands.Candidates)
 	}
 }
+
+// TestItemArtworkSeriesFallback covers the item compose's series-fallback
+// tier (artwork precedence): an item resolving no override and no own poster
+// inherits its owning series' first usable chain poster — resolved through
+// the same backing rules the store's episode derivation uses (directory
+// prefix at depth one, exact relative path for file-backed) — riding the
+// same staged/handoff flow as a native winner; own artwork wins over the
+// inherited one, a series without art (or a corrupt series document, or no
+// owning series at all) leaves the item honestly absent. All vectors share
+// one library and one GET /items, so the whole table composes through ONE
+// itemDTOs call — the single lazy series read the design prices.
+func TestItemArtworkSeriesFallback(t *testing.T) {
+	ctx := context.Background()
+	st := openAPIStore(t)
+	svc := art.NewService(st, t.TempDir())
+
+	seriesBody := artJPEG(t, 0x2A)
+	ownBody := artJPEG(t, 0x2B)
+	up := newArtUpstream(t, map[string][]byte{
+		"/series.jpg": seriesBody,
+		"/own.jpg":    ownBody,
+		"/never.jpg":  artJPEG(t, 0x2C), // exists only so the handoff dial is observable
+	})
+	for _, p := range []string{"/series.jpg", "/own.jpg"} {
+		if _, err := svc.Acquire(ctx, up.server.URL+p, art.KindPoster); err != nil {
+			t.Fatalf("stage %s: %v", p, err)
+		}
+	}
+	seriesProxy := artObjectPath + "art_" + sha256HexOf(seriesBody)
+	ownProxy := artObjectPath + "art_" + sha256HexOf(ownBody)
+
+	lib, err := st.CreateLibrary(ctx, "serial", "/media/fallback", "Fallback")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	putItem := func(t *testing.T, id, relPath string, doc json.RawMessage) {
+		t.Helper()
+		if err := st.PutItem(ctx, store.Item{
+			ID: id, ModuleID: "serial", LibraryID: lib, FileID: id, RelativePath: relPath,
+			MediaType: "tv", Document: doc, SchemaVersion: 1,
+		}); err != nil {
+			t.Fatalf("PutItem %s: %v", id, err)
+		}
+	}
+	// dirSeriesDoc is a directory-backed series' document (the backing marker
+	// stamped; its absence floors to directory identically), fileSeriesDoc a
+	// file-backed one.
+	dirSeriesDoc := func(posterURL string) json.RawMessage {
+		return json.RawMessage(`{"sources":{` + jsonQuote("shikimori") + `:{"poster":` + jsonQuote(posterURL) + `}},"parsed":{"backing":"directory"}}`)
+	}
+	fileSeriesDoc := func(posterURL string) json.RawMessage {
+		return json.RawMessage(`{"sources":{` + jsonQuote("shikimori") + `:{"poster":` + jsonQuote(posterURL) + `}},"parsed":{"backing":"file"}}`)
+	}
+	putArtSeries(t, st, lib, "Inherit", dirSeriesDoc(up.server.URL+"/series.jpg"))
+	putArtSeries(t, st, lib, "Own", dirSeriesDoc(up.server.URL+"/series.jpg"))
+	putArtSeries(t, st, lib, "Bare", dirSeriesDoc(""))
+	putArtSeries(t, st, lib, "Movie.mkv", fileSeriesDoc(up.server.URL+"/series.jpg"))
+	putArtSeries(t, st, lib, "Broken", json.RawMessage(`{"sources":`)) // corrupt: floors to absence
+	putArtSeries(t, st, lib, "Lazy", dirSeriesDoc(up.server.URL+"/never.jpg"))
+	noDoc := json.RawMessage(`{}`)
+	putItem(t, "itm_inherit1", "Inherit/s1e1.mkv", noDoc)
+	putItem(t, "itm_inherit2", "Inherit/s1e2.mkv", noDoc)
+	putItem(t, "itm_nested", "Inherit/nested/deep.mkv", noDoc) // beyond depth 1: not an episode of Inherit
+	putItem(t, "itm_own", "Own/ep.mkv", artSeriesDoc("shikimori", up.server.URL+"/own.jpg"))
+	putItem(t, "itm_bare", "Bare/ep.mkv", noDoc)
+	putItem(t, "itm_movie", "Movie.mkv", noDoc) // file-backed: EXACT path equality
+	putItem(t, "itm_broken", "Broken/ep.mkv", noDoc)
+	putItem(t, "itm_stray", "Stray/ep.mkv", noDoc) // no owning series row at all
+	putItem(t, "itm_lazy", "Lazy/ep.mkv", noDoc)
+
+	app := newArtTestApp(t, st, svc, []titleSourceBinding{{ID: "shikimori", Enabled: true}})
+	resp := doRequest(t, app.handler, http.MethodGet, "/api/v1/items?library="+strconv.FormatInt(lib, 10), "", adminToken)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got itemsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode item list: %v", err)
+	}
+	byPath := make(map[string]string, len(got.Items))
+	for _, it := range got.Items {
+		byPath[it.RelativePath] = it.Artwork
+	}
+
+	tests := []struct {
+		name     string
+		itemPath string
+		want     string // "" = the field omitted (honest absence)
+	}{
+		{"inherit_staged_series_poster", "Inherit/s1e1.mkv", seriesProxy},
+		{"every_depth_one_episode_inherits", "Inherit/s1e2.mkv", seriesProxy},
+		{"beyond_depth_one_stays_absent", "Inherit/nested/deep.mkv", ""},
+		{"own_artwork_precedence", "Own/ep.mkv", ownProxy},
+		{"series_without_art_absence", "Bare/ep.mkv", ""},
+		{"file_backed_exact_path", "Movie.mkv", seriesProxy},
+		{"corrupt_series_doc_floors", "Broken/ep.mkv", ""},
+		{"unowned_item_absence", "Stray/ep.mkv", ""},
+		{"inherit_unstaged_raw_url", "Lazy/ep.mkv", up.server.URL + "/never.jpg"},
+	}
+	for _, tc := range tests {
+		if got, ok := byPath[tc.itemPath]; !ok {
+			t.Errorf("%s: item %q missing from the served list", tc.name, tc.itemPath)
+		} else if got != tc.want {
+			t.Errorf("%s: artwork = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+
+	// The staged posters are proxied without any re-fetch (one dial each =
+	// the setup Acquire) and the inherited unstaged winner is handed off
+	// exactly once — the identical pendings economics of a native winner.
+	if n := up.hits("/series.jpg"); n != 1 {
+		t.Errorf("series poster dials = %d, want 1 (setup only; staging serves the proxy URL)", n)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for up.hits("/never.jpg") == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := up.hits("/never.jpg"); n != 1 {
+		t.Errorf("inherited unstaged winner dials = %d, want 1 (non-blocking handoff, fetch-once)", n)
+	}
+}
+
+// TestPostersNoUpstreamArtReason pins the posters envelope's additive reason
+// verdict (artwork D3): "no_upstream_art" exactly when the document carries
+// at least one namespace poster key and EVERY such key is a missing-art
+// placeholder — present-but-unusable is not never-produced. A chain that
+// never produced a poster key (no key, or an empty one), a document with any
+// usable poster, and a real poster on a chain-blind namespace all OMIT the
+// field: the verdict reads the document, never the gate chain, and rides the
+// wire as omitempty (key absent, never an empty string).
+func TestPostersNoUpstreamArtReason(t *testing.T) {
+	st := openAPIStore(t)
+	svc := art.NewService(st, t.TempDir())
+	up := newArtUpstream(t, map[string][]byte{"/real.jpg": artJPEG(t, 0x6B)})
+	real := up.server.URL + "/real.jpg"
+	placeholder := up.server.URL + missingArtPathPrefix + "/na.jpg"
+
+	lib, err := st.CreateLibrary(context.Background(), "serial", "/media/reason", "Reason")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	app := newArtTestApp(t, st, svc, []titleSourceBinding{
+		{ID: "shikimori", Enabled: true},
+		{ID: "serial-parser", Enabled: true},
+	})
+
+	tests := []struct {
+		name       string
+		relPath    string
+		doc        json.RawMessage
+		wantReason string // "" = the reason key must be ABSENT on the wire
+		wantCands  int
+	}{
+		{
+			name:       "placeholder_only_serves_the_reason",
+			relPath:    "PlaceholderOnly",
+			doc:        artSeriesDoc("shikimori", placeholder),
+			wantReason: posterReasonNoUpstreamArt,
+			wantCands:  0,
+		},
+		{
+			name:      "never_produced_omits",
+			relPath:   "NeverProduced",
+			doc:       json.RawMessage(`{"sources":{"shikimori":{}}}`),
+			wantCands: 0,
+		},
+		{
+			name:      "empty_poster_key_omits",
+			relPath:   "EmptyPoster",
+			doc:       artSeriesDoc("shikimori", ""),
+			wantCands: 0,
+		},
+		{
+			name:      "usable_poster_omits",
+			relPath:   "Usable",
+			doc:       artSeriesDoc("shikimori", real),
+			wantCands: 1,
+		},
+		{
+			name:    "placeholder_plus_usable_omits",
+			relPath: "Mixed",
+			doc: json.RawMessage(`{"sources":{` +
+				jsonQuote("shikimori") + `:{"poster":` + jsonQuote(placeholder) + `},` +
+				jsonQuote("serial-parser") + `:{"poster":` + jsonQuote(real) + `}}}`),
+			wantCands: 1,
+		},
+		{
+			name:      "chain_blind_real_poster_omits",
+			relPath:   "ChainBlind",
+			doc:       artSeriesDoc("unlisted", real),
+			wantCands: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			putArtSeries(t, st, lib, tc.relPath, tc.doc)
+			id := seriesIDOf(t, st, lib, tc.relPath)
+			resp := doRequest(t, app.handler, http.MethodGet, "/api/v1/series/"+id+"/posters", "", adminToken)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			// The pointer probe: key presence IS the omitempty verdict.
+			var got struct {
+				Current    string            `json:"current"`
+				Candidates []posterCandidate `json:"candidates"`
+				Reason     *string           `json:"reason"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decode candidates: %v", err)
+			}
+			if tc.wantReason == "" {
+				if got.Reason != nil {
+					t.Fatalf("reason = %q, want the key omitted (this document is not no_upstream_art)", *got.Reason)
+				}
+			} else if got.Reason == nil || *got.Reason != tc.wantReason {
+				t.Fatalf("reason = %v, want %q", got.Reason, tc.wantReason)
+			}
+			if len(got.Candidates) != tc.wantCands {
+				t.Fatalf("candidates = %+v, want %d", got.Candidates, tc.wantCands)
+			}
+		})
+	}
+}

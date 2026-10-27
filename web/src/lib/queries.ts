@@ -10,6 +10,7 @@ import {
 } from "@tanstack/react-query";
 
 import {
+  ApiError,
   approvePairing,
   apiRequest,
   deleteLibrary,
@@ -37,7 +38,6 @@ import {
   type AdminDevicesResponse,
   type AdminPairingsResponse,
   type AdminStatus,
-  type ApiError,
   type CreateLibraryRequest,
   type ItemResponse,
   type ItemsResponse,
@@ -572,9 +572,12 @@ function fetchArtObjectUrl(url: string, signal: AbortSignal): Promise<string> {
 // fetch); a miss fetches through fetchItemMediaObjectUrl and parks the blob
 // in the LRU. The hook NEVER revokes what it hands out — the LRU owns
 // revocation (eviction + URL change) — so a consumer's URL stays alive
-// while its entry is cached. ANY failure (404 serve miss, network, abort) →
+// while its entry is cached. Any failure (404 serve miss, network, abort) →
 // null, so the surface keeps its generated fallback — never a
-// broken-image state.
+// broken-image state. The ONE exception is 401 (poster-backfill 3.1): that
+// error is the session rotation (handle401 already cleared credentials and
+// redirected), so the hook skips the fallback write and the previously
+// rendered poster stays until navigation lands.
 export function useArtworkObjectUrl(url: string | null): string | null {
   const [resolved, setResolved] = useState<string | null>(() =>
     url === null ? null : (artLru.consult(url) ?? null),
@@ -599,10 +602,20 @@ export function useArtworkObjectUrl(url: string | null): string | null {
         }
         setResolved(objectUrl);
       })
-      .catch(() => {
-        if (!disposed) {
-          setResolved(null); // any art error → the generated fallback
+      .catch((error: unknown) => {
+        if (disposed) {
+          return;
         }
+        // A 401 is the session rotation, not an art miss (INV-401-source-of-truth):
+        // the shared fetcher's handle401 has already cleared credentials and
+        // redirected — writing the fallback here would mask the rotation with
+        // the generated gradient, so the rendered poster stays until
+        // navigation lands (D5). Every other failure (404 serve miss,
+        // network, abort) still writes the fallback.
+        if (error instanceof ApiError && error.status === 401) {
+          return;
+        }
+        setResolved(null); // any other art error → the generated fallback
       });
     return () => {
       disposed = true;

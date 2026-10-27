@@ -298,10 +298,14 @@ export function PosterOverlay(props: {
           </p>
         ) : served.length === 0 ? (
           // The honest no-posters state: nothing usable anywhere in the
-          // chain — say so, keep the upload path one glance away.
+          // chain — say so, keep the upload path one glance away. The served
+          // reason splits the two no-poster stories: a document of nothing
+          // but placeholders («У источника нет постера») vs the generic
+          // line — field-driven off the served field, never a source literal.
           <p className="text-sm text-muted-foreground">
-            Плакатов нет — ни один источник не дал подходящее изображение.
-            Загрузите своё ниже.
+            {candidates.data?.reason === "no_upstream_art"
+              ? "У источника нет постера"
+              : "Плакатов нет — ни один источник не дал подходящее изображение. Загрузите своё ниже."}
           </p>
         ) : (
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">

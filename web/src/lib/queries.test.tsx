@@ -9,9 +9,12 @@ import { fileURLToPath } from "node:url";
 
 import * as apiModule from "@/lib/api";
 import type { ListItemsParams } from "@/lib/api";
+import { setToken, TOKEN_KEY } from "@/lib/auth";
 import {
+  artLru,
   queryClient,
   useAdminStatus,
+  useArtworkObjectUrl,
   usePosterCandidates,
   usePosterMutations,
   useApprovePairing,
@@ -39,6 +42,28 @@ function wrapper(client: QueryClient) {
   return ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
+}
+
+function stubObjectUrls(): { create: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> } {
+  const create = vi.fn(() => `blob:mock-${String(Math.random())}`);
+  const revoke = vi.fn();
+  Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true, writable: true });
+  Object.defineProperty(URL, "revokeObjectURL", { value: revoke, configurable: true, writable: true });
+  return { create, revoke };
+}
+
+// stubLocation — the api.test.ts idiom: jsdom makes window.location.assign
+// non-configurable, so the whole location property is replaced with a stub
+// whose assign is observable; the original is put back afterwards.
+function stubLocation(): { assign: ReturnType<typeof vi.fn>; restore: () => void } {
+  const assign = vi.fn();
+  const original = window.location;
+  Object.defineProperty(window, "location", { configurable: true, value: { assign } });
+  return {
+    assign,
+    restore: () =>
+      Object.defineProperty(window, "location", { configurable: true, value: original }),
+  };
 }
 
 describe("query hooks — S5 joint (hooks -> Go endpoints via apiRequest)", () => {
@@ -163,14 +188,6 @@ describe("query hooks — S5 joint (hooks -> Go endpoints via apiRequest)", () =
 });
 
 describe("useItemMedia — object-URL lifecycle (media-preview D5)", () => {
-  function stubObjectUrls(): { create: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> } {
-    const create = vi.fn(() => `blob:mock-${String(Math.random())}`);
-    const revoke = vi.fn();
-    Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true, writable: true });
-    Object.defineProperty(URL, "revokeObjectURL", { value: revoke, configurable: true, writable: true });
-    return { create, revoke };
-  }
-
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -420,6 +437,81 @@ describe("poster hooks — the useTitleOverride pattern (artwork 3.1)", () => {
     expect(deleteSpy).toHaveBeenCalledWith("item", "itm_1_9");
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["posters", "item", "itm_1_9"] });
     invalidateSpy.mockRestore();
+  });
+});
+
+// ---- art 401 routing (poster-backfill 3.1) -----------------------------------
+
+describe("useArtworkObjectUrl — 401 rotation routing (poster-backfill 3.1)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    artLru.reset(); // drain leftovers through the stub
+    localStorage.clear();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+  });
+
+  it("a 401 fires the rotation and never writes the fallback — the rendered poster stays until navigation lands", async () => {
+    setToken("t1");
+    const location = stubLocation();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response("jpeg-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ error: { code: "unauthorized", message: "session expired", retryable: false } }),
+          { status: 401, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    const { create } = stubObjectUrls();
+
+    const { result, rerender } = renderHook(
+      ({ url }: { url: string }) => useArtworkObjectUrl(url),
+      { initialProps: { url: "/api/v1/art/object/art_a" } },
+    );
+    await waitFor(() => expect(result.current).toBe(create.mock.results[0]?.value));
+    const renderedPoster = create.mock.results[0]?.value;
+
+    rerender({ url: "/api/v1/art/object/art_b" });
+
+    // The rotation fired through the shared handle401: credentials cleared +
+    // credential-aware redirect (an admin token was in play → /login).
+    await waitFor(() => expect(location.assign).toHaveBeenCalledWith("/login"));
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+
+    // And NO fallback write: the previously rendered poster stays so the
+    // gradient never masks the rotation. (Base behavior writes null here.)
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(result.current).toBe(renderedPoster);
+    location.restore();
+  });
+
+  it("a 404 still writes the fallback — only the 401 identity skips setResolved(null)", async () => {
+    const { create } = stubObjectUrls();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response("jpeg-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ error: { code: "not_found", message: "no art", retryable: false } }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+    const { result, rerender } = renderHook(
+      ({ url }: { url: string }) => useArtworkObjectUrl(url),
+      { initialProps: { url: "/api/v1/art/object/art_a" } },
+    );
+    await waitFor(() => expect(result.current).toBe(create.mock.results[0]?.value));
+
+    rerender({ url: "/api/v1/art/object/art_b" });
+    await waitFor(() => expect(result.current).toBeNull());
   });
 });
 

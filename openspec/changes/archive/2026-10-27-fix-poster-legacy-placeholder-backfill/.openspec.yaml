@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-10-26
+goal: "Make stored poster state honest: settle-side repair of legacy
+  placeholders, overlay no-upstream-art state, series fallback for items, 401
+  handling for art blobs"

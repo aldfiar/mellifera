@@ -1528,11 +1528,14 @@ export interface PosterCandidate {
 
 // art.go posterCandidatesResponse — the GET …/posters envelope: the
 // effective current selection in the PUT vocabulary ("" = the chain
-// composes) plus one candidate per usable source. Field names match the
-// JSON tags EXACTLY.
+// composes), one candidate per usable source, and the additive reason
+// verdict: "no_upstream_art" exactly when the upstream produced only
+// missing-art placeholders — omitted when the chain never produced a poster
+// key. Field names match the JSON tags EXACTLY.
 export interface PosterCandidatesDTO {
   current: string; // "src:<plugin_id>" | "user:art_<64hex>" | "thumb" | ""
   candidates: PosterCandidate[];
+  reason?: string; // "no_upstream_art" | absent
 }
 
 // art.go posterOverrideResponse — the stored override record, the
