@@ -551,7 +551,7 @@ definitions:
         type: integer
       plan:
         items:
-          $ref: '#/definitions/store.PlanSpec'
+          $ref: '#/definitions/relay.PlanSpec'
         type: array
       purpose:
         type: string
@@ -781,7 +781,7 @@ definitions:
       auto_next_countdown_seconds:
         type: integer
     type: object
-  store.PlanSpec:
+  relay.PlanSpec:
     properties:
       binary_safe:
         type: boolean
@@ -802,7 +802,7 @@ definitions:
       url:
         type: string
     type: object
-  store.RelayResult:
+  relay.RelayResult:
     properties:
       body:
         items:
@@ -2136,7 +2136,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/store.RelayResult'
+          $ref: '#/definitions/relay.RelayResult'
       responses:
         "204":
           description: result accepted

@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mellifera/mellifera/internal/store"
+	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 )
@@ -134,7 +134,7 @@ func searchResults(ctx context.Context, md sdk.MetadataSource, query, kind strin
 // transient store read error burns a tick and keeps polling — the budget
 // backstops it; a cancelled context aborts the wait through the poll sleep and
 // answers the same way (the request it belonged to is gone either way).
-func (q *Queue) searchOverRelay(ctx context.Context, md sdk.MetadataSource, pluginID, query, kind string, plan []store.PlanSpec, fetchErr error) ([]map[string]any, error) {
+func (q *Queue) searchOverRelay(ctx context.Context, md sdk.MetadataSource, pluginID, query, kind string, plan []relay.PlanSpec, fetchErr error) ([]map[string]any, error) {
 	giveUp := func() ([]map[string]any, error) {
 		return nil, fmt.Errorf("enrich: search fetch: %w", fetchErr)
 	}
@@ -151,7 +151,7 @@ func (q *Queue) searchOverRelay(ctx context.Context, md sdk.MetadataSource, plug
 		if err == nil && found {
 			switch {
 			case job.state == relayStateDone:
-				_ = q.deps.Relay.store.MarkRelayConsumed(ctx, job.id) // best-effort: the read that fed SearchResults
+				_ = q.deps.Relay.Store.MarkRelayConsumed(ctx, job.id) // best-effort: the read that fed SearchResults
 				return searchResults(ctx, md, query, kind, job.result.Body, int32(job.result.HTTPStatus), job.result.Headers)
 			case job.state == relayStateFailed:
 				return giveUp()
@@ -173,7 +173,7 @@ type searchRelayJob struct {
 	id         int64
 	state      string
 	leaseUntil time.Time
-	result     store.RelayResult
+	result     relay.RelayResult
 }
 
 // newestSearchJob is one poll tick's read: the newest purpose=search job for
@@ -194,7 +194,7 @@ func newestSearchJob(ctx context.Context, r *Relay, pluginID string, wantPlan []
 		lease  sql.NullString
 		result []byte
 	)
-	err := r.store.DB().QueryRowContext(ctx, `
+	err := r.Store.DB().QueryRowContext(ctx, `
 SELECT id, state, lease_until, result FROM relay_jobs
 WHERE purpose = ? AND plugin_id = ? AND plan = ?
 ORDER BY id DESC LIMIT 1`, relayPurposeSearch, pluginID, string(wantPlan),

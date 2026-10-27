@@ -60,7 +60,7 @@ type Deps struct {
 	// every deferred-handoff branch guards and a network failure keeps
 	// today's exact failure behavior (retries, ledger, lifecycle — also the
 	// operator kill switch). Wired flat in cmd/mellifera beside FetchGate
-	// (enrich.NewRelay).
+	// (an &enrich.Relay literal).
 	Relay *Relay
 }
 

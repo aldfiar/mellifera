@@ -11,6 +11,7 @@ import (
 
 	"github.com/mellifera/mellifera/internal/art"
 	"github.com/mellifera/mellifera/internal/pairing"
+	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -165,11 +166,11 @@ type Deps struct {
 	// the SAME identity the result route's guard re-derives); the claim and
 	// lease stamping happen inside the closure cmd-side. found=false with a
 	// nil error (empty queue or lost race) is not an error → the handler
-	// answers 204. Returns the raw store.RelayJob — the descriptor source the
+	// answers 204. Returns the raw relay.RelayJob — the descriptor source the
 	// handler projects to the wire verbatim. Nil-safe (503 when nil),
 	// mirroring Reenrich/SearchSource; built in cmd/mellifera over
 	// enrich.Relay.Claim (INV2 — api never imports enrich).
-	RelayClaim func(ctx context.Context, principalHash string) (store.RelayJob, bool, error)
+	RelayClaim func(ctx context.Context, principalHash string) (relay.RelayJob, bool, error)
 	// RelayResult is the client-relayed-fetch result closure (D7): accepts ONE
 	// claimed relay job's reported outcome from the principal that claimed it
 	// — built in cmd/mellifera over enrich.Relay.Ingest (INV2 — api never
@@ -177,13 +178,13 @@ type Deps struct {
 	// SHA-256 hex of the caller's bearer credential (the SAME identity
 	// RelayClaim stamped — the guard inside the closure's one conditional
 	// UPDATE matches it against a LIVE lease); result is the decoded
-	// store.RelayResult passed through verbatim (its json tags ARE the wire
+	// relay.RelayResult passed through verbatim (its json tags ARE the wire
 	// vocabulary, the PlanSpec discipline — nothing re-shaped handler-side).
 	// The closure's wrapped sql.ErrNoRows is the store guard's refusal — a
 	// lost, expired, foreign, or unknown claim, row left untouched — and maps
 	// to 409 at the handler; any other error is a real failure → 500; nil
 	// error → 204. Nil-safe (503 when nil), mirroring RelayClaim.
-	RelayResult func(ctx context.Context, jobID int64, principalHash string, result store.RelayResult) error
+	RelayResult func(ctx context.Context, jobID int64, principalHash string, result relay.RelayResult) error
 	// RelayMaxBody is the POST /relay/{id}/result request-body cap in bytes
 	// (client-relayed-fetch D7): the handler wraps r.Body in
 	// http.MaxBytesReader over it BEFORE decoding, so an over-cap payload is

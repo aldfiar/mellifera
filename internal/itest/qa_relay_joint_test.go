@@ -281,7 +281,7 @@ func qaRelayCannedSearch() []map[string]any {
 	}}
 }
 
-// qaRelayPlanSpec mirrors one descriptor plan entry (store.PlanSpec — its json
+// qaRelayPlanSpec mirrors one descriptor plan entry (relay.PlanSpec — its json
 // tags ARE the wire vocabulary; body rides the base64 string encoding).
 type qaRelayPlanSpec struct {
 	Method         string            `json:"method"`
@@ -294,7 +294,7 @@ type qaRelayPlanSpec struct {
 }
 
 // qaRelayClaim is the QA-local decode of the POST /relay/claim descriptor
-// ({id, purpose, plan} — the api projection of the claimed store.RelayJob).
+// ({id, purpose, plan} — the api projection of the claimed relay.RelayJob).
 type qaRelayClaim struct {
 	ID      int64             `json:"id"`
 	Purpose string            `json:"purpose"`

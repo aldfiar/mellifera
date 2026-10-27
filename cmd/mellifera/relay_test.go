@@ -12,7 +12,7 @@ import (
 )
 
 // TestRelayEnv covers the client-relayed-fetch composition-root knobs (task
-// 4.3): MELLIFERA_RELAY_LEASE (the claim handout — feeds NewRelay's leaseTTL)
+// 4.3): MELLIFERA_RELAY_LEASE (the claim handout — feeds Relay.LeaseTTL)
 // and MELLIFERA_RELAY_MAX_BODY (the result body cap — feeds
 // api.Deps.RelayMaxBody). For both: unset/empty → the default; a set value →
 // verbatim; a malformed value → the default + a logged warning naming the knob

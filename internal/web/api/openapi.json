@@ -2030,7 +2030,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/store.RelayResult"
+                            "$ref": "#/definitions/relay.RelayResult"
                         }
                     }
                 ],
@@ -3298,7 +3298,7 @@
                 "plan": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/store.PlanSpec"
+                        "$ref": "#/definitions/relay.PlanSpec"
                     }
                 },
                 "purpose": {
@@ -3634,7 +3634,7 @@
                 }
             }
         },
-        "store.PlanSpec": {
+        "relay.PlanSpec": {
             "type": "object",
             "properties": {
                 "binary_safe": {
@@ -3666,7 +3666,7 @@
                 }
             }
         },
-        "store.RelayResult": {
+        "relay.RelayResult": {
             "type": "object",
             "properties": {
                 "body": {

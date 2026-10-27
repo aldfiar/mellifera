@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -30,8 +31,8 @@ func relayTestStore(t *testing.T) *store.Store {
 
 // relaySeedPlan is a minimal single-spec request plan (the enqueue input task
 // 3.2 hands over verbatim).
-func relaySeedPlan() []store.PlanSpec {
-	return []store.PlanSpec{
+func relaySeedPlan() []relay.PlanSpec {
+	return []relay.PlanSpec{
 		{
 			Method:         "GET",
 			URL:            "https://shikimori.one/api/animes/1",
@@ -44,7 +45,7 @@ func relaySeedPlan() []store.PlanSpec {
 
 // relayClaim claims one job back from the store (the only read path 1.1
 // exposes) so the tests can assert the inserted row verbatim.
-func relayClaim(t *testing.T, s *store.Store) (store.RelayJob, bool) {
+func relayClaim(t *testing.T, s *store.Store) (relay.RelayJob, bool) {
 	t.Helper()
 	job, found, err := s.ClaimOldestRelayJob(context.Background(), "test-principal", time.Now(), time.Now().Add(time.Minute))
 	if err != nil {
@@ -69,7 +70,7 @@ func assertRelayFlat(t *testing.T, row store.FailureRow, cool time.Duration) {
 // relayEnqueueArgs is one Enqueue call's shape (the boundary signature task
 // 3.2/5.1 call through).
 type relayEnqueueArgs struct {
-	plan      []store.PlanSpec
+	plan      []relay.PlanSpec
 	purpose   string
 	rowID     string
 	libraryID int64
@@ -89,7 +90,7 @@ func TestRelayEnqueue(t *testing.T) {
 
 	t.Run("enrich_flat_default_cool", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil) // zero knobs -> defaults: lease 2m, flat cool 10m
+		r := &Relay{Store: s} // zero knobs -> defaults: lease 2m, flat cool 10m
 		args := relayEnqueueArgs{
 			plan:      relaySeedPlan(),
 			purpose:   "enrich",
@@ -142,7 +143,7 @@ func TestRelayEnqueue(t *testing.T) {
 
 	t.Run("repeat_handoff_no_doubling", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		for i := 0; i < 2; i++ {
 			if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_2", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 				t.Fatalf("Enqueue #%d: %v", i+1, err)
@@ -163,7 +164,7 @@ func TestRelayEnqueue(t *testing.T) {
 
 	t.Run("custom_cool_knob", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 3*time.Minute, nil)
+		r := &Relay{Store: s, Cool: 3 * time.Minute}
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_3", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
@@ -179,7 +180,7 @@ func TestRelayEnqueue(t *testing.T) {
 
 	t.Run("stale_prior_row_increments", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		// A lapsed terminal row from an earlier cycle: the increment discipline
 		// advances it, it never resets to 1 (the ledger's own precedent).
 		if err := s.RecordFailure(ctx, "itm_4", "shikimori", "exhausted", "prior cycle", 3, time.Now().Add(-time.Hour)); err != nil {
@@ -199,7 +200,7 @@ func TestRelayEnqueue(t *testing.T) {
 
 	t.Run("search_purpose_no_ledger", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		if err := r.Enqueue(ctx, relaySeedPlan(), "search", "", 0, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
@@ -281,7 +282,7 @@ func TestRelayEnqueueRedactsURLs(t *testing.T) {
 
 	t.Run("stored_reason_redacted", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		errText := `Get "https://api.themoviedb.org/3/search/movie?api_key=SECRETKEY&query=dune": dial tcp: i/o timeout`
 		if err := r.Enqueue(context.Background(), relaySeedPlan(), "enrich", "itm_9", 7, "tmdb", "network", errText); err != nil {
 			t.Fatalf("Enqueue: %v", err)
@@ -315,7 +316,7 @@ func relayNotifyRecorder(dst *[]int64) func(context.Context, int64) {
 // relayHandoff runs one full handoff through the Relay surface: Enqueue, then
 // Claim for the principal hash — the claimed job (its id is the ingest input)
 // comes back or the test fails.
-func relayHandoff(t *testing.T, r *Relay, purpose, rowID string, libraryID int64, pluginID, principal string) store.RelayJob {
+func relayHandoff(t *testing.T, r *Relay, purpose, rowID string, libraryID int64, pluginID, principal string) relay.RelayJob {
 	t.Helper()
 	if err := r.Enqueue(context.Background(), relaySeedPlan(), purpose, rowID, libraryID, pluginID, "network", "dial tcp: i/o timeout"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -332,8 +333,8 @@ func relayHandoff(t *testing.T, r *Relay, purpose, rowID string, libraryID int64
 
 // relayDoneResult is a canned successful client response for the seed plan's
 // URL (the shape a live claimant posts through 4.2).
-func relayDoneResult() store.RelayResult {
-	return store.RelayResult{
+func relayDoneResult() relay.RelayResult {
+	return relay.RelayResult{
 		HTTPStatus: 200,
 		Headers:    map[string]string{"Content-Type": "application/json"},
 		Body:       []byte(`{"id":1,"name":"frieren"}`),
@@ -350,7 +351,7 @@ func TestRelayClaim(t *testing.T) {
 
 	t.Run("descriptor_stamped_with_principal_and_ttl", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, time.Minute, 0, nil)
+		r := &Relay{Store: s, LeaseTTL: time.Minute}
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_1", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
@@ -379,7 +380,7 @@ func TestRelayClaim(t *testing.T) {
 
 	t.Run("empty_queue_not_found", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		job, found, err := r.Claim(ctx, "principal-a")
 		if err != nil || found {
 			t.Fatalf("Claim on empty queue: found=%v err=%v", found, err)
@@ -391,7 +392,7 @@ func TestRelayClaim(t *testing.T) {
 
 	t.Run("oldest_first_then_drained", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_1", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue #1: %v", err)
 		}
@@ -419,7 +420,7 @@ func TestRelayClaim(t *testing.T) {
 
 	t.Run("expired_lease_reclaimed_by_next_principal", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 25*time.Millisecond, 0, nil) // tiny TTL: expiry is lazy, the next claim's predicate decides
+		r := &Relay{Store: s, LeaseTTL: 25 * time.Millisecond} // tiny TTL: expiry is lazy, the next claim's predicate decides
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_1", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
@@ -453,10 +454,10 @@ func TestRelayConsult(t *testing.T) {
 
 	// relayConsultFixture completes one full enrich round to a done state for
 	// the pair (itm_1, shikimori) with the given result.
-	relayConsultFixture := func(t *testing.T, result store.RelayResult) *Relay {
+	relayConsultFixture := func(t *testing.T, result relay.RelayResult) *Relay {
 		t.Helper()
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		job := relayHandoff(t, r, "enrich", "itm_1", 7, "shikimori", "principal-a")
 		if err := r.Ingest(ctx, job.ID, "principal-a", result); err != nil {
 			t.Fatalf("Ingest: %v", err)
@@ -495,7 +496,7 @@ func TestRelayConsult(t *testing.T) {
 
 	t.Run("no_job_is_a_miss", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		if got, ok, err := r.Consult(ctx, "itm_1", "shikimori", relaySeedPlan()); err != nil || ok || got.HTTPStatus != 0 {
 			t.Fatalf("empty cache must miss: ok=%v err=%v got=%+v", ok, err, got)
 		}
@@ -503,7 +504,7 @@ func TestRelayConsult(t *testing.T) {
 
 	t.Run("pending_job_is_a_miss", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_1", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
@@ -514,9 +515,9 @@ func TestRelayConsult(t *testing.T) {
 
 	t.Run("failed_job_is_a_miss", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		job := relayHandoff(t, r, "enrich", "itm_1", 7, "shikimori", "principal-a")
-		if err := r.Ingest(ctx, job.ID, "principal-a", store.RelayResult{Error: "client: dial tcp: i/o timeout"}); err != nil {
+		if err := r.Ingest(ctx, job.ID, "principal-a", relay.RelayResult{Error: "client: dial tcp: i/o timeout"}); err != nil {
 			t.Fatalf("Ingest: %v", err)
 		}
 		if _, ok, err := r.Consult(ctx, "itm_1", "shikimori", relaySeedPlan()); err != nil || ok {
@@ -537,7 +538,7 @@ func TestRelayIngest(t *testing.T) {
 	t.Run("done_enrich_clears_ledger_and_notifies", func(t *testing.T) {
 		s := relayTestStore(t)
 		var woken []int64
-		r := NewRelay(s, 0, 0, relayNotifyRecorder(&woken))
+		r := &Relay{Store: s, LeaseTTL: 0, Notify: relayNotifyRecorder(&woken)}
 		job := relayHandoff(t, r, "enrich", "itm_1", 7, "shikimori", "principal-a")
 		rows, err := s.ListFailures(ctx)
 		if err != nil || len(rows) != 1 {
@@ -561,7 +562,7 @@ func TestRelayIngest(t *testing.T) {
 
 	t.Run("wrong_principal_refused_claim_intact", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		job := relayHandoff(t, r, "enrich", "itm_1", 7, "shikimori", "principal-a")
 		err := r.Ingest(ctx, job.ID, "principal-b", relayDoneResult())
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -575,7 +576,7 @@ func TestRelayIngest(t *testing.T) {
 
 	t.Run("expired_claim_refused_row_reclaimable", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 25*time.Millisecond, 0, nil)
+		r := &Relay{Store: s, LeaseTTL: 25 * time.Millisecond}
 		job := relayHandoff(t, r, "enrich", "itm_1", 7, "shikimori", "principal-a")
 		time.Sleep(60 * time.Millisecond) // the claim lapsed
 		err := r.Ingest(ctx, job.ID, "principal-a", relayDoneResult())
@@ -591,10 +592,10 @@ func TestRelayIngest(t *testing.T) {
 
 	t.Run("failed_round_increments_attempts_rearms_flat", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		job := relayHandoff(t, r, "enrich", "itm_1", 7, "shikimori", "principal-a") // Enqueue wrote attempts=1
 		errText := `Get "https://shikimori.one/api/animes/1?api_key=SECRET": connection reset by peer`
-		if err := r.Ingest(ctx, job.ID, "principal-a", store.RelayResult{Error: errText}); err != nil {
+		if err := r.Ingest(ctx, job.ID, "principal-a", relay.RelayResult{Error: errText}); err != nil {
 			t.Fatalf("Ingest: %v", err)
 		}
 		rows, err := s.ListFailures(ctx)
@@ -620,7 +621,7 @@ func TestRelayIngest(t *testing.T) {
 	t.Run("search_ingest_completes_without_ledger_or_notify", func(t *testing.T) {
 		s := relayTestStore(t)
 		var woken []int64
-		r := NewRelay(s, 0, 0, relayNotifyRecorder(&woken))
+		r := &Relay{Store: s, LeaseTTL: 0, Notify: relayNotifyRecorder(&woken)}
 		job := relayHandoff(t, r, "search", "", 0, "shikimori", "principal-a")
 		if err := r.Ingest(ctx, job.ID, "principal-a", relayDoneResult()); err != nil {
 			t.Fatalf("Ingest: %v", err)
@@ -636,7 +637,7 @@ func TestRelayIngest(t *testing.T) {
 
 	t.Run("unknown_job_refused", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		if err := r.Ingest(ctx, 424242, "principal-a", relayDoneResult()); !errors.Is(err, sql.ErrNoRows) {
 			t.Fatalf("unknown job id must be refused with the 409 shape, got %v", err)
 		}
@@ -654,13 +655,13 @@ func TestRelayIngest(t *testing.T) {
 func TestRelayIngestThirdFailureLandsExhausted(t *testing.T) {
 	ctx := context.Background()
 	s := relayTestStore(t)
-	r := NewRelay(s, 0, 0, nil)
+	r := &Relay{Store: s}
 
 	const rowID, pluginID = "itm_x", "shikimori"
 	var libID int64 = 7
 	for round := 1; round <= 3; round++ {
 		job := relayHandoff(t, r, "enrich", rowID, libID, pluginID, "principal-a")
-		if err := r.Ingest(ctx, job.ID, "principal-a", store.RelayResult{Error: "client: dial tcp: i/o timeout"}); err != nil {
+		if err := r.Ingest(ctx, job.ID, "principal-a", relay.RelayResult{Error: "client: dial tcp: i/o timeout"}); err != nil {
 			t.Fatalf("round %d Ingest: %v", round, err)
 		}
 		rows, err := s.ListFailures(ctx)

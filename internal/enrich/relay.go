@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -54,7 +55,7 @@ const relayGiveUpRounds = 3
 // client's error text arrives redacted).
 const relayFailurePrefix = "relay: "
 
-// Relay zero-value defaults, applied by NewRelay. The lease default mirrors
+// Relay zero-value defaults, applied at use (lease/cool). The lease default mirrors
 // the MELLIFERA_RELAY_LEASE composition-root default (2m claim handout); the
 // cooldown default is the ruled flat handoff cooldown (D5).
 const (
@@ -71,42 +72,49 @@ const (
 // (D4), never inside Relay: a nil *Relay means relay disabled and today's
 // failure behavior is bit-identical.
 //
-// The zero knobs are filled by NewRelay; a Relay is otherwise stateless — all
-// durability lives in relay_jobs and the enrichment_failures ledger, so
-// restarts lose nothing (the relay is the first STORED control state since the
-// ledger, on the enrichment_failures precedent).
+// The zero knobs take their defaults at use (lease/cool); a Relay is otherwise
+// stateless — all durability lives in relay_jobs and the enrichment_failures
+// ledger, so restarts lose nothing (the relay is the first STORED control
+// state since the ledger, on the enrichment_failures precedent).
 type Relay struct {
-	store *store.Store
-
-	// leaseTTL is the claim handout: how long one client principal owns a
+	// Store is the backing store (relay_jobs + the enrichment_failures
+	// ledger), set once by the composition root. It is NOT nil-safe — the
+	// nil-safety boundary is the Deps.Relay field (D4), never inside Relay.
+	Store *store.Store
+	// LeaseTTL is the claim handout: how long one client principal owns a
 	// claimed job before the claim predicate considers it abandoned (lazy
-	// expiry — no sweeper; the folded-into-claim-predicate precedent).
-	leaseTTL time.Duration
-	// cool is the flat 'relayed' ledger cooldown (D5): the handoff keeps the
+	// expiry — no sweeper; the folded-into-claim-predicate precedent). Zero
+	// or negative → defaultRelayLease at use.
+	LeaseTTL time.Duration
+	// Cool is the flat 'relayed' ledger cooldown (D5): the handoff keeps the
 	// (row, plugin) pair out of derivation for exactly this long — flat, NO
 	// doubling, however many relay rounds pile up (the explicitCooldown shape,
 	// enrichment 3.4: a retry the operator or the loop didn't choose must never
-	// be punished by growth).
-	cool time.Duration
-	// notify is the library-notify closure for the completion wake (D5:
+	// be punished by growth). Zero or negative → defaultRelayCool at use.
+	Cool time.Duration
+	// Notify is the library-notify closure for the completion wake (D5:
 	// ClearFailure + Notify so derivation re-runs the pair into the consult).
 	// Never called by Enqueue (no notify at enqueue — the cooldown-skip is the
-	// quiet-down); Ingest (2.2) is its only caller. May be nil.
-	notify func(ctx context.Context, libraryID int64)
+	// quiet-down); Ingest is its only caller. May be nil.
+	Notify func(ctx context.Context, libraryID int64)
 }
 
-// NewRelay constructs a Relay over the store with the lease/cooldown knobs and
-// the library-notify closure. A non-positive knob takes its default (the
-// QueueConfig withDefaults precedent): leaseTTL 2m, cool 10m flat. notify may
-// be nil; the completion path treats a nil closure as no-op.
-func NewRelay(st *store.Store, leaseTTL, cool time.Duration, notify func(ctx context.Context, libraryID int64)) *Relay {
-	if leaseTTL <= 0 {
-		leaseTTL = defaultRelayLease
+// lease resolves the claim handout: the composition-root knob when positive,
+// the default otherwise (the QueueConfig withDefaults precedent — a zero knob
+// never disables, it takes its default).
+func (r *Relay) lease() time.Duration {
+	if r.LeaseTTL > 0 {
+		return r.LeaseTTL
 	}
-	if cool <= 0 {
-		cool = defaultRelayCool
+	return defaultRelayLease
+}
+
+// cool resolves the flat handoff cooldown the same way.
+func (r *Relay) cool() time.Duration {
+	if r.Cool > 0 {
+		return r.Cool
 	}
-	return &Relay{store: st, leaseTTL: leaseTTL, cool: cool, notify: notify}
+	return defaultRelayCool
 }
 
 // Enqueue inserts one relay job (purpose enrich or search) and — for enrich
@@ -125,8 +133,8 @@ func NewRelay(st *store.Store, leaseTTL, cool time.Duration, notify func(ctx con
 // +1, first round 1) — the same column Ingest (2.2) increments per failed
 // round, never a new counter. A store error is returned wrapped; the caller
 // (the chain) decides the soft-fail.
-func (r *Relay) Enqueue(ctx context.Context, plan []store.PlanSpec, purpose, rowID string, libraryID int64, pluginID, class, errText string) error {
-	if _, err := r.store.CreateRelayJob(ctx, store.RelayJob{
+func (r *Relay) Enqueue(ctx context.Context, plan []relay.PlanSpec, purpose, rowID string, libraryID int64, pluginID, class, errText string) error {
+	if _, err := r.Store.CreateRelayJob(ctx, relay.RelayJob{
 		Purpose:   purpose,
 		RowID:     rowID,
 		LibraryID: libraryID,
@@ -143,7 +151,7 @@ func (r *Relay) Enqueue(ctx context.Context, plan []store.PlanSpec, purpose, row
 		attempts = priorAttempts(idx, rowID, pluginID) + 1
 	}
 	reason := fmt.Sprintf("%s: %s", class, redactURLs(errText))
-	if err := r.store.RecordFailure(ctx, rowID, pluginID, relayedStatus, reason, attempts, now().Add(r.cool)); err != nil {
+	if err := r.Store.RecordFailure(ctx, rowID, pluginID, relayedStatus, reason, attempts, now().Add(r.cool())); err != nil {
 		return fmt.Errorf("enrich: relay enqueue %s/%s (ledger): %w", rowID, pluginID, err)
 	}
 	return nil
@@ -157,11 +165,11 @@ func (r *Relay) Enqueue(ctx context.Context, plan []store.PlanSpec, purpose, row
 // projects to the wire (id, purpose, plan — 4.1). Nothing claimable is
 // not-found (false, nil error) — the loser of a race and the empty queue read
 // identically, and the caller never spins.
-func (r *Relay) Claim(ctx context.Context, principalHash string) (store.RelayJob, bool, error) {
+func (r *Relay) Claim(ctx context.Context, principalHash string) (relay.RelayJob, bool, error) {
 	t := now()
-	job, found, err := r.store.ClaimOldestRelayJob(ctx, principalHash, t, t.Add(r.leaseTTL))
+	job, found, err := r.Store.ClaimOldestRelayJob(ctx, principalHash, t, t.Add(r.lease()))
 	if err != nil {
-		return store.RelayJob{}, false, fmt.Errorf("enrich: relay claim: %w", err)
+		return relay.RelayJob{}, false, fmt.Errorf("enrich: relay claim: %w", err)
 	}
 	return job, found, nil
 }
@@ -178,18 +186,18 @@ func (r *Relay) Claim(ctx context.Context, principalHash string) (store.RelayJob
 // the chain's consumer decides the soft-fail. Candidates scan newest-completed
 // first so the freshest plan-matched response wins (the RFC3339Nano TEXT
 // ordering carries the store's accepted sub-second truncation skew).
-func (r *Relay) Consult(ctx context.Context, rowID, pluginID string, plan []store.PlanSpec) (store.RelayResult, bool, error) {
+func (r *Relay) Consult(ctx context.Context, rowID, pluginID string, plan []relay.PlanSpec) (relay.RelayResult, bool, error) {
 	want, err := json.Marshal(plan)
 	if err != nil {
-		return store.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s (plan): %w", rowID, pluginID, err)
+		return relay.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s (plan): %w", rowID, pluginID, err)
 	}
-	rows, err := r.store.DB().QueryContext(ctx, `
+	rows, err := r.Store.DB().QueryContext(ctx, `
 SELECT id, plan, result FROM relay_jobs
 WHERE purpose = ? AND row_id = ? AND plugin_id = ? AND state = ? AND consumed = 0
 ORDER BY completed_at DESC, id DESC`,
 		relayPurposeEnrich, rowID, pluginID, relayStateDone)
 	if err != nil {
-		return store.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s: %w", rowID, pluginID, err)
+		return relay.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s: %w", rowID, pluginID, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -199,24 +207,24 @@ ORDER BY completed_at DESC, id DESC`,
 			result []byte
 		)
 		if err := rows.Scan(&id, &plan, &result); err != nil {
-			return store.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s (scan): %w", rowID, pluginID, err)
+			return relay.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s (scan): %w", rowID, pluginID, err)
 		}
 		if !bytes.Equal(plan, want) {
 			continue // the document drifted — this job is not the current plan's cache
 		}
-		var out store.RelayResult
+		var out relay.RelayResult
 		if err := json.Unmarshal(result, &out); err != nil {
-			return store.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s (result): %w", rowID, pluginID, err)
+			return relay.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s (result): %w", rowID, pluginID, err)
 		}
-		if err := r.store.MarkRelayConsumed(ctx, id); err != nil {
-			return store.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s (consume): %w", rowID, pluginID, err)
+		if err := r.Store.MarkRelayConsumed(ctx, id); err != nil {
+			return relay.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s (consume): %w", rowID, pluginID, err)
 		}
 		return out, true, nil
 	}
 	if err := rows.Err(); err != nil {
-		return store.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s: %w", rowID, pluginID, err)
+		return relay.RelayResult{}, false, fmt.Errorf("enrich: relay consult %s/%s: %w", rowID, pluginID, err)
 	}
-	return store.RelayResult{}, false, nil
+	return relay.RelayResult{}, false, nil
 }
 
 // Ingest completes one claimed relay job with its claimant's reported outcome:
@@ -234,12 +242,12 @@ ORDER BY completed_at DESC, id DESC`,
 // terminalCooldown doubling schedule instead of re-arming the flat handoff
 // cooldown (recordRelayRound). Search-purpose jobs complete but never touch
 // the ledger — their consumer is the search poll (5.1).
-func (r *Relay) Ingest(ctx context.Context, jobID int64, principalHash string, result store.RelayResult) error {
+func (r *Relay) Ingest(ctx context.Context, jobID int64, principalHash string, result relay.RelayResult) error {
 	state := relayStateDone
 	if result.Error != "" {
 		state = relayStateFailed
 	}
-	if err := r.store.CompleteRelayJob(ctx, jobID, principalHash, state, result, now()); err != nil {
+	if err := r.Store.CompleteRelayJob(ctx, jobID, principalHash, state, result, now()); err != nil {
 		return fmt.Errorf("enrich: relay ingest %d: %w", jobID, err)
 	}
 	meta, err := r.relayJobMeta(ctx, jobID)
@@ -250,11 +258,11 @@ func (r *Relay) Ingest(ctx context.Context, jobID int64, principalHash string, r
 		return nil // a search has no (row, plugin) pair — no ledger write, no wake (D5)
 	}
 	if state == relayStateDone {
-		if err := r.store.ClearFailure(ctx, meta.rowID, meta.pluginID); err != nil {
+		if err := r.Store.ClearFailure(ctx, meta.rowID, meta.pluginID); err != nil {
 			return fmt.Errorf("enrich: relay ingest %d (clear): %w", jobID, err)
 		}
-		if r.notify != nil {
-			r.notify(ctx, meta.libraryID) // the completion wake — the pair re-derives into the consult
+		if r.Notify != nil {
+			r.Notify(ctx, meta.libraryID) // the completion wake — the pair re-derives into the consult
 		}
 		return nil
 	}
@@ -280,7 +288,7 @@ type relayJobMeta struct {
 // reaches it.
 func (r *Relay) relayJobMeta(ctx context.Context, id int64) (relayJobMeta, error) {
 	var m relayJobMeta
-	err := r.store.DB().QueryRowContext(ctx,
+	err := r.Store.DB().QueryRowContext(ctx,
 		"SELECT purpose, row_id, library_id, plugin_id FROM relay_jobs WHERE id = ?", id,
 	).Scan(&m.purpose, &m.rowID, &m.libraryID, &m.pluginID)
 	if err != nil {
@@ -301,8 +309,8 @@ func (r *Relay) relayJobMeta(ctx context.Context, id int64) (relayJobMeta, error
 // MaxAttempts 3, ExhaustedCool 7d doubling, CoolCap cap) — the exhausted row is
 // indistinguishable from any queue-lane exhaustion and reopens exactly like
 // one (explicit refresh or cooldown lapse).
-func (r *Relay) recordRelayRound(ctx context.Context, jobID int64, meta relayJobMeta, result store.RelayResult) error {
-	rounds, err := r.store.CountRelayRounds(ctx, meta.rowID, meta.pluginID)
+func (r *Relay) recordRelayRound(ctx context.Context, jobID int64, meta relayJobMeta, result relay.RelayResult) error {
+	rounds, err := r.Store.CountRelayRounds(ctx, meta.rowID, meta.pluginID)
 	if err != nil {
 		return fmt.Errorf("enrich: relay ingest %d (rounds): %w", jobID, err)
 	}
@@ -314,12 +322,12 @@ func (r *Relay) recordRelayRound(ctx context.Context, jobID int64, meta relayJob
 	reason := relayFailurePrefix + redactURLs(result.Error)
 	if rounds >= relayGiveUpRounds {
 		storeAttempts, cool := terminalCooldown(ledgerExhausted, prior, withDefaults(QueueConfig{}))
-		if err := r.store.RecordFailure(ctx, meta.rowID, meta.pluginID, ledgerExhausted, reason, storeAttempts, now().Add(cool)); err != nil {
+		if err := r.Store.RecordFailure(ctx, meta.rowID, meta.pluginID, ledgerExhausted, reason, storeAttempts, now().Add(cool)); err != nil {
 			return fmt.Errorf("enrich: relay ingest %d (exhausted): %w", jobID, err)
 		}
 		return nil
 	}
-	if err := r.store.RecordFailure(ctx, meta.rowID, meta.pluginID, relayedStatus, reason, prior+1, now().Add(r.cool)); err != nil {
+	if err := r.Store.RecordFailure(ctx, meta.rowID, meta.pluginID, relayedStatus, reason, prior+1, now().Add(r.cool())); err != nil {
 		return fmt.Errorf("enrich: relay ingest %d (re-arm): %w", jobID, err)
 	}
 	return nil
@@ -330,7 +338,7 @@ func (r *Relay) recordRelayRound(ctx context.Context, jobID int64, meta relayJob
 // single-instance MVP). A read error surfaces to the caller, which records
 // round 1 rather than guessing at a phantom prior.
 func (r *Relay) failureIndex(ctx context.Context) (failureIndex, error) {
-	rows, err := r.store.ListFailures(ctx)
+	rows, err := r.Store.ListFailures(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("enrich: relay ledger read: %w", err)
 	}

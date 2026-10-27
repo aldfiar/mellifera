@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
@@ -411,7 +412,7 @@ func (s *relaySearchSrc) fetched() *metadatav1.SearchResultsRequest {
 // identity on the way through. stop ends the spin without a failed-test report
 // (the test's Cleanup closes it so an early test exit never leaves a
 // goroutine reporting into a finished test).
-func claimAndIngest(t *testing.T, r *Relay, result store.RelayResult, stop <-chan struct{}) {
+func claimAndIngest(t *testing.T, r *Relay, result relay.RelayResult, stop <-chan struct{}) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -515,12 +516,12 @@ func TestSearchRelayCompletes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			src := &relaySearchSrc{searchSrc: searchSrc{spec: deadSearchSpec(), cands: tc.cands}}
 			q, s := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": src}, nil)
-			r := NewRelay(s, 0, 0, nil)
+			r := &Relay{Store: s}
 			q.deps.Relay = r
 
 			stop := make(chan struct{})
 			t.Cleanup(func() { close(stop) })
-			go claimAndIngest(t, r, store.RelayResult{
+			go claimAndIngest(t, r, relay.RelayResult{
 				HTTPStatus: tc.status,
 				Headers:    map[string]string{"Content-Type": "application/json"},
 				Body:       []byte(tc.body),
@@ -599,7 +600,7 @@ func TestSearchRelayExpiresToUpstreamError(t *testing.T) {
 		// the budget WAS what spent out.
 		clock := stepClock(t, t0, 31*time.Second)
 		q, s := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": deadSearchSrc()}, nil)
-		q.deps.Relay = NewRelay(s, 0, 0, nil)
+		q.deps.Relay = &Relay{Store: s}
 		_, err := q.SearchSource(ctx, "shikimori", "aria", "")
 		assertUpstream(t, err)
 		if !clock().After(t0.Add(relaySearchBudget)) {
@@ -614,11 +615,11 @@ func TestSearchRelayExpiresToUpstreamError(t *testing.T) {
 		// same round trip.
 		clock := stepClock(t, t0, time.Second)
 		q, s := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": deadSearchSrc()}, nil)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		q.deps.Relay = r
 		stop := make(chan struct{})
 		t.Cleanup(func() { close(stop) })
-		go claimAndIngest(t, r, store.RelayResult{Error: "the client could not reach the upstream either"}, stop)
+		go claimAndIngest(t, r, relay.RelayResult{Error: "the client could not reach the upstream either"}, stop)
 		_, err := q.SearchSource(ctx, "shikimori", "aria", "")
 		assertUpstream(t, err)
 		if clock().After(t0.Add(relaySearchBudget)) {
@@ -650,7 +651,7 @@ func TestSearchRelayExpiresToUpstreamError(t *testing.T) {
 			return t0
 		}
 		q, s := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": deadSearchSrc()}, nil)
-		r := NewRelay(s, time.Microsecond, 0, nil)
+		r := &Relay{Store: s, LeaseTTL: time.Microsecond}
 		q.deps.Relay = r
 		type searchOutcome struct {
 			err error
@@ -752,7 +753,7 @@ func TestSearchRelayNonNetworkUnchanged(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			q, s := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": tc.src}, nil)
-			q.deps.Relay = NewRelay(s, 0, 0, nil) // live: the non-network path must ignore it
+			q.deps.Relay = &Relay{Store: s} // live: the non-network path must ignore it
 			_, err := q.SearchSource(ctx, "shikimori", "aria", "")
 			tc.checkErr(t, err)
 			if _, found := relayClaim(t, s); found {

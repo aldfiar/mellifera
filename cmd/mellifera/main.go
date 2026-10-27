@@ -219,16 +219,21 @@ func main() {
 	// transport over the relay_jobs store. Built BEFORE NewQueue, which copies
 	// the Deps struct (a later assignment would miss the queue's copy): the
 	// lease rides MELLIFERA_RELAY_LEASE (relayLease — default 2m claim
-	// handout), the cooldown passes 0 so NewRelay fills its flat 10m 'relayed'
-	// default (no env knob by design), and the completion wake is the SAME
-	// library-notify target the queue's notify closures ride, with the PROCESS
-	// ctx substituted for the request-scoped ctx the ingest arrives on (the
-	// scanDeps.Notify detachment — the derivation must outlive the HTTP
-	// request). The wake only fires after Start, when enrichQueue is assigned.
+	// handout), the cooldown field stays zero so the Relay's flat 10m
+	// 'relayed' default applies at use (no env knob by design), and the
+	// completion wake is the SAME library-notify target the queue's notify
+	// closures ride, with the PROCESS ctx substituted for the request-scoped
+	// ctx the ingest arrives on (the scanDeps.Notify detachment — the
+	// derivation must outlive the HTTP request). The wake only fires after
+	// Start, when enrichQueue is assigned.
 	var enrichQueue *enrich.Queue
-	enrichRelay := enrich.NewRelay(st, relayLease(), 0, func(_ context.Context, libraryID int64) {
-		enrichQueue.Notify(ctx, libraryID)
-	})
+	enrichRelay := &enrich.Relay{
+		Store:    st,
+		LeaseTTL: relayLease(),
+		Notify: func(_ context.Context, libraryID int64) {
+			enrichQueue.Notify(ctx, libraryID)
+		},
+	}
 	scanDeps.Enrich.Relay = enrichRelay
 	// Async enrich queue (arch §4.4): a bounded worker pool that derives pending
 	// (item, plugin) work from items + the ledger and drains it for the process
@@ -775,7 +780,7 @@ func envDuration(key string, def time.Duration) time.Duration {
 // a bare seconds integer is NOT accepted, the unit is part of the value)
 // verbatim when set, the default 2m when unset/empty, and the default + a
 // logged warning naming the knob when malformed (envDuration's
-// INV-env-defaults contract). Feeds NewRelay's leaseTTL: how long one client
+// INV-env-defaults contract). Feeds Relay.LeaseTTL: how long one client
 // principal owns a claimed relay job before the claim predicate considers it
 // abandoned.
 func relayLease() time.Duration {

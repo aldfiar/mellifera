@@ -9,61 +9,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/relay"
 )
 
-// PlanSpec is one request inside a relay job's plan (client-relayed-fetch):
-// the verbatim upstream fetch a client executes on the server's behalf. The
-// store persists plans opaquely as a JSON blob column (INV3 discipline — the
-// store never interprets a spec); the struct is the boundary the enrich chain
-// fills at enqueue and the claim descriptor projects to the wire. The json
-// tags ARE the blob vocabulary and mirror the claim descriptor's wire shape.
-type PlanSpec struct {
-	Method         string            `json:"method"`
-	URL            string            `json:"url"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	Body           []byte            `json:"body,omitempty"`
-	BinarySafe     bool              `json:"binary_safe"`
-	TimeoutSeconds int               `json:"timeout_seconds"`
-	MinIntervalMS  int               `json:"min_interval_ms"`
-}
-
-// RelayResult is the stored outcome of one completed relay job (client-
-// relayed-fetch): what the client came back with, whether it read as an HTTP
-// response (status/headers/body) or died before one (error). Like the plan it
-// persists as a JSON blob column and is opaque to the store — the enrich
-// chain decides what a result means (D5: done clears the ledger, failed
-// counts a round).
-type RelayResult struct {
-	HTTPStatus int               `json:"http_status"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	Body       []byte            `json:"body,omitempty"`
-	Error      string            `json:"error,omitempty"`
-}
-
-// RelayJob is one row of the relay_jobs durable queue (client-relayed-fetch):
-// a deferred fetch plan awaiting a client relay. State is a value-agnostic
-// column — the closed pending|claimed|done|failed set is owned by the caller
-// (the enrichment_failures FailureRow precedent); lease expiry is LAZY,
-// decided inside the claim predicate by the caller's clock (the pairing
-// lazy-expiry precedent), never swept. ClaimPrincipalHash is the opaque hash
-// of whichever principal holds the lease — the raw credential never persists.
-type RelayJob struct {
-	ID                 int64
-	Purpose            string
-	RowID              string
-	LibraryID          int64
-	PluginID           string
-	Plan               []PlanSpec
-	State              string
-	ClaimPrincipalHash string
-	ClaimedAt          time.Time
-	LeaseUntil         time.Time
-	Result             RelayResult
-	ResultBytes        int
-	CreatedAt          time.Time
-	CompletedAt        time.Time
-	Consumed           bool
-}
+// The relay job shapes (relay.RelayJob / relay.PlanSpec / relay.RelayResult)
+// live in internal/relay — the descriptor vocabulary shared with the enrich
+// chain and the api claim surface (the GATE-ruled exported-symbol split).
+// This file owns their SQL: every statement over relay_jobs, nothing else.
 
 // relayJobClaimSQL is the ONE conditional statement behind every claim
 // (design D3): the WHERE id = (SELECT ...) subselect picks the oldest
@@ -97,7 +50,7 @@ RETURNING id, purpose, row_id, library_id, plugin_id, plan, state,
 // CreatedAt is stamped now (the PutItem precedent). Purpose, row and plugin
 // ids are not validated — the store is value-agnostic, the caller owns the
 // enrich|search vocabulary.
-func (s *Store) CreateRelayJob(ctx context.Context, job RelayJob) (int64, error) {
+func (s *Store) CreateRelayJob(ctx context.Context, job relay.RelayJob) (int64, error) {
 	plan, err := json.Marshal(job.Plan)
 	if err != nil {
 		return 0, fmt.Errorf("store: create relay job %s/%s (plan): %w", job.RowID, job.PluginID, err)
@@ -127,23 +80,23 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 // not-found (found=false, nil error) — the caller never spins. now is the
 // caller's clock (stamps claimed_at, bounds lease expiry); leaseUntil is the
 // handout the caller computes from its TTL.
-func (s *Store) ClaimOldestRelayJob(ctx context.Context, principalHash string, now, leaseUntil time.Time) (RelayJob, bool, error) {
+func (s *Store) ClaimOldestRelayJob(ctx context.Context, principalHash string, now, leaseUntil time.Time) (relay.RelayJob, bool, error) {
 	rows, err := s.db.QueryContext(ctx, relayJobClaimSQL,
 		principalHash, formatTime(now), formatTime(leaseUntil), formatTime(now),
 	)
 	if err != nil {
-		return RelayJob{}, false, fmt.Errorf("store: claim relay job: %w", err)
+		return relay.RelayJob{}, false, fmt.Errorf("store: claim relay job: %w", err)
 	}
 	defer rows.Close()
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
-			return RelayJob{}, false, fmt.Errorf("store: claim relay job: %w", err)
+			return relay.RelayJob{}, false, fmt.Errorf("store: claim relay job: %w", err)
 		}
-		return RelayJob{}, false, nil // nothing claimable — not an error
+		return relay.RelayJob{}, false, nil // nothing claimable — not an error
 	}
 	job, err := scanRelayJob(rows)
 	if err != nil {
-		return RelayJob{}, false, fmt.Errorf("store: claim relay job scan: %w", err)
+		return relay.RelayJob{}, false, fmt.Errorf("store: claim relay job scan: %w", err)
 	}
 	return job, true, nil
 }
@@ -154,7 +107,7 @@ func (s *Store) ClaimOldestRelayJob(ctx context.Context, principalHash string, n
 // wrapped sql.ErrNoRows and the row is left untouched (the api layer maps it
 // to 409). completed_at is stamped with the caller's now; result_bytes is
 // derived from the stored body length — the caller never passes it.
-func (s *Store) CompleteRelayJob(ctx context.Context, id int64, principalHash, state string, result RelayResult, now time.Time) error {
+func (s *Store) CompleteRelayJob(ctx context.Context, id int64, principalHash, state string, result relay.RelayResult, now time.Time) error {
 	blob, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("store: complete relay job %d (result): %w", id, err)
@@ -217,10 +170,10 @@ WHERE row_id = ? AND plugin_id = ? AND state = 'failed'`,
 // scanRelayJob scans one relay_jobs row (through the shared *sql.Row /
 // *sql.Rows scanner interface) and round-trips the JSON blob columns and the
 // RFC3339Nano stamps. NULL claim/completion stamps read as zero times; a NULL
-// result blob reads as the zero RelayResult.
-func scanRelayJob(sc scanner) (RelayJob, error) {
+// result blob reads as the zero relay.RelayResult.
+func scanRelayJob(sc scanner) (relay.RelayJob, error) {
 	var (
-		job         RelayJob
+		job         relay.RelayJob
 		plan        []byte
 		result      []byte
 		createdAt   string
@@ -235,39 +188,39 @@ func scanRelayJob(sc scanner) (RelayJob, error) {
 		&claimedAt, &leaseUntil, &result, &job.ResultBytes,
 		&createdAt, &completedAt, &consumed,
 	); err != nil {
-		return RelayJob{}, err
+		return relay.RelayJob{}, err
 	}
 	if err := json.Unmarshal(plan, &job.Plan); err != nil {
-		return RelayJob{}, fmt.Errorf("plan: %w", err)
+		return relay.RelayJob{}, fmt.Errorf("plan: %w", err)
 	}
 	if len(result) > 0 {
 		if err := json.Unmarshal(result, &job.Result); err != nil {
-			return RelayJob{}, fmt.Errorf("result: %w", err)
+			return relay.RelayJob{}, fmt.Errorf("result: %w", err)
 		}
 	}
 	created, err := parseTime(createdAt)
 	if err != nil {
-		return RelayJob{}, fmt.Errorf("created_at: %w", err)
+		return relay.RelayJob{}, fmt.Errorf("created_at: %w", err)
 	}
 	job.CreatedAt = created
 	if claimedAt.Valid {
 		t, err := parseTime(claimedAt.String)
 		if err != nil {
-			return RelayJob{}, fmt.Errorf("claimed_at: %w", err)
+			return relay.RelayJob{}, fmt.Errorf("claimed_at: %w", err)
 		}
 		job.ClaimedAt = t
 	}
 	if leaseUntil.Valid {
 		t, err := parseTime(leaseUntil.String)
 		if err != nil {
-			return RelayJob{}, fmt.Errorf("lease_until: %w", err)
+			return relay.RelayJob{}, fmt.Errorf("lease_until: %w", err)
 		}
 		job.LeaseUntil = t
 	}
 	if completedAt.Valid {
 		t, err := parseTime(completedAt.String)
 		if err != nil {
-			return RelayJob{}, fmt.Errorf("completed_at: %w", err)
+			return relay.RelayJob{}, fmt.Errorf("completed_at: %w", err)
 		}
 		job.CompletedAt = t
 	}

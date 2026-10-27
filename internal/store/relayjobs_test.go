@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mellifera/mellifera/internal/relay"
 	"reflect"
 	"sync"
 	"testing"
@@ -26,11 +27,11 @@ const relayTestLease = 2 * time.Minute
 // minimal single-spec plan and returns its minted id.
 func seedRelayJob(t *testing.T, s *Store, rowID, pluginID string) int64 {
 	t.Helper()
-	id, err := s.CreateRelayJob(context.Background(), RelayJob{
+	id, err := s.CreateRelayJob(context.Background(), relay.RelayJob{
 		Purpose:   "enrich",
 		RowID:     rowID,
 		PluginID:  pluginID,
-		Plan:      []PlanSpec{{Method: "GET", URL: "https://upstream.example/" + rowID, TimeoutSeconds: 10}},
+		Plan:      []relay.PlanSpec{{Method: "GET", URL: "https://upstream.example/" + rowID, TimeoutSeconds: 10}},
 		CreatedAt: relayTestBase,
 	})
 	if err != nil {
@@ -50,7 +51,7 @@ func TestRelayJobCreate_ClaimRoundTrip(t *testing.T) {
 	s := openStore(t)
 
 	t.Run("enrich_roundtrip", func(t *testing.T) {
-		plan := []PlanSpec{
+		plan := []relay.PlanSpec{
 			{
 				Method:         "GET",
 				URL:            "https://api.example/tv/1399?api_key=k",
@@ -66,7 +67,7 @@ func TestRelayJobCreate_ClaimRoundTrip(t *testing.T) {
 				TimeoutSeconds: 5,
 			},
 		}
-		id, err := s.CreateRelayJob(ctx, RelayJob{
+		id, err := s.CreateRelayJob(ctx, relay.RelayJob{
 			Purpose: "enrich", RowID: "itm_1", LibraryID: 7, PluginID: "tmdb",
 			Plan: plan, CreatedAt: relayTestBase,
 		})
@@ -101,7 +102,7 @@ func TestRelayJobCreate_ClaimRoundTrip(t *testing.T) {
 		if !job.CreatedAt.Equal(relayTestBase) {
 			t.Fatalf("created_at = %v, want %v", job.CreatedAt, relayTestBase)
 		}
-		if job.Consumed || !job.CompletedAt.IsZero() || job.ResultBytes != 0 || !reflect.DeepEqual(job.Result, RelayResult{}) {
+		if job.Consumed || !job.CompletedAt.IsZero() || job.ResultBytes != 0 || !reflect.DeepEqual(job.Result, relay.RelayResult{}) {
 			t.Fatalf("fresh claim defaults broken: consumed=%v completed=%v bytes=%d result=%+v",
 				job.Consumed, job.CompletedAt, job.ResultBytes, job.Result)
 		}
@@ -127,8 +128,8 @@ func TestRelayJobCreate_ClaimRoundTrip(t *testing.T) {
 	})
 
 	t.Run("search_purpose_roundtrip", func(t *testing.T) {
-		plan := []PlanSpec{{Method: "GET", URL: "https://api.example/search?q=one+piece", TimeoutSeconds: 20}}
-		id, err := s.CreateRelayJob(ctx, RelayJob{
+		plan := []relay.PlanSpec{{Method: "GET", URL: "https://api.example/search?q=one+piece", TimeoutSeconds: 20}}
+		id, err := s.CreateRelayJob(ctx, relay.RelayJob{
 			Purpose: "search", PluginID: "shiki", Plan: plan, CreatedAt: relayTestBase,
 		})
 		if err != nil {
@@ -269,7 +270,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 	ctx := context.Background()
 	t0 := relayTestBase
 	leaseUntil := t0.Add(relayTestLease)
-	result := RelayResult{
+	result := relay.RelayResult{
 		HTTPStatus: 200,
 		Headers:    map[string]string{"Content-Type": "application/json"},
 		Body:       []byte(`{"results":[{"id":1}]}`),
@@ -335,7 +336,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 			if state != "done" {
 				t.Fatalf("state = %q, want done", state)
 			}
-			var got RelayResult
+			var got relay.RelayResult
 			if err := json.Unmarshal(resultBlob, &got); err != nil {
 				t.Fatalf("result blob: %v", err)
 			}
@@ -358,7 +359,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", t0, leaseUntil); err != nil || !found {
 			t.Fatalf("setup claim = found=%v err=%v", found, err)
 		}
-		failed := RelayResult{HTTPStatus: 502, Error: "dial tcp: connection refused"}
+		failed := relay.RelayResult{HTTPStatus: 502, Error: "dial tcp: connection refused"}
 		if err := s.CompleteRelayJob(ctx, id, "hash-a", "failed", failed, t0.Add(time.Minute)); err != nil {
 			t.Fatalf("complete failed: %v", err)
 		}
@@ -373,7 +374,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 		if state != "failed" {
 			t.Fatalf("state = %q, want failed", state)
 		}
-		var got RelayResult
+		var got relay.RelayResult
 		if err := json.Unmarshal(resultBlob, &got); err != nil {
 			t.Fatalf("result blob: %v", err)
 		}
@@ -438,7 +439,7 @@ func TestRelayJobCountRounds(t *testing.T) {
 			t.Fatalf("setup claim %s/%s = found=%v err=%v", rowID, pluginID, found, err)
 		}
 		if err := s.CompleteRelayJob(ctx, id, "hash-a", "failed",
-			RelayResult{HTTPStatus: 502, Error: "boom"}, t0.Add(time.Minute)); err != nil {
+			relay.RelayResult{HTTPStatus: 502, Error: "boom"}, t0.Add(time.Minute)); err != nil {
 			t.Fatalf("complete failed %s/%s: %v", rowID, pluginID, err)
 		}
 	}
@@ -457,7 +458,7 @@ func TestRelayJobCountRounds(t *testing.T) {
 		t.Fatalf("setup claim done = found=%v err=%v", found, err)
 	}
 	if err := s.CompleteRelayJob(ctx, doneID, "hash-a", "done",
-		RelayResult{HTTPStatus: 200, Body: []byte(`{}`)}, t0.Add(2*relayTestLease)); err != nil {
+		relay.RelayResult{HTTPStatus: 200, Body: []byte(`{}`)}, t0.Add(2*relayTestLease)); err != nil {
 		t.Fatalf("complete done: %v", err)
 	}
 

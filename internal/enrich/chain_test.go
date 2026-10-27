@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mellifera/mellifera/internal/module"
+	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
@@ -63,7 +64,7 @@ func relayConsumed(t *testing.T, s *store.Store, id int64) bool {
 
 // assertDeferredJob claims the run's handoff back and asserts the whole-plan
 // positional shape and the (row, plugin) identity a 3.2 handoff must carry.
-func assertDeferredJob(t *testing.T, s *store.Store, rowID string, libraryID int64, wantURLs []string) store.RelayJob {
+func assertDeferredJob(t *testing.T, s *store.Store, rowID string, libraryID int64, wantURLs []string) relay.RelayJob {
 	t.Helper()
 	job, found := relayClaim(t, s)
 	if !found {
@@ -119,7 +120,7 @@ func TestDeferredHandoff(t *testing.T) {
 
 	t.Run("network primary defers the whole plan: one job, positional, retry short-circuits", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		rec := &fetchRecorder{}
 		live := httptest.NewServer(rec)
 		defer live.Close()
@@ -162,7 +163,7 @@ func TestDeferredHandoff(t *testing.T) {
 
 	t.Run("network extra defers too: the plan hands whole before any soft-fail", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		rec := &fetchRecorder{}
 		live := httptest.NewServer(rec)
 		defer live.Close()
@@ -226,7 +227,7 @@ func TestDeferredHandoff(t *testing.T) {
 	t.Run("enqueue error degrades to today's failure", func(t *testing.T) {
 		s := relayTestStore(t)
 		_ = s.Close() // the relay store is broken
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		live := httptest.NewServer(&fetchRecorder{})
 		defer live.Close()
 		dead := deadUpstream(t)
@@ -248,7 +249,7 @@ func TestDeferredConsultFeedsConvert(t *testing.T) {
 
 	t.Run("consult hit feeds Convert exactly as a server fetch, stamped executor client", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		rec := &fetchRecorder{}
 		live := httptest.NewServer(rec)
 		defer live.Close()
@@ -257,8 +258,8 @@ func TestDeferredConsultFeedsConvert(t *testing.T) {
 		extra := &metadatav1.RequestSpec{Method: "GET", UrlTemplate: live.URL + "?which=extra1"}
 		var gotConv *metadatav1.ConvertRequest
 		src := &planSource{
-			primary: primary,
-			extras:  []*metadatav1.RequestSpec{extra},
+			primary:   primary,
+			extras:    []*metadatav1.RequestSpec{extra},
 			onConvert: func(cr *metadatav1.ConvertRequest) { gotConv = cr },
 		}
 
@@ -272,7 +273,7 @@ func TestDeferredConsultFeedsConvert(t *testing.T) {
 		if !found {
 			t.Fatal("seed handoff produced no claimable job")
 		}
-		stored := store.RelayResult{
+		stored := relay.RelayResult{
 			HTTPStatus: 200,
 			Headers:    map[string]string{"X-Relay": "client-1", "Content-Type": "application/json"},
 			Body:       []byte(`{"id":1,"name":"stored-by-client"}`),
@@ -325,20 +326,20 @@ func TestDeferredConsultFeedsConvert(t *testing.T) {
 
 	t.Run("mismatched plan misses the cache and degrades to a server fetch", func(t *testing.T) {
 		s := relayTestStore(t)
-		r := NewRelay(s, 0, 0, nil)
+		r := &Relay{Store: s}
 		rec := &fetchRecorder{}
 		live := httptest.NewServer(rec)
 		defer live.Close()
 		primary := &metadatav1.RequestSpec{Method: "GET", UrlTemplate: live.URL + "?which=fresh"}
 		var gotConv *metadatav1.ConvertRequest
 		src := &planSource{
-			primary: primary,
+			primary:   primary,
 			onConvert: func(cr *metadatav1.ConvertRequest) { gotConv = cr },
 		}
 
 		// A done, unconsumed job whose plan NO LONGER matches (the document
 		// drifted): the stale job must stay unconsumed.
-		stalePlan := []store.PlanSpec{{Method: "GET", URL: "https://stale.example/old", TimeoutSeconds: 5}}
+		stalePlan := []relay.PlanSpec{{Method: "GET", URL: "https://stale.example/old", TimeoutSeconds: 5}}
 		if err := r.Enqueue(ctx, stalePlan, relayPurposeEnrich, "itm_c2", 3, "plan", fetchClassNetwork, "dial tcp: refused"); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
@@ -346,7 +347,7 @@ func TestDeferredConsultFeedsConvert(t *testing.T) {
 		if !found {
 			t.Fatal("seed handoff produced no claimable job")
 		}
-		if err := r.Ingest(ctx, job.ID, "test-principal", store.RelayResult{HTTPStatus: 200, Body: []byte(`{"stale":true}`)}); err != nil {
+		if err := r.Ingest(ctx, job.ID, "test-principal", relay.RelayResult{HTTPStatus: 200, Body: []byte(`{"stale":true}`)}); err != nil {
 			t.Fatalf("Ingest: %v", err)
 		}
 

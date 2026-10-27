@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mellifera/mellifera/internal/pairing"
+	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -25,7 +26,7 @@ import (
 // field populated, so the wire assertion proves each descriptor field
 // verbatim — including body ([]byte → the base64 string the SPA executes)
 // and the binary_safe flag that governs that encoding.
-var relaySeededPlan = []store.PlanSpec{
+var relaySeededPlan = []relay.PlanSpec{
 	{
 		Method:         "GET",
 		URL:            "https://api.example.org/3/search/tv?query=aria",
@@ -49,7 +50,7 @@ var relaySeededPlan = []store.PlanSpec{
 // returns its minted id.
 func seedRelayJob(t *testing.T, st *store.Store) int64 {
 	t.Helper()
-	id, err := st.CreateRelayJob(context.Background(), store.RelayJob{
+	id, err := st.CreateRelayJob(context.Background(), relay.RelayJob{
 		Purpose:   "enrich",
 		RowID:     "itm_relay",
 		LibraryID: 3,
@@ -70,8 +71,8 @@ var relayClaimCalls []string
 // UPDATE with the clock and lease the composition root owns — the test builds
 // it straight over the store seam, one hop down, and records every principal
 // hash it is called with.
-func relayClaimClosure(st *store.Store) func(context.Context, string) (store.RelayJob, bool, error) {
-	return func(ctx context.Context, principalHash string) (store.RelayJob, bool, error) {
+func relayClaimClosure(st *store.Store) func(context.Context, string) (relay.RelayJob, bool, error) {
+	return func(ctx context.Context, principalHash string) (relay.RelayJob, bool, error) {
 		relayClaimCalls = append(relayClaimCalls, principalHash)
 		now := time.Now()
 		return st.ClaimOldestRelayJob(ctx, principalHash, now, now.Add(2*time.Minute))
@@ -155,7 +156,7 @@ func TestRelayClaim(t *testing.T) {
 
 	t.Run("descriptor_plan_round_trips_through_the_typed_shape", func(t *testing.T) {
 		// The typed projection: marshaling the api descriptor struct and
-		// decoding it back into []store.PlanSpec rebuilds the seeded plan
+		// decoding it back into []relay.PlanSpec rebuilds the seeded plan
 		// exactly — the wire shape IS the store shape, body base64-decodes to
 		// the original bytes. Nothing re-shaped handler-side.
 		var typed relayClaimResponse
@@ -222,8 +223,8 @@ func TestRelayClaim(t *testing.T) {
 
 	t.Run("closure_error_is_500_internal", func(t *testing.T) {
 		st := openAPIStore(t)
-		h := New(Deps{AdminToken: adminToken, Store: st, RelayClaim: func(context.Context, string) (store.RelayJob, bool, error) {
-			return store.RelayJob{}, false, context.DeadlineExceeded
+		h := New(Deps{AdminToken: adminToken, Store: st, RelayClaim: func(context.Context, string) (relay.RelayJob, bool, error) {
+			return relay.RelayJob{}, false, context.DeadlineExceeded
 		}})
 		resp := doRequest(t, h, http.MethodPost, path, "", adminToken)
 		defer resp.Body.Close()
@@ -349,7 +350,7 @@ func TestRelayClaimEmptyQueue(t *testing.T) {
 type relayResultCall struct {
 	id     int64
 	hash   string
-	result store.RelayResult
+	result relay.RelayResult
 }
 
 // relayResultCalls is reset per subtest; every closure invocation appends.
@@ -362,8 +363,8 @@ var relayResultCalls []relayResultCall
 // the store's refusal ("enrich: relay ingest %d: %w" over the store's wrapped
 // sql.ErrNoRows). The test builds it straight over the store seam, one hop
 // down (the relayClaimClosure posture), and records every (id, hash, result).
-func relayResultClosure(st *store.Store) func(context.Context, int64, string, store.RelayResult) error {
-	return func(ctx context.Context, id int64, principalHash string, result store.RelayResult) error {
+func relayResultClosure(st *store.Store) func(context.Context, int64, string, relay.RelayResult) error {
+	return func(ctx context.Context, id int64, principalHash string, result relay.RelayResult) error {
 		relayResultCalls = append(relayResultCalls, relayResultCall{id: id, hash: principalHash, result: result})
 		state := "done"
 		if result.Error != "" {
@@ -395,7 +396,7 @@ func claimRelayFor(t *testing.T, st *store.Store, credential string, leaseUntil 
 // []byte (the same encoding the plan's body used on the way out).
 func relayDoneBody(t *testing.T) string {
 	t.Helper()
-	blob, err := json.Marshal(store.RelayResult{
+	blob, err := json.Marshal(relay.RelayResult{
 		HTTPStatus: 200,
 		Headers:    map[string]string{"Content-Type": "application/json"},
 		Body:       []byte{0x00, 0xff, 0x7f},
@@ -490,7 +491,7 @@ func TestRelayResult(t *testing.T) {
 		// The refusal left the claimed row untouched: the rightful principal
 		// still completes it under its live lease.
 		if err := st.CompleteRelayJob(context.Background(), wantID, relayHashToken("device-cred"), "done",
-			store.RelayResult{HTTPStatus: 200}, time.Now()); err != nil {
+			relay.RelayResult{HTTPStatus: 200}, time.Now()); err != nil {
 			t.Fatalf("refused attempt mutated the row: %v", err)
 		}
 	})
@@ -628,7 +629,7 @@ func TestRelayResult(t *testing.T) {
 		st := openAPIStore(t)
 		relayResultCalls = nil
 		h := New(Deps{AdminToken: adminToken, Store: st,
-			RelayResult: func(context.Context, int64, string, store.RelayResult) error {
+			RelayResult: func(context.Context, int64, string, relay.RelayResult) error {
 				return context.DeadlineExceeded
 			}, RelayMaxBody: 1 << 20})
 

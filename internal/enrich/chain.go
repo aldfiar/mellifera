@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mellifera/mellifera/internal/module"
-	"github.com/mellifera/mellifera/internal/store"
+	"github.com/mellifera/mellifera/internal/relay"
 	commonv1 "github.com/mellifera/mellifera/proto/mellifera/common/v1"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
@@ -63,7 +63,7 @@ func (sc *relayScope) enabled() bool {
 // queue's hard-abort owns teardown; a cancelled ctx must not write durable
 // relay state), or an enqueue error keeps today's failure behavior
 // bit-identical: the caller falls through to the plain failure path.
-func (sc *relayScope) handOff(ctx context.Context, src module.MetadataSourceBinding, start, errText, class string, plan []store.PlanSpec) (sourceResult, bool) {
+func (sc *relayScope) handOff(ctx context.Context, src module.MetadataSourceBinding, start, errText, class string, plan []relay.PlanSpec) (sourceResult, bool) {
 	if !sc.enabled() || plan == nil || class != fetchClassNetwork || ctx.Err() != nil {
 		return sourceResult{}, false
 	}
@@ -82,13 +82,13 @@ func (sc *relayScope) handOff(ctx context.Context, src module.MetadataSourceBind
 // normal fetch fails with the same spec-class error, today's behavior). The
 // marshaler over the result is deterministic, so the rebuilt plan
 // byte-compares against a stored job's plan (Consult's match).
-func buildPlan(primary *metadatav1.RequestSpec, extras []*metadatav1.RequestSpec) []store.PlanSpec {
+func buildPlan(primary *metadatav1.RequestSpec, extras []*metadatav1.RequestSpec) []relay.PlanSpec {
 	specs := make([]*metadatav1.RequestSpec, 0, 1+len(extras))
 	if primary != nil {
 		specs = append(specs, primary)
 	}
 	specs = append(specs, extras...)
-	out := make([]store.PlanSpec, 0, len(specs))
+	out := make([]relay.PlanSpec, 0, len(specs))
 	for _, spec := range specs {
 		values, err := resolveVariables(spec.GetVariables())
 		if err != nil {
@@ -98,7 +98,7 @@ func buildPlan(primary *metadatav1.RequestSpec, extras []*metadatav1.RequestSpec
 		if err != nil {
 			return nil
 		}
-		out = append(out, store.PlanSpec{
+		out = append(out, relay.PlanSpec{
 			Method:         strings.ToUpper(spec.GetMethod()),
 			URL:            rawURL,
 			Headers:        spec.GetHeaders(),
@@ -147,7 +147,7 @@ type sourceResult struct {
 	// executorClient ("client") when the primary response was fed from the
 	// relay cache (D4 consult hit). Empty for every server fetch; appendStage
 	// stamps it onto the _stages fetch entry (spec "Result endpoint").
-	executor string
+	executor   string
 	startedAt  string
 	finishedAt string
 }
@@ -194,8 +194,8 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 	var raw []byte
 	var httpStatus int32
 	var respHeaders map[string]string
-	executor := ""            // executorClient once the primary came from the relay cache
-	var plan []store.PlanSpec // the whole request plan, held while the relay can act on it
+	executor := ""                                                              // executorClient once the primary came from the relay cache
+	var plan []relay.PlanSpec                                                   // the whole request plan, held while the relay can act on it
 	if spec := buildRes.GetSpec(); spec != nil && spec.GetUrlTemplate() != "" { // no url template: local source, nothing to fetch
 		if scope.enabled() { // D4: the call site owns the relay policy — fetchSource stays a pure executor
 			plan = buildPlan(spec, buildRes.GetExtraSpecs())

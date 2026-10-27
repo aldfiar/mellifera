@@ -15,19 +15,19 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/mellifera/mellifera/internal/store"
+	"github.com/mellifera/mellifera/internal/relay"
 )
 
 // relayClaimResponse is the wire shape of POST /relay/claim (client-relayed-
 // fetch D7): the server-authored descriptor for ONE claimed relay job. Plan
-// entries ride store.PlanSpec UNCHANGED — its json tags ARE the wire
+// entries ride relay.PlanSpec UNCHANGED — its json tags ARE the wire
 // vocabulary, and body's []byte marshals to the base64 string the SPA
 // executes (binary_safe flags that encoding) — so the descriptor is the
 // store row projected to {id, purpose, plan}, nothing re-shaped handler-side.
 type relayClaimResponse struct {
 	ID      int64            `json:"id"`
 	Purpose string           `json:"purpose"`
-	Plan    []store.PlanSpec `json:"plan"`
+	Plan    []relay.PlanSpec `json:"plan"`
 }
 
 // principalHash is the relay principal identity: the SHA-256 hex of the
@@ -47,7 +47,7 @@ func principalHash(credential string) string {
 // forks on Role (ruled OQ-1). Pure delegation (INV1): the credential hash
 // comes from the middleware-validated Authorization header (the same
 // credential authN resolved), the nil-safe Deps.RelayClaim closure owns the
-// claim mechanics and lease stamping cmd-side, and the returned store.RelayJob
+// claim mechanics and lease stamping cmd-side, and the returned relay.RelayJob
 // is projected verbatim into the descriptor. Nothing claimable is found=false
 // with a nil error — the loser of a race and the empty queue read identically
 // → 204, the caller never spins; a closure error is a real failure → 500;
@@ -84,7 +84,7 @@ func (a *app) relayClaim(w http.ResponseWriter, r *http.Request) {
 // request body is capped FIRST (http.MaxBytesReader over Deps.RelayMaxBody —
 // a composition-root value, never env-read handler-side, INV1) so an over-cap
 // payload is rejected 413 before any ingestion. The wire body IS
-// store.RelayResult: its json tags are the vocabulary ({http_status, headers,
+// relay.RelayResult: its json tags are the vocabulary ({http_status, headers,
 // body, error}; body rides the same base64 string encoding the plan's body
 // used on the way out), and nothing is re-shaped handler-side. Pure delegation
 // (INV1): the principal hash is re-derived from the SAME middleware-validated
@@ -102,7 +102,7 @@ func (a *app) relayClaim(w http.ResponseWriter, r *http.Request) {
 // @ID           relay-result
 // @Router       /relay/{id}/result [post]
 // @Param        id      path int              true "relay job id"
-// @Param        request body store.RelayResult true "the client's fetch outcome"
+// @Param        request body relay.RelayResult true "the client's fetch outcome"
 // @Success      204 "result accepted"
 // @Failure      400 {object} errorBody
 // @Failure      409 {object} errorBody
@@ -123,7 +123,7 @@ func (a *app) relayResult(w http.ResponseWriter, r *http.Request) {
 	// over-cap body dies at the decode with *http.MaxBytesError, never
 	// reaching the closure.
 	r.Body = http.MaxBytesReader(w, r.Body, a.deps.RelayMaxBody)
-	var result store.RelayResult
+	var result relay.RelayResult
 	if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
