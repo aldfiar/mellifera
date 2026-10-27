@@ -127,8 +127,8 @@ func TestBuildRequest(t *testing.T) {
 			t.Fatalf("BuildRequest: %v", err)
 		}
 		extras := res.GetExtraSpecs()
-		if len(extras) != 2 {
-			t.Fatalf("extra_specs = %d, want the anchored pair (roles first, episodes second)", len(extras))
+		if len(extras) != 3 {
+			t.Fatalf("extra_specs = %d, want the anchored trio (roles first, episodes second, GraphQL poster third)", len(extras))
 		}
 		rolesSpec := extras[0]
 		if got := rolesSpec.GetMethod(); got != "GET" {
@@ -167,8 +167,8 @@ func TestBuildRequestEpisodeExtra(t *testing.T) {
 			t.Fatalf("BuildRequest: %v", err)
 		}
 		extras := res.GetExtraSpecs()
-		if len(extras) != 2 {
-			t.Fatalf("extra_specs = %d, want exactly two (roles, episodes)", len(extras))
+		if len(extras) != 3 {
+			t.Fatalf("extra_specs = %d, want exactly three (roles, episodes, GraphQL poster)", len(extras))
 		}
 		if got := extras[0].GetUrlTemplate(); got != rolesTemplate {
 			t.Errorf("extras[0].url_template = %q, want the roles endpoint (unchanged)", got)
@@ -185,8 +185,8 @@ func TestBuildRequestEpisodeExtra(t *testing.T) {
 			t.Fatalf("BuildRequest: %v", err)
 		}
 		extras := res.GetExtraSpecs()
-		if len(extras) != 2 {
-			t.Fatalf("extra_specs = %d, want exactly two", len(extras))
+		if len(extras) != 3 {
+			t.Fatalf("extra_specs = %d, want exactly three", len(extras))
 		}
 		ep := extras[1]
 		if got := ep.GetMethod(); got != "GET" {
@@ -217,7 +217,63 @@ func TestBuildRequestEpisodeExtra(t *testing.T) {
 			t.Fatalf("BuildRequest: %v", err)
 		}
 		if got := len(res.GetExtraSpecs()); got != 0 {
-			t.Errorf("extra_specs = %d, want 0 (a search run is a single fetch — no roles, no episodes)", got)
+			t.Errorf("extra_specs = %d, want 0 (a search run is a single fetch — no roles, no episodes, no GraphQL poster)", got)
 		}
 	})
+}
+
+// TestBuildRequestGraphQLPosterExtra pins the GraphQL poster leg of the
+// anchored request plan (artwork 2026-10-27): extras[2] POSTs the GraphQL
+// endpoint with the anchored id baked into the body (the executor sends
+// spec.Body raw — no {placeholder} substitution over bodies, so the
+// brace-heavy GraphQL document carries no placeholders at all), under the
+// same anonymous-tier posture (app-named User-Agent, 700 ms pacing, no
+// auth, no secret variables) plus the JSON Content-Type a GraphQL POST
+// requires.
+func TestBuildRequestGraphQLPosterExtra(t *testing.T) {
+	p := &sourceImpl{}
+
+	res, err := p.BuildRequest(context.Background(),
+		buildReq(t, map[string]any{"shikimori_id": int64(60636)}))
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	extras := res.GetExtraSpecs()
+	if len(extras) != 3 {
+		t.Fatalf("extra_specs = %d, want exactly three (roles, episodes, GraphQL poster)", len(extras))
+	}
+	g := extras[2]
+	if got := g.GetMethod(); got != "POST" {
+		t.Errorf("graphql method = %q, want POST", got)
+	}
+	if got := g.GetUrlTemplate(); got != graphqlPosterTemplate {
+		t.Errorf("graphql url_template = %q, want %q", got, graphqlPosterTemplate)
+	}
+	// No placeholders in the GraphQL leg: bodies are sent RAW (no
+	// substitution ever runs over them), so a leftover {placeholder} would
+	// reach upstream verbatim.
+	if strings.Contains(string(g.GetBody()), "{shikimori_id}") {
+		t.Errorf("graphql body %q carries an unsubstituted {shikimori_id} placeholder (bodies are never substituted)", g.GetBody())
+	}
+	// The anchored id IS baked into the query, quoted as GraphQL demands.
+	if !strings.Contains(string(g.GetBody()), `\"60636\"`) {
+		t.Errorf("graphql body = %q, want the quoted anchored id 60636", g.GetBody())
+	}
+	// The anonymous-tier posture: app-named UA, JSON content type, no auth,
+	// 700 ms pacing, no secret variables.
+	if got := g.GetHeaders()["User-Agent"]; got != userAgent {
+		t.Errorf("graphql User-Agent = %q, want the app-named %q", got, userAgent)
+	}
+	if got := g.GetHeaders()["Content-Type"]; got != "application/json" {
+		t.Errorf("graphql Content-Type = %q, want application/json", got)
+	}
+	if g.GetHeaders()["Authorization"] != "" {
+		t.Error("graphql Authorization header present, want none at the anonymous tier")
+	}
+	if got := g.GetMinIntervalMs(); got != minIntervalMS {
+		t.Errorf("graphql min_interval_ms = %d, want %d", got, minIntervalMS)
+	}
+	if len(g.GetVariables()) != 0 {
+		t.Errorf("graphql variables = %v, want none (the id is baked into the body)", g.GetVariables())
+	}
 }
