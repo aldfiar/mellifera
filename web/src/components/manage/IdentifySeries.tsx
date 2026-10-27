@@ -189,7 +189,7 @@ export function SeriesIdentify(props: {
               No matches. Try the original title or the source id.
             </p>
           ) : (
-            <ul className="flex flex-col gap-1" aria-label="Search candidates">
+            <ul className="identify-candidates flex flex-col gap-1" aria-label="Search candidates">
               {(search.data?.candidates ?? []).map((c) => (
                 <li key={c.external_id}>
                   <button
@@ -202,8 +202,8 @@ export function SeriesIdentify(props: {
                     }}
                   >
                     <span className="flex flex-col">
-                      <span className="text-xs font-medium">{c.title}</span>
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-xs font-medium line-clamp-3">{c.title}</span>
+                      <span className="text-xs text-muted-foreground line-clamp-2">
                         {[c.kind, c.year !== undefined ? String(c.year) : null, c.russian_title]
                           .filter((f) => f !== null)
                           .join(" · ")}

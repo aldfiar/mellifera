@@ -535,10 +535,18 @@ body.side-open .app-content {
 }
 
 /* The portaled dialog panel: the menu and the rename view share one shell
-   over the shared .overlay-backdrop scrim (click-away closes). */
+   over the shared .overlay-backdrop scrim (click-away closes). The panel
+   carries the overlay height contract (as .overlay-card does): capped at
+   min(90vh, 640px) and scrolling itself — a variable-length view (the
+   identify candidates) must never grow the panel past the viewport, where
+   the backdrop's flex-centering would clip the TOP rows off-screen above
+   the fold (2026-10-27: candidate #0 — the correct match — rendered at
+   top −475px and read as a "search quality" failure). */
 .cardact-panel {
   width: 100%;
   max-width: 320px;
+  max-height: min(90vh, 640px);
+  overflow-y: auto;
   border: 1px solid hsl(var(--border));
   border-radius: var(--radius);
   background: hsl(var(--card));
@@ -576,6 +584,15 @@ body.side-open .app-content {
   border: none;
   outline: none;
   background: transparent;
+}
+
+/* The identify candidates list is its OWN scroll region inside the capped
+   .cardact-panel (max 46vh): every candidate stays reachable by scrolling
+   the list while the Back action below stays pinned — the panel itself only
+   scrolls for a view taller than the cap, never for list length. */
+.identify-candidates {
+  max-height: 46vh;
+  overflow-y: auto;
 }
 
 /* ---- Admin collections table + edit overlay (web-ui-phase-3 group 6) ------ */
