@@ -499,6 +499,8 @@ definitions:
         type: array
       current:
         type: string
+      reason:
+        type: string
     type: object
   api.posterOverrideResponse:
     properties:

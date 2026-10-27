@@ -3098,6 +3098,9 @@
                 },
                 "current": {
                     "type": "string"
+                },
+                "reason": {
+                    "type": "string"
                 }
             }
         },

@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/mellifera/mellifera/internal/store"
 )
 
 // settlePageSize is one page of the item walk per library (QueryItems is
@@ -44,23 +46,49 @@ func missingArtURL(u string) bool {
 
 // Settle runs ONE settle+GC pass (artwork): the shared document walk covers
 // every library's series rows AND its non-series items — films and TV alike
-// — collecting each namespace poster URL. The settle half Acquires every
-// non-placeholder URL (fetch-once: rows and the singleflight collapse
+// — yielding the rows themselves, because the first leg is the repair: every
+// legacy missing-art placeholder a document still carries in
+// sources.<ns>.poster (rows enriched before the write-side drop) is stripped
+// and the document is put back through PutSeries/PutItem — ONLY when a
+// placeholder key was actually removed; a corrupt document is left
+// untouched. The settle half then Acquires every non-placeholder URL of the
+// REPAIRED documents (fetch-once: rows and the singleflight collapse
 // repeats; a corrupt document simply contributes no URLs); the GC half
 // reclaims on REFERENCE LOSS, never time — the referenced set is every
-// stored override selection unioned with every live document poster URL
-// (conservative: gate flips and chain reorders never delete; the fetch
-// rows' own sha256 column is deliberately NOT a reference). A fetch row
-// whose URL is in neither set is deleted together with its blob dir; the
+// stored override selection unioned with every live REPAIRED document poster
+// URL (conservative: gate flips and chain reorders never delete; the fetch
+// rows' own sha256 column is deliberately NOT a reference), so a stripped
+// placeholder neither re-triggers acquisition nor protects a row. A fetch
+// row whose URL is in neither set is deleted together with its blob dir; the
 // repair legs delete a row whose bytes file is missing and a bytes dir with
 // no surviving reference. The boot run is this same pass, not a bulk path,
 // and every leg yields to ctx. Store-level read failures abort the pass
 // (the janitor logs them); per-URL acquire failures are logged and skipped —
 // the failure cooldown bounds the retry economics.
 func (s *Service) Settle(ctx context.Context) error {
-	live, err := s.walkPosterURLs(ctx)
+	rows, err := s.walkPosterRows(ctx)
 	if err != nil {
 		return err
+	}
+	seen := make(map[string]bool)
+	var live []string
+	for _, row := range rows {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		doc := row.document()
+		if repaired, changed := stripMissingPosters(doc); changed {
+			if err := row.putBack(ctx, s.st, repaired); err != nil {
+				return err
+			}
+			doc = repaired
+		}
+		for _, u := range posterURLs(doc) {
+			if !seen[u] {
+				seen[u] = true
+				live = append(live, u)
+			}
+		}
 	}
 	for _, u := range live {
 		if ctx.Err() != nil {
@@ -76,26 +104,49 @@ func (s *Service) Settle(ctx context.Context) error {
 	return s.gc(ctx, live)
 }
 
-// walkPosterURLs reads every library's series and item documents into the
-// distinct live poster-URL set — ONE walk shared by the settle and the GC
-// halves. A corrupt document yields no URLs (tolerant, like every dynamic
-// read); a store-level failure aborts the pass. Series and non-series items
-// ride the same loop: the GC union must hold every kind-field URL.
-func (s *Service) walkPosterURLs(ctx context.Context) ([]string, error) {
+// settleRow is one walked document row — exactly one of the two pointers is
+// set. The repair reads document(), decides, and putBack()s the rewritten
+// document into the row's own table; identity is store-owned (PutSeries
+// re-derives the id and preserves created_at, series.go; PutItem upserts on
+// file_id, items.go).
+type settleRow struct {
+	sr *store.Series
+	it *store.Item
+}
+
+// document returns the row's raw dynamic-JSON document.
+func (r settleRow) document() json.RawMessage {
+	if r.sr != nil {
+		return r.sr.Document
+	}
+	return r.it.Document
+}
+
+// putBack writes doc back into the row's own table, replacing only the
+// document — the identity and lifecycle columns ride the row as read.
+func (r settleRow) putBack(ctx context.Context, st *store.Store, doc json.RawMessage) error {
+	if r.sr != nil {
+		sr := *r.sr
+		sr.Document = doc
+		return st.PutSeries(ctx, sr)
+	}
+	it := *r.it
+	it.Document = doc
+	return st.PutItem(ctx, it)
+}
+
+// walkPosterRows reads every library's series and item documents into the
+// walked row set — ONE walk shared by the repair, settle, and GC halves.
+// Series and non-series items ride the same loop: the GC union must hold
+// every kind-field URL, and the repair must rewrite both tables. A corrupt
+// document still yields its ROW (the strip's tolerant floor leaves it
+// untouched); a store-level failure aborts the pass.
+func (s *Service) walkPosterRows(ctx context.Context) ([]settleRow, error) {
 	libs, err := s.st.ListLibraries(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("art: list libraries: %w", err)
 	}
-	seen := make(map[string]bool)
-	var urls []string
-	add := func(raw json.RawMessage) {
-		for _, u := range posterURLs(raw) {
-			if !seen[u] {
-				seen[u] = true
-				urls = append(urls, u)
-			}
-		}
-	}
+	var rows []settleRow
 	for _, lib := range libs {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -104,8 +155,8 @@ func (s *Service) walkPosterURLs(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("art: query series %d: %w", lib.ID, err)
 		}
-		for _, sr := range series {
-			add(sr.Document)
+		for i := range series {
+			rows = append(rows, settleRow{sr: &series[i]})
 		}
 		for offset := 0; ; offset += settlePageSize {
 			if ctx.Err() != nil {
@@ -115,15 +166,15 @@ func (s *Service) walkPosterURLs(ctx context.Context) ([]string, error) {
 			if err != nil {
 				return nil, fmt.Errorf("art: query items %d: %w", lib.ID, err)
 			}
-			for _, it := range page {
-				add(it.Document)
+			for i := range page {
+				rows = append(rows, settleRow{it: &page[i]})
 			}
 			if len(page) < settlePageSize {
 				break
 			}
 		}
 	}
-	return urls, nil
+	return rows, nil
 }
 
 // posterURLs collects a document's namespace poster URLs — every
@@ -150,6 +201,68 @@ func posterURLs(raw json.RawMessage) []string {
 		}
 	}
 	return out
+}
+
+// stripMissingPosters removes every legacy missing-art placeholder poster
+// key from a stored document: for each sources.<ns> object whose poster
+// passes missingArtURL (the EXACT path-prefix rule — a real URL whose path
+// merely contains similar substrings is never a match), the poster key is
+// deleted. The second result reports whether any key was removed; false
+// returns raw untouched, byte for byte, so the caller writes back ONLY on an
+// actual removal. A corrupt document — or one whose sources shapes do not
+// parse — is left untouched (the tolerant floor: posterURLs reads it as no
+// URLs elsewhere, and rewriting a misshapen doc is never this pass's
+// business). The re-marshal roundtrips through maps, so key order is not
+// identity — only content is. The golden fixture (poster-backfill 1.2)
+// drives this function directly.
+func stripMissingPosters(raw json.RawMessage) (json.RawMessage, bool) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return raw, false
+	}
+	sourcesRaw, ok := doc["sources"]
+	if !ok {
+		return raw, false
+	}
+	var sources map[string]json.RawMessage
+	if err := json.Unmarshal(sourcesRaw, &sources); err != nil {
+		return raw, false
+	}
+	changed := false
+	for ns, src := range sources {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(src, &fields); err != nil {
+			continue // a non-object namespace is not ours to repair
+		}
+		posterRaw, ok := fields["poster"]
+		if !ok {
+			continue
+		}
+		var u string
+		if err := json.Unmarshal(posterRaw, &u); err != nil || !missingArtURL(u) {
+			continue
+		}
+		delete(fields, "poster")
+		reenc, err := json.Marshal(fields)
+		if err != nil {
+			continue
+		}
+		sources[ns] = reenc
+		changed = true
+	}
+	if !changed {
+		return raw, false
+	}
+	reenc, err := json.Marshal(sources)
+	if err != nil {
+		return raw, false
+	}
+	doc["sources"] = reenc
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
 }
 
 // gc reconciles the fetch rows and the blob tree against the reference
