@@ -23,6 +23,15 @@ the backend; this one owns everything under `web/`.
   (Rename / Rename series / Identify / Refresh metadata). Never inline forms
   on browse surfaces. Menu hidden by default; on full pages the trigger uses
   `.cardact-trigger--inline` (always visible).
+- **Overlay height contract.** Every overlay panel rendering variable-length
+  content carries `max-height: min(90vh, 640px); overflow-y: auto`
+  (`.cardact-panel` and `.overlay-card`); a long list inside such a panel is
+  its OWN scroll region (`.identify-candidates`, `max-height: 46vh`) so the
+  actions below it stay pinned. Without the cap, the backdrop's
+  flex-centering clips the panel's TOP rows off-screen (2026-10-27: the
+  identify panel grew to 1615px at a 633px viewport and the correct
+  candidate #0 rendered at top −475px — read as a "search quality" failure).
+  Pinned by `lib/overlayContract.test.ts` + `manage/IdentifySeries.test.tsx`.
 - **Color = state.** Green ok (`emerald-600` text / `emerald-500` dot) /
   red fail (`destructive`) / gray off (`muted-foreground`). Selection is a
   background/border change, never pills. Soft pastel overall.

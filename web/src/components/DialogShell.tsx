@@ -19,8 +19,9 @@ import { createPortal } from "react-dom";
 //   returnFocusRef  — the element focus returns to on close (the trigger).
 //   focusKey        — when it changes while open, focus moves to the panel's
 //                     first focusable (the open → view-flip routing).
-//   width           — "card" (the card-action menu panel) | "wide" (the
-//                     Manage sheet: wide and scrollable).
+//   width           — "card" (the card-action menu panel) | "identify" (the
+//                     same panel widened for the long-title candidate rows)
+//                   | "wide" (the Manage sheet: wide and scrollable).
 //
 // Esc is forwarded, never consumed: the shell never closes on Esc by itself,
 // so a pending mutation can suppress closing (an unmounted view could never
@@ -38,7 +39,7 @@ function focusables(panel: HTMLElement): HTMLElement[] {
 export function DialogShell(props: {
   open: boolean;
   label: string;
-  width?: "card" | "wide";
+  width?: "card" | "identify" | "wide";
   focusKey?: string;
   returnFocusRef?: RefObject<HTMLElement>;
   onClose: () => void;
@@ -88,10 +89,14 @@ export function DialogShell(props: {
   };
 
   // Width variant over the two existing sheet styles: "card" keeps the
-  // Pass-1 menu panel (320px), "wide" is the scrollable Manage sheet
-  // (.overlay-card already carries max-height + overflow-y) widened inline —
-  // the variant stays a shell concern, no extra global CSS.
+  // Pass-1 menu panel (320px), "identify" is the same panel widened inline
+  // for the identify view (candidate titles run 100+ chars — at 320px they
+  // wrap past any readable clamp; 30rem gives the clamped rows their line
+  // budget), "wide" is the scrollable Manage sheet (.overlay-card already
+  // carries max-height + overflow-y) widened inline — the variant stays a
+  // shell concern, no extra global CSS.
   const wide = props.width === "wide";
+  const identify = props.width === "identify";
 
   return createPortal(
     <div className="overlay-backdrop" onClick={props.onClose}>
@@ -101,7 +106,13 @@ export function DialogShell(props: {
         aria-modal="true"
         aria-label={props.label}
         className={wide ? "overlay-card" : "cardact-panel"}
-        style={wide ? { maxWidth: "45rem" } : undefined}
+        style={
+          wide
+            ? { maxWidth: "45rem" }
+            : identify
+              ? { maxWidth: "30rem" }
+              : undefined
+        }
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key !== "Escape") {
