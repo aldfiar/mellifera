@@ -143,6 +143,11 @@ SELECT plugin_id, COUNT(*) FROM enrichment_failures GROUP BY plugin_id`)
 // QueryItems precedent). pluginID "" = all plugins. ListFailures itself stays
 // UNTOUCHED (the derivation's failureIndex rides it) — the handler routes
 // no-parameter requests there so today's full-list answer is preserved.
+//
+// Ordering is RFC3339Nano TEXT order (the stored stamp format): stable newest-first
+// across seconds; within one second a zero-fraction stamp sorts AFTER fractional
+// ones (the nano trailing-zero trim) — accepted skew at operator-listing
+// granularity.
 func (s *Store) ListFailuresPage(ctx context.Context, pluginID string, limit, offset int) ([]FailureRow, error) {
 	if limit <= 0 {
 		limit = 50
