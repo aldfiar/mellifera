@@ -135,6 +135,7 @@ export function CardActions(props: {
       <DialogShell
         open={open}
         label={props.triggerLabel}
+        width={overlay === "identify" ? "identify" : "card"}
         returnFocusRef={triggerRef}
         focusKey={overlay}
         onClose={closeAll}

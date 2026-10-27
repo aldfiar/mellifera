@@ -5,7 +5,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -81,32 +80,41 @@ func (s *Store) GetItem(ctx context.Context, id string) (Item, error) {
 }
 
 // QueryItems lists items for a library, newest-row ordering, with LIMIT/OFFSET
-// pagination. limit<=0 returns no rows. A non-empty status filters by exact
-// match (WHERE status = ?); an empty status returns items of ALL statuses (the
-// scan-library listing behavior, unchanged). The two query shapes are gated by
-// the empty check -- status is never interpolated into SQL (INV1).
-func (s *Store) QueryItems(ctx context.Context, libraryID int64, status string, limit, offset int) ([]Item, error) {
+// pagination. limit<=0 returns no rows; a negative offset clamps to 0. A
+// non-empty status filters by exact match (WHERE status = ?); an empty status
+// returns items of ALL statuses (the scan-library listing behavior, unchanged).
+// A non-empty pathPrefix keeps only items under that folder (substr equality
+// on prefix+"/" at ANY depth — no LIKE wildcards to escape, so a folder named
+// "100%" matches literally); topLevel keeps only files with no "/" at all
+// (instr = 0 — byte-parity with LibraryFolders' top-level bucket, so a chip
+// count and its paged stream agree). The filters compose with status.
+// Everything user-controlled rides BOUND args -- nothing is ever interpolated
+// into SQL (INV1); the caller (api) owns normalization, the store trusts a
+// pre-trimmed prefix.
+func (s *Store) QueryItems(ctx context.Context, libraryID int64, status, pathPrefix string, topLevel bool, limit, offset int) ([]Item, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	var (
-		rows *sql.Rows
-		err  error
-	)
+	where := "library_id = ?"
+	args := []any{libraryID}
 	if status != "" {
-		rows, err = s.db.QueryContext(ctx,
-			itemColumns+" FROM items WHERE library_id = ? AND status = ? ORDER BY id LIMIT ? OFFSET ?",
-			libraryID, status, limit, offset,
-		)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			itemColumns+" FROM items WHERE library_id = ? ORDER BY id LIMIT ? OFFSET ?",
-			libraryID, limit, offset,
-		)
+		where += " AND status = ?"
+		args = append(args, status)
 	}
+	if pathPrefix != "" {
+		where += " AND substr(relative_path, 1, ?) = ?"
+		args = append(args, len(pathPrefix)+1, pathPrefix+"/")
+	}
+	if topLevel {
+		where += " AND instr(relative_path, '/') = 0"
+	}
+	rows, err := s.db.QueryContext(ctx,
+		itemColumns+" FROM items WHERE "+where+" ORDER BY id LIMIT ? OFFSET ?",
+		append(args, limit, offset)...,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query items lib %d: %w", libraryID, err)
 	}

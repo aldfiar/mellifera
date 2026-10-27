@@ -1083,7 +1083,7 @@ func newEnrichPreviewClosure(st *store.Store, reg *module.Registry) func(context
 			}
 		}
 		for offset := 0; ; offset += previewBatch {
-			batch, err := st.QueryItems(ctx, libraryID, "", previewBatch, offset)
+			batch, err := st.QueryItems(ctx, libraryID, "", "", false, previewBatch, offset)
 			if err != nil {
 				return api.EnrichPreview{}, fmt.Errorf("preview: query items lib %d: %w", libraryID, err)
 			}

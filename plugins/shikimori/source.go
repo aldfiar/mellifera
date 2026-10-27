@@ -174,11 +174,12 @@ func (*sourceImpl) BuildRequest(_ context.Context, req *metadatav1.BuildRequestR
 		vars[idKey] = intVar(id)
 		// The request plan (media-data convention, design Interfaces §5):
 		// an anchored run also fetches the anime's roles (the convention
-		// cast) and the anime's episodes (episode-titles) so Convert can
-		// compose both. The extras are POSITIONAL — extras[0] roles,
-		// extras[1] episodes — and Convert reads them by position. A search
-		// stays single-fetch.
-		res.ExtraSpecs = []*metadatav1.RequestSpec{rolesSpec(id), episodesSpec(id)}
+		// cast), the anime's episodes (episode-titles), and the GraphQL
+		// poster (the new-poster-system fallback) so Convert can compose
+		// all three. The extras are POSITIONAL — extras[0] roles,
+		// extras[1] episodes, extras[2] the GraphQL poster — and Convert
+		// reads them by position. A search stays single-fetch.
+		res.ExtraSpecs = []*metadatav1.RequestSpec{rolesSpec(id), episodesSpec(id), graphqlPosterSpec(id)}
 	} else {
 		title := req.GetQuery().GetFields()[titleKey].GetStringValue()
 		vars[titleKey] = stringVar(title)
@@ -224,6 +225,33 @@ func episodesSpec(id int64) *metadatav1.RequestSpec {
 		UrlTemplate:   episodesTemplate,
 		Headers:       map[string]string{"User-Agent": userAgent},
 		Variables:     map[string]*metadatav1.VariableValue{idKey: intVar(id)},
+		MinIntervalMs: minIntervalMS,
+	}
+}
+
+// graphqlPosterTemplate is the GraphQL endpoint the poster leg POSTs to —
+// same origin as every other leg (the hermetic seam swaps it with them).
+var graphqlPosterTemplate = apiBase + "/api/graphql"
+
+// graphqlPosterSpec shapes the GraphQL poster leg (artwork, 2026-10-27):
+// POST /api/graphql with the anime's id baked into the query — the executor
+// sends spec.Body RAW (no {placeholder} substitution runs over bodies), so
+// the brace-heavy GraphQL document needs no escaping dance. It rides the
+// anchored plan THIRD (extras[2], behind the roles and episodes fetches)
+// under the SAME anonymous-tier contract — the app-named User-Agent and the
+// 700 ms pacing — and Convert consults it ONLY when the REST image produced
+// no poster (shikimori's REST field is a false negative for anime whose art
+// lives only in the new poster system).
+func graphqlPosterSpec(id int64) *metadatav1.RequestSpec {
+	query := fmt.Sprintf(`{"query":"{animes(ids:\"%d\"){poster{originalUrl}}}"}`, id)
+	return &metadatav1.RequestSpec{
+		Method:      "POST",
+		UrlTemplate: graphqlPosterTemplate,
+		Headers: map[string]string{
+			"User-Agent":   userAgent,
+			"Content-Type": "application/json",
+		},
+		Body:          []byte(query),
 		MinIntervalMs: minIntervalMS,
 	}
 }

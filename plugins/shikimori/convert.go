@@ -23,7 +23,9 @@ var errNoCandidates = errors.New("shikimori returned no candidates")
 
 // Convert normalizes the raw shikimori payload into the RU-first
 // sources.shikimori namespace: title{romaji,russian}, kind, status, episodes,
-// aired_on, description, genres, score, url, poster. The payload is either a
+// aired_on, description, genres, score, url, poster (the REST image, filled
+// from the GraphQL poster leg when the REST field is a missing-art false
+// negative — see the fallback block below). The payload is either a
 // single anime object (the by-id fetch) or a list (the search); a list runs
 // the preference score and picks ONE candidate. The resolved shikimori_id
 // rides inside the metadata under resolved_ids (the core lifts it into
@@ -42,6 +44,23 @@ func (*sourceImpl) Convert(_ context.Context, req *metadatav1.ConvertRequest) (*
 	}
 	m := namespaceFields(entry)
 	m[resolvedIDsKey] = map[string]any{idKey: int64(entry.ID)}
+	// Poster fallback (artwork, 2026-10-27): shikimori's REST image field is
+	// a FALSE NEGATIVE for anime whose art lives only in the new poster
+	// system (uploads/poster/animes/…) — /api/animes/:id serves the
+	// missing-art asset for them while the website shows real art. The
+	// anchored plan's extras[2] asks the GraphQL endpoint for
+	// poster.originalUrl; it fills the namespace ONLY when the REST leg
+	// produced no poster (absent or placeholder — the write-side drop). A
+	// real REST poster always wins; a failed/unfetched/malformed GraphQL
+	// leg leaves honest absence; a GraphQL poster that is ITSELF a
+	// missing-art URL is dropped the same way.
+	if _, ok := m["poster"]; !ok {
+		if extras := req.GetExtraResponses(); len(extras) > 2 && extras[2].GetFetched() {
+			if u := graphqlPosterURL(extras[2].GetBody()); u != "" {
+				m["poster"] = u
+			}
+		}
+	}
 	// The request plan's extras are aligned by position (proto D4) and this
 	// plugin declares two: extras[0] the roles fetch (the convention cast,
 	// source.go BuildRequest), extras[1] the episodes fetch (episode-titles).
@@ -188,7 +207,7 @@ func namespaceFields(e animeEntry) map[string]any {
 		"genres":      genreNames(e.Genres),
 		"url":         absoluteURL(e.URL),
 	}
-	if poster := absoluteURL(e.Image.Original); !missingArtURL(poster) {
+	if poster := absoluteURL(e.Image.Original); poster != "" && !missingArtURL(poster) {
 		m["poster"] = poster
 	}
 	if s, err := e.Score.Float64(); err == nil && s > 0 {
@@ -225,6 +244,39 @@ func genreNames(genres []animeGenre) []any {
 		out = append(out, displayFirst(g.Russian, g.Name))
 	}
 	return out
+}
+
+// graphqlPosterBody mirrors the GraphQL answer the poster leg parses:
+// {"data":{"animes":[{"poster":{"originalUrl":"…"}}]}}.
+type graphqlPosterBody struct {
+	Data struct {
+		Animes []struct {
+			Poster struct {
+				OriginalURL string `json:"originalUrl"`
+			} `json:"poster"`
+		} `json:"animes"`
+	} `json:"data"`
+}
+
+// graphqlPosterURL reads the GraphQL poster leg's answer (extras[2]): the
+// first anime's poster.originalUrl, absolute-checked against apiBase like
+// every other poster this plugin writes, and dropped when it is itself a
+// missing-art URL. Anything but a well-formed answer with a usable URL
+// yields "" — the caller leaves honest absence; the leg never errors the
+// chain.
+func graphqlPosterURL(body []byte) string {
+	var g graphqlPosterBody
+	if err := json.Unmarshal(body, &g); err != nil {
+		return ""
+	}
+	if len(g.Data.Animes) == 0 {
+		return ""
+	}
+	u := absoluteURL(g.Data.Animes[0].Poster.OriginalURL)
+	if u == "" || missingArtURL(u) {
+		return ""
+	}
+	return u
 }
 
 // rolesEntry mirrors one entry of the shikimori roles payload

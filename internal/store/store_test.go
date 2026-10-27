@@ -243,7 +243,7 @@ func TestStore_Items(t *testing.T) {
 			}
 
 			// Idempotency: exactly one row for this library (public API, no db reach-in).
-			items, err := s.QueryItems(ctx, libID, "", 100, 0)
+			items, err := s.QueryItems(ctx, libID, "", "", false, 100, 0)
 			if err != nil {
 				t.Fatalf("QueryItems: %v", err)
 			}
@@ -322,7 +322,7 @@ func TestStore_QueryItems(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := s.QueryItems(ctx, libID, "", tc.limit, tc.offset)
+			got, err := s.QueryItems(ctx, libID, "", "", false, tc.limit, tc.offset)
 			if err != nil {
 				t.Fatalf("QueryItems(%d,%d): %v", tc.limit, tc.offset, err)
 			}
@@ -331,6 +331,98 @@ func TestStore_QueryItems(t *testing.T) {
 					libID, tc.limit, tc.offset, len(got), tc.want)
 			}
 		})
+	}
+}
+
+// TestStore_QueryItems_PathFilter covers the photos folder-filter lane
+// (feature/photos-folder-filter): pathPrefix matches at ANY depth via prefix+"/"
+// equality, topLevel keeps only "/"-free paths (byte-parity with
+// LibraryFolders' buckets), filters compose with status, and library scoping
+// still holds under a filter.
+func TestStore_QueryItems_PathFilter(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+
+	libID, err := s.CreateLibrary(ctx, "image", "/data/photos", "Photos")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	seed := []struct{ fid, path, status string }{
+		{"fid-top", "root.jpg", "ready"},
+		{"fid-e1", "ecchi/one.jpg", "ready"},
+		{"fid-e2", "ecchi/two.jpg", "pending"},
+		{"fid-en", "ecchi/nested/three.jpg", "ready"},
+		{"fid-m", "from_manga/m.jpg", "ready"},
+	}
+	for _, it := range seed {
+		if err := s.PutItem(ctx, Item{
+			ID: "itm_" + it.fid, ModuleID: "image", LibraryID: libID, FileID: it.fid,
+			RelativePath: it.path, MediaType: "image",
+			Document: json.RawMessage(`{}`), SchemaVersion: 1, Status: it.status,
+		}); err != nil {
+			t.Fatalf("PutItem %s: %v", it.fid, err)
+		}
+	}
+	// Same folder name in ANOTHER library must never leak into a filtered page.
+	other, err := s.CreateLibrary(ctx, "image", "/data/other", "Other")
+	if err != nil {
+		t.Fatalf("CreateLibrary other: %v", err)
+	}
+	if err := s.PutItem(ctx, Item{
+		ID: "itm-other", ModuleID: "image", LibraryID: other, FileID: "fid-other",
+		RelativePath: "ecchi/leak.jpg", MediaType: "image",
+		Document: json.RawMessage(`{}`), SchemaVersion: 1, Status: "ready",
+	}); err != nil {
+		t.Fatalf("PutItem other: %v", err)
+	}
+
+	gotFIDs := func(prefix string, topLevel bool, status string) []string {
+		t.Helper()
+		items, err := s.QueryItems(ctx, libID, status, prefix, topLevel, 100, 0)
+		if err != nil {
+			t.Fatalf("QueryItems(prefix=%q,top=%v,status=%q): %v", prefix, topLevel, status, err)
+		}
+		fids := make([]string, 0, len(items))
+		for _, it := range items {
+			fids = append(fids, it.FileID)
+		}
+		return fids
+	}
+	assertSet := func(name string, got []string, want ...string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %v, want %v", name, got, want)
+		}
+		set := map[string]bool{}
+		for _, fid := range got {
+			set[fid] = true
+		}
+		for _, fid := range want {
+			if !set[fid] {
+				t.Fatalf("%s: got %v, want %v", name, got, want)
+			}
+		}
+	}
+
+	assertSet("folder any depth", gotFIDs("ecchi", false, ""), "fid-e1", "fid-e2", "fid-en")
+	assertSet("folder deep", gotFIDs("ecchi/nested", false, ""), "fid-en")
+	assertSet("top-level only", gotFIDs("", true, ""), "fid-top")
+	assertSet("folder+status compose", gotFIDs("ecchi", false, "ready"), "fid-e1", "fid-en")
+	// LibraryFolders parity on the same seed: chip counts == filtered totals.
+	folders, err := s.LibraryFolders(ctx, libID)
+	if err != nil {
+		t.Fatalf("LibraryFolders: %v", err)
+	}
+	for _, fc := range folders {
+		var want int
+		if fc.Path == "" {
+			want = len(gotFIDs("", true, ""))
+		} else {
+			want = len(gotFIDs(fc.Path, false, ""))
+		}
+		if int(fc.Items) != want {
+			t.Fatalf("folders endpoint says %q=%d but filtered stream has %d -- chip/grid parity broken", fc.Path, fc.Items, want)
+		}
 	}
 }
 
@@ -391,14 +483,14 @@ func TestStore_ItemsStatus_RoundTrip(t *testing.T) {
 	if nw.Status != "new" {
 		t.Fatalf("GetItem(nw1).Status = %q, want 'new' (PutItem default)", nw.Status)
 	}
-	only, err := s.QueryItems(ctx, libID, "enriched", 100, 0)
+	only, err := s.QueryItems(ctx, libID, "enriched", "", false, 100, 0)
 	if err != nil {
 		t.Fatalf("QueryItems(enriched): %v", err)
 	}
 	if len(only) != 1 || only[0].ID != "en1" {
 		t.Fatalf("QueryItems(enriched) = %+v, want [en1]", only)
 	}
-	all, err := s.QueryItems(ctx, libID, "", 100, 0)
+	all, err := s.QueryItems(ctx, libID, "", "", false, 100, 0)
 	if err != nil {
 		t.Fatalf("QueryItems(all): %v", err)
 	}

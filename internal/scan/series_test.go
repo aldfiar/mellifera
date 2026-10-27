@@ -154,7 +154,7 @@ func TestSeriesRescanIdempotent(t *testing.T) {
 	}
 
 	// Episode items carry the §2 stamping verbatim.
-	items, err := s.QueryItems(ctx, libID, "", 100, 0)
+	items, err := s.QueryItems(ctx, libID, "", "", false, 100, 0)
 	if err != nil {
 		t.Fatalf("QueryItems: %v", err)
 	}

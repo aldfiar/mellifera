@@ -59,6 +59,107 @@ const (
 	]`
 )
 
+// TestConvertPosterGraphQLFallback pins the poster fallback (artwork
+// 2026-10-27): shikimori's REST image is a FALSE NEGATIVE for anime whose
+// art lives only in the new poster system — /api/animes/:id answers with the
+// missing-art asset while GraphQL's poster.originalUrl carries the real URL.
+// The GraphQL leg (extras[2]) fills the namespace ONLY when the REST leg
+// produced no poster; a real REST poster always wins; anything but a usable
+// GraphQL answer leaves honest absence.
+func TestConvertPosterGraphQLFallback(t *testing.T) {
+	p := &sourceImpl{}
+	const missingRest = `{"id": 60636, "name": "Bleach", "russian": "Бич", "kind": "tv",
+		"status": "ongoing", "episodes": 10, "url": "/animes/60636-x",
+		"image": {"original": "/assets/globals/missing_original.jpg"}}`
+	const realRest = `{"id": 1, "name": "Air", "russian": "Воздух", "kind": "tv",
+		"status": "released", "episodes": 13, "url": "/animes/1-air",
+		"image": {"original": "/images/animes/1.jpg"}}`
+	const gqlAnswer = `{"data":{"animes":[{"poster":{"originalUrl":"https://shikimori.io/uploads/poster/animes/60636/main-17c08aafd12c84275d13866fe655cf6d.webp"}}]}}`
+
+	fetched := func(body string) *metadatav1.FetchedResponse {
+		return &metadatav1.FetchedResponse{Body: []byte(body), Fetched: true}
+	}
+
+	cases := []struct {
+		name      string
+		payload   string
+		extras    []*metadatav1.FetchedResponse
+		want      string // want poster value; "" = want the key ABSENT
+	}{
+		{
+			name:    "missing-art REST poster is filled from the GraphQL answer",
+			payload: missingRest,
+			extras:  []*metadatav1.FetchedResponse{nil, nil, fetched(gqlAnswer)},
+			want:    "https://shikimori.io/uploads/poster/animes/60636/main-17c08aafd12c84275d13866fe655cf6d.webp",
+		},
+		{
+			name:    "empty REST image is filled too",
+			payload: `{"id": 2, "name": "NoImg", "kind": "tv", "url": "/animes/2-x"}`,
+			extras:  []*metadatav1.FetchedResponse{nil, nil, fetched(`{"data":{"animes":[{"poster":{"originalUrl":"/uploads/poster/animes/2/a.jpeg"}}]}}`)},
+			want:    "https://shikimori.io/uploads/poster/animes/2/a.jpeg",
+		},
+		{
+			name:    "a real REST poster wins — the GraphQL answer is ignored",
+			payload: realRest,
+			extras:  []*metadatav1.FetchedResponse{nil, nil, fetched(gqlAnswer)},
+			want:    "https://shikimori.io/images/animes/1.jpg",
+		},
+		{
+			name:    "unfetched GraphQL leg leaves honest absence",
+			payload: missingRest,
+			extras:  []*metadatav1.FetchedResponse{nil, nil, {Error: "dial tcp: refused"}},
+			want:    "",
+		},
+		{
+			name:    "malformed GraphQL body leaves honest absence",
+			payload: missingRest,
+			extras:  []*metadatav1.FetchedResponse{nil, nil, fetched(`<!DOCTYPE html>`)},
+			want:    "",
+		},
+		{
+			name:    "empty animes list leaves honest absence",
+			payload: missingRest,
+			extras:  []*metadatav1.FetchedResponse{nil, nil, fetched(`{"data":{"animes":[]}}`)},
+			want:    "",
+		},
+		{
+			name:    "a GraphQL missing-art poster is dropped like the REST one",
+			payload: missingRest,
+			extras:  []*metadatav1.FetchedResponse{nil, nil, fetched(`{"data":{"animes":[{"poster":{"originalUrl":"/assets/globals/missing_original.jpg"}}]}}`)},
+			want:    "",
+		},
+		{
+			name:    "no extras at all (a search-shaped run) leaves honest absence",
+			payload: missingRest,
+			want:    "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := convertReq(t, tc.payload, nil)
+			req.ExtraResponses = tc.extras
+			res, err := p.Convert(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Convert: %v", err)
+			}
+			if res.GetError() != nil {
+				t.Fatalf("Convert error: %v", res.GetError())
+			}
+			ns := res.GetMetadata().AsMap()
+			if tc.want == "" {
+				if _, ok := ns["poster"]; ok {
+					t.Fatalf("poster = %v, want the key ABSENT (honest absence)", ns["poster"])
+				}
+				return
+			}
+			if got, _ := ns["poster"].(string); got != tc.want {
+				t.Fatalf("poster = %v, want %q", ns["poster"], tc.want)
+			}
+		})
+	}
+}
+
 // TestConvert drives Convert over the fixture payloads (box 1.3): the by-id
 // single-object namespace shape, the multi-candidate selection (preference
 // score + nothing-agrees determinism), the empty result, and the provenance

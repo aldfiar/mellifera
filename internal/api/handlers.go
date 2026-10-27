@@ -895,19 +895,23 @@ func (a *app) scanLibrary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// listItems: parse {id} + optional ?status= + pagination → store.QueryItems →
-// write itemsResponse. One domain call. An absent/empty ?status= passes "" so all
-// statuses are returned (INV-empty-all); api does not validate the status set
-// (store/enrich own it — pure delegation).
+// listItems: parse {id} + optional ?status=/?path_prefix=/?top_level= +
+// pagination → store.QueryItems → write itemsResponse. One domain call. An
+// absent/empty ?status= passes "" so all statuses are returned (INV-empty-all);
+// api does not validate the status set (store/enrich own it — pure delegation).
+// The folder filters are normalized HERE (parsePathFilter) so the store only
+// ever sees a pre-trimmed prefix.
 //
-// @Summary      List items (optionally filtered by library + status)
+// @Summary      List items (optionally filtered by library + status + folder)
 // @Tags         items
 // @ID           list-items
 // @Router       /items [get]
-// @Param        library query int    false "library id filter"
-// @Param        status  query string false "status filter (empty = all)"
-// @Param        limit   query int    false "page size (default 50, max 200)"
-// @Param        offset  query int    false "page offset"
+// @Param        library     query int     false "library id filter"
+// @Param        status      query string  false "status filter (empty = all)"
+// @Param        path_prefix query string  false "folder prefix filter — only items whose relative_path is under prefix/ (leading/trailing slashes trimmed, '.'/'..' segments rejected)"
+// @Param        top_level   query boolean false "only items with no subfolder in relative_path (conflicts with path_prefix)"
+// @Param        limit       query int     false "page size (default 50, max 200)"
+// @Param        offset      query int     false "page offset"
 // @Success      200 {object} itemsResponse
 // @Failure      400 {object} errorBody
 // @Failure      500 {object} errorBody
@@ -918,8 +922,13 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := r.URL.Query().Get("status")
+	pathPrefix, topLevel, bad := parsePathFilter(r)
+	if bad != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
+		return
+	}
 	limit, offset := parsePagination(r)
-	items, err := a.deps.Store.QueryItems(r.Context(), id, status, limit, offset)
+	items, err := a.deps.Store.QueryItems(r.Context(), id, status, pathPrefix, topLevel, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1401,22 +1410,71 @@ func parsePagination(r *http.Request) (limit, offset int) {
 	return limit, offset
 }
 
+// parsePathFilter reads the optional folder filters of GET /items (the photos
+// chip lane): path_prefix keeps only items under that folder (any depth),
+// top_level=true only "/"-free paths. Validation and normalization live HERE
+// so the store receives a pre-trimmed prefix it can trust blindly:
+//
+//   - leading/trailing slashes and surrounding spaces are trimmed ("/ecchi/"
+//     and " /ecchi " both mean "ecchi");
+//   - an interior empty segment ("a//b"), "." or ".." is a 400 bad_request —
+//     a folder prefix cannot walk the tree;
+//   - path_prefix together with top_level is contradictory — 400, never a
+//     silent precedence.
+//
+// The returned message is "" when the request is fine.
+func parsePathFilter(r *http.Request) (pathPrefix string, topLevel bool, bad string) {
+	topLevel = r.URL.Query().Get("top_level") == "true"
+	raw := strings.TrimSpace(r.URL.Query().Get("path_prefix"))
+	pathPrefix = strings.Trim(raw, "/")
+	if pathPrefix == "" && raw == "" {
+		return "", topLevel, "" // no path filter at all
+	}
+	if pathPrefix == "" {
+		return "", false, "path_prefix must name a folder (only slashes found)"
+	}
+	if topLevel {
+		return "", false, "path_prefix and top_level are mutually exclusive"
+	}
+	for _, seg := range strings.Split(pathPrefix, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", false, "path_prefix must be a relative folder path without empty, '.' or '..' segments"
+		}
+	}
+	return pathPrefix, false, ""
+}
+
 // itemDTOs performs the boundary struct conversion (INV4): every store.Item
 // becomes an itemDTO before it leaves the package, each row carrying its
 // stored title override (serial-watch-flow 2.1 — the per-row read is the
-// MVP posture; design defers batching to implementation latitude) and its
+// MVP posture; design defers batching to implementation latitude), its
 // server-composed display name through the namer threaded in from the
 // handler (display-naming 3.1 — the same seam stamps title_override per
-// row). When a template is active and the row resolves to a series, the
-// series' stored override is point-read beside the row's own, so a series
-// rename reaches the composed name while the item's own override still wins.
-// A store failure on any override read propagates (500 at the call site).
+// row), and its composed artwork — an item resolving neither an override
+// nor an own poster inherits its owning series' (artwork, the lazy
+// series-fallback leg below). When a template is active and the row
+// resolves to a series, the series' stored override is point-read beside
+// the row's own, so a series rename reaches the composed name while the
+// item's own override still wins. A store failure on any override read
+// propagates (500 at the call site).
 func (a *app) itemDTOs(ctx context.Context, items []store.Item, n namer) ([]itemDTO, error) {
 	rows := make([]artRow, len(items))
 	for i, it := range items {
-		rows[i] = artRow{id: it.ID, doc: it.Document}
+		rows[i] = artRow{id: it.ID, path: it.RelativePath, doc: it.Document}
 	}
-	artwork, err := a.artworkFor(ctx, artKindItem, rows, n)
+	// The artwork compose's lazy series-fallback leg: ONE library-scoped
+	// series read per call, made by artworkFor only when some item actually
+	// resolved absent. Every itemDTOs caller addresses one library (the
+	// list's ?library=, the detail's own row, the episodes route's series),
+	// so the first row's library keys the read.
+	libID := int64(0)
+	if len(items) > 0 {
+		libID = items[0].LibraryID
+	}
+	seriesOf := func(ctx context.Context) ([]store.Series, error) {
+		return a.deps.Store.QuerySeries(ctx, libID, "")
+	}
+	artwork, err := a.artworkFor(ctx, artKindItem, rows, n, seriesOf)
 	if err != nil {
 		return nil, err
 	}
@@ -1495,7 +1553,7 @@ func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n namer) ([]se
 	for i, sr := range srs {
 		rows[i] = artRow{id: sr.ID, doc: sr.Document}
 	}
-	artwork, err := a.artworkFor(ctx, artKindSeries, rows, n)
+	artwork, err := a.artworkFor(ctx, artKindSeries, rows, n, nil) // the series leg owns no fallback — absence is honest
 	if err != nil {
 		return nil, err
 	}

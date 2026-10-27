@@ -96,7 +96,7 @@ func TestRescanCarryForward(t *testing.T) {
 			if _, err := runScan(ctx, s, r, rr.resolve, passthroughEnricher(), nil, libID); err != nil {
 				t.Fatalf("runScan: %v", err)
 			}
-			items, err := s.QueryItems(ctx, libID, "", 100, 0)
+			items, err := s.QueryItems(ctx, libID, "", "", false, 100, 0)
 			if err != nil {
 				t.Fatalf("QueryItems: %v", err)
 			}
@@ -195,7 +195,7 @@ func rescanOnce(t *testing.T, s *store.Store, r *module.Registry, libID int64, f
 	if _, err := runScan(context.Background(), s, r, rr.resolve, passthroughEnricher(), nil, libID); err != nil {
 		t.Fatalf("runScan: %v", err)
 	}
-	items, err := s.QueryItems(context.Background(), libID, "", 100, 0)
+	items, err := s.QueryItems(context.Background(), libID, "", "", false, 100, 0)
 	if err != nil {
 		t.Fatalf("QueryItems: %v", err)
 	}

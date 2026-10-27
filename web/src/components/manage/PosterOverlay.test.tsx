@@ -136,6 +136,25 @@ describe("PosterOverlay (artwork 3.4)", () => {
     expect(screen.getByText("Сбросить к источнику")).toBeDefined();
   });
 
+  it("upstream_no_art_reason_renders_served_copy", async () => {
+    vi.spyOn(apiModule, "posterCandidates").mockResolvedValue({
+      current: "",
+      candidates: [],
+      reason: "no_upstream_art",
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    renderOverlay(client);
+
+    // The served reason drives the copy split — the generic line is gone.
+    expect(await screen.findByText("У источника нет постера")).toBeDefined();
+    expect(
+      screen.queryByText(/Плакатов нет — ни один источник не дал подходящее изображение/),
+    ).toBeNull();
+    // The upload path remains one glance away.
+    expect(screen.getByText(/Перетащите изображение сюда/)).toBeDefined();
+  });
+
   it("an upload shows the in-flight quiet line and suppresses Esc while in flight", async () => {
     vi.spyOn(apiModule, "posterCandidates").mockResolvedValue(envelope("src:shikimori"));
     vi.spyOn(apiModule, "uploadPoster").mockReturnValue(new Promise(() => {})); // in flight, unresolved

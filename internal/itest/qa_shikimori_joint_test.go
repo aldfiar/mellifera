@@ -43,11 +43,13 @@ package itest
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -137,6 +139,10 @@ type qaShikReq struct {
 	at                      time.Time
 }
 
+// qaShikGraphQLIDRe pulls the anchored id out of the GraphQL poster leg's
+// POST body ({animes(ids:"N"){poster{originalUrl}}}).
+var qaShikGraphQLIDRe = regexp.MustCompile(`ids:\\"(\d+)\\"`)
+
 // qaShikStub is the fake upstream: it records every request and serves the
 // anime payloads above.
 type qaShikStub struct {
@@ -166,6 +172,28 @@ func qaShikStartStub(t *testing.T) *qaShikStub {
 			return
 		}
 		qaShikWriteJSON(t, w, e)
+	})
+	// The GraphQL poster leg (artwork 2026-10-27): the anchored plan's
+	// extras[2] POSTs {animes(ids:"N"){poster{originalUrl}}} — answer with
+	// the new-poster-system URL for the requested id so the e2e covers the
+	// fallback contract end to end.
+	mux.HandleFunc("/api/graphql", func(w http.ResponseWriter, r *http.Request) {
+		s.record(r)
+		body, _ := io.ReadAll(r.Body)
+		m := qaShikGraphQLIDRe.FindSubmatch(body)
+		if m == nil {
+			http.NotFound(w, r)
+			return
+		}
+		qaShikWriteJSON(t, w, map[string]any{
+			"data": map[string]any{
+				"animes": []any{map[string]any{
+					"poster": map[string]any{
+						"originalUrl": "/uploads/poster/animes/" + string(m[1]) + "/qa-main.webp",
+					},
+				}},
+			},
+		})
 	})
 	s.srv = httptest.NewServer(mux)
 	t.Cleanup(s.srv.Close)
@@ -321,10 +349,12 @@ func TestShikimoriJoint(t *testing.T) {
 	qaShikAssertLedger(t, j, map[string]bool{})
 	qaShikAssertNamespace(t, j, qaShikAwaitNamespace(t, j, qaShikDirA), qaShikWantA)
 	qaShikAssertNamespace(t, j, qaShikAwaitNamespace(t, j, qaShikDirB), qaShikWantB)
-	// want-total 8 = 2 ids x 3 requests (by-id + /roles + /episodes): the
-	// second anchored extra (/episodes) is sanctioned by openspec change
-	// episode-titles (shikimori-enrichment delta).
-	qaShikAssertAnchoredLeg(t, j, 8, qaShikIDa, qaShikIDb)
+	// want-total 10 = 2 ids x 4 requests (by-id + /roles + /episodes +
+	// the GraphQL poster POST): the second anchored extra (/episodes) is
+	// sanctioned by openspec change episode-titles (shikimori-enrichment
+	// delta); the third (GraphQL poster) closes the REST image false
+	// negative for the new poster system (artwork).
+	qaShikAssertAnchoredLeg(t, j, 10, qaShikIDa, qaShikIDb)
 }
 
 // qaShikAwaitNamespace polls the series rows until the dir's row settles
@@ -484,27 +514,35 @@ func qaShikAssertSearchLeg(t *testing.T, j *qaShikJoint, wantTotal int, titles [
 }
 
 // qaShikAssertAnchoredLeg pins the second leg's upstream contract: the tail
-// requests after the sweep are GETs on the BY-ID endpoints — three per id (the
-// by-id fetch, its /roles request-plan companion, and its /episodes fetch —
-// the extra episodes request sanctioned by openspec change episode-titles),
-// as a set (rows drain concurrently) — proving identifiers.shikimori_id
-// anchored the second Match (the search endpoint is never hit again).
+// requests after the sweep hit the BY-ID endpoints — four per id (the by-id
+// fetch, its /roles request-plan companion, its /episodes fetch, and the
+// GraphQL poster POST — the extras request sanctioned by the artwork poster
+// fallback), as a set (rows drain concurrently) — proving
+// identifiers.shikimori_id anchored the second Match (the search endpoint is
+// never hit again).
 func qaShikAssertAnchoredLeg(t *testing.T, j *qaShikJoint, wantTotal int, ids ...int) {
 	t.Helper()
 	reqs := j.stub.requests()
 	if len(reqs) != wantTotal {
 		t.Fatalf("upstream saw %d requests, want %d: %+v", len(reqs), wantTotal, reqs)
 	}
-	tail := reqs[len(reqs)-3*len(ids):]
+	tail := reqs[len(reqs)-4*len(ids):]
 	paths := map[string]bool{}
 	for _, id := range ids {
 		paths[qaShikAPI+"/"+strconv.Itoa(id)] = false
 		paths[qaShikAPI+"/"+strconv.Itoa(id)+"/roles"] = false
 		paths[qaShikAPI+"/"+strconv.Itoa(id)+"/episodes"] = false
+		paths["/api/graphql"] = false
 	}
 	for i, r := range tail {
-		if r.method != http.MethodGet {
-			t.Errorf("anchored request %d: %s, want GET", i, r.method)
+		// The three REST legs are GETs; the GraphQL poster leg is the one
+		// sanctioned POST.
+		if want := map[string]string{"/api/graphql": http.MethodPost}[r.path]; want == "" {
+			if r.method != http.MethodGet {
+				t.Errorf("anchored request %d: %s %s, want GET", i, r.method, r.path)
+			}
+		} else if r.method != want {
+			t.Errorf("anchored request %d: %s %s, want %s", i, r.method, r.path, want)
 		}
 		qaShikAssertUA(t, i, r.ua)
 		qaShikAssertPacing(t, i, tail)

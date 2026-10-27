@@ -1,0 +1,28 @@
+# Tasks
+
+## 1 - legacy repair: settle strips placeholder poster keys from stored docs
+
+- [ ] 1.1 Settle repair leg in internal/art/settle.go: reshape the shared walk (walkPosterURLs, settle.go:84) to yield rows — series AND items, the walk it already runs — add the pure strip reusing settle.go's own missingArtURL exact path-prefix rule (a real URL whose path merely contains similar substrings is NEVER stripped; a corrupt document is left untouched), and write the document back via store.PutSeries / store.PutItem ONLY when a placeholder `sources.<ns>.poster` key was removed, with the settle-acquire + GC reference set deriving from the repaired docs; table-driven internal/art/settle_test.go (NEW) feeding a stored doc carrying a legacy placeholder key (`/assets/globals/missing_original.jpg`) and asserting the strip plus the real-URL negative — THE /fix REPRO: this test fails on base a467358 (Settle only skips placeholders at settle.go:69-71 and internal/art has no PutItem/PutSeries call anywhere). @qa
+  verify: test -f internal/art/settle_test.go && go test ./internal/art -run TestSettleRepair -count=1 || exit 1
+  file: contracts/1.1-settle-repair.md
+  qa: tests/internal/art/settle_test.go::TestSettleRepairStripsLegacyPlaceholderPoster, tests/internal/art/settle_test.go::TestSettleRepairKeepsRealURLsByteIdentical
+- [ ] 1.2 Golden repair fixture internal/art/testdata/golden/poster_repair.json (NEW, the internal/api/testdata/golden/ idiom): legacy-placeholder → repaired roundtrip vectors — placeholder key stripped with every other field surviving, a real-URL document unchanged, a mixed-source document half-repaired, the relative-form placeholder (rows enriched before the absolute-URL helper) — consumed by TestPosterRepairGolden in settle_test.go asserting SEMANTIC JSON equality (the strip re-marshals; key order is not identity).
+  verify: test -f internal/art/testdata/golden/poster_repair.json && go test ./internal/art -run TestPosterRepairGolden -count=1 || exit 1
+
+## 2 - served honesty: posters reason + item series fallback (internal/api compose)
+
+- [ ] 2.1 Posters reason field: posterCandidatesResponse (internal/api/art.go:267) gains `Reason string` as `"reason,omitempty"` served as `"no_upstream_art"` exactly when the document carries at least one namespace poster key and every such key is a placeholder (present-but-unusable is not never-produced) — an unexported helper beside usablePosters computed in the posters handler (art.go:412), api/ stays pure delegation, ZERO new exported symbols (internal/api sits at the 12 hard-fail boundary), swag @Success annotation updated; web leg: PosterCandidatesDTO (web/src/lib/api.ts:1533) gains `reason?` and the PosterOverlay empty state renders «У источника нет постера» when the served reason is `"no_upstream_art"`, the generic line otherwise — field-driven off the served field, never source literals. @qa
+  verify: go test ./internal/api -run TestPostersNoUpstreamArtReason -count=1 && cd web && npx vitest run src/components/manage/PosterOverlay.test.tsx || exit 1
+  file: contracts/2.1-posters-reason.md
+  qa: tests/internal/api/art_test.go::TestPostersNoUpstreamArtReason, tests/web/src/components/manage/PosterOverlay.test.tsx::upstream_no_art_reason_renders_served_copy
+- [ ] 2.2 Item compose series fallback in internal/api: artworkFor's item leg (art.go:196) resolves an absent row — no override, no usable poster — through the owning series' first usable chain poster: ONE lazy QuerySeries(ctx, libID, "") per itemDTOs call only when some item resolved absent (every caller addresses one library: handlers.go:938/1031/1353), then a pure unexported match mirroring store/series.go's own backing derivations (exact relative path = file-backed, item path under the series directory = directory-backed); the inherited URL re-enters the same pendings→Staged flow (served proxy URL when staged, non-blocking acquisition handoff otherwise); a corrupt series document floors to absence; toItemDTO and the `itemDTO.artwork` wire shape stay untouched; table-driven TestItemArtworkSeriesFallback in internal/api/art_test.go (inherit case, own-artwork precedence, series-without-art absence, directory- and file-backed resolution).
+  verify: go test ./internal/api -run TestItemArtworkSeriesFallback -count=1 || exit 1
+  file: contracts/2.2-series-fallback.md
+
+## 3 - web channel: art 401 routing + embedded regen
+
+- [ ] 3.1 Art-blob 401 routing in web/src/lib/queries.ts: useArtworkObjectUrl's catch (queries.ts:602-606) distinguishes ApiError status 401 — the shared fetcher's handle401 (web/src/lib/api.ts:1426, invoked at api.ts:1393-1395) has already cleared credentials, redirected credential-aware, and thrown — and SKIPS the setResolved(null) fallback write, so a previously rendered poster stays until the rotation lands while every other failure (404 serve miss, network, abort) keeps the generated fallback; no new export from api.ts, no second redirect, artInFlight and LRU cleanup untouched; vitest in web/src/lib/queries.test.tsx asserts the rotation fires AND no fallback write on a 401 — red on base (base writes null → the gradient masks the rotation).
+  verify: cd web && npx vitest run src/lib/queries.test.tsx || exit 1
+  file: contracts/3.1-art-401.md
+- [ ] 3.2 Regenerate the committed embedded artifacts through make web-build: swag picks the posters reason field into internal/web/api and the SPA rebuild lands in internal/web/dist — a fresh rebuild leaves both trees clean and go build ./... succeeds (GOPATH/bin on PATH for swag).
+  verify: PATH="$PATH:$(go env GOPATH)/bin" make web-build && test -z "$(git status --porcelain internal/web/dist internal/web/api)" && go build ./... || exit 1

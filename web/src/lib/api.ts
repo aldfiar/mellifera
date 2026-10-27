@@ -580,12 +580,16 @@ export interface PluginLogsResponse {
 export interface ItemResponse {
   item: ItemDTO;
 }
-
-// listItems query params — `library` is REQUIRED (Go listItems 400s without an
-// integer `library`; handlers.go:216-230). `status` empty = all (server INV).
+// ListItemsParams carries the /items query: the library page context, the
+// status filter ("" / undefined = all statuses), and the folder filters of the
+// photos chip lane — path_prefix pages only items under that folder (any
+// depth), top_level=true only "/"-free paths. They are mutually exclusive on
+// the wire (api 400s on both) and the request omits whichever is unset.
 export interface ListItemsParams {
   library: number;
   status?: string;
+  path_prefix?: string;
+  top_level?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -915,6 +919,12 @@ export async function listItems(params: ListItemsParams): Promise<ItemsResponse>
   qs.set("library", String(params.library));
   if (params.status) {
     qs.set("status", params.status);
+  }
+  if (params.path_prefix) {
+    qs.set("path_prefix", params.path_prefix);
+  }
+  if (params.top_level !== undefined) {
+    qs.set("top_level", "true");
   }
   if (params.limit !== undefined) {
     qs.set("limit", String(params.limit));
@@ -1608,11 +1618,14 @@ export interface PosterCandidate {
 
 // art.go posterCandidatesResponse — the GET …/posters envelope: the
 // effective current selection in the PUT vocabulary ("" = the chain
-// composes) plus one candidate per usable source. Field names match the
-// JSON tags EXACTLY.
+// composes), one candidate per usable source, and the additive reason
+// verdict: "no_upstream_art" exactly when the upstream produced only
+// missing-art placeholders — omitted when the chain never produced a poster
+// key. Field names match the JSON tags EXACTLY.
 export interface PosterCandidatesDTO {
   current: string; // "src:<plugin_id>" | "user:art_<64hex>" | "thumb" | ""
   candidates: PosterCandidate[];
+  reason?: string; // "no_upstream_art" | absent
 }
 
 // art.go posterOverrideResponse — the stored override record, the

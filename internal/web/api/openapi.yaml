@@ -507,6 +507,8 @@ definitions:
         type: array
       current:
         type: string
+      reason:
+        type: string
     type: object
   api.posterOverrideResponse:
     properties:
@@ -1236,6 +1238,16 @@ paths:
         in: query
         name: status
         type: string
+      - description: folder prefix filter — only items whose relative_path is under
+          prefix/ (leading/trailing slashes trimmed, '.'/'..' segments rejected)
+        in: query
+        name: path_prefix
+        type: string
+      - description: only items with no subfolder in relative_path (conflicts with
+          path_prefix)
+        in: query
+        name: top_level
+        type: boolean
       - description: page size (default 50, max 200)
         in: query
         name: limit
@@ -1257,7 +1269,7 @@ paths:
           description: Internal Server Error
           schema:
             $ref: '#/definitions/api.errorBody'
-      summary: List items (optionally filtered by library + status)
+      summary: List items (optionally filtered by library + status + folder)
       tags:
       - items
   /items/{id}:

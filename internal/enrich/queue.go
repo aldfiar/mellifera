@@ -501,7 +501,7 @@ func (q *Queue) pendingExtras(
 func (q *Queue) allItems(ctx context.Context, libraryID int64) ([]store.Item, error) {
 	var out []store.Item
 	for offset := 0; ; offset += deriveBatch {
-		batch, err := q.deps.Store.QueryItems(ctx, libraryID, "", deriveBatch, offset)
+		batch, err := q.deps.Store.QueryItems(ctx, libraryID, "", "", false, deriveBatch, offset)
 		if err != nil {
 			return nil, fmt.Errorf("enrich: derive items lib %d: %w", libraryID, err)
 		}

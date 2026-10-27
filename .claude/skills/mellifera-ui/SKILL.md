@@ -23,6 +23,25 @@ the backend; this one owns everything under `web/`.
   (Rename / Rename series / Identify / Refresh metadata). Never inline forms
   on browse surfaces. Menu hidden by default; on full pages the trigger uses
   `.cardact-trigger--inline` (always visible).
+- **Overlay height contract.** Every overlay panel rendering variable-length
+  content carries `max-height: min(90vh, 640px); overflow-y: auto`
+  (`.cardact-panel` and `.overlay-card`); a long list inside such a panel is
+  its OWN scroll region (`.identify-candidates`, `max-height: 46vh`) so the
+  actions below it stay pinned. Without the cap, the backdrop's
+  flex-centering clips the panel's TOP rows off-screen (2026-10-27: the
+  identify panel grew to 1615px at a 633px viewport and the correct
+  candidate #0 rendered at top −475px — read as a "search quality" failure).
+  Pinned by `lib/overlayContract.test.ts` + `manage/IdentifySeries.test.tsx`.
+- **Server-side list filtering.** A facet that narrows a paged list (the
+  photos folder chips) must ride the request as a server filter
+  (`?path_prefix=` / `?top_level=true` on `/items`), NEVER a client-side
+  post-filter over one unfiltered page — a client filter both hides off-page
+  items and lies next to whole-library facet counts (2026-10-27: chips said
+  `from_manga` 23 while its items sat past page 1 → "no images"). Any count
+  shown beside a filter must come from the same stream that pages the grid
+  (`LibraryFolders` parity). `parsePathFilter` in `internal/api/handlers.go`
+  owns normalization; `QueryItems(ctx, lib, status, pathPrefix, topLevel,
+  limit, offset)` composes the filters with bound args (INV1).
 - **Color = state.** Green ok (`emerald-600` text / `emerald-500` dot) /
   red fail (`destructive`) / gray off (`muted-foreground`). Selection is a
   background/border change, never pills. Soft pastel overall.

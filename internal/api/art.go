@@ -3,7 +3,9 @@
 
 // Artwork composition + routes (artwork): the read-time `artwork` stamp on
 // the served series/item DTOs — override → first non-placeholder poster
-// walking the gate-resolved chain → absent (the omitempty then omitting the
+// walking the gate-resolved chain → items only, the owning series' chain
+// poster (one lazy series read per page, the same backing rules the store's
+// episode derivation uses) → absent (the omitempty then omitting the
 // field) — the art object serve route, and the poster override family
 // symmetric to titles. Composition mirrors the display-naming posture:
 // batched per-page reads, tolerant (a corrupt document floors to absence,
@@ -61,6 +63,11 @@ const (
 	// predicate against that copy (TestArtWalkSkipGolden), so one side
 	// drifting alone fails its own suite.
 	missingArtPathPrefix = "/assets/globals/missing"
+
+	// posterReasonNoUpstreamArt is the posters envelope's reason verdict for
+	// a document whose namespaces all produced placeholders — upstream has
+	// no art (the served literal the SPA keys its copy split on).
+	posterReasonNoUpstreamArt = "no_upstream_art"
 )
 
 // placeholderPoster reports whether u's PATH carries the missing-art asset
@@ -95,10 +102,13 @@ func artTokenSHA(token string) (string, bool) {
 
 // ---- composition (the display.go seam) --------------------------------------
 
-// artRow is one row's art input: the entity id and its raw document.
+// artRow is one row's art input: the entity id, its relative path (the item
+// leg's series-fallback match key; the series leg leaves it unused), and its
+// raw document.
 type artRow struct {
-	id  string
-	doc json.RawMessage
+	id   string
+	path string
+	doc  json.RawMessage
 }
 
 // posterRef is one usable namespace poster the chain walk found.
@@ -134,6 +144,34 @@ func usablePosters(n namer, doc map[string]any) []posterRef {
 		out = append(out, posterRef{source: b.ID, url: u})
 	}
 	return out
+}
+
+// noUpstreamArt is the posters envelope's reason verdict (artwork D3): true
+// exactly when the document carries at least one namespace poster key and
+// EVERY such key is a missing-art placeholder — upstream produced something,
+// but none of it is usable (present-but-unusable is not never-produced). A
+// namespace without a poster key (or with an empty one — the walk's absent
+// form) is never produced; any non-placeholder poster key — even on a
+// namespace outside the gate chain — is usable enough to refuse the verdict:
+// the predicate reads the document, never the chain or the gate.
+func noUpstreamArt(doc map[string]any) bool {
+	sources, _ := doc["sources"].(map[string]any)
+	had := false
+	for _, v := range sources {
+		ns, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		u, ok := ns["poster"].(string)
+		if !ok || u == "" {
+			continue
+		}
+		had = true
+		if !placeholderPoster(u) {
+			return false
+		}
+	}
+	return had
 }
 
 // thumbFact reads the item document's frame-grabber thumbnail fact — the
@@ -184,16 +222,36 @@ func resolveArtSelection(sel, entityID string, isItem bool, n namer, doc map[str
 	return "", ""
 }
 
+// seriesOwnsItem reports whether itemPath is one of sr's episodes under the
+// series' own backing kind — the read-side mirror of store.QueryItemsBySeries's
+// two derivations (store/series.go): EXACT relative-path equality for a
+// file-backed series, the series directory prefix with no further separator
+// (the depth-1 filter) for a directory-backed one. The backing is the same
+// parsed.backing marker fact seriesBacking stamps, with the same floor. Pure:
+// the series rows are the caller's lazy read; nothing here touches the store.
+func seriesOwnsItem(sr store.Series, itemPath string) bool {
+	if seriesBacking(sr.Document) == store.SeriesBackingFile {
+		return itemPath == sr.RelativePath
+	}
+	rest, ok := strings.CutPrefix(itemPath, sr.RelativePath+"/")
+	return ok && !strings.Contains(rest, "/")
+}
+
 // artworkFor resolves the `artwork` field for a page of rows (artwork D3):
-// override → first non-placeholder chain poster → absent. TWO batched reads
-// price the page — ONE ListArtOverrides for the stored selections, ONE
-// Staged pass over the resolved winner URLs — never per-row probes. An
+// override → first non-placeholder chain poster → — items only, via the lazy
+// series read — the owning series' first non-placeholder chain poster →
+// absent. TWO batched reads price the page — ONE ListArtOverrides for the
+// stored selections, ONE Staged pass over the resolved winner URLs — never
+// per-row probes. The series leg is lazy (D4): seriesOf is consulted ONCE,
+// only when at least one item row resolved absent, and the inherited URL
+// re-enters the same pendings flow below as an own-chain winner. An
 // unmaterialized winner serves its raw URL immediately while a background
 // acquisition is handed off (non-blocking, D4; a placeholder is never
 // resolved, so never handed off). A nil Deps.Art degrades to absence (the
-// additive field simply omits); a store failure propagates (500 at the call
-// site); a corrupt document floors to absence.
-func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n namer) (map[string]string, error) {
+// additive field simply omits); a nil seriesOf (the series leg) skips the
+// fallback; a store failure propagates (500 at the call site); a corrupt
+// document — row's or owning series' — floors to absence.
+func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n namer, seriesOf func(context.Context) ([]store.Series, error)) (map[string]string, error) {
 	out := make(map[string]string, len(rows))
 	if a.deps.Art == nil || len(rows) == 0 {
 		return out, nil
@@ -212,6 +270,7 @@ func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n name
 		rowID, url string // a raw remote winner awaiting the staged check
 	}
 	var pendings []pending
+	var absent []artRow
 	for _, row := range rows {
 		doc := docMap(row.doc)
 		final, remote := "", ""
@@ -228,8 +287,32 @@ func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n name
 			out[row.id] = final
 		case remote != "":
 			pendings = append(pendings, pending{row.id, remote})
+		default:
+			absent = append(absent, row)
 		}
-		// else: absent — the omitempty omits
+	}
+	// The item leg's series fallback (artwork precedence): a row resolved
+	// through neither the override nor its own chain inherits the owning
+	// series' first usable chain poster. ONE lazy series read prices the
+	// whole page; the pure match finds each absent row's owner (first owner
+	// wins — QuerySeries is relative-path ordered), and a corrupt series
+	// document floors to absence through the same usablePosters walk.
+	if len(absent) > 0 && seriesOf != nil {
+		srs, err := seriesOf(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range absent {
+			for _, sr := range srs {
+				if !seriesOwnsItem(sr, row.path) {
+					continue
+				}
+				if p := usablePosters(n, docMap(sr.Document)); len(p) > 0 {
+					pendings = append(pendings, pending{row.id, p[0].url})
+				}
+				break
+			}
+		}
 	}
 	urls := make([]string, 0, len(pendings))
 	for _, p := range pendings {
@@ -266,10 +349,15 @@ type posterCandidate struct {
 
 // posterCandidatesResponse is the GET …/posters envelope (artwork): the
 // effective current selection in the PUT vocabulary ("" = the chain
-// composes) plus the candidates.
+// composes) plus the candidates, plus the additive reason verdict —
+// "no_upstream_art" exactly when the document carries at least one
+// namespace poster key and every such key is a placeholder (the upstream
+// has no art); omitempty in every other case (a chain that never produced
+// a poster key is NOT that state).
 type posterCandidatesResponse struct {
 	Current    string            `json:"current"`
 	Candidates []posterCandidate `json:"candidates"`
+	Reason     string            `json:"reason,omitempty"`
 }
 
 // posterSelectionRequest is the body of PUT …/poster (artwork): one
@@ -408,7 +496,9 @@ func (a *app) artObject(w http.ResponseWriter, r *http.Request) {
 // active selection, plus "thumb" for items carrying the frame-grabber fact
 // — pointing at the existing media thumb variant. Staged candidates carry
 // their served proxy URLs; unstaged the raw remote URL, with a non-blocking
-// acquisition handoff so selecting one is instant.
+// acquisition handoff so selecting one is instant. The envelope's reason
+// verdict distinguishes a placeholder-only document (no_upstream_art) from
+// a chain that never produced a poster key (the field omits).
 func (a *app) posters(w http.ResponseWriter, r *http.Request, kind string) {
 	if a.deps.Art == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "art endpoint disabled", false)
@@ -472,9 +562,14 @@ func (a *app) posters(w http.ResponseWriter, r *http.Request, kind string) {
 			Current: sel == artSelectionThumb,
 		})
 	}
+	reason := ""
+	if noUpstreamArt(doc) {
+		reason = posterReasonNoUpstreamArt
+	}
 	writeJSON(w, http.StatusOK, posterCandidatesResponse{
 		Current:    wireSelection(sel),
 		Candidates: cands,
+		Reason:     reason,
 	})
 }
 

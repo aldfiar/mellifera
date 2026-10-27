@@ -1,0 +1,88 @@
+{
+  "vectors": [
+    {
+      "name": "placeholder_stripped_fields_survive",
+      "input": {
+        "title": "Fringe",
+        "sources": {
+          "shikimori": {
+            "id": 12345,
+            "poster": "https://shikimori.one/assets/globals/missing_original.jpg"
+          }
+        }
+      },
+      "expected": {
+        "title": "Fringe",
+        "sources": {
+          "shikimori": {
+            "id": 12345
+          }
+        }
+      },
+      "changed": true,
+      "note": "the legacy placeholder key is stripped and every other field (sibling namespace field, doc-level title) survives the re-marshal roundtrip"
+    },
+    {
+      "name": "real_url_untouched",
+      "input": {
+        "sources": {
+          "tmdb": {
+            "poster": "https://image.tmdb.org/t/p/original/real.jpg"
+          }
+        }
+      },
+      "expected": {
+        "sources": {
+          "tmdb": {
+            "poster": "https://image.tmdb.org/t/p/original/real.jpg"
+          }
+        }
+      },
+      "changed": false,
+      "note": "a real-URL document is not a repair: raw is returned byte for byte and no write-back happens"
+    },
+    {
+      "name": "mixed_sources_half_repaired",
+      "input": {
+        "sources": {
+          "shikimori": {
+            "id": 1,
+            "poster": "https://shikimori.one/assets/globals/missing.jpg"
+          },
+          "tmdb": {
+            "poster": "https://image.tmdb.org/t/p/original/x.jpg"
+          }
+        }
+      },
+      "expected": {
+        "sources": {
+          "shikimori": {
+            "id": 1
+          },
+          "tmdb": {
+            "poster": "https://image.tmdb.org/t/p/original/x.jpg"
+          }
+        }
+      },
+      "changed": true,
+      "note": "a mixed-source document is half-repaired: only the placeholder namespace's poster key dies, the real-URL namespace keeps its poster untouched"
+    },
+    {
+      "name": "relative_placeholder_stripped",
+      "input": {
+        "sources": {
+          "shikimori": {
+            "poster": "/assets/globals/missing_original.jpg"
+          }
+        }
+      },
+      "expected": {
+        "sources": {
+          "shikimori": {}
+        }
+      },
+      "changed": true,
+      "note": "relative form (rows enriched before the absolute-URL helper): the PATH prefix /assets/globals/missing is the rule, no scheme or host required"
+    }
+  ]
+}
