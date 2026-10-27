@@ -13,11 +13,13 @@ import {
   getItem,
   hasFrameGrabberThumb,
   hasOriginalFile,
+  listEnrichFailures,
   listItems,
   revokeDevice,
   startPairing,
   waitPairing,
   type LibrariesResponse,
+  type ListEnrichFailuresParams,
   type ListItemsParams,
 } from "@/lib/api";
 import { DEVICE_TOKEN_KEY, setDeviceToken, setToken, TOKEN_KEY } from "@/lib/auth";
@@ -277,6 +279,100 @@ describe("items client — S4 joint (listItems/getItem <-> Go /api/v1/items)", (
     expect(caught).toBeInstanceOf(ApiError);
     expect((caught as ApiError).code).toBe("not_found");
     expect((caught as ApiError).status).toBe(404);
+  });
+});
+
+describe("enrich failures client — D10 (listEnrichFailures <-> Go /api/v1/enrich/failures)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("sends plugin_id/limit/offset verbatim — all optional, absent = the bare endpoint", async () => {
+    setToken("t1");
+    // mockImplementation (not mockResolvedValue): a Response body can be read
+    // only once, and this test awaits three requests.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => jsonResponse(200, { failures: [] }));
+
+    const full: ListEnrichFailuresParams = {
+      plugin_id: "shikimori",
+      limit: 25,
+      offset: 50,
+    };
+    await listEnrichFailures(full);
+    const [fullPath] = fetchSpy.mock.calls[0]!;
+    expect(fullPath).toBe(
+      "/api/v1/enrich/failures?plugin_id=shikimori&limit=25&offset=50",
+    );
+
+    // Every parameter is optional (the handler contract): a no-parameter
+    // request is the BARE endpoint — the handler answers the full
+    // unfiltered ledger, never a client-shaped default.
+    await listEnrichFailures();
+    const [barePath] = fetchSpy.mock.calls[1]!;
+    expect(barePath).toBe("/api/v1/enrich/failures");
+
+    // A partial parameter set sends only the present keys.
+    await listEnrichFailures({ plugin_id: "tv-parser" });
+    const [scopedPath] = fetchSpy.mock.calls[2]!;
+    expect(scopedPath).toBe("/api/v1/enrich/failures?plugin_id=tv-parser");
+  });
+
+  it("parses the served ledger rows verbatim (row_kind, stamps, the gone kind included)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        failures: [
+          {
+            row_id: "ser_3_abc",
+            row_kind: "series",
+            title: "Во все тяжкие",
+            plugin_id: "shikimori",
+            status: "relayed",
+            reason: "relayed: dial tcp 1.2.3.4:443: connect refused",
+            attempts: 1,
+            failed_at: "2026-10-27T10:00:00Z",
+            next_eligible_at: "2026-10-27T10:10:00Z",
+          },
+          {
+            row_id: "itm_9_gone",
+            row_kind: "gone",
+            title: "",
+            plugin_id: "shikimori",
+            status: "exhausted",
+            reason: "no_data: chain exhausted",
+            attempts: 3,
+            failed_at: "2026-10-26T09:00:00Z",
+            next_eligible_at: "2026-10-26T09:40:00Z",
+          },
+        ],
+      }),
+    );
+
+    const out = await listEnrichFailures({ plugin_id: "shikimori", limit: 200 });
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe(
+      "/api/v1/enrich/failures?plugin_id=shikimori&limit=200",
+    );
+    expect(out.failures).toHaveLength(2);
+    expect(out.failures[0]).toEqual({
+      row_id: "ser_3_abc",
+      row_kind: "series",
+      title: "Во все тяжкие",
+      plugin_id: "shikimori",
+      status: "relayed",
+      reason: "relayed: dial tcp 1.2.3.4:443: connect refused",
+      attempts: 1,
+      failed_at: "2026-10-27T10:00:00Z",
+      next_eligible_at: "2026-10-27T10:10:00Z",
+    });
+    // Loop-safety rows render too — "gone" is a served kind, never filtered.
+    expect(out.failures[1]!.row_kind).toBe("gone");
+    expect(out.failures[1]!.status).toBe("exhausted");
   });
 });
 

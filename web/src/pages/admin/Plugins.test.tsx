@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ReactElement } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import * as apiModule from "@/lib/api";
@@ -44,10 +45,20 @@ function renderPlugins(client: QueryClient): ReturnType<typeof render> {
   return render(
     <MemoryRouter initialEntries={["/admin/plugins"]}>
       <QueryClientProvider client={client}>
+        <LocationProbe />
         <Plugins />
       </QueryClientProvider>
     </MemoryRouter>,
   );
+}
+
+// LocationProbe — the routing-memory seam (the AutoNext.test.tsx idiom):
+// the click-through targets the 6.4 drill-down route, which may not render
+// a page yet — what this suite pins is WHERE the router landed, rendered
+// into the DOM so waitFor can observe the navigation.
+function LocationProbe(): ReactElement {
+  const location = useLocation();
+  return <span data-testid="route">{location.pathname}</span>;
 }
 
 // ROW_SEL — the plugin row anchor (mirrors the row's data-plugin-id).
@@ -199,6 +210,76 @@ describe("Plugins — admin surface (plugin-admin-surfaces)", () => {
     ) as HTMLElement;
     expect(within(off).getByText("Not reporting")).toBeDefined();
     expect(off.querySelector('[data-status="off"]')).not.toBeNull();
+  });
+
+  it("the «Ошибки» column reads the served count — 0 muted and unlinked, positive a click-through", async () => {
+    // The scenario (client-relayed-fetch D10, web-ui "Plugin failures column
+    // and drill-down"): the aggregate's per-plugin failures count renders
+    // VERBATIM; 0 is muted with no link (an empty ledger is the normal
+    // state, not an error); any positive count is a click-through to the
+    // plugin's failures page. The drill-down page itself is task 6.4's — so
+    // the navigation is pinned as a routing-memory fact, never a
+    // rendered-page assertion.
+    const failuresSpy = vi.spyOn(apiModule, "listEnrichFailures");
+    vi.spyOn(apiModule, "getAdminPlugins").mockResolvedValue({
+      plugins: [
+        SERVING, // no failures key — the absent-field floor
+        fakePlugin({
+          plugin_id: "tv-parser",
+          name: "TV parser",
+          health: undefined,
+          effective: undefined,
+          failures: 0,
+        }),
+        fakePlugin({
+          plugin_id: "frame-grabber",
+          name: "Frame grabber",
+          description: "Thumbnail extraction",
+          health: undefined,
+          effective: undefined,
+          failures: 3,
+        }),
+      ],
+    });
+
+    const { container } = renderPlugins(freshClient());
+    await waitFor(() =>
+      expect(container.querySelector(ROW_SEL)).not.toBeNull(),
+    );
+
+    expect(screen.getByText("Ошибки")).toBeDefined();
+
+    // 0 (explicitly served) and the absent-field floor both render muted,
+    // as plain text — no link anchor anywhere in the cell.
+    for (const rowSel of [ROW_SEL, 'tr[data-plugin-id="tv-parser"]']) {
+      const row = container.querySelector(rowSel) as HTMLElement;
+      const zero = within(row).getByText("0");
+      expect(zero.closest("a")).toBeNull();
+      expect(zero.className).toContain("text-muted-foreground");
+    }
+
+    // The positive count is the SERVED number as the link text, targeting
+    // the plugin's failures page.
+    const failRow = container.querySelector(
+      'tr[data-plugin-id="frame-grabber"]',
+    ) as HTMLElement;
+    const link = within(failRow).getByRole("link", { name: "3" });
+    expect(link.getAttribute("href")).toBe(
+      "/admin/plugins/frame-grabber/failures",
+    );
+
+    // The column reads ONLY the aggregate — the scoped failures listing is
+    // never fetched eagerly from the table.
+    expect(failuresSpy).not.toHaveBeenCalled();
+
+    // The click-through lands on the drill-down route (6.4's page may 404
+    // until it lands; the router memory is the contract here).
+    fireEvent.click(link);
+    await waitFor(() =>
+      expect(screen.getByTestId("route").textContent).toBe(
+        "/admin/plugins/frame-grabber/failures",
+      ),
+    );
   });
 
   it("last logs render on demand, oldest first", async () => {

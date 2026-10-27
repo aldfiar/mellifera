@@ -572,11 +572,37 @@
                 ],
                 "summary": "List the enrichment failure ledger",
                 "operationId": "enrich-failures",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "scope the listing to one plugin",
+                        "name": "plugin_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "window size, newest first (default 50, capped at 200)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "window offset into the newest-first order",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/api.enrichFailuresResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
                         }
                     },
                     "500": {
@@ -1945,6 +1971,106 @@
                 }
             }
         },
+        "/relay/claim": {
+            "post": {
+                "tags": [
+                    "relay"
+                ],
+                "summary": "Claim a relay fetch job",
+                "operationId": "relay-claim",
+                "responses": {
+                    "200": {
+                        "description": "descriptor for the claimed job",
+                        "schema": {
+                            "$ref": "#/definitions/api.relayClaimResponse"
+                        }
+                    },
+                    "204": {
+                        "description": "nothing claimable"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/relay/{id}/result": {
+            "post": {
+                "tags": [
+                    "relay"
+                ],
+                "summary": "Submit the result of a claimed relay fetch job",
+                "operationId": "relay-result",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "relay job id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "the client's fetch outcome",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/store.RelayResult"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "result accepted"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/series": {
             "get": {
                 "tags": [
@@ -3037,6 +3163,10 @@
                 "effective": {
                     "$ref": "#/definitions/api.pluginAdminEffective"
                 },
+                "failures": {
+                    "description": "Failures is the additive per-plugin ledger count (client-relayed-fetch\nD10): the enrichment-failures rows CURRENTLY STORED for the plugin —\nnever a lifetime total (the ledger keeps none). Always on the wire (no\nomitempty): a plugin the ledger holds nothing for serves 0, it does not\nomit the field.",
+                    "type": "integer"
+                },
                 "health": {
                     "$ref": "#/definitions/api.PluginHealth"
                 },
@@ -3156,6 +3286,23 @@
             "properties": {
                 "position_seconds": {
                     "type": "integer"
+                }
+            }
+        },
+        "api.relayClaimResponse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "plan": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.PlanSpec"
+                    }
+                },
+                "purpose": {
+                    "type": "string"
                 }
             }
         },
@@ -3483,6 +3630,61 @@
             "type": "object",
             "properties": {
                 "auto_next_countdown_seconds": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.PlanSpec": {
+            "type": "object",
+            "properties": {
+                "binary_safe": {
+                    "type": "boolean"
+                },
+                "body": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "method": {
+                    "type": "string"
+                },
+                "min_interval_ms": {
+                    "type": "integer"
+                },
+                "timeout_seconds": {
+                    "type": "integer"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.RelayResult": {
+            "type": "object",
+            "properties": {
+                "body": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "error": {
+                    "type": "string"
+                },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "http_status": {
                     "type": "integer"
                 }
             }

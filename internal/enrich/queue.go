@@ -663,7 +663,14 @@ func (q *Queue) workItem(ctx context.Context, rowID string) {
 	// narrowed extras — synthesized defaults included — resolve through the
 	// SAME prefs, mirroring derivation's pendingExtras resolution.
 	extras := ResolveGates(module.Module{ID: mod.ID, MetadataSources: runExtras(mod, row.extras)}, prefs, row.libraryID)
-	dr := q.driveSources(ctx, gated, extras, doc, reconstructBase(doc), rowID, idx, &status)
+	// The relay scope rides the (row, plugin) pair the run addresses
+	// (client-relayed-fetch D4): a nil Deps.Relay leaves it unbuilt — relay
+	// disabled, today's failure behavior bit-identical.
+	var sc *relayScope
+	if q.deps.Relay != nil {
+		sc = &relayScope{relay: q.deps.Relay, rowID: rowID, libraryID: row.libraryID}
+	}
+	dr := q.driveSources(ctx, gated, extras, doc, reconstructBase(doc), rowID, idx, &status, sc)
 	if dr.hardAbort {
 		q.hardFail(ctx, row, doc, dr.err)
 		return

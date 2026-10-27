@@ -157,6 +157,44 @@ type Deps struct {
 	// ErrUnknownPlugin → 400 at the handler); any other error is a real
 	// failure (→ 500). Nil-safe (503 when nil), mirroring PluginConfigs.
 	PluginLogs func(ctx context.Context, pluginID string) ([]string, error)
+	// RelayClaim is the client-relayed-fetch claim closure (D7): hands the
+	// oldest claimable relay job (pending, or claimed with an expired lease)
+	// to the requesting principal — any authenticated one, admin+client (ruled
+	// OQ-1); the browse group is the only gate. principalHash is the SHA-256
+	// hex of the caller's bearer credential (the pairing hashToken recipe —
+	// the SAME identity the result route's guard re-derives); the claim and
+	// lease stamping happen inside the closure cmd-side. found=false with a
+	// nil error (empty queue or lost race) is not an error → the handler
+	// answers 204. Returns the raw store.RelayJob — the descriptor source the
+	// handler projects to the wire verbatim. Nil-safe (503 when nil),
+	// mirroring Reenrich/SearchSource; built in cmd/mellifera over
+	// enrich.Relay.Claim (INV2 — api never imports enrich).
+	RelayClaim func(ctx context.Context, principalHash string) (store.RelayJob, bool, error)
+	// RelayResult is the client-relayed-fetch result closure (D7): accepts ONE
+	// claimed relay job's reported outcome from the principal that claimed it
+	// — built in cmd/mellifera over enrich.Relay.Ingest (INV2 — api never
+	// imports enrich). jobID is the claimed job's id; principalHash is the
+	// SHA-256 hex of the caller's bearer credential (the SAME identity
+	// RelayClaim stamped — the guard inside the closure's one conditional
+	// UPDATE matches it against a LIVE lease); result is the decoded
+	// store.RelayResult passed through verbatim (its json tags ARE the wire
+	// vocabulary, the PlanSpec discipline — nothing re-shaped handler-side).
+	// The closure's wrapped sql.ErrNoRows is the store guard's refusal — a
+	// lost, expired, foreign, or unknown claim, row left untouched — and maps
+	// to 409 at the handler; any other error is a real failure → 500; nil
+	// error → 204. Nil-safe (503 when nil), mirroring RelayClaim.
+	RelayResult func(ctx context.Context, jobID int64, principalHash string, result store.RelayResult) error
+	// RelayMaxBody is the POST /relay/{id}/result request-body cap in bytes
+	// (client-relayed-fetch D7): the handler wraps r.Body in
+	// http.MaxBytesReader over it BEFORE decoding, so an over-cap payload is
+	// rejected 413 before any ingestion. A plain int64 — the WatchDefaults
+	// precedent: a configured value, not a domain call; the composition root
+	// owns the env read (MELLIFERA_RELAY_MAX_BODY, default 2 MiB — task 4.3)
+	// and its floor, and the handler never reads env (INV1 pure delegation).
+	// Zero/negative is a composition-root misconfiguration (every body then
+	// trips the cap); the value is passed through verbatim, never
+	// second-guessed handler-side.
+	RelayMaxBody int64
 	// Pairing is the device-pairing minting service (device-pairing D1/D3):
 	// the pairing handlers delegate to it and the auth middleware's
 	// RoleClient branch consults its LookupToken. Not a closure but the
@@ -304,6 +342,17 @@ func mountV1Routes(r chi.Router, h *app) {
 		// served verbatim (never env-read here). Read-only viewer data, so
 		// the browse group beside progress.
 		r.Get("/watch-defaults", h.watchDefaults)
+		// Relay claim (client-relayed-fetch D7): the oldest claimable fetch
+		// job handed to ANY authenticated principal — a viewer-side transport
+		// action, not an operator mutation, so the browse group (admin+client;
+		// the group is the only gate). 200 descriptor / 204 nothing claimable.
+		r.Post("/relay/claim", h.relayClaim)
+		// Relay result (client-relayed-fetch 4.2): the claimed job's reported
+		// outcome accepted back from the SAME principal — a viewer-side
+		// transport action beside the claim, so the browse group (admin+client;
+		// the group is the only gate). 204 accepted / 409 lost, expired, or
+		// foreign claim / 413 over the RelayMaxBody cap / 400 malformed body.
+		r.Post("/relay/{id}/result", h.relayResult)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(authMiddleware(h.deps.AdminToken, h.deps.Pairing))

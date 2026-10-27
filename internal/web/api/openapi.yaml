@@ -459,6 +459,14 @@ definitions:
         type: string
       effective:
         $ref: '#/definitions/api.pluginAdminEffective'
+      failures:
+        description: |-
+          Failures is the additive per-plugin ledger count (client-relayed-fetch
+          D10): the enrichment-failures rows CURRENTLY STORED for the plugin —
+          never a lifetime total (the ledger keeps none). Always on the wire (no
+          omitempty): a plugin the ledger holds nothing for serves 0, it does not
+          omit the field.
+        type: integer
       health:
         $ref: '#/definitions/api.PluginHealth'
       name:
@@ -536,6 +544,17 @@ definitions:
     properties:
       position_seconds:
         type: integer
+    type: object
+  api.relayClaimResponse:
+    properties:
+      id:
+        type: integer
+      plan:
+        items:
+          $ref: '#/definitions/store.PlanSpec'
+        type: array
+      purpose:
+        type: string
     type: object
   api.scanResponse:
     properties:
@@ -760,6 +779,42 @@ definitions:
   api.watchDefaultsResponse:
     properties:
       auto_next_countdown_seconds:
+        type: integer
+    type: object
+  store.PlanSpec:
+    properties:
+      binary_safe:
+        type: boolean
+      body:
+        items:
+          type: integer
+        type: array
+      headers:
+        additionalProperties:
+          type: string
+        type: object
+      method:
+        type: string
+      min_interval_ms:
+        type: integer
+      timeout_seconds:
+        type: integer
+      url:
+        type: string
+    type: object
+  store.RelayResult:
+    properties:
+      body:
+        items:
+          type: integer
+        type: array
+      error:
+        type: string
+      headers:
+        additionalProperties:
+          type: string
+        type: object
+      http_status:
         type: integer
     type: object
 host: localhost:8080
@@ -1140,11 +1195,28 @@ paths:
   /enrich/failures:
     get:
       operationId: enrich-failures
+      parameters:
+      - description: scope the listing to one plugin
+        in: query
+        name: plugin_id
+        type: string
+      - description: window size, newest first (default 50, capped at 200)
+        in: query
+        name: limit
+        type: integer
+      - description: window offset into the newest-first order
+        in: query
+        name: offset
+        type: integer
       responses:
         "200":
           description: OK
           schema:
             $ref: '#/definitions/api.enrichFailuresResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
         "500":
           description: Internal Server Error
           schema:
@@ -2050,6 +2122,72 @@ paths:
       summary: Store the playback position for an item
       tags:
       - progress
+  /relay/{id}/result:
+    post:
+      operationId: relay-result
+      parameters:
+      - description: relay job id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: the client's fetch outcome
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/store.RelayResult'
+      responses:
+        "204":
+          description: result accepted
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Submit the result of a claimed relay fetch job
+      tags:
+      - relay
+  /relay/claim:
+    post:
+      operationId: relay-claim
+      responses:
+        "200":
+          description: descriptor for the claimed job
+          schema:
+            $ref: '#/definitions/api.relayClaimResponse'
+        "204":
+          description: nothing claimable
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Claim a relay fetch job
+      tags:
+      - relay
   /series:
     get:
       operationId: list-series

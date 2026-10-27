@@ -5,11 +5,14 @@ package enrich
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
+	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 )
@@ -28,6 +31,25 @@ const identifyOwner = "identify"
 // validates too; the queue refuses before touching the row).
 var errEmptyExternalID = errors.New("enrich: identify: empty external_id")
 
+// relaySearchBudget is the search poll's give-up budget (ruled OQ-6, D8): a
+// held search request waits at most this long for its relay job to reach a
+// terminal answer before it replies with the upstream error. A named constant,
+// deliberately NOT an env knob — a UX budget, not a tuning surface (design.md
+// D8).
+const relaySearchBudget = 60 * time.Second
+
+// relaySearchPollInterval is the poll granularity: one relay_jobs read per
+// tick (a newest-row lookup over the S10 seam — relay.go's Consult precedent)
+// separated by a cancellable sleep. Short, so a job a client completes lands
+// in the answer within a tick of its ingest; tests drive the budget with the
+// package clock, never by out-waiting this interval.
+const relaySearchPollInterval = 250 * time.Millisecond
+
+// relayStateClaimed names the state a live claim stamps (the store's one
+// conditional UPDATE writes it; relay.go names only the states IT moves —
+// done|failed). The search poll reads it to observe an abandoned lease.
+const relayStateClaimed = "claimed"
+
 // SearchSource serves the identify overlay's interactive search
 // (identify-match-override): resolve the typed client (the same accessor the
 // chain uses — an unknown plugin errors from the manager), SearchSpecs, execute
@@ -38,6 +60,13 @@ var errEmptyExternalID = errors.New("enrich: identify: empty external_id")
 // A source without search surfaces sdk.ErrSearchUnsupported — direct for an
 // in-process impl, re-wrapped for the gRPC seam where a plugin's plain error
 // arrives carrying the sentinel text.
+//
+// A NETWORK-class fetch failure with the relay live (Deps.Relay non-nil — the
+// chain's same enablement rule, D4) rides the client relay instead (ruled
+// OQ-6): the closure enqueues a purpose=search job for the plugin and HOLDS,
+// polling the job within the budget, before answering — the poll lives here,
+// inside the closure, so the api endpoint and this signature stay
+// byte-identical (D8). Every other failure keeps today's immediate answer.
 func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) ([]map[string]any, error) {
 	if q.resolve == nil {
 		return nil, errors.New("enrich: search: no plugin resolver")
@@ -52,8 +81,27 @@ func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) 
 	}
 	body, status, headers, err := fetchSource(ctx, q.deps.FetchGate, pluginID, specs.GetSpec())
 	if err != nil {
+		// Ruled OQ-6 (D8): a NETWORK-class fetch rides the relay — the job
+		// enqueues for the plugin and this closure holds and polls it. Every
+		// other condition keeps today's immediate answer bit-for-bit: relay
+		// disabled (nil Deps.Relay, the chain's same rule), a non-network
+		// class, a dying context (no durable relay state off a dead request),
+		// or a plan that will not build.
+		if q.deps.Relay != nil && ctx.Err() == nil && classifyFetchError(err) == fetchClassNetwork {
+			if plan := buildPlan(specs.GetSpec(), nil); plan != nil {
+				return q.searchOverRelay(ctx, md, pluginID, query, kind, plan, err)
+			}
+		}
 		return nil, fmt.Errorf("enrich: search fetch: %w", err)
 	}
+	return searchResults(ctx, md, query, kind, body, status, headers)
+}
+
+// searchResults runs the plugin's result conversion over one fetched response
+// and flattens the candidates to the convention-field maps — the identical
+// shape the direct server fetch and a relay-fed stored response present, so
+// the conversion cannot tell the transports apart.
+func searchResults(ctx context.Context, md sdk.MetadataSource, query, kind string, body []byte, status int32, headers map[string]string) ([]map[string]any, error) {
 	res, err := md.SearchResults(ctx, &metadatav1.SearchResultsRequest{
 		Query: query, Kind: kind,
 		Fetched: &metadatav1.FetchedResponse{Body: body, HttpStatus: status, Headers: headers, Fetched: true},
@@ -66,6 +114,108 @@ func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) 
 		candidates = append(candidates, candidateMap(c))
 	}
 	return candidates, nil
+}
+
+// searchOverRelay is the identify search's relay leg (ruled OQ-6, D8): the
+// network-class fetch failure has happened — enqueue the whole plan as ONE
+// purpose=search job for the plugin (Enqueue writes no ledger row: a search
+// has no (row, plugin) pair to cool, D5) and hold the request HERE, inside the
+// closure, polling the job until a terminal answer exists or the budget spends
+// out. The completion channel is the same Claim→Ingest round trip enrich jobs
+// ride: an authenticated client claims the job (Relay.Claim's oldest-claimable
+// pick is purpose-agnostic), executes the plan, and Ingests the outcome — a
+// result-carrying ingest lands the job done (search-purpose: no ledger write,
+// no wake). A done job feeds its STORED response to SearchResults — the same
+// searchResults call the direct fetch makes — and answers the candidates,
+// consuming the result (D4's read-that-fed discipline; the store treats a
+// re-mark as a harmless rewrite). A failed job, an observed expired claim, or
+// the spent budget answers fmt.Errorf("enrich: search fetch: %w", fetchErr) —
+// byte-for-byte the error the endpoint answers today with retry disabled. A
+// transient store read error burns a tick and keeps polling — the budget
+// backstops it; a cancelled context aborts the wait through the poll sleep and
+// answers the same way (the request it belonged to is gone either way).
+func (q *Queue) searchOverRelay(ctx context.Context, md sdk.MetadataSource, pluginID, query, kind string, plan []store.PlanSpec, fetchErr error) ([]map[string]any, error) {
+	giveUp := func() ([]map[string]any, error) {
+		return nil, fmt.Errorf("enrich: search fetch: %w", fetchErr)
+	}
+	if err := q.deps.Relay.Enqueue(ctx, plan, relayPurposeSearch, "", 0, pluginID, fetchClassNetwork, fetchErr.Error()); err != nil {
+		return giveUp() // the relay store is broken: today's immediate answer
+	}
+	want, err := json.Marshal(plan)
+	if err != nil { // PlanSpec never fails to marshal — guarded like Consult
+		return giveUp()
+	}
+	deadline := now().Add(relaySearchBudget)
+	for {
+		job, found, err := newestSearchJob(ctx, q.deps.Relay, pluginID, want)
+		if err == nil && found {
+			switch {
+			case job.state == relayStateDone:
+				_ = q.deps.Relay.store.MarkRelayConsumed(ctx, job.id) // best-effort: the read that fed SearchResults
+				return searchResults(ctx, md, query, kind, job.result.Body, int32(job.result.HTTPStatus), job.result.Headers)
+			case job.state == relayStateFailed:
+				return giveUp()
+			case job.state == relayStateClaimed && !job.leaseUntil.IsZero() && job.leaseUntil.Before(now()):
+				return giveUp() // the claimant abandoned the job — the lazy expiry, read at the poll (D3)
+			}
+		}
+		if !now().Before(deadline) {
+			return giveUp()
+		}
+		if err := sleepContext(ctx, relaySearchPollInterval); err != nil {
+			return giveUp() // the operator closed the picker: the wait aborts cleanly
+		}
+	}
+}
+
+// searchRelayJob is one poll tick's snapshot of the watched job row.
+type searchRelayJob struct {
+	id         int64
+	state      string
+	leaseUntil time.Time
+	result     store.RelayResult
+}
+
+// newestSearchJob is one poll tick's read: the newest purpose=search job for
+// the plugin whose stored plan byte-equals the current plan — Consult's keying
+// exactly (the deterministic marshaler makes equal plans equal bytes), newest
+// id first so THIS enqueue's row is the one watched. Enqueue returns no id
+// (the Relay boundary hands back only an error), so the poll keys the row
+// rather than reaching past the boundary; an identical twin search converges
+// on the same row and the same, data-identical answer — the stale twin stays
+// unconsumed, Consult's safe degradation. The read rides the S10 seam
+// (relay_jobs exposes no read method; relay.go's Consult/relayJobMeta are the
+// in-package precedent). found=false is just "no row yet" — the poll keeps
+// going; a read error is returned and the poller keeps ticking under the
+// budget.
+func newestSearchJob(ctx context.Context, r *Relay, pluginID string, wantPlan []byte) (searchRelayJob, bool, error) {
+	var (
+		job    searchRelayJob
+		lease  sql.NullString
+		result []byte
+	)
+	err := r.store.DB().QueryRowContext(ctx, `
+SELECT id, state, lease_until, result FROM relay_jobs
+WHERE purpose = ? AND plugin_id = ? AND plan = ?
+ORDER BY id DESC LIMIT 1`, relayPurposeSearch, pluginID, string(wantPlan),
+	).Scan(&job.id, &job.state, &lease, &result)
+	if errors.Is(err, sql.ErrNoRows) {
+		return searchRelayJob{}, false, nil
+	}
+	if err != nil {
+		return searchRelayJob{}, false, fmt.Errorf("enrich: search relay poll %s: %w", pluginID, err)
+	}
+	if lease.Valid {
+		if t, perr := time.Parse(time.RFC3339Nano, lease.String); perr == nil {
+			job.leaseUntil = t // an unparseable stamp reads as no lease: the budget backstops
+		}
+	}
+	if len(result) > 0 {
+		if err := json.Unmarshal(result, &job.result); err != nil {
+			return searchRelayJob{}, false, fmt.Errorf("enrich: search relay poll %s (result): %w", pluginID, err)
+		}
+	}
+	return job, true, nil
 }
 
 // searchSentinel re-wraps an SDK error so the unsupported-search sentinel stays

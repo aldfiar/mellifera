@@ -392,6 +392,41 @@ export interface EnrichPreview {
   versions: Record<string, number>;
 }
 
+// enrich_admin.go enrichFailureDTO — one row of GET /api/v1/enrich/failures
+// (client-relayed-fetch D10): the ledger row plus the best-effort row_kind/
+// title resolved server-side (items first, then series; neither → "gone",
+// never filtered — loop-safety rows stay visible). Stamps are RFC3339
+// strings, the titleOverrideDTO convention. Field names match the JSON tags
+// EXACTLY.
+export interface EnrichFailure {
+  row_id: string;
+  row_kind: string; // "item" | "series" | "gone"
+  title: string;
+  plugin_id: string;
+  status: string; // "exhausted" | "no_data" | "pack_failed" | "relayed"
+  reason: string;
+  attempts: number;
+  failed_at: string;
+  next_eligible_at: string;
+}
+
+// enrich_admin.go enrichFailuresResponse — the GET /enrich/failures 200
+// envelope; empty array, never null.
+export interface EnrichFailuresResponse {
+  failures: EnrichFailure[];
+}
+
+// listEnrichFailures query params — ALL optional, mirroring the handler
+// contract verbatim (enrich_admin.go enrichFailures): plugin_id absent = the
+// FULL unfiltered ledger; limit absent = the server's default 50 (capped at
+// 200 server-side); offset absent = 0. Present values are sent through
+// untouched — an invalid numeric is a server 400, the client never clamps.
+export interface ListEnrichFailuresParams {
+  plugin_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
 // source_admin.go sourceAdminChain — one metadata-chain position of one
 // plugin: the module that binds the plugin as a metadata source plus the
 // binding's config priority (1-based, the enrichment chain order).
@@ -508,9 +543,10 @@ export interface PluginAdminEffective {
 
 // plugin_admin.go pluginAdminPlugin — one loaded plugin's row: boot-literal
 // identity, the health snapshot when the plugin reported, capability chips,
-// module-scope effective verdicts, and config bindings. Optional
-// health/effective in TS like every additive field — absence is "not
-// reported / no verdicts", never a type hole.
+// module-scope effective verdicts, config bindings, and the per-plugin
+// failure count. Optional health/effective/failures in TS like every
+// additive field — absence is "not reported / no verdicts / no rows", never
+// a type hole.
 export interface PluginAdminPlugin {
   plugin_id: string;
   name: string;
@@ -519,6 +555,13 @@ export interface PluginAdminPlugin {
   health?: PluginHealth;
   effective?: PluginAdminEffective;
   config: PluginAdminBinding[];
+  // failures — the additive per-plugin ledger count (client-relayed-fetch
+  // D10): the enrichment-failure rows CURRENTLY STORED for the plugin,
+  // never a lifetime total (the ledger keeps none). Always on the wire (the
+  // Go field has no omitempty — a plugin the ledger holds nothing for
+  // serves 0); optional in TS so an absent field floors to 0, never a type
+  // hole. Rendered verbatim by the Plugins page's «Ошибки» column.
+  failures?: number;
 }
 
 // plugin_admin.go pluginAdminResponse — empty array, never null
@@ -696,6 +739,12 @@ export const ENDPOINTS = {
   // (a missing one 400s).
   enrichPreview: (id: number): string =>
     `/api/v1/libraries/${id}/enrich/preview`,
+  // enrichFailures — GET /api/v1/enrich/failures (enrich_admin.go
+  // enrichFailures, client-relayed-fetch D10): the enrichment failure
+  // ledger. Optional plugin_id/limit/offset query params scope the
+  // newest-first window; a no-parameter request answers the FULL
+  // unfiltered ledger, byte-identical to the pre-D10 contract.
+  enrichFailures: "/api/v1/enrich/failures",
   librarySummary: (id: number): string => `/api/v1/libraries/${id}/summary`,
   libraryFolders: (id: number): string => `/api/v1/libraries/${id}/folders`,
   adminStatus: "/api/v1/admin/status",
@@ -1082,6 +1131,37 @@ export async function getEnrichPreview(
   const q = new URLSearchParams({ plugin_id: pluginId });
   return apiRequest<EnrichPreview>(
     `${ENDPOINTS.enrichPreview(id)}?${q.toString()}`,
+  );
+}
+
+// listEnrichFailures — GET /api/v1/enrich/failures (enrich_admin.go
+// enrichFailures, client-relayed-fetch D10): the enrichment failure ledger.
+// Every parameter is OPTIONAL and mirrors the handler verbatim: plugin_id
+// scopes the listing to one plugin, limit/offset window the newest-first
+// order (limit defaults to 50 server-side, capped at 200; offset into that
+// order). Present values ride the query string untouched — the server 400s
+// an invalid numeric, the client never clamps; a no-parameter request is
+// the bare endpoint and answers the full unfiltered ledger. 400 bad_request
+// for an invalid numeric, 500 store error — canonical, surfaced by the
+// caller (reads are retry:0 like every admin surface).
+export async function listEnrichFailures(
+  params: ListEnrichFailuresParams = {},
+): Promise<EnrichFailuresResponse> {
+  const qs = new URLSearchParams();
+  if (params.plugin_id) {
+    qs.set("plugin_id", params.plugin_id);
+  }
+  if (params.limit !== undefined) {
+    qs.set("limit", String(params.limit));
+  }
+  if (params.offset !== undefined) {
+    qs.set("offset", String(params.offset));
+  }
+  const query = qs.toString();
+  return apiRequest<EnrichFailuresResponse>(
+    query === ""
+      ? ENDPOINTS.enrichFailures
+      : `${ENDPOINTS.enrichFailures}?${query}`,
   );
 }
 

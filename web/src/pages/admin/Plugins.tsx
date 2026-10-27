@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState } from "react";
 import type { ReactElement } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import type {
@@ -51,6 +52,11 @@ import {
 //    — and renders the bounded tail oldest-first (in-memory: a server
 //    restart empties it, stated in the panel copy).
 //
+//  - the failures cell («Ошибки», client-relayed-fetch D10) renders the
+//    SERVED per-plugin count verbatim — 0 muted with no link (an empty
+//    ledger is the normal state), any positive count a click-through to
+//    the plugin's failures page (/admin/plugins/:pluginId/failures).
+//
 // INV-no-writes: the page has no write affordance anywhere — Sources keeps
 // the gate toggles. INV-no-mutation-retry: every read is retry:0 — canonical
 // errors surface inline and the operator re-clicks.
@@ -98,13 +104,14 @@ function PluginsTable(props: { plugins: PluginAdminPlugin[] }): ReactElement {
           <TableHead className="w-40">Status</TableHead>
           <TableHead className="w-36">Capabilities</TableHead>
           <TableHead>Config</TableHead>
+          <TableHead className="w-20">Ошибки</TableHead>
           <TableHead className="w-28">Logs</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {props.plugins.length === 0 ? (
           <TableRow>
-            <TableCell colSpan={5} className="text-muted-foreground">
+            <TableCell colSpan={6} className="text-muted-foreground">
               No plugins loaded
             </TableCell>
           </TableRow>
@@ -177,6 +184,9 @@ function PluginRow(props: {
           </div>
         </TableCell>
         <TableCell>
+          <FailuresCell plugin={p} />
+        </TableCell>
+        <TableCell>
           <Button
             size="sm"
             variant="outline"
@@ -190,7 +200,7 @@ function PluginRow(props: {
       </TableRow>
       {props.logsOpen ? (
         <TableRow className="hover:bg-transparent">
-          <TableCell colSpan={5}>
+          <TableCell colSpan={6}>
             <LogsPanel pluginId={p.plugin_id} />
           </TableCell>
         </TableRow>
@@ -267,6 +277,28 @@ function StatusCell(props: { plugin: PluginAdminPlugin }): ReactElement {
         <span className="text-xs text-muted-foreground">{message}</span>
       ) : null}
     </div>
+  );
+}
+
+// FailuresCell — the «Ошибки» column (client-relayed-fetch D10): the SERVED
+// per-plugin failures count rendered verbatim — 0 muted with no link (an
+// empty ledger is the normal state, not an error), any positive count a
+// click-through to the plugin's failures page
+// (/admin/plugins/:pluginId/failures — the drill-down surface). An absent
+// field floors to 0: the server always serves the field, so absence means
+// "no rows", never a type hole.
+function FailuresCell(props: { plugin: PluginAdminPlugin }): ReactElement {
+  const count = props.plugin.failures ?? 0;
+  if (count <= 0) {
+    return <span className="text-sm text-muted-foreground">{count}</span>;
+  }
+  return (
+    <Link
+      to={`/admin/plugins/${props.plugin.plugin_id}/failures`}
+      className="text-sm font-medium underline underline-offset-4 hover:text-foreground"
+    >
+      {count}
+    </Link>
   );
 }
 
