@@ -486,7 +486,7 @@ func (a *app) adminSourcePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := 0
 	for {
-		page, err := a.deps.Store.QueryItems(r.Context(), lib.ID, "", titleCountPageSize, offset)
+		page, err := a.deps.Store.QueryItems(r.Context(), lib.ID, "", "", false, titleCountPageSize, offset)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -790,7 +790,7 @@ func (a *app) sourceTitleCounts(ctx context.Context, pluginIDs []string) (map[st
 		}
 		offset := 0
 		for {
-			page, err := a.deps.Store.QueryItems(ctx, lib.ID, "", titleCountPageSize, offset)
+			page, err := a.deps.Store.QueryItems(ctx, lib.ID, "", "", false, titleCountPageSize, offset)
 			if err != nil {
 				return nil, err
 			}

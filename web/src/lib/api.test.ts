@@ -206,6 +206,16 @@ describe("items client — S4 joint (listItems/getItem <-> Go /api/v1/items)", (
     await listItems({ library: 3 });
     const [minimalPath] = fetchSpy.mock.calls[1]!;
     expect(minimalPath).toBe("/api/v1/items?library=3");
+
+    // The photos chip filters ride the request — server-side filtering, never
+    // a client post-filter over one unfiltered page.
+    await listItems({ library: 5, path_prefix: "from_manga", limit: 50, offset: 0 });
+    const [prefixPath] = fetchSpy.mock.calls[2]!;
+    expect(prefixPath).toBe("/api/v1/items?library=5&path_prefix=from_manga&limit=50&offset=0");
+
+    await listItems({ library: 5, top_level: true, limit: 50, offset: 0 });
+    const [topLevelPath] = fetchSpy.mock.calls[3]!;
+    expect(topLevelPath).toBe("/api/v1/items?library=5&top_level=true&limit=50&offset=0");
   });
 
   it("listItems parses the page verbatim incl. the full document", async () => {

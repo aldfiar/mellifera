@@ -593,7 +593,7 @@
                 "tags": [
                     "items"
                 ],
-                "summary": "List items (optionally filtered by library + status)",
+                "summary": "List items (optionally filtered by library + status + folder)",
                 "operationId": "list-items",
                 "parameters": [
                     {
@@ -606,6 +606,18 @@
                         "type": "string",
                         "description": "status filter (empty = all)",
                         "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "folder prefix filter — only items whose relative_path is under prefix/ (leading/trailing slashes trimmed, '.'/'..' segments rejected)",
+                        "name": "path_prefix",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "only items with no subfolder in relative_path (conflicts with path_prefix)",
+                        "name": "top_level",
                         "in": "query"
                     },
                     {

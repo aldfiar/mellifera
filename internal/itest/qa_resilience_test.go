@@ -156,7 +156,7 @@ func TestQA_Store_WAL_ConcurrentReadersDuringWrite(t *testing.T) {
 					return
 				default:
 				}
-				items, qerr := s.QueryItems(ctx, libID, "", 100, 0)
+				items, qerr := s.QueryItems(ctx, libID, "", "", false, 100, 0)
 				if qerr != nil {
 					readerErr.Store(qerr.Error())
 					return

@@ -1036,11 +1036,18 @@ function Pagination(props: {
 }
 
 // usePagedItems — the shared paged items query (limit/offset at PAGE_SIZE) +
-// the page-turn/reset callbacks every body reuses.
-function usePagedItems(libraryId: number) {
+// the page-turn/reset callbacks every body reuses. The optional folder drives
+// the server-side chip filter: a named folder → path_prefix (items under that
+// folder, any depth), "" (the top-level chip) → top_level=true, null → no
+// filter. The filter rides the request, NEVER a client-side post-filter — a
+// client filter over one unfiltered page both hides off-page items and lies
+// next to whole-library chip counts (the bug this hook parameter closes).
+function usePagedItems(libraryId: number, folder: string | null = null) {
   const [offset, setOffset] = useState(0);
   const params: ListItemsParams = {
     library: libraryId,
+    path_prefix: folder !== null && folder !== "" ? folder : undefined,
+    top_level: folder === "" ? true : undefined,
     limit: PAGE_SIZE,
     offset,
   };
@@ -1243,18 +1250,19 @@ function durationSeconds(doc: ItemDocument): number | null {
 // ---- image (photos) — box 5.3 -----------------------------------------------
 
 // PhotosBody — the photos layout: the subfolder chip row from
-// GET /api/v1/libraries/{id}/folders (client-side filtering — a picked chip
-// narrows the grid to that folder's relative_path prefix, All resets), above
-// a CSS-columns masonry grid of item tiles with capture-date footers. Paging
-// stays limit/offset; a folder switch restarts at offset 0 (a filtered
-// continuation page of the unfiltered list would skip items).
+// GET /api/v1/libraries/{id}/folders above a CSS-columns masonry grid of item
+// tiles with capture-date footers. A picked chip SERVER-FILTERS the stream
+// (?path_prefix= for a named folder, ?top_level=true for top-level files);
+// All clears the filter. The grid therefore pages the exact stream the chip
+// counts, and Next/Prev step within the folder — a folder switch restarts at
+// offset 0.
 //
 // `folder` is the selected prefix: null = All, "" = top-level files (the
 // folders endpoint reports them with path ""), otherwise the depth-1 prefix.
 function PhotosBody(props: { libraryId: number }): ReactElement {
-  const { query, items, offset, prev, next, reset } = usePagedItems(props.libraryId);
-  const folders = useLibraryFolders(props.libraryId);
   const [folder, setFolder] = useState<string | null>(null);
+  const { query, items, offset, prev, next, reset } = usePagedItems(props.libraryId, folder);
+  const folders = useLibraryFolders(props.libraryId);
 
   if (query.isLoading) {
     return <LoadingState label="Loading items…" />;
@@ -1262,13 +1270,6 @@ function PhotosBody(props: { libraryId: number }): ReactElement {
   if (query.error) {
     return <ErrorState error={query.error as ApiError} onRetry={query.refetch} />;
   }
-
-  const visible =
-    folder === null
-      ? items
-      : folder === ""
-        ? items.filter((i) => !i.relative_path.includes("/"))
-        : items.filter((i) => i.relative_path.startsWith(`${folder}/`));
 
   const pickFolder = (path: string | null): void => {
     setFolder(path);
@@ -1294,16 +1295,16 @@ function PhotosBody(props: { libraryId: number }): ReactElement {
         ))}
       </div>
 
-      {visible.length === 0 && offset === 0 ? (
+      {items.length === 0 && offset === 0 ? (
         <EmptyState message="No items in this collection." />
       ) : (
         <ul className="masonry">
-          {visible.map((item, index) => (
+          {items.map((item, index) => (
             <li key={item.id}>
               <PhotoTile
                 item={item}
                 handoff={browseState(
-                  visible.map((i) => i.id),
+                  items.map((i) => i.id),
                   index,
                   props.libraryId,
                 )}
@@ -1312,13 +1313,13 @@ function PhotosBody(props: { libraryId: number }): ReactElement {
           ))}
         </ul>
       )}
-      <Pagination offset={offset} count={visible.length} onPrev={prev} onNext={next} />
+      <Pagination offset={offset} count={items.length} onPrev={prev} onNext={next} />
     </section>
   );
 }
 
-// FolderChip — one subfolder filter chip (client-side; the folders endpoint
-// only names the prefixes). The count rides along as a tabular figure.
+// FolderChip — one subfolder filter chip; the count is the folders-endpoint
+// total for that folder, which the server-filtered stream now pages 1:1.
 function FolderChip(props: {
   label: string;
   count?: number;
