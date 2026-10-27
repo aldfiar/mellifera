@@ -24,8 +24,9 @@ import { TOKEN_KEY } from "@/lib/auth";
 // Group-5 slice (boxes 5.1–5.4) + ui-management pass 1: the collection page's
 // OWN behavior, asserted at the fetch seam (the same idiom as Home.test.tsx).
 // Covered here: the tv body's muted meta line + served-title floor, the
-// photos body's folder-chip client-side filter round-trip and masonry
-// date-footers (present and honestly absent), the serial body's series grid
+// - the photos body's folder-chip row (folders endpoint) and its SERVER-side
+//   filter round-trip: a chip click sends path_prefix/top_level on /items and
+//   renders exactly the served page (never a client-side post-filter).
 // (title precedence, the episode-flow round-trip hitting the episodes
 // endpoint once) with its empty and error states, and the INV-no-filenames
 // surface rules (no raw filename anywhere; floors per surface). Layout itself
@@ -288,22 +289,54 @@ describe("Collection — image body (box 5.3)", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the folder chip row from the folders endpoint and filters client-side; All resets", async () => {
-    fetchWith(photoSeam());
+  it("renders the folder chip row from the folders endpoint and filters server-side; All resets", async () => {
+    const ROOT = item("itm_1_p0", "image", "root.jpg", doc({ dateTaken: "2026-01-01T00:00:00Z" }));
+    const beach = PHOTOS[0]!;
+    // Specific entries BEFORE the generic ones — the mock matches by substring
+    // and earlier entries win, so "/items?library=1&limit=50&offset=0" must
+    // come after its path_prefix/top_level specializations.
+    fetchWith({
+      "/api/v1/libraries/1/folders": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            folders: [
+              { path: "", items: 1 },
+              { path: "2025", items: 1 },
+              { path: "2026", items: 1 },
+              { path: "archive", items: 1 },
+            ],
+          }),
+        ),
+      ...headerSeam("image", 4),
+      "/api/v1/items?library=1&path_prefix=2026&limit=50&offset=0": () =>
+        Promise.resolve(jsonResponse(200, { items: [beach] })),
+      "/api/v1/items?library=1&top_level=true&limit=50&offset=0": () =>
+        Promise.resolve(jsonResponse(200, { items: [ROOT] })),
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(jsonResponse(200, { items: PHOTOS })),
+    });
     renderCollection("1");
 
-    // All three tiles first, each with a capture-date footer (or honestly none).
+    // All first: every tile, unfiltered stream.
     expect(await screen.findByRole("link", { name: "Open beach" })).toBeDefined();
     expect(screen.getByRole("link", { name: "Open alps" })).toBeDefined();
     expect(screen.getByRole("link", { name: "Open scan" })).toBeDefined();
 
-    // Pick the 2026 folder → only its tile remains (client-side prefix filter).
+    // Pick the 2026 chip → the request carries path_prefix=2026 and the grid
+    // renders exactly the served page (server-side filter, no post-filter).
+    // Two-phase wait: the key switch unmounts the grid (isLoading), then the
+    // filtered page lands — findByRole bridges the gap.
     fireEvent.click(screen.getByRole("button", { name: /2026/ }));
-    expect(screen.getByRole("link", { name: "Open beach" })).toBeDefined();
-    expect(screen.queryByRole("link", { name: "Open alps" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Open alps" })).toBeNull());
     expect(screen.queryByRole("link", { name: "Open scan" })).toBeNull();
+    expect(await screen.findByRole("link", { name: "Open beach" })).toBeDefined();
 
-    // All resets the filter.
+    // Top level chip → top_level=true, its own served page.
+    fireEvent.click(screen.getByRole("button", { name: /Top level/ }));
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Open beach" })).toBeNull());
+    expect(await screen.findByRole("link", { name: "Open root" })).toBeDefined();
+
+    // All resets to the unfiltered stream.
     fireEvent.click(screen.getByRole("button", { name: "All" }));
     expect(await screen.findByRole("link", { name: "Open alps" })).toBeDefined();
     expect(screen.getByRole("link", { name: "Open scan" })).toBeDefined();

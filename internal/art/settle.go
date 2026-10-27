@@ -162,7 +162,7 @@ func (s *Service) walkPosterRows(ctx context.Context) ([]settleRow, error) {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			page, err := s.st.QueryItems(ctx, lib.ID, "", settlePageSize, offset)
+			page, err := s.st.QueryItems(ctx, lib.ID, "", "", false, settlePageSize, offset)
 			if err != nil {
 				return nil, fmt.Errorf("art: query items %d: %w", lib.ID, err)
 			}

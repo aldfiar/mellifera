@@ -445,3 +445,121 @@ func TestListItems_StatusFilter(t *testing.T) {
 		})
 	}
 }
+
+// TestListItems_PathFilter is the seam test for the photos chip lane
+// (feature/photos-folder-filter): ?path_prefix= pages only items under the
+// folder (any depth, slashes trimmed), ?top_level=true only "/"-free paths,
+// both compose with ?status=, and contradictory/malformed filters are 400s —
+// never silent precedence or silent no-op.
+func TestListItems_PathFilter(t *testing.T) {
+	st := openAPIStore(t)
+	libID, err := st.CreateLibrary(context.Background(), "image", "/media/photos", "Photos")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	seed := map[string]string{
+		"fid-top": "root.jpg",
+		"fid-e1":  "ecchi/one.jpg",
+		"fid-e2":  "ecchi/two.jpg",
+		"fid-en":  "ecchi/nested/three.jpg",
+		"fid-m":   "from_manga/m.jpg",
+	}
+	for fid, path := range seed {
+		status := "ready"
+		if fid == "fid-e2" {
+			status = "pending" // exercises the prefix+status composition
+		}
+		if err := st.PutItem(context.Background(), store.Item{
+			ID: "itm_" + fid, ModuleID: "image", LibraryID: libID, FileID: fid,
+			RelativePath: path, MediaType: "image",
+			Document: json.RawMessage(`{}`), SchemaVersion: 1, Status: status,
+		}); err != nil {
+			t.Fatalf("PutItem %s: %v", fid, err)
+		}
+	}
+	h := New(Deps{AdminToken: adminToken, Store: st, Scan: func(context.Context, int64) (scan.Result, error) {
+		return scan.Result{}, nil
+	}})
+
+	base := "/api/v1/items?library=" + strconv.FormatInt(libID, 10)
+	okCases := []struct {
+		name string
+		path string
+		want []string // expected fileID set
+	}{
+		{"prefix_filters_folder", base + "&path_prefix=ecchi", []string{"fid-e1", "fid-e2", "fid-en"}},
+		{"prefix_trailing_slash_trimmed", base + "&path_prefix=ecchi/", []string{"fid-e1", "fid-e2", "fid-en"}},
+		{"prefix_leading_slash_trimmed", base + "&path_prefix=/ecchi", []string{"fid-e1", "fid-e2", "fid-en"}},
+		{"prefix_deep", base + "&path_prefix=ecchi/nested", []string{"fid-en"}},
+		{"prefix_composes_with_status", base + "&path_prefix=ecchi&status=pending", []string{"fid-e2"}},
+		{"top_level_filters", base + "&top_level=true", []string{"fid-top"}},
+		{"top_level_false_is_absent", base + "&top_level=false", nil /* all five */},
+		{"no_filter_returns_all", base, nil /* all five */},
+	}
+	for _, tc := range okCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, h, http.MethodGet, tc.path, "", adminToken)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			var ir itemsResponse
+			if err := json.NewDecoder(resp.Body).Decode(&ir); err != nil {
+				t.Fatalf("decode itemsResponse: %v", err)
+			}
+			got := map[string]bool{}
+			for _, it := range ir.Items {
+				got[it.FileID] = true
+			}
+			if tc.want == nil { // expect every seed fileID
+				for fid := range seed {
+					if !got[fid] {
+						t.Fatalf("missing %q in response (got %v)", fid, got)
+					}
+				}
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got items %v, want exactly %v", got, tc.want)
+			}
+			for _, fid := range tc.want {
+				if !got[fid] {
+					t.Fatalf("missing %q in response (got %v)", fid, got)
+				}
+			}
+		})
+	}
+
+	badCases := []struct {
+		name string
+		path string
+	}{
+		{"prefix_and_top_level_conflict", base + "&path_prefix=ecchi&top_level=true"},
+		{"prefix_only_slashes", base + "&path_prefix=/"},
+		{"prefix_dot_segment", base + "&path_prefix=ecchi/./nested"},
+		{"prefix_dotdot_segment", base + "&path_prefix=../ecchi"},
+		{"prefix_interior_double_slash", base + "&path_prefix=ecchi//nested"},
+	}
+	for _, tc := range badCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, h, http.MethodGet, tc.path, "", adminToken)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+			var eb struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&eb); err != nil {
+				t.Fatalf("decode error body: %v", err)
+			}
+			if eb.Error.Code != "bad_request" {
+				t.Fatalf("code = %q, want bad_request", eb.Error.Code)
+			}
+		})
+	}
+}
