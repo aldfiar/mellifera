@@ -10,10 +10,12 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
@@ -370,4 +372,393 @@ func TestIdentifySeries(t *testing.T) {
 			})
 		}
 	})
+}
+
+// deadSearchSpec is a GET spec against an address that refuses connections —
+// the canonical NETWORK-class search fetch failure (no response ever arrives).
+func deadSearchSpec() *metadatav1.RequestSpec {
+	return &metadatav1.RequestSpec{Method: "GET", UrlTemplate: "http://127.0.0.1:1/search"}
+}
+
+func deadSearchSrc() *searchSrc {
+	return &searchSrc{spec: deadSearchSpec()}
+}
+
+// relaySearchSrc captures the SearchResults request so a test can prove the
+// STORED relay response (not a server fetch) fed the conversion.
+type relaySearchSrc struct {
+	searchSrc
+	mu   sync.Mutex
+	last *metadatav1.SearchResultsRequest
+}
+
+func (s *relaySearchSrc) SearchResults(ctx context.Context, req *metadatav1.SearchResultsRequest) (*metadatav1.SearchResultsResult, error) {
+	s.mu.Lock()
+	s.last = req
+	s.mu.Unlock()
+	return s.searchSrc.SearchResults(ctx, req)
+}
+
+func (s *relaySearchSrc) fetched() *metadatav1.SearchResultsRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.last
+}
+
+// claimAndIngest plays the client side of the relay for one search job: spin
+// (real-time backstop — the poll and the enrich fake clock are the timed
+// parties) until the enqueue lands, claim through the SAME Relay.Claim the api
+// pair serves, and Ingest the scripted outcome. Asserts the job's search
+// identity on the way through. stop ends the spin without a failed-test report
+// (the test's Cleanup closes it so an early test exit never leaves a
+// goroutine reporting into a finished test).
+func claimAndIngest(t *testing.T, r *Relay, result relay.RelayResult, stop <-chan struct{}) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		job, found, err := r.Claim(context.Background(), "test-principal")
+		if err != nil {
+			t.Errorf("relay claim: %v", err)
+			return
+		}
+		if found {
+			if job.Purpose != relayPurposeSearch || job.RowID != "" || job.PluginID != "shikimori" {
+				t.Errorf("search job identity: purpose=%q row=%q plugin=%q", job.Purpose, job.RowID, job.PluginID)
+				return
+			}
+			if err := r.Ingest(context.Background(), job.ID, "test-principal", result); err != nil {
+				t.Errorf("relay ingest: %v", err)
+			}
+			return
+		}
+		select {
+		case <-stop:
+			return
+		case <-time.After(2 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			t.Error("the search job never became claimable")
+			return
+		}
+	}
+}
+
+// stepClock installs a fake package clock that advances one step per read and
+// returns a reader for the current fake time. The stepper keeps the poll's
+// budget finite under a regression (a broken hold fails in seconds, never
+// hangs), and the readback turns the budget into an assertion. Both closures
+// are mutex-guarded: the client-side goroutines read the clock concurrently
+// with the test goroutine's readback.
+func stepClock(t *testing.T, start time.Time, step time.Duration) (read func() time.Time) {
+	t.Helper()
+	realNow := now
+	t.Cleanup(func() { now = realNow })
+	mu := &sync.Mutex{}
+	cur := start
+	now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		cur = cur.Add(step)
+		return cur
+	}
+	return func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return cur
+	}
+}
+
+// TestSearchRelayCompletes pins the completion leg of the search relay (ruled
+// OQ-6): the server fetch fails network-class, the job enqueues (purpose
+// search, no row — and no ledger row), the client side claims and Ingests a
+// done result through the same Claim→Ingest round trip enrich jobs ride, and
+// the held closure answers the candidates converted from the STORED response —
+// within the budget (asserted off the fake clock's readback). A done job's
+// stored response feeds SearchResults whatever status it carries (the direct
+// path's contract), and the fed result is consumed (D4's read-that-fed
+// discipline).
+func TestSearchRelayCompletes(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	clock := stepClock(t, t0, time.Second) // 1s per read: the budget passes in a minute of reads — the done job answers in a few
+
+	cases := []struct {
+		name   string
+		body   string
+		status int
+		cands  []*metadatav1.SearchCandidate
+		want   []map[string]any
+	}{
+		{
+			name:   "done_response_feeds_searchresults",
+			body:   `[]`,
+			status: 200,
+			cands: []*metadatav1.SearchCandidate{
+				{ExternalId: "378", Title: "Aria the Animation", Kind: "tv", Year: proto.Int32(2005)},
+			},
+			want: []map[string]any{
+				{"external_id": "378", "title": "Aria the Animation", "kind": "tv", "year": int32(2005)},
+			},
+		},
+		{
+			name:   "any_stored_status_feeds_like_the_direct_path",
+			body:   `{"message":"rate limited"}`,
+			status: 502,
+			cands: []*metadatav1.SearchCandidate{
+				{ExternalId: "40709", Title: "Wake Up, Aria!", Kind: "ova"},
+			},
+			want: []map[string]any{
+				{"external_id": "40709", "title": "Wake Up, Aria!", "kind": "ova"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &relaySearchSrc{searchSrc: searchSrc{spec: deadSearchSpec(), cands: tc.cands}}
+			q, s := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": src}, nil)
+			r := &Relay{Store: s}
+			q.deps.Relay = r
+
+			stop := make(chan struct{})
+			t.Cleanup(func() { close(stop) })
+			go claimAndIngest(t, r, relay.RelayResult{
+				HTTPStatus: tc.status,
+				Headers:    map[string]string{"Content-Type": "application/json"},
+				Body:       []byte(tc.body),
+			}, stop)
+
+			cands, err := q.SearchSource(ctx, "shikimori", "aria", "")
+			if err != nil {
+				t.Fatalf("SearchSource over the relay: %v", err)
+			}
+			if !clock().Before(t0.Add(relaySearchBudget)) {
+				t.Fatalf("the answer came at %v past t0 — the budget, not the done job", clock().Sub(t0))
+			}
+			if !reflect.DeepEqual(cands, tc.want) {
+				t.Fatalf("candidates = %v, want %v", cands, tc.want)
+			}
+			f := src.fetched()
+			if f == nil {
+				t.Fatal("SearchResults never ran")
+			}
+			fe := f.GetFetched()
+			if !fe.GetFetched() || fe.GetHttpStatus() != int32(tc.status) || string(fe.GetBody()) != tc.body {
+				t.Fatalf("SearchResults fed %v, want the stored response (status %d, body %q, fetched)", fe, tc.status, tc.body)
+			}
+			if f.GetQuery() != "aria" || f.GetKind() != "" {
+				t.Fatalf("SearchResults query/kind = %q/%q, want aria/\"\"", f.GetQuery(), f.GetKind())
+			}
+			rows, err := s.ListFailures(ctx)
+			if err != nil {
+				t.Fatalf("ListFailures: %v", err)
+			}
+			if len(rows) != 0 {
+				t.Fatalf("a search job must write no ledger row, found %d", len(rows))
+			}
+			var consumed int
+			if err := s.DB().QueryRowContext(ctx, `SELECT consumed FROM relay_jobs WHERE purpose = 'search'`).Scan(&consumed); err != nil {
+				t.Fatalf("relay job read: %v", err)
+			}
+			if consumed != 1 {
+				t.Fatalf("the fed result was not consumed: consumed=%d", consumed)
+			}
+		})
+	}
+}
+
+// TestSearchRelayExpiresToUpstreamError pins the give-up legs (ruled OQ-6): a
+// job the client never completes — never claimed with the budget spent out,
+// claimed-then-failed, or claimed-then-abandoned past its lease — answers the
+// SAME upstream error the endpoint answers today with retry disabled:
+// byte-for-byte the immediate answer a relay-disabled queue gives for the same
+// failing fetch. The fake clock drives the budget so the suite stays fast.
+func TestSearchRelayExpiresToUpstreamError(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	realNow := now
+	t.Cleanup(func() { now = realNow })
+
+	// The immediate answer today: a relay-disabled queue for the same failing
+	// fetch. The endpoint writes err.Error() verbatim into its 502 with retry
+	// disabled — every give-up below must reproduce it byte-for-byte.
+	qNow, _ := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": deadSearchSrc()}, nil)
+	_, wantErr := qNow.SearchSource(ctx, "shikimori", "aria", "")
+	if wantErr == nil || !strings.HasPrefix(wantErr.Error(), "enrich: search fetch: ") {
+		t.Fatalf("baseline immediate answer = %v", wantErr)
+	}
+
+	assertUpstream := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil || err.Error() != wantErr.Error() {
+			t.Fatalf("give-up answer = %v, want byte-identical %v", err, wantErr)
+		}
+	}
+
+	t.Run("unclaimed_budget_expires", func(t *testing.T) {
+		// An advancing fake clock: the 60 s budget spends out in two reads —
+		// no real waiting; no client ever claims the job. The readback proves
+		// the budget WAS what spent out.
+		clock := stepClock(t, t0, 31*time.Second)
+		q, s := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": deadSearchSrc()}, nil)
+		q.deps.Relay = &Relay{Store: s}
+		_, err := q.SearchSource(ctx, "shikimori", "aria", "")
+		assertUpstream(t, err)
+		if !clock().After(t0.Add(relaySearchBudget)) {
+			t.Fatalf("answered at %v past t0 — the budget never spent out", clock().Sub(t0))
+		}
+	})
+
+	t.Run("failed_job_answers_upstream", func(t *testing.T) {
+		// A slow-stepping clock: the budget CANNOT be what answers (asserted
+		// off the readback — the FAILED state must be) — the client executes
+		// but reports a transport failure (Ingest's error set) through the
+		// same round trip.
+		clock := stepClock(t, t0, time.Second)
+		q, s := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": deadSearchSrc()}, nil)
+		r := &Relay{Store: s}
+		q.deps.Relay = r
+		stop := make(chan struct{})
+		t.Cleanup(func() { close(stop) })
+		go claimAndIngest(t, r, relay.RelayResult{Error: "the client could not reach the upstream either"}, stop)
+		_, err := q.SearchSource(ctx, "shikimori", "aria", "")
+		assertUpstream(t, err)
+		if clock().After(t0.Add(relaySearchBudget)) {
+			t.Fatalf("answered at %v past t0 — the budget, not the failed job", clock().Sub(t0))
+		}
+		rows, err := s.ListFailures(ctx)
+		if err != nil {
+			t.Fatalf("ListFailures: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("a failed search round must touch no ledger row, found %d", len(rows))
+		}
+	})
+
+	t.Run("expired_claim_answers_upstream", func(t *testing.T) {
+		// The clock is pinned until the claim lands, then jumps an hour: the
+		// poll reads the abandoned lease as expired (the lazy expiry, D3) —
+		// the lease is handed out at 1µs so any later read sees it past. The
+		// search runs concurrently with the claimant: the job must exist
+		// before a claim can land.
+		mu := &sync.Mutex{}
+		released := false
+		now = func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			if released {
+				return t0.Add(time.Hour)
+			}
+			return t0
+		}
+		q, s := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": deadSearchSrc()}, nil)
+		r := &Relay{Store: s, LeaseTTL: time.Microsecond}
+		q.deps.Relay = r
+		type searchOutcome struct {
+			err error
+		}
+		out := make(chan searchOutcome, 1)
+		go func() {
+			_, err := q.SearchSource(ctx, "shikimori", "aria", "")
+			out <- searchOutcome{err: err}
+		}()
+		claimed := make(chan struct{})
+		go func() {
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				_, found, err := r.Claim(context.Background(), "test-principal")
+				if err != nil {
+					t.Errorf("relay claim: %v", err)
+					return
+				}
+				if found { // claimed, never ingested — the claimant abandons
+					close(claimed)
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Error("the search job never became claimable")
+					return
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+		}()
+		<-claimed
+		mu.Lock()
+		released = true
+		mu.Unlock()
+		o := <-out
+		assertUpstream(t, o.err)
+	})
+}
+
+// TestSearchRelayNonNetworkUnchanged pins the class gate (ruled OQ-6): the
+// relay is the NETWORK-class path only — every other search failure keeps
+// today's immediate answer, even with the relay live (a fast-spending fake
+// clock turns a wrongly-relayed hold into a fast give-up, and the zero-jobs
+// assertion catches the detour).
+func TestSearchRelayNonNetworkUnchanged(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	realNow := now
+	t.Cleanup(func() { now = realNow })
+	step := t0
+	now = func() time.Time { step = step.Add(time.Minute); return step }
+
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(live.Close)
+
+	cases := []struct {
+		name     string
+		src      *searchSrc
+		checkErr func(t *testing.T, err error)
+	}{
+		{
+			name: "unsupported_search_sentinel",
+			src:  &searchSrc{specErr: sdk.ErrSearchUnsupported},
+			checkErr: func(t *testing.T, err error) {
+				if !errors.Is(err, sdk.ErrSearchUnsupported) {
+					t.Fatalf("err = %v, want ErrSearchUnsupported", err)
+				}
+			},
+		},
+		{
+			name: "specs_rpc_failure",
+			src:  &searchSrc{specErr: errors.New("specs rpc boom")},
+			checkErr: func(t *testing.T, err error) {
+				if err == nil || err.Error() != "enrich: search: specs rpc boom" {
+					t.Fatalf("err = %v, want today's immediate wrap", err)
+				}
+			},
+		},
+		{
+			name: "spec_class_method_rejected_before_any_fetch",
+			src:  &searchSrc{spec: &metadatav1.RequestSpec{Method: "DELETE", UrlTemplate: live.URL + "/search"}},
+			checkErr: func(t *testing.T, err error) {
+				if err == nil || !strings.HasPrefix(err.Error(), "enrich: search fetch: unsupported method") {
+					t.Fatalf("err = %v, want today's immediate spec-class answer", err)
+				}
+			},
+		},
+		{
+			name: "spec_class_unresolved_placeholder",
+			src:  &searchSrc{spec: &metadatav1.RequestSpec{Method: "GET", UrlTemplate: live.URL + "/search?q={query}"}},
+			checkErr: func(t *testing.T, err error) {
+				if err == nil || !strings.HasPrefix(err.Error(), "enrich: search fetch: placeholder") {
+					t.Fatalf("err = %v, want today's immediate spec-class answer", err)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q, s := searchQueue(t, map[string]sdk.MetadataSource{"shikimori": tc.src}, nil)
+			q.deps.Relay = &Relay{Store: s} // live: the non-network path must ignore it
+			_, err := q.SearchSource(ctx, "shikimori", "aria", "")
+			tc.checkErr(t, err)
+			if _, found := relayClaim(t, s); found {
+				t.Fatal("a non-network failure must not enqueue a relay job")
+			}
+		})
+	}
 }

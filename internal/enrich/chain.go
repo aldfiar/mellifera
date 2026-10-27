@@ -6,9 +6,11 @@ package enrich
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mellifera/mellifera/internal/module"
+	"github.com/mellifera/mellifera/internal/relay"
 	commonv1 "github.com/mellifera/mellifera/proto/mellifera/common/v1"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
@@ -23,7 +25,91 @@ const (
 	outcomeFailed                         // chain ran but an RPC errored or namespace was violated
 	outcomeUnavailable                    // plugin not loaded / not resolvable
 	outcomeSkipped                        // disabled, or Match returned applies=false
+	outcomeDeferred                       // network-class fetch handed to the relay queue: neither failed nor succeeded
 )
+
+// executorClient stamps a _stages fetch entry whose response did NOT come
+// from a server fetch: the consuming run read it from the relay cache — the
+// fetch ran on a client relay (spec "Result endpoint": audit shows where the
+// fetch ran). The only value today; the field stays open for future executors.
+const executorClient = "client"
+
+// relayScope is the deferred-handoff scope one source run carries: the relay
+// plus the (row, plugin) pair identity the handoff and the consult address
+// (the queue's driveSources builds it over Deps.Relay + the loaded row). The
+// ONE nil-safety decision point (client-relayed-fetch D4): a nil scope, a nil
+// relay, or a missing row id is relay disabled, and every branch on the scope
+// keeps today's failure behavior bit-identical — the sync path (no row id
+// exists) simply passes nil.
+type relayScope struct {
+	relay     *Relay
+	rowID     string
+	libraryID int64
+}
+
+// enabled reports whether the scope carries a live relay for a real (row,
+// plugin) pair. Nil-receiver safe by design: it is the guard every relay
+// branch reads.
+func (sc *relayScope) enabled() bool {
+	return sc != nil && sc.relay != nil && sc.rowID != ""
+}
+
+// handOff converts a network-class fetch failure into the deferred outcome
+// (D4): the whole request plan (primary + extras, positional) hands to the
+// relay as one durable job and the run ends deferred — neither failed nor
+// succeeded; the relayed ledger row Enqueue writes IS the loop-safety write.
+// A disabled relay, a missing plan (the spec failed validation — a spec-class
+// condition that never relays), a non-network class, a dying context (the
+// queue's hard-abort owns teardown; a cancelled ctx must not write durable
+// relay state), or an enqueue error keeps today's failure behavior
+// bit-identical: the caller falls through to the plain failure path.
+func (sc *relayScope) handOff(ctx context.Context, src module.MetadataSourceBinding, start, errText, class string, plan []relay.PlanSpec) (sourceResult, bool) {
+	if !sc.enabled() || plan == nil || class != fetchClassNetwork || ctx.Err() != nil {
+		return sourceResult{}, false
+	}
+	if err := sc.relay.Enqueue(ctx, plan, relayPurposeEnrich, sc.rowID, sc.libraryID, src.PluginID, class, errText); err != nil {
+		return sourceResult{}, false // relay store broken: today's failure behavior (soft-fail)
+	}
+	return deferredOutcome(src, start, errText), true
+}
+
+// buildPlan renders the run's whole request plan — the primary first, then
+// the extras positionally, the same alignment Convert's FetchedResponse[]
+// consumes — into the store's PlanSpec boundary (the enqueue/consult wire
+// shape). Every URL is fully substituted: the descriptor is server-authored,
+// the client never sees a template or a placeholder. A spec that fails
+// validation yields nil (the relay path skips: consult and handoff — the
+// normal fetch fails with the same spec-class error, today's behavior). The
+// marshaler over the result is deterministic, so the rebuilt plan
+// byte-compares against a stored job's plan (Consult's match).
+func buildPlan(primary *metadatav1.RequestSpec, extras []*metadatav1.RequestSpec) []relay.PlanSpec {
+	specs := make([]*metadatav1.RequestSpec, 0, 1+len(extras))
+	if primary != nil {
+		specs = append(specs, primary)
+	}
+	specs = append(specs, extras...)
+	out := make([]relay.PlanSpec, 0, len(specs))
+	for _, spec := range specs {
+		values, err := resolveVariables(spec.GetVariables())
+		if err != nil {
+			return nil
+		}
+		rawURL, err := substitute(spec.GetUrlTemplate(), values)
+		if err != nil {
+			return nil
+		}
+		out = append(out, relay.PlanSpec{
+			Method:         strings.ToUpper(spec.GetMethod()),
+			URL:            rawURL,
+			Headers:        spec.GetHeaders(),
+			Body:           spec.GetBody(),
+			BinarySafe:     spec.GetBinarySafe(),
+			TimeoutSeconds: int(spec.GetTimeoutSeconds()),
+			MinIntervalMS:  int(spec.GetMinIntervalMs()),
+		})
+	}
+	return out
+}
 
 // sourceResult is runSource's output: the source's contribution (namespace +
 // provenance/_view entries) on success, or the failure detail otherwise. The
@@ -50,8 +136,20 @@ type sourceResult struct {
 	matchConfidence float64
 	warnings        []string
 	errMsg          string
-	startedAt       string
-	finishedAt      string
+	// fetchClass carries the machine fetch-failure class (the closed
+	// network|upstream|protocol|spec set, fetch.go) when the failure was the
+	// fetch stage — empty for every other outcome. appendStage records it
+	// beside the error in the _stages fetch entry and the dispatch composes
+	// it onto the ledger reason (spec "Fetch failure classification"; the
+	// deferred conversion reading it is task 3.2's).
+	fetchClass string
+	// executor names where the fetch ran when it did NOT run server-side:
+	// executorClient ("client") when the primary response was fed from the
+	// relay cache (D4 consult hit). Empty for every server fetch; appendStage
+	// stamps it onto the _stages fetch entry (spec "Result endpoint").
+	executor   string
+	startedAt  string
+	finishedAt string
 }
 
 // runSource drives the full 4-RPC chain for one metadata_source binding:
@@ -60,10 +158,14 @@ type sourceResult struct {
 // identity anchor, enrichment D-4 — first enrichment sees none). The fetch
 // between BuildRequest and Convert executes the plugin's RequestSpec
 // server-side (mode A, enrichment D-5); a spec without a url template is
-// local (no fetch, the former stub behavior). gate paces the fetch (nil = unpaced). On
-// any per-source failure the chain soft-fails (AC-6); only a cancelled
-// context is a hard failure (handled by Enrich).
-func runSource(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate) sourceResult {
+// local (no fetch, the former stub behavior). gate paces the fetch (nil = unpaced).
+// scope is the deferred-handoff scope (nil = relay disabled): the call site
+// owns the relay policy (client-relayed-fetch D4) — consult before fetching,
+// and a network-class failure (primary OR extra) hands the whole plan to the
+// relay and ends the run deferred. On any per-source failure the chain
+// soft-fails (AC-6); only a cancelled context is a hard failure (handled by
+// Enrich).
+func runSource(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate, scope *relayScope) sourceResult {
 	start := stamp()
 	if !src.Enabled {
 		return sourceResult{kind: outcomeSkipped, pluginID: src.PluginID, startedAt: start, finishedAt: stamp()}
@@ -92,16 +194,48 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 	var raw []byte
 	var httpStatus int32
 	var respHeaders map[string]string
+	executor := ""                                                              // executorClient once the primary came from the relay cache
+	var plan []relay.PlanSpec                                                   // the whole request plan, held while the relay can act on it
 	if spec := buildRes.GetSpec(); spec != nil && spec.GetUrlTemplate() != "" { // no url template: local source, nothing to fetch
-		raw, httpStatus, respHeaders, err = fetchSource(ctx, gate, src.PluginID, spec)
-		if err != nil {
-			return failOutcome(src, start, "fetch", err)
+		if scope.enabled() { // D4: the call site owns the relay policy — fetchSource stays a pure executor
+			plan = buildPlan(spec, buildRes.GetExtraSpecs())
+			if plan != nil { // a spec-validation failure skips the relay path entirely
+				// Consult BEFORE fetching (D4): a done, unconsumed,
+				// plan-matched job feeds its stored response in exactly as a
+				// server fetch and is consumed. A read error or a plan
+				// mismatch is a miss — safe degradation to the normal fetch.
+				if stored, ok, cerr := scope.relay.Consult(ctx, scope.rowID, src.PluginID, plan); cerr == nil && ok {
+					raw, httpStatus, respHeaders = stored.Body, int32(stored.HTTPStatus), stored.Headers
+					executor = executorClient
+				}
+			}
+		}
+		if executor == "" {
+			raw, httpStatus, respHeaders, err = fetchSource(ctx, gate, src.PluginID, spec)
+			if err != nil {
+				if sr, handed := scope.handOff(ctx, src, start, err.Error(), classifyFetchError(err), plan); handed {
+					return sr // the run ends deferred — neither failed nor succeeded (D4)
+				}
+				return fetchFailOutcome(src, start, err)
+			}
 		}
 	}
 	// The request plan (media-data convention D4): extras run after the
 	// primary, in order, through the same validation and FetchGate slot —
-	// a failed extra soft-fails its own entry and never this run.
-	extraResponses := fetchExtras(ctx, gate, src.PluginID, buildRes.GetExtraSpecs())
+	// a failed extra soft-fails its own entry and never this run. One
+	// exception at the call site (D4): a NETWORK-class extra failure defers
+	// the whole plan when the relay is live — fetchExtras' entries carry only
+	// free text, so the machine classes ride positionally beside them.
+	extraResponses, extraClasses := fetchExtras(ctx, gate, src.PluginID, buildRes.GetExtraSpecs())
+	for i, class := range extraClasses {
+		if class != fetchClassNetwork {
+			continue
+		}
+		if sr, handed := scope.handOff(ctx, src, start, extraResponses[i].GetError(), class, plan); handed {
+			return sr
+		}
+		break // not deferable — today's behavior: the entry stays soft-failed
+	}
 	conv, err := md.Convert(ctx, &metadatav1.ConvertRequest{
 		Query: matchRes.GetQuery(), ModuleType: mod.MediaType,
 		RawResponse: raw, HttpStatus: httpStatus, ResponseHeaders: respHeaders,
@@ -135,6 +269,7 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 		episodeTitles:   conv.GetEpisodeTitles(),
 		provHints:       conv.GetProvenance(),
 		matchConfidence: matchRes.GetConfidence(),
+		executor:        executor,
 		startedAt:       start, finishedAt: stamp(),
 	}
 }
@@ -201,10 +336,44 @@ func failOutcome(src module.MetadataSourceBinding, start, stage string, err erro
 	}
 }
 
+// fetchFailOutcome is failOutcome for the fetch stage: it carries the machine
+// class beside the free-text error, and the text is redacted BEFORE it lands
+// anywhere durable — _stages error text, warnings/logs, and the ledger reason
+// all read this string, and a credential-bearing fetch URL must survive none
+// of them (D6: redactURLs is the one redaction home, relay.go). Human text
+// stays alongside the class token, never instead (spec "Fetch failure
+// classification").
+func fetchFailOutcome(src module.MetadataSourceBinding, start string, err error) sourceResult {
+	msg := redactURLs(fmt.Sprintf("fetch: %v", err))
+	return sourceResult{
+		kind: outcomeFailed, pluginID: src.PluginID, errMsg: msg,
+		fetchClass: classifyFetchError(err),
+		warnings:   []string{fmt.Sprintf("source %q %s", src.PluginID, msg)},
+		startedAt:  start, finishedAt: stamp(),
+	}
+}
+
 func skipOutcome(src module.MetadataSourceBinding, start, reason string) sourceResult {
 	return sourceResult{
 		kind: outcomeUnavailable, pluginID: src.PluginID,
 		warnings:  []string{fmt.Sprintf("source %q skipped: %s", src.PluginID, reason)},
 		startedAt: start, finishedAt: stamp(),
+	}
+}
+
+// deferredOutcome is the relay handoff's outcome (client-relayed-fetch D4):
+// neither failed nor succeeded — the plan waits on a client relay, the
+// relayed ledger row Enqueue wrote IS the loop-safety write, and no retry,
+// terminal write, or lifecycle advance may follow it (runSourceRetryable
+// short-circuits; the dispatch walks none of applyOutcome's write paths).
+// The _stages entry records status "deferred" beside the machine class and
+// the redacted human text for audit.
+func deferredOutcome(src module.MetadataSourceBinding, start, errText string) sourceResult {
+	msg := redactURLs(fmt.Sprintf("fetch: %s", errText))
+	return sourceResult{
+		kind: outcomeDeferred, pluginID: src.PluginID, errMsg: msg,
+		fetchClass: fetchClassNetwork,
+		warnings:   []string{fmt.Sprintf("source %q %s", src.PluginID, msg)},
+		startedAt:  start, finishedAt: stamp(),
 	}
 }

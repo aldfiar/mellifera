@@ -21,7 +21,7 @@ const (
 	ledgerPackFailed = "pack_failed" // streams lane: a failed packaging run (flat cooldown, D-10)
 )
 
-// runSourceRetryable wraps runSource (chain.go:49) with bounded in-memory
+// runSourceRetryable wraps runSource (chain.go) with bounded in-memory
 // exponential backoff, classifying the outcome for the dispatch (Task 05) to map
 // onto the ledger. It is a PURE transform over runSource: it returns a
 // classification (ledgerStatus) + the last sourceResult; it does NOT touch the
@@ -32,6 +32,10 @@ const (
 //   - success with an empty namespace: terminal-immediate no_data (B5).
 //   - skipped (disabled / Match.applies=false) / unavailable (plugin not loaded):
 //     no retry, ledgerStatus="" (B6).
+//   - deferred (client-relayed-fetch D4: a network-class failure handed to
+//     Deps.Relay): returns immediately — NO backoff, NO exhausted write; the
+//     relayed ledger row Enqueue wrote IS the loop-safety write, and the
+//     returned ledgerStatus="" keeps applyOutcome off every write path.
 //   - transient failure: retries with backoff = base<<(attempt-1) while
 //     attempt < maxAttempts; on the maxAttempts-th failure, terminal exhausted (B3/B4).
 //   - ctx cancellation: the only hard abort; returns the in-flight result with
@@ -40,8 +44,9 @@ const (
 // maxAttempts/backoff are split out of QueueConfig (Task 05) so this file
 // compiles standalone before queue.go lands; the dispatch passes cfg.MaxAttempts
 // and cfg.Backoff at the call site (spec out_of_scope blesses this split).
-// doc and gate pass through to runSource (identity anchor + fetch pacing).
-func runSourceRetryable(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate, maxAttempts int, backoff time.Duration) (sourceResult, string, int) {
+// doc, gate, and scope pass through to runSource (identity anchor, fetch
+// pacing, relay scope).
+func runSourceRetryable(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate, scope *relayScope, maxAttempts int, backoff time.Duration) (sourceResult, string, int) {
 	// sr defaults to a NON-success kind so an early ctx-cancel (before any attempt
 	// runs) is never mistaken for outcomeSucceeded — whose iota is the zero value 0.
 	sr := sourceResult{kind: outcomeFailed, pluginID: src.PluginID}
@@ -49,13 +54,15 @@ func runSourceRetryable(ctx context.Context, resolve metadataResolver, src modul
 		if err := ctx.Err(); err != nil {
 			return sr, "", attempt - 1 // B7: ctx abort, ledgerStatus="", attempts = how far it got
 		}
-		sr = runSource(ctx, resolve, src, mod, base, doc, gate)
+		sr = runSource(ctx, resolve, src, mod, base, doc, gate, scope)
 		switch sr.kind {
 		case outcomeSucceeded:
 			if len(sr.namespace) == 0 {
 				return sr, ledgerNoData, attempt // B5: clean run, no metadata -> terminal no_data
 			}
 			return sr, "", attempt // B2: success short-circuit, no ledger write
+		case outcomeDeferred:
+			return sr, "", attempt // D4: deferred — the relayed row IS the loop-safety write
 		case outcomeSkipped, outcomeUnavailable:
 			return sr, "", attempt // B6: not failures -> no retry, no ledger
 		case outcomeFailed:

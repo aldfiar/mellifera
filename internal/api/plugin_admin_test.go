@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -365,3 +367,108 @@ func TestAdminPluginLogs(t *testing.T) {
 // (an absent pointer is omitted from the wire, present is carried).
 func intPtr(v int) *int    { return &v }
 func boolPtr(v bool) *bool { return &v }
+
+// TestPluginFailureCount is the aggregate's per-plugin ledger-count test
+// (client-relayed-fetch D10, the plugin-admin delta): ONE FailureCountsByPlugin
+// read feeds every row — a seeded ledger row surfaces under its plugin, a
+// plugin with no rows reads 0, and the field rides the existing aggregate
+// shape additively (always on the wire; a served 0, never an omission). Every
+// seeded row names a nonexistent item id, so the ledger's gone-entities-stay-
+// counted rule is exercised in every seeded case.
+func TestPluginFailureCount(t *testing.T) {
+	// failureCountRig builds the minimal GET /admin/plugins rig over one
+	// store: the three-plugin boot inventory (alpha, beta, gamma — none bound
+	// to any module), seed's ledger rows recorded before the GET. Returns the
+	// typed decode plus the raw body (the additive-wire check decodes the
+	// envelope loosely, since the typed one cannot prove wire presence).
+	rig := func(t *testing.T, seed map[string]int) (pluginAdminResponse, []byte) {
+		t.Helper()
+		st := openAPIStore(t)
+		ctx := context.Background()
+		for pluginID, n := range seed {
+			for i := 0; i < n; i++ {
+				itemID := fmt.Sprintf("itm_gone_%s_%d", pluginID, i) // no items/series rows behind it
+				err := st.RecordFailure(ctx, itemID, pluginID, "exhausted", "test reason", 3, time.Now().Add(time.Hour))
+				if err != nil {
+					t.Fatalf("record failure %s/%s: %v", itemID, pluginID, err)
+				}
+			}
+		}
+		h := New(Deps{
+			AdminToken: adminToken,
+			Store:      st,
+			SourceInventory: func(context.Context) ([]string, map[string]string, map[string]string) {
+				return []string{"alpha", "beta", "gamma"}, nil, nil
+			},
+			ModuleIDs:     func(context.Context) ([]string, error) { return nil, nil },
+			ModuleSources: func(context.Context, string, int64) ([]string, []int, []bool, error) { return nil, nil, nil, nil },
+			PluginConfigs: func(context.Context, string) ([]string, []string, []int, []bool, []string, []string, []string, error) {
+				return nil, nil, nil, nil, nil, nil, nil, nil
+			},
+		})
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/admin/plugins", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var got pluginAdminResponse
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode pluginAdminResponse: %v", err)
+		}
+		return got, body
+	}
+
+	tests := []struct {
+		name string
+		seed map[string]int // plugin id → ledger rows recorded before the GET
+		want map[string]int // plugin id → expected served failures
+	}{
+		{
+			name: "seeded_rows_surface_under_their_plugin",
+			seed: map[string]int{"alpha": 2, "beta": 1},
+			want: map[string]int{"alpha": 2, "beta": 1, "gamma": 0},
+		},
+		{
+			name: "plugin_with_no_rows_reads_zero",
+			seed: nil,
+			want: map[string]int{"alpha": 0, "beta": 0, "gamma": 0},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, body := rig(t, tc.seed)
+			byID := pluginByID(t, got, []string{"alpha", "beta", "gamma"})
+			for pluginID, want := range tc.want {
+				if byID[pluginID].Failures != want {
+					t.Fatalf("%s failures = %d, want %d", pluginID, byID[pluginID].Failures, want)
+				}
+			}
+			// The field rides the aggregate additively: the loose decode sees
+			// the RAW envelope — every row carries the failures key holding the
+			// served number, in boot order beside the existing fields.
+			var loose struct {
+				Plugins []map[string]any `json:"plugins"`
+			}
+			if err := json.Unmarshal(body, &loose); err != nil {
+				t.Fatalf("decode raw envelope: %v", err)
+			}
+			if len(loose.Plugins) != len(got.Plugins) {
+				t.Fatalf("loose rows = %d, want %d", len(loose.Plugins), len(got.Plugins))
+			}
+			for i, row := range loose.Plugins {
+				raw, ok := row["failures"]
+				if !ok {
+					t.Fatalf("plugins[%d] (%s) carries no failures key — the field must ride the aggregate additively", i, got.Plugins[i].PluginID)
+				}
+				n, isNum := raw.(float64)
+				if !isNum || int(n) != got.Plugins[i].Failures {
+					t.Fatalf("plugins[%d] failures wire = %v, want %d", i, raw, got.Plugins[i].Failures)
+				}
+			}
+		})
+	}
+}

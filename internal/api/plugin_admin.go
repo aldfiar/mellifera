@@ -46,9 +46,10 @@ type pluginAdminEffective struct {
 }
 
 // pluginAdminPlugin is one loaded plugin's row of the GET /admin/plugins
-// aggregate (plugin-admin-surfaces D4): boot-literal identity, the
-// Deps.Status health snapshot when the closure reported the plugin,
-// capability chips, module-scope effective verdicts, and config bindings.
+// aggregate (plugin-admin-surfaces D4, widened per client-relayed-fetch D10):
+// boot-literal identity, the Deps.Status health snapshot when the closure
+// reported the plugin, capability chips, module-scope effective verdicts,
+// config bindings, and the additive per-plugin failure count.
 // UNEXPORTED: the api package-level export budget sits at its cap (see
 // sourceAdminSource) — same-package handlers and tests construct it; cmd
 // builds the pieces through the primitive-typed Deps closures instead of
@@ -61,6 +62,12 @@ type pluginAdminPlugin struct {
 	Health       *PluginHealth         `json:"health,omitempty"`
 	Effective    *pluginAdminEffective `json:"effective,omitempty"`
 	Config       []pluginAdminBinding  `json:"config"`
+	// Failures is the additive per-plugin ledger count (client-relayed-fetch
+	// D10): the enrichment-failures rows CURRENTLY STORED for the plugin —
+	// never a lifetime total (the ledger keeps none). Always on the wire (no
+	// omitempty): a plugin the ledger holds nothing for serves 0, it does not
+	// omit the field.
+	Failures int `json:"failures"`
 }
 
 // pluginAdminResponse is the wire envelope for GET /admin/plugins.
@@ -91,27 +98,31 @@ type pluginConfigBindings struct {
 }
 
 // pluginAdminAggregate is the collected input of one GET /admin/plugins
-// response: the boot-literal inventory, the health snapshot, and the
-// module-scope gate resolution (reused from the sources aggregate) plus the
-// per-plugin config bindings. Collected once by collectPluginAggregate,
-// rendered by renderPlugins — the split keeps both functions inside the
-// funlen budget.
+// response: the boot-literal inventory, the health snapshot, the module-scope
+// gate resolution (reused from the sources aggregate), the per-plugin config
+// bindings, and the failure-ledger counts keyed by plugin id (ONE
+// FailureCountsByPlugin read, client-relayed-fetch D10). Collected once by
+// collectPluginAggregate, rendered by renderPlugins — the split keeps both
+// functions inside the funlen budget.
 type pluginAdminAggregate struct {
-	inventoryIDs []string
-	names        map[string]string
-	descriptions map[string]string
-	healths      map[string]PluginHealth
-	moduleIDs    []string
-	moduleScope  map[string]sourceResolution
-	configs      map[string]pluginConfigBindings
+	inventoryIDs  []string
+	names         map[string]string
+	descriptions  map[string]string
+	healths       map[string]PluginHealth
+	moduleIDs     []string
+	moduleScope   map[string]sourceResolution
+	configs       map[string]pluginConfigBindings
+	failureCounts map[string]int
 }
 
 // adminPlugins: GET /admin/plugins — the read-only loaded-plugin aggregate
 // (plugin-admin-surfaces): Deps.SourceInventory (boot literals) +
 // Deps.Status health + Deps.PluginCapabilities chips + the module-scope gate
 // resolution (the SAME resolution /admin/sources serves, via Deps.ModuleIDs +
-// Deps.ModuleSources) + Deps.PluginConfigs config bindings, one row per
-// loaded plugin in boot order. WRITES NOTHING. Any closure nil → 503;
+// Deps.ModuleSources) + Deps.PluginConfigs config bindings + the
+// Deps.Store.FailureCountsByPlugin per-plugin ledger counts (client-relayed-
+// fetch D10), one row per loaded plugin in boot order. WRITES NOTHING. Any
+// closure nil → 503;
 // closure/store errors → 500 (fail-fast, like every other read here).
 //
 // @Summary     List every loaded plugin with its config and health
@@ -174,9 +185,12 @@ func (a *app) adminPluginLogs(w http.ResponseWriter, r *http.Request) {
 
 // collectPluginAggregate gathers everything one GET /admin/plugins response
 // renders: the boot-literal inventory, the Deps.Status health snapshot, the
-// registry module list, the module-scope gate resolution per module, and the
-// per-plugin config bindings. Read-only: nothing here writes. Error → the
-// caller 500s (fail-fast, like every other read).
+// registry module list, the module-scope gate resolution per module, the
+// per-plugin config bindings, and the failure-ledger counts — ONE
+// FailureCountsByPlugin read over the Deps.Store field (client-relayed-fetch
+// D10; the enrichFailures precedent: the store is already a Deps field, no
+// closure). Read-only: nothing here writes. Error → the caller 500s
+// (fail-fast, like every other read).
 func (a *app) collectPluginAggregate(ctx context.Context) (pluginAdminAggregate, error) {
 	ids, names, descriptions := a.deps.SourceInventory(ctx)
 	healths, err := a.sourceHealths(ctx)
@@ -203,14 +217,19 @@ func (a *app) collectPluginAggregate(ctx context.Context) (pluginAdminAggregate,
 		}
 		configs[id] = bindings
 	}
+	failureCounts, err := a.deps.Store.FailureCountsByPlugin(ctx)
+	if err != nil {
+		return pluginAdminAggregate{}, err
+	}
 	return pluginAdminAggregate{
-		inventoryIDs: ids,
-		names:        names,
-		descriptions: descriptions,
-		healths:      healths,
-		moduleIDs:    moduleIDs,
-		moduleScope:  moduleScope,
-		configs:      configs,
+		inventoryIDs:  ids,
+		names:         names,
+		descriptions:  descriptions,
+		healths:       healths,
+		moduleIDs:     moduleIDs,
+		moduleScope:   moduleScope,
+		configs:       configs,
+		failureCounts: failureCounts,
 	}, nil
 }
 
@@ -236,8 +255,9 @@ func (a *app) pluginConfigs(ctx context.Context, pluginID string) (pluginConfigB
 // renderPlugins builds the response rows in inventory (boot) order: every
 // loaded plugin renders, even one with no module binding, no health report,
 // and no capabilities — the aggregate is the loaded set, not the healthy set.
-// Maps/slices initialize non-nil so an empty block renders {} / [] and never
-// null.
+// The per-plugin failure count rides the same loop (client-relayed-fetch
+// D10): a plugin the collected map holds nothing for serves 0. Maps/slices
+// initialize non-nil so an empty block renders {} / [] and never null.
 func (a *app) renderPlugins(ctx context.Context, agg pluginAdminAggregate) []pluginAdminPlugin {
 	out := make([]pluginAdminPlugin, 0, len(agg.inventoryIDs))
 	for _, id := range agg.inventoryIDs {
@@ -247,6 +267,7 @@ func (a *app) renderPlugins(ctx context.Context, agg pluginAdminAggregate) []plu
 			Description:  agg.descriptions[id],
 			Capabilities: []string{},
 			Config:       []pluginAdminBinding{},
+			Failures:     agg.failureCounts[id], // absent key → 0: no stored ledger rows
 		}
 		if a.deps.PluginCapabilities != nil {
 			if caps, known := a.deps.PluginCapabilities(ctx, id); known && len(caps) > 0 {

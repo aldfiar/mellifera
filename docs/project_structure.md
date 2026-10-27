@@ -876,6 +876,28 @@ async-enrichment, image-enrichment, web-ui, serial-library, media-serving, and
 the playback-progress additions inside web-ui), the gate records in
 `openspec/changes/archive/`, and the full records in git history.
 
+## Layer `client-relayed-fetch` (2026-10-27)
+
+The enrichment fetch executor no longer assumes the server reaches upstreams.
+Every fetch failure classifies into the closed set `network|upstream|protocol|spec`
+(`internal/enrich/fetch.go`); a network-class failure ends the run **deferred** and
+hands the whole request plan (primary + extras, positional) to a durable
+`relay_jobs` queue (`internal/store/relayjobs.go` — the SQL methods; the descriptor
+shapes `PlanSpec`/`RelayJob`/`RelayResult` live in `internal/relay`, the
+exported-symbol-budget vocabulary split). Authenticated clients serve the queue:
+`POST /api/v1/relay/claim` + `POST /api/v1/relay/{id}/result`
+(`internal/api/relay.go`), executed in the browser by the SPA relay loop
+(`web/src/lib/relay.ts` + `relayWorker.ts`, mounted in the authenticated shell —
+15 s poll, idle backoff, 401 stop). Completion clears the `relayed` ledger row and
+wakes the library; three failed relay rounds land terminal `exhausted` (the
+standard doubling schedule). Identify search rides the same transport (≤60 s
+poll). Admin surface: per-plugin `failures` count on `GET /api/v1/admin/plugins`,
+optional `plugin_id`/`limit`/`offset` on `GET /api/v1/enrich/failures`, and the
+`/admin/plugins/{pluginId}/failures` drill-down page. Knobs:
+`MELLIFERA_RELAY_LEASE` (2m claim handout) and `MELLIFERA_RELAY_MAX_BODY` (2 MiB
+result cap). Key-bearing URLs redact everywhere (`redactURLs` in
+`internal/enrich/relay.go` — the one redaction home).
+
 ## Open questions the planner must resolve
 
 From the enhanced objective (nice-to-have unless marked blocking):

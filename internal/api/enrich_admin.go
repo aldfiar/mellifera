@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/mellifera/mellifera/internal/store"
 )
 
 // Sentinel errors the cmd/mellifera Reenrich closure returns (enrichment
@@ -201,24 +203,72 @@ func (a *app) enrichPreview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pv)
 }
 
-// enrichFailures: store.ListFailures → enrichFailuresResponse with
-// best-effort row_kind/title resolved per row (resolveFailureRow). The
-// ledger is read raw — every row renders, including entities gone from both
-// tables as row_kind "gone" (loop-safety rows must stay visible; the spec
-// forbids filtering). No closure: the store is already a Deps field (D-6).
+// enrichFailures: the failure-ledger listing (client-relayed-fetch D10).
+// With NO query parameters the answer is today's verbatim: store.ListFailures,
+// the full unfiltered ledger — every row renders, including entities gone
+// from both tables as row_kind "gone" (loop-safety rows must stay visible;
+// the spec forbids filtering). With any of the OPTIONAL plugin_id/limit/
+// offset params present the read delegates to ListFailuresPage (plugin-
+// scoped, newest-first window; limit default 50 capped 200 store-side) and
+// renders the SAME row shape — the params scope the window, never the
+// contract. Invalid limit/offset numerics → 400 bad_request. No closure: the
+// store is already a Deps field (D-6).
 //
 // @Summary      List the enrichment failure ledger
 // @Tags         admin
 // @ID           enrich-failures
 // @Router       /enrich/failures [get]
+// @Param        plugin_id query string false "scope the listing to one plugin"
+// @Param        limit     query int    false "window size, newest first (default 50, capped at 200)"
+// @Param        offset    query int    false "window offset into the newest-first order"
 // @Success      200 {object} enrichFailuresResponse
+// @Failure      400 {object} errorBody
 // @Failure      500 {object} errorBody
 func (a *app) enrichFailures(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.deps.Store.ListFailures(r.Context())
+	q := r.URL.Query()
+	_, hasLimit := q["limit"]
+	_, hasOffset := q["offset"]
+	pluginID := q.Get("plugin_id")
+	if pluginID == "" && !hasLimit && !hasOffset {
+		rows, err := a.deps.Store.ListFailures(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		a.writeFailureRows(w, r, rows)
+		return
+	}
+	limit := 0 // absent param → the store's default 50
+	if hasLimit {
+		n, err := strconv.Atoi(q.Get("limit"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "limit must be an integer", false)
+			return
+		}
+		limit = n
+	}
+	offset := 0
+	if hasOffset {
+		n, err := strconv.Atoi(q.Get("offset"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "offset must be an integer", false)
+			return
+		}
+		offset = n
+	}
+	rows, err := a.deps.Store.ListFailuresPage(r.Context(), pluginID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
+	a.writeFailureRows(w, r, rows)
+}
+
+// writeFailureRows renders ledger rows as enrichFailuresResponse — the DTO
+// loop shared by both enrichFailures read paths (best-effort row_kind/title
+// resolved per row via resolveFailureRow). One renderer for the untouched
+// no-params path and the paged path keeps the wire shape byte-identical.
+func (a *app) writeFailureRows(w http.ResponseWriter, r *http.Request, rows []store.FailureRow) {
 	out := make([]enrichFailureDTO, 0, len(rows))
 	for _, fr := range rows {
 		kind, title, err := a.resolveFailureRow(r.Context(), fr.ItemID)

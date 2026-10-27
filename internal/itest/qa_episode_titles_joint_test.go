@@ -59,8 +59,8 @@ import (
 const (
 	qaEpDir   = "Space Odyssey S01"
 	qaEpTitle = "Space Odyssey" // the shared grammar's season cut of the dir
-	qaEpIDa   = 4301             // the organic search's anime (anchor source)
-	qaEpIDb   = 4302             // the identify pick — absent from every search list
+	qaEpIDa   = 4301            // the organic search's anime (anchor source)
+	qaEpIDb   = 4302            // the identify pick — absent from every search list
 
 	qaEpRelE1 = qaEpDir + "/Space Odyssey S01E01.mkv" // season 1 episode 1 — routed
 	qaEpRelE2 = qaEpDir + "/Space Odyssey S01E02.mkv" // season 1 episode 2 — routed
