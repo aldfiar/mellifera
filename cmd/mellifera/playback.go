@@ -79,8 +79,8 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 // testable without package main.
 func newSweep(st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, budgetBytes int64, optInCodecs bool) func(context.Context) {
 	return func(ctx context.Context) {
-		sweepFrontier(ctx, st, enqueue, optInCodecs)
-		sweepBudget(ctx, st, root, budgetBytes)
+		fronted := sweepFrontier(ctx, st, enqueue, optInCodecs)
+		sweepBudget(ctx, st, root, budgetBytes, fronted)
 		sweepIntegrity(ctx, st, root, validate, enqueue)
 	}
 }
@@ -88,11 +88,16 @@ func newSweep(st *store.Store, root string, validate func(itemID, nonce string) 
 // sweepFrontier builds the frontier's input snapshot from the store — every
 // library's serials with their gate, the watched set, the cooldown map —
 // and executes the returned jobs through the streams lane's enqueue seam.
-func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) error, optInCodecs bool) {
+// It returns the fronted item-ID set — the frontier's WORKING SET, wanted
+// built whether or not this pass could enqueue it (a queue-full defer is
+// still fronted) — which the budget sweep pins against eviction (see
+// Evictions): the set of things the frontier will (re)pack must not be its
+// own recurring eviction victim.
+func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) error, optInCodecs bool) map[string]bool {
 	libs, err := st.ListLibraries(ctx)
 	if err != nil {
 		slog.Warn("orchestrator: list libraries failed", "error", err)
-		return
+		return nil
 	}
 	cool := streamCooldowns(ctx, st)
 	watched, _ := watchState(ctx, st)
@@ -119,7 +124,10 @@ func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) er
 			})
 		}
 	}
-	for _, job := range orchestrator.Frontier(in) {
+	jobs := orchestrator.Frontier(in)
+	fronted := make(map[string]bool, len(jobs))
+	for _, job := range jobs {
+		fronted[job.ItemID] = true
 		if err := enqueue(job.ItemID); err != nil {
 			slog.Warn("orchestrator: enqueue failed", "item", job.ItemID, "reason", job.Reason, "error", err)
 			continue
@@ -127,14 +135,18 @@ func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) er
 		slog.Info("orchestrator: fronted packaging", "item", job.ItemID,
 			"library", job.LibraryID, "reason", job.Reason)
 	}
+	return fronted
 }
 
 // sweepBudget walks the artifact root into the disk-truth snapshot (build
 // dirs under <itemID>/<nonce>, orphans included — a directory whose item row
-// is gone or deleted) and executes the returned evictions. An unreadable
-// store read marks the item live (never evict blind); a missing root means
-// nothing was ever packaged.
-func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes int64) {
+// is gone or deleted) and executes the returned evictions. fronted is the
+// frontier's working set (sweepFrontier's return) — pinned against eviction;
+// if the budget cannot be met without evicting pinned builds, that is the
+// operator signal that the budget sits below the working set, logged loudly.
+// An unreadable store read marks the item live (never evict blind); a
+// missing root means nothing was ever packaged.
+func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes int64, fronted map[string]bool) {
 	if budgetBytes <= 0 {
 		return // the cap is off — do not even walk the disk
 	}
@@ -165,7 +177,18 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 			})
 		}
 	}
-	for _, path := range orchestrator.Evictions(dirs, watched, budgetBytes) {
+	owner := make(map[string]string, len(dirs)) // path → item id, for the pinned-eviction warning
+	for _, d := range dirs {
+		owner[d.Path] = d.ItemID
+	}
+	for _, path := range orchestrator.Evictions(dirs, watched, fronted, budgetBytes) {
+		if id := owner[path]; fronted[id] {
+			// The budget could not be met from non-fronted artifacts alone:
+			// the frontier will repack this and evict it again — the churn
+			// the pin exists to break. Loud and rare: the operator's signal
+			// to raise MELLIFERA_ORCH_BUDGET_GB above the working set.
+			slog.Warn("orchestrator: budget below frontier working set — evicting a fronted build", "item", id, "path", path)
+		}
 		evictDir(path)
 	}
 }

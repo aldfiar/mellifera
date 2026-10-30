@@ -28,12 +28,20 @@ type ArtifactDir struct {
 // included); eviction is least-recently-watched first — the playback-progress
 // recency the caller passes in, with never-watched items and orphans
 // (orphans absolutely first at equal recency — pure waste) at the tail of
-// the recency order. budgetBytes <= 0 disables the cap (the locked `0` =
-// off knob); within budget, nothing is evicted. The result is the ordered
-// list of directory paths to move aside and delete — deterministic (recency,
-// then orphan-first, then path), non-nil, and NEVER an original: only
-// artifact directories are judged here.
-func Evictions(dirs []ArtifactDir, watched map[string]time.Time, budgetBytes int64) []string {
+// the recency order — EXCEPT the frontier's working set: items in the
+// fronted set are evicted LAST, after every non-fronted artifact, whatever
+// their recency. A frontier build (a pilot, the next-after-watched episode)
+// is never-watched by construction, so a plain recency order would keep
+// reaping exactly what the frontier keeps (re)packing — the evict→repack
+// churn loop; pinning the working set breaks it. Fronted items do fall to
+// eviction when the budget cannot be met from the rest alone (the caller
+// warns — the budget is below the working set). budgetBytes <= 0 disables
+// the cap (the locked `0` = off knob); within budget, nothing is evicted.
+// The result is the ordered list of directory paths to move aside and
+// delete — deterministic (non-fronted, then recency, then orphan-first,
+// then path), non-nil, and NEVER an original: only artifact directories
+// are judged here.
+func Evictions(dirs []ArtifactDir, watched map[string]time.Time, fronted map[string]bool, budgetBytes int64) []string {
 	if budgetBytes <= 0 {
 		return nil // the cap is off — accounting never evicts
 	}
@@ -48,6 +56,9 @@ func Evictions(dirs []ArtifactDir, watched map[string]time.Time, budgetBytes int
 	copy(ordered, dirs)
 	sort.Slice(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
+		if fa, fb := fronted[a.ItemID], fronted[b.ItemID]; fa != fb {
+			return !fa // the frontier's working set is evicted last (churn break)
+		}
 		ta, tb := recency(a, watched), recency(b, watched)
 		if !ta.Equal(tb) {
 			return ta.Before(tb) // least-recently-watched first

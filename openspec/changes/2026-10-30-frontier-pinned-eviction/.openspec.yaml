@@ -1,0 +1,6 @@
+schema: lite
+created: 2026-10-30
+goal: Break the evict→repack churn loop — the frontier's working set (pilots,
+  next-after-watched) is pinned against budget eviction and outlives stale
+  watched artifacts; fronted builds fall to eviction only when the budget
+  cannot be met from the rest, with a loud operator WARN.

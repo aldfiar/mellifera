@@ -27,6 +27,7 @@ func TestBudgetEviction(t *testing.T) {
 		name        string
 		dirs        []ArtifactDir
 		watched     map[string]time.Time
+		fronted     map[string]bool
 		budgetBytes int64
 		want        []string // nil asserts NO evictions
 	}{
@@ -105,11 +106,56 @@ func TestBudgetEviction(t *testing.T) {
 			budgetBytes: 32 * gb,
 			want:        []string{"/r/a/n1"},
 		},
+		{
+			// The churn break: a fronted build is never-watched by
+			// construction (a pilot, next-after-watched) — under a plain
+			// recency order it would ALWAYS be the victim while the
+			// frontier keeps repacking it. The pin evicts the stale
+			// watched artifact first, fronted last.
+			name: "fronted_never_watched_outlives_stale_watched",
+			dirs: library(
+				ArtifactDir{Path: "/r/front/n1", ItemID: "front", Bytes: 20 * gb, Live: true},
+				ArtifactDir{Path: "/r/stale/n1", ItemID: "stale", Bytes: 20 * gb, Live: true},
+			),
+			watched:     map[string]time.Time{"stale": mid}, // front never watched
+			fronted:     map[string]bool{"front": true},
+			budgetBytes: 32 * gb,
+			want:        []string{"/r/stale/n1"},
+		},
+		{
+			// Orphans are still waste-first even with a frontier present:
+			// reaping the orphan alone lands within budget, the pinned
+			// build stays, nothing live is touched.
+			name: "fronted_pin_does_not_shield_orphans",
+			dirs: library(
+				ArtifactDir{Path: "/r/front/n1", ItemID: "front", Bytes: 20 * gb, Live: true},
+				ArtifactDir{Path: "/r/dead/n1", ItemID: "dead", Bytes: 4 * gb, Live: false},
+			),
+			watched:     map[string]time.Time{},
+			fronted:     map[string]bool{"front": true},
+			budgetBytes: 22 * gb, // over budget (24) — reaping the orphan lands within it
+			want:        []string{"/r/dead/n1"},
+		},
+		{
+			// Budget below the working set: fronted items DO fall to
+			// eviction — last, in their own recency order — so the cap
+			// still bounds the disk. The caller warns in this case.
+			name: "fronted_falls_last_when_budget_unreachable",
+			dirs: library(
+				ArtifactDir{Path: "/r/f1/n1", ItemID: "f1", Bytes: 20 * gb, Live: true},
+				ArtifactDir{Path: "/r/f2/n1", ItemID: "f2", Bytes: 20 * gb, Live: true},
+				ArtifactDir{Path: "/r/old/n1", ItemID: "old", Bytes: 20 * gb, Live: true},
+			),
+			watched:     map[string]time.Time{"old": mid},
+			fronted:     map[string]bool{"f1": true, "f2": true},
+			budgetBytes: 32 * gb,
+			want:        []string{"/r/old/n1", "/r/f1/n1"}, // non-fronted first, then fronted by path
+		},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := Evictions(tc.dirs, tc.watched, tc.budgetBytes)
+			got := Evictions(tc.dirs, tc.watched, tc.fronted, tc.budgetBytes)
 			if len(got) != len(tc.want) {
 				t.Fatalf("Evictions() = %v, want %v", got, tc.want)
 			}
@@ -126,10 +172,10 @@ func TestBudgetEviction(t *testing.T) {
 // an off cap and an empty artifact root both yield an empty (never nil)
 // result... except the off knob, which short-circuits nil by contract.
 func TestEvictionsEmptyRoot(t *testing.T) {
-	if got := Evictions(nil, nil, 32<<30); len(got) != 0 {
+	if got := Evictions(nil, nil, nil, 32<<30); len(got) != 0 {
 		t.Fatalf("Evictions(nil) = %v, want empty", got)
 	}
-	if got := Evictions(nil, nil, 0); got != nil {
+	if got := Evictions(nil, nil, nil, 0); got != nil {
 		t.Fatalf("Evictions(nil, budget 0) = %v, want nil", got)
 	}
 }
