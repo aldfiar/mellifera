@@ -4,7 +4,9 @@
 package orchestrator
 
 import (
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -21,6 +23,15 @@ type ArtifactDir struct {
 	Bytes  int64
 	Live   bool
 }
+
+// inFlightPrefix marks an artifact directory a pack worker is writing RIGHT
+// NOW (the streams lane packs into `.tmp-<nonce>` and renames on completion).
+// In-flight builds are accounted (their bytes are on disk) but NEVER eviction
+// candidates: deleting one mid-run kills ffmpeg (exit 254 / missing
+// index.m3u8) and the terminal pack_failed poisons the item for a 30-day
+// cooldown — transient budget pressure must not convert itself into
+// per-item playback outages.
+const inFlightPrefix = ".tmp-"
 
 // Evictions decides the budget-capped artifact set (D-9; spec
 // "Budget-capped artifacts"). Accounting reads the passed disk truth as
@@ -72,6 +83,9 @@ func Evictions(dirs []ArtifactDir, watched map[string]time.Time, fronted map[str
 	for _, d := range ordered {
 		if total <= budgetBytes {
 			break
+		}
+		if strings.HasPrefix(filepath.Base(d.Path), inFlightPrefix) {
+			continue // in-flight build: its bytes are accounted, its life is not ours to take
 		}
 		evicted = append(evicted, d.Path)
 		total -= d.Bytes

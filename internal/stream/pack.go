@@ -361,7 +361,7 @@ func (s *Service) runFFmpeg(ctx context.Context, args []string) error {
 		if errors.Is(pctx.Err(), context.DeadlineExceeded) {
 			return fmt.Errorf("stream: ffmpeg timed out after %s", s.PackTimeout)
 		}
-		return fmt.Errorf("stream: ffmpeg failed: %w: %s", err, truncate(out, 512))
+		return fmt.Errorf("stream: ffmpeg failed: %w: %s", err, truncateTail(out, 512))
 	}
 	return nil
 }
@@ -493,6 +493,18 @@ func truncate(b []byte, n int) string {
 	s := string(bytes.TrimSpace(b))
 	if len(s) > n {
 		s = s[:n]
+	}
+	return s
+}
+
+// truncateTail caps captured ffmpeg output keeping the END — ffmpeg prints
+// its version banner first and the actual error line last, so a head-cut
+// stores the banner and discards the diagnosis (the 2026-10-31 postmortem's
+// F4: 27 identical useless ledger reasons).
+func truncateTail(b []byte, n int) string {
+	s := string(bytes.TrimSpace(b))
+	if len(s) > n {
+		s = s[len(s)-n:]
 	}
 	return s
 }

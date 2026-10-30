@@ -124,10 +124,8 @@ func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) er
 			})
 		}
 	}
-	jobs := orchestrator.Frontier(in)
-	fronted := make(map[string]bool, len(jobs))
+	jobs, fronted := orchestrator.Frontier(in)
 	for _, job := range jobs {
-		fronted[job.ItemID] = true
 		if err := enqueue(job.ItemID); err != nil {
 			slog.Warn("orchestrator: enqueue failed", "item", job.ItemID, "reason", job.Reason, "error", err)
 			continue

@@ -10,10 +10,16 @@ as the truth — including directories orphaned by moved or deleted library
 files — and eviction SHALL be least-recently-watched first (by playback
 progress recency), moving the artifact aside before deleting it, EXCEPT that
 artifacts of currently-frontier items (the working set the frontier keeps
-packing: pilots and next-after-watched episodes) SHALL be evicted only after
+packing: pilots and next-after-watched episodes, pinned on every tick whether
+or not the frontier emits a job for them — packaged and cooling frontier
+positions stay in the working set) SHALL be evicted only after
 every non-fronted artifact; frontier items SHALL fall to eviction in the same
 least-recently-watched order when the budget cannot be met from non-fronted
-artifacts alone. A successful eviction of an item's published build (state
+artifacts alone. Eviction SHALL count in-flight builds (staged under their
+`.tmp-` prefix) toward the budget but SHALL never select an in-flight build
+for eviction; transient in-flight pressure SHALL be resolved from published
+non-fronted artifacts, and if nothing evictable remains the budget SHALL be
+allowed to run over until the build completes. A successful eviction of an item's published build (state
 complete, matching nonce) SHALL reset the item's stored streams state to
 `none` — eviction is a policy act, not corruption, so the integrity sweep
 SHALL NOT see a complete build whose directory is gone. Originals SHALL
@@ -33,3 +39,13 @@ never be evicted.
 
 - **WHEN** a budget eviction removes an item's artifact directory that is the item's published build (stored streams state complete with a matching nonce)
 - **THEN** the item's stored streams state is reset to `none` (the direct floor serves it; pack-on-play may re-pack on demand) and the integrity sweep does not enqueue a repack for it
+
+#### Scenario: Working set holds through non-job ticks
+
+- **WHEN** a fronted item's packaging has completed (or the item sits in failure cooldown) so the frontier emits no job for it on a tick, and the budget is exceeded on that same tick
+- **THEN** the item still counts as fronted for eviction — its fresh, never-watched build is not evicted while any non-fronted artifact remains
+
+#### Scenario: In-flight builds survive budget pressure
+
+- **WHEN** the budget is exceeded while an item's build is still being written under its in-flight `.tmp-` staging directory
+- **THEN** accounting counts the in-flight directory's bytes but eviction removes only published non-fronted artifacts, and if none remain the budget stays exceeded until the build completes rather than killing the in-flight build

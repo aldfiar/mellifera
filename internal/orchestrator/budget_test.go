@@ -179,3 +179,35 @@ func TestEvictionsEmptyRoot(t *testing.T) {
 		t.Fatalf("Evictions(nil, budget 0) = %v, want nil", got)
 	}
 }
+
+// TestBudgetInFlightNeverEvicted pins the pack-survival contract
+// (postmortem 2026-10-31, F2): a `.tmp-` build directory a pack worker is
+// writing RIGHT NOW is accounted (its bytes count against the budget) but is
+// never an eviction candidate — deleting one mid-run converts transient
+// budget pressure into a terminal pack_failed and a 30-day cooldown.
+func TestBudgetInFlightNeverEvicted(t *testing.T) {
+	gb := int64(1) << 30
+	recent := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
+	dirs := []ArtifactDir{
+		{Path: "/r/itm/.tmp-inflight", ItemID: "itm", Bytes: 30 * gb, Live: true},
+		{Path: "/r/itm/nonce1", ItemID: "itm", Bytes: 10 * gb, Live: true},
+		{Path: "/r/other/nonce2", ItemID: "other", Bytes: 10 * gb, Live: true},
+	}
+	watched := map[string]time.Time{"itm": recent, "other": recent}
+
+	// 50 GiB on disk, 40 GiB budget, and the largest never-watched dir is the
+	// in-flight one: it must survive; the sweep still meets the budget.
+	got := Evictions(dirs, watched, nil, 40*gb)
+	want := []string{"/r/itm/nonce1"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("Evictions() = %v, want %v (in-flight .tmp- never evicted)", got, want)
+	}
+
+	// Over budget with ONLY an in-flight build available: nothing is evicted —
+	// pressure waits for the pack to land (or fail) on its own.
+	got = Evictions([]ArtifactDir{{Path: "/r/itm/.tmp-x", ItemID: "itm", Bytes: 50 * gb, Live: true}},
+		watched, nil, 40*gb)
+	if len(got) != 0 {
+		t.Fatalf("Evictions() = %v, want none (only an in-flight build exists)", got)
+	}
+}

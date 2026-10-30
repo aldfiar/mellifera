@@ -62,10 +62,18 @@ type Job struct {
 // already packaged, outside its failure cooldown). A streams-disabled
 // library is skipped at the gate; a never-pre-warmed movie library is
 // absent from the input by construction (movies pack on play — OnPlay).
-// The result is deterministic: serials in input order, one job per serial
-// at most, empty slice never nil.
-func Frontier(in FrontierIn) []Job {
+//
+// It returns the eligible jobs AND the WORKING SET — the frontier-position
+// item of every gated, not-fully-watched serial, whether or not a job was
+// emitted for it this pass. The working set is the budget sweep's eviction
+// pin: a position item that is packaged (or cooling) emits no job today but
+// WILL be the frontier's next repack after any eviction — pinning only the
+// job-emitting ticks is the evict→repack churn loop (the set empties exactly
+// when fresh builds exist to protect). The result is deterministic: serials
+// in input order, one job per serial at most, empty slice never nil.
+func Frontier(in FrontierIn) ([]Job, map[string]bool) {
 	jobs := make([]Job, 0)
+	fronted := make(map[string]bool)
 	for _, sr := range in.Serials {
 		if !sr.StreamsEnabled || len(sr.Episodes) == 0 {
 			continue // gate: disabled library (or empty serial) — nothing fronts
@@ -84,12 +92,13 @@ func Frontier(in FrontierIn) []Job {
 			reason = reasonNext
 		}
 		cand := sr.Episodes[last+1] // pilot (last<0) or K+1-after-watched
+		fronted[cand.ItemID] = true // the working set: pinned whether or not eligible
 		if !eligible(cand, in.Now) {
 			continue
 		}
 		jobs = append(jobs, Job{ItemID: cand.ItemID, LibraryID: sr.LibraryID, Reason: reason})
 	}
-	return jobs
+	return jobs, fronted
 }
 
 // OnPlay is the pack-on-play decision (D-8; the movie half of the frontier
