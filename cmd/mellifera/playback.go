@@ -189,24 +189,66 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 			// to raise MELLIFERA_ORCH_BUDGET_GB above the working set.
 			slog.Warn("orchestrator: budget below frontier working set — evicting a fronted build", "item", id, "path", path)
 		}
-		evictDir(path)
+		if evictDir(path) {
+			resetStreamsState(ctx, st, owner[path], filepath.Base(path))
+		}
 	}
 }
 
 // evictDir moves one artifact directory aside (the .trash sibling — a client
 // mid-fetch never sees a half-deleted tree) and then deletes it. Best-effort:
-// a failed move leaves the artifact for the next sweep.
-func evictDir(path string) {
+// a failed move leaves the artifact for the next sweep. It reports whether the
+// directory is gone — the caller's cue to unpublish the build record.
+func evictDir(path string) bool {
 	trash := path + ".trash"
 	if err := os.Rename(path, trash); err != nil {
 		slog.Warn("orchestrator: eviction move failed", "path", path, "error", err)
-		return
+		return false
 	}
 	if err := os.RemoveAll(trash); err != nil {
 		slog.Warn("orchestrator: trash removal failed", "path", trash, "error", err)
-		return
+		return false
 	}
 	slog.Info("orchestrator: evicted artifact directory", "path", path)
+	return true
+}
+
+// resetStreamsState unpublishes the item's build record after a budget
+// eviction took its directory: eviction is a policy act, not corruption, so
+// the record must not keep advertising a complete build the disk no longer
+// has — the integrity sweep would heal it straight back into the lane and
+// the budget sweep would evict it again (the evict→repack loop). The write
+// follows the lane's persistStreams pattern (Interfaces §1): a fresh row
+// reload, replace only doc["streams"], PutItem — never a blind overwrite of
+// the row. Only the published build's own nonce is reset: a stale-nonce
+// directory is not the build the record points at. Best-effort, like the
+// sweep itself: a failed write leaves the loop in place for one more pass —
+// the next eviction of the same item retries the unpublish.
+func resetStreamsState(ctx context.Context, st *store.Store, itemID, nonce string) {
+	row, err := st.GetItem(ctx, itemID)
+	if err != nil {
+		return // orphaned or unreadable: nothing published to unpublish
+	}
+	doc := decodeItemDoc(row.Document)
+	streams, _ := doc["streams"].(map[string]any)
+	if state, _ := streams["state"].(string); state != stream.StateComplete {
+		return // partial belongs to the floor guard, failed to the cooldown
+	}
+	if cur, _ := streams["nonce"].(string); cur != nonce {
+		return // the evicted directory was a stale nonce, not the published build
+	}
+	doc["streams"] = map[string]any{"state": stream.StateNone}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		slog.Warn("orchestrator: eviction unpublish marshal failed", "item", itemID, "error", err)
+		return
+	}
+	row.Document = b
+	if err := st.PutItem(ctx, row); err != nil {
+		slog.Warn("orchestrator: eviction unpublish write failed", "item", itemID, "error", err)
+		return
+	}
+	slog.Info("orchestrator: evicted build unpublished", "item", itemID)
 }
 
 // sweepIntegrity walks the artifact root like sweepBudget (item dirs, live

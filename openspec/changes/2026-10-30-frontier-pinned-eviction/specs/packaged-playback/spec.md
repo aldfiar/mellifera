@@ -13,7 +13,11 @@ artifacts of currently-frontier items (the working set the frontier keeps
 packing: pilots and next-after-watched episodes) SHALL be evicted only after
 every non-fronted artifact; frontier items SHALL fall to eviction in the same
 least-recently-watched order when the budget cannot be met from non-fronted
-artifacts alone. Originals SHALL never be evicted.
+artifacts alone. A successful eviction of an item's published build (state
+complete, matching nonce) SHALL reset the item's stored streams state to
+`none` — eviction is a policy act, not corruption, so the integrity sweep
+SHALL NOT see a complete build whose directory is gone. Originals SHALL
+never be evicted.
 
 #### Scenario: Over-budget eviction reaps least-recently-watched and orphans
 
@@ -24,3 +28,8 @@ artifacts alone. Originals SHALL never be evicted.
 
 - **WHEN** artifact directories on disk exceed the budget, one belonging to a currently-frontier item (never watched — a pilot or next-after-watched episode) and one belonging to an item watched longer ago, and both are non-fronted-or-fronted respectively
 - **THEN** eviction removes the stale watched artifact first, and the fronted build only if the budget still cannot be met after every non-fronted artifact is gone — and the sweep logs the fronted eviction as the operator signal that the budget sits below the working set
+
+#### Scenario: Eviction unpublishes the build record
+
+- **WHEN** a budget eviction removes an item's artifact directory that is the item's published build (stored streams state complete with a matching nonce)
+- **THEN** the item's stored streams state is reset to `none` (the direct floor serves it; pack-on-play may re-pack on demand) and the integrity sweep does not enqueue a repack for it

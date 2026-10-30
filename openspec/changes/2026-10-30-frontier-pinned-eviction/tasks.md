@@ -13,3 +13,7 @@
 ## ops - operator surface
 
 - [ ] 3.1 docs/operator-runbook.md: `MELLIFERA_ORCH_BUDGET_GB` note — the frontier working set is pinned; the WARN means the budget sits below it, raise it
+
+## unpublish - eviction is policy, not corruption
+
+- [ ] 4.1 cmd/mellifera: `evictDir` reports success; on success `sweepBudget` resets the item's stored streams namespace to `state=none` when the evicted directory is the published build (fresh row reload, replace only `doc["streams"]`, PutItem — the persistStreams pattern; stale-nonce directories and partial/failed states are left alone)

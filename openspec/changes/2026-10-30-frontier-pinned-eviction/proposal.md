@@ -30,6 +30,13 @@ Only the policy lacks it.
 - `sweepFrontier` returns the fronted item-ID set (jobs the frontier wants
   built, whether or not this pass could enqueue them — a queue-full defer
   is still fronted), and `newSweep` hands it to `sweepBudget`.
+- A successful eviction also unpublishes the build record: `sweepBudget`
+  resets the item's `doc["streams"]` to `state=none` when the evicted
+  directory is the published build (state complete, nonce match). Without
+  it the integrity sweep sees state=complete against a gone directory,
+  judges it corruption, and repacks — a second, independent evict→repack
+  engine that frontier pinning cannot touch (observed on alatoic 2026-10-30:
+  non-fronted items cycling evict→repack every tick with no WARN).
 - Orphan reaping, the `0` = off knob, the within-budget no-op, and
   deterministic ordering are unchanged; existing eviction behavior for a
   nil/empty fronted set is byte-identical to before.
