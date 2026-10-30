@@ -14,6 +14,7 @@ lessons for future work. Update it when a fix lands or a new finding appears.
 | `8d2694b` | unpublish build record on budget eviction | integrity sweep no longer repacks evicted-but-complete items |
 | `1148e5c` | request log middleware (1 INFO line/request, no query strings) | made the TV attempt visible server-side |
 | (next) | frontier working set pinned every tick; in-flight `.tmp-*` never evicted; ffmpeg reason keeps stderr tail | F2+F3+F4 fixed; openspec delta extended; ledger cleanup is manual ops |
+| `950665b` | = the row above (this commit) | deployed to alatoic 2026-10-31 02:12 MSK |
 
 ## Findings
 
@@ -107,13 +108,34 @@ lessons for future work. Update it when a fix lands or a new finding appears.
 3. **F4** — ffmpeg failure reason now keeps the TAIL of stderr (the actual
    error line), not the head (banner).
 
-## One-time server remediation (alatoic)
+## One-time server remediation (alatoic) — DONE 2026-10-31
 
 - Clear poisoned ledger rows: `DELETE FROM enrichment_failures WHERE
-  plugin_id='__streams__' AND status='pack_failed';` (27 items, incl. the TV
-  episode) — done with the container stopped, then restart. Items re-enter
-  normal frontier/pack-on-play eligibility.
-- Remove orphan `.tmp-*` crumbs under `~/mellifera/streams/itm_2_*`.
+  plugin_id='__streams__' AND status='pack_failed';` — **done**: 28 rows
+  deleted (27 + one fresh from the 01:27 TV retry). DB is root-owned
+  (container writes it) and the box has no passwordless sudo — the write was
+  made as root via `docker run --rm --privileged --pid=host --entrypoint
+  nsenter mellifera:local -t 1 -m -u -i -- env HOME=/home/darthmantis
+  /usr/bin/python3 /tmp/unpoison_ledger.py` with the container stopped.
+  Backup kept: `~/mellifera/mellifera.db.bak-20261030-225306`.
+- Budget raised `MELLIFERA_ORCH_BUDGET_GB` 40 → **60** (inline in
+  `~/mellifera/docker-compose.yml`, NOT `~/.env`): the un-poisoned working set
+  is 28 frontier items ≈ 59 GiB of builds — at 40 (and 50) the sweep evicted
+  fresh fronted builds with the new `budget below frontier working set` WARN,
+  which is exactly the operator signal to raise it. At 60 the churn stops.
+- Deployed `950665b`; post-cleanup boot-storm (~28 eligible items vs a
+  4-worker/64-buffer queue) drained in ~15 min.
+- **Verified end state**: `itm_4_4abdae6f23167012` descriptor `mode=hls
+  state=complete`; master playlist 200 with audio rendition group, variant
+  `rend0` 287 segments, `init_0.mp4` contains `avcC` (H.264) — YaBrowser/MSE
+  compatible. No eviction lines after the budget raise.
+- Late observation (benign, open): for a few ticks after a pack lands, the
+  frontier still offers the already-packaged item (stale input snapshot from
+  boot); the queue rejects it (`enqueue failed ... buffer full`). Harmless —
+  no duplicate pack — but the WARN noise misleads; refresh the sweep input
+  per tick or check packaged state at enqueue time.
+- Remove orphan `.tmp-*` crumbs under `~/mellifera/streams/itm_2_*` (TODO,
+  cosmetic ~10MB).
 - Watch for the churn signature (`fronted packaging` for the same item ID
   more than once) after deploy — request/orchestrator logs now make it visible.
 
