@@ -583,7 +583,7 @@ func main() {
 	// SPA + Swagger surface (INV-single-handler — no second http.Server).
 	// DevMode loosens the cache headers for the Vite dev proxy
 	// (MELLIFERA_WEB_DEV).
-	handler := web.Handler(apiHandler, web.Options{DevMode: cfg.webDev, Media: mediaSvc})
+	handler := requestLog(web.Handler(apiHandler, web.Options{DevMode: cfg.webDev, Media: mediaSvc}))
 
 	srv := &http.Server{
 		Addr:              cfg.listenAddr,
