@@ -156,7 +156,7 @@ func (q *Queue) Start(ctx context.Context) error {
 	if !q.running.CompareAndSwap(false, true) {
 		return errAlreadyStarted
 	}
-	q.work = make(chan laneTask, q.cfg.Workers*4) // bounded buffer: backpressure on slow drains
+	q.work = make(chan laneTask, q.cfg.Workers*16) // bounded buffer: backpressure on slow drains — wide enough to absorb a pack storm (the sweep's frontier burst after a fresh library or an opt-in codec flip) without starving metadata dispatch
 	ctx, q.cancel = context.WithCancel(ctx)
 	q.leases = newLeaseMap()
 	q.seedLibs(ctx) // fresh-boot fix (enrichment D-8): sweep libraries persisted by a previous process

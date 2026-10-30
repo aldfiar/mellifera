@@ -57,7 +57,13 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 		return false, nil // direct floor serves it — never pre-warm (D-8)
 	}
 	if err := enqueue(row.ID); err != nil {
-		return false, err
+		// A momentarily full (or stopped) queue must never break the play
+		// itself: fall back to the direct floor (queued=false, no 202) and
+		// let the next sweep tick — or the user's retry — re-attempt the
+		// pack. The enqueue seam's contract: an error here is transient
+		// backpressure, not a play-blocking condition.
+		slog.Warn("orchestrator: pack-on-play enqueue deferred", "item", row.ID, "error", err)
+		return false, nil
 	}
 	slog.Info("orchestrator: pack-on-play", "item", row.ID)
 	return true, nil
