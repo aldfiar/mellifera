@@ -42,20 +42,17 @@ const (
 	// clock and the watched set over at most this many most-recent rows —
 	// far beyond any realistic continue-watching surface.
 	watchScanLimit = 10_000
-
-	// optInCodecs is the opt-in codec knob at its locked default (D-2): off.
-	// Classify folds it in, so opt-in codecs read direct_only until a knob
-	// surface ships.
-	optInCodecs = false
 )
 
 // packOnPlay executes the pack-on-play decision (D-8) for POST /play: the
 // played item is enqueued into the streams lane exactly when the policy says
 // so (packable, nothing published yet, outside its failure cooldown); the
 // direct floor serves everything else. queued reports the enqueue so the
-// play verb can answer 202.
-func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error, row store.Item) (bool, error) {
-	ep := episodeFromDoc(row.ID, decodeItemDoc(row.Document), streamCooldowns(ctx, st))
+// play verb can answer 202. optInCodecs is the opt-in codec knob (D-2's env
+// surface — MELLIFERA_STREAM_OPT_IN_CODECS, default off): HEVC/AC-3 items
+// are packable only while it is enabled.
+func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error, row store.Item, optInCodecs bool) (bool, error) {
+	ep := episodeFromDoc(row.ID, decodeItemDoc(row.Document), streamCooldowns(ctx, st), optInCodecs)
 	if !orchestrator.OnPlay(ep, time.Now()) {
 		return false, nil // direct floor serves it — never pre-warm (D-8)
 	}
@@ -74,9 +71,9 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 // next tick retries. validate is the wired stream.Service.ValidateBuild,
 // injected as a func (the enqueue seam's pattern) so the sweep stays
 // testable without package main.
-func newSweep(st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, budgetBytes int64) func(context.Context) {
+func newSweep(st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, budgetBytes int64, optInCodecs bool) func(context.Context) {
 	return func(ctx context.Context) {
-		sweepFrontier(ctx, st, enqueue)
+		sweepFrontier(ctx, st, enqueue, optInCodecs)
 		sweepBudget(ctx, st, root, budgetBytes)
 		sweepIntegrity(ctx, st, root, validate, enqueue)
 	}
@@ -85,7 +82,7 @@ func newSweep(st *store.Store, root string, validate func(itemID, nonce string) 
 // sweepFrontier builds the frontier's input snapshot from the store — every
 // library's serials with their gate, the watched set, the cooldown map —
 // and executes the returned jobs through the streams lane's enqueue seam.
-func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) error) {
+func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) error, optInCodecs bool) {
 	libs, err := st.ListLibraries(ctx)
 	if err != nil {
 		slog.Warn("orchestrator: list libraries failed", "error", err)
@@ -108,7 +105,7 @@ func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) er
 			}
 			eps := make([]orchestrator.Episode, 0, len(items))
 			for _, it := range items {
-				eps = append(eps, episodeFromDoc(it.ID, decodeItemDoc(it.Document), cool))
+				eps = append(eps, episodeFromDoc(it.ID, decodeItemDoc(it.Document), cool, optInCodecs))
 			}
 			// The gate rides the row — the policy owns the skip (one judge).
 			in.Serials = append(in.Serials, orchestrator.Serial{
@@ -231,10 +228,10 @@ func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate 
 }
 
 // episodeFromDoc projects one item document into the orchestrator's narrow
-// Episode input: the classification gate (with the opt-in knob folded at its
-// default), the published-build state (partial or complete = already
-// packaged), and the pack_failed cooldown deadline (zero when none).
-func episodeFromDoc(itemID string, doc map[string]any, cool map[string]time.Time) orchestrator.Episode {
+// Episode input: the classification gate (with the opt-in codec knob folded
+// in), the published-build state (partial or complete = already packaged),
+// and the pack_failed cooldown deadline (zero when none).
+func episodeFromDoc(itemID string, doc map[string]any, cool map[string]time.Time, optInCodecs bool) orchestrator.Episode {
 	ff, _ := doc["ffprobe"].(map[string]any)
 	streams, _ := doc["streams"].(map[string]any)
 	state, _ := streams["state"].(string)

@@ -338,7 +338,7 @@ func main() {
 				// never fronts, or any unpackaged packable item) gets its
 				// packaging enqueued by the play that asked for it; the
 				// direct floor answers everything else. queued=true → 202.
-				return packOnPlay(ctx, st, enrichQueue.EnqueuePack, row)
+				return packOnPlay(ctx, st, enrichQueue.EnqueuePack, row, cfg.optInCodecs)
 			}
 			var doc map[string]any
 			if err := json.Unmarshal(row.Document, &doc); err != nil {
@@ -553,7 +553,7 @@ func main() {
 	// stream Service's own ValidateBuild method value (the enqueue seam's
 	// func-injection pattern); the budget knob is GiB (default 32; 0 = off —
 	// see loadConfig).
-	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30)
+	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30, cfg.optInCodecs)
 	// artSettle is the registry's art task (artwork): ONE settle+GC pass per
 	// tick — the shared document walk acquires every live non-placeholder
 	// poster URL and reclaims blobs on reference loss. Errors are logged,
@@ -626,6 +626,7 @@ type config struct {
 	artInterval       time.Duration
 	mediaSecret       []byte
 	orchBudgetGB      int
+	optInCodecs       bool
 	adminToken        string
 	baseScannerPath   string
 	serialScannerPath string
@@ -676,6 +677,11 @@ func loadConfig() config {
 		// off (the orchestrator's Evictions contract), so the knob can never
 		// accidentally evict everything.
 		orchBudgetGB:      envInt("MELLIFERA_ORCH_BUDGET_GB", 32),
+		// Opt-in codec knob (D-2's env surface — default off, the locked
+		// default): while false, Classify folds HEVC/AC-3 items to
+		// direct_only (the direct floor serves them); true makes them
+		// packable through the remux lane like any hostile-container item.
+		optInCodecs:       envBool("MELLIFERA_STREAM_OPT_IN_CODECS", false),
 		adminToken:        adminToken,
 		baseScannerPath:   envOr("MELLIFERA_BASE_SCANNER", "bin/base-scanner"),
 		serialScannerPath: envOr("MELLIFERA_SERIAL_SCANNER", "bin/serial-scanner"),
