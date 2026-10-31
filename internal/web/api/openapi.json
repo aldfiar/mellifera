@@ -3017,6 +3017,12 @@
         "api.playbackResponse": {
             "type": "object",
             "properties": {
+                "codecs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "mode": {
                     "type": "string"
                 },
