@@ -142,6 +142,11 @@ func TestPlaybackRoundTrip(t *testing.T) {
 		t.Fatalf("playlist missing the two-phase tail merge markers:\n%s", playlist)
 	}
 	segURI := pbFirstSegment(playlist)
+	// Self-authorizing playlist (incident 2026-10-31): the served segment URI
+	// itself carries the token, so a cookie-less TV client can play it.
+	if !strings.Contains(segURI, "token=") {
+		t.Fatalf("segment URI %q carries no token — playlists must be self-authorizing", segURI)
+	}
 	segStatus, segBody, segHeader := pbDo(t, w.client, http.MethodGet, w.baseURL+pbPlaylistURI(pb.PlayURL, segURI), "", nil)
 	if segStatus != http.StatusOK || len(segBody) == 0 {
 		t.Fatalf("segment %s: status %d len %d, want 200 with bytes", segURI, segStatus, len(segBody))
@@ -197,11 +202,16 @@ func pbFirstSegment(playlist string) string {
 }
 
 // pbPlaylistURI resolves a playlist-relative URI against the play URL's base
-// path (dropping its query) so the segment request hits the same mount.
+// path (dropping its query) so the segment request hits the same mount. A URI
+// already carrying its own query (served playlists embed the token) is used
+// verbatim — the cookie-less-client path.
 func pbPlaylistURI(playURL, uri string) string {
 	base := stripToken(playURL)
 	if i := strings.LastIndex(base, "/"); i >= 0 {
 		base = base[:i+1]
+	}
+	if strings.Contains(uri, "?") {
+		return base + uri
 	}
 	return base + uri + "?token=" + tokenOf(playURL)
 }

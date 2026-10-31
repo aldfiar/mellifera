@@ -332,6 +332,93 @@ func TestTailSegmentServe(t *testing.T) {
 	})
 }
 
+// TestPlaylistTokenPropagation is the spec floor for self-authorizing
+// playlists (incident 2026-10-31: a TV client fetched the play URL's token
+// but met 401 on every playlist-relative segment — its cookie jar never
+// attached). A served playlist's every URI carries the requesting token, so
+// a client with NO cookie jar can lift any URI verbatim and serve it.
+func TestPlaylistTokenPropagation(t *testing.T) {
+	s, srv, _, _ := tokenServe(t)
+	// A second build with URI-bearing lines: map init, head segment, tail.
+	build := filepath.Join(s.Root, "it_tok", "nonce02")
+	if err := os.MkdirAll(filepath.Join(build, "t"), 0o755); err != nil {
+		t.Fatalf("mkdir build: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(build, "index.m3u8"),
+		[]byte("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4.0,\nseg-00000.m4s\n#EXTINF:4.0,\nt/seg-00007.m4s\n#EXT-X-ENDLIST\n"), 0o644); err != nil {
+		t.Fatalf("write playlist: %v", err)
+	}
+	seg := []byte("head-segment-payload")
+	if err := os.WriteFile(filepath.Join(build, "seg-00000.m4s"), seg, 0o644); err != nil {
+		t.Fatalf("write segment: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(build, "init.mp4"), []byte("init"), 0o644); err != nil {
+		t.Fatalf("write init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(build, "t", "seg-00007.m4s"), []byte("tail"), 0o644); err != nil {
+		t.Fatalf("write tail: %v", err)
+	}
+	tok, _ := s.Issue("it_tok", timeNow())
+
+	t.Run("query_served_playlist_embeds_the_token_in_every_uri", func(t *testing.T) {
+		resp := get(t, srv, "/media/it_tok/nonce02/index.m3u8?token="+tok, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		body := string(readBody(t, resp))
+		for _, want := range []string{
+			`#EXT-X-MAP:URI="init.mp4?token=` + tok + `"`,
+			"seg-00000.m4s?token=" + tok,
+			"t/seg-00007.m4s?token=" + tok,
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("served playlist missing %q:\n%s", want, body)
+			}
+		}
+	})
+
+	t.Run("cookie_served_playlist_embeds_the_same_token", func(t *testing.T) {
+		resp := get(t, srv, "/media/it_tok/nonce02/index.m3u8", http.Header{"Cookie": {"media_token=" + tok}})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if body := string(readBody(t, resp)); !strings.Contains(body, "seg-00000.m4s?token="+tok) {
+			t.Fatalf("cookie-served playlist lacks the token:\n%s", body)
+		}
+	})
+
+	t.Run("verbatim_segment_uri_serves_without_any_cookie", func(t *testing.T) {
+		// The exact TV flow: fetch the playlist with the token, then lift a
+		// URI line verbatim (resolved against the playlist's directory) and
+		// fetch it with no cookie and no extra credentials.
+		resp := get(t, srv, "/media/it_tok/nonce02/index.m3u8?token="+tok, nil)
+		uri := ""
+		for _, l := range strings.Split(string(readBody(t, resp)), "\n") {
+			l = strings.TrimSpace(l)
+			if l != "" && !strings.HasPrefix(l, "#") {
+				uri = l
+				break
+			}
+		}
+		if uri == "" || !strings.Contains(uri, "token=") {
+			t.Fatalf("first playlist URI = %q, want a token-carrying segment", uri)
+		}
+		segResp := get(t, srv, "/media/it_tok/nonce02/"+uri, nil)
+		if segResp.StatusCode != http.StatusOK {
+			t.Fatalf("verbatim %q: status %d, want 200", uri, segResp.StatusCode)
+		}
+		if body := readBody(t, segResp); !bytes.Equal(body, seg) {
+			t.Fatalf("verbatim segment body = %q, want the published bytes", body)
+		}
+	})
+
+	t.Run("bare_segment_without_cookie_still_rejected", func(t *testing.T) {
+		if resp := get(t, srv, "/media/it_tok/nonce02/seg-00000.m4s", nil); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("bare segment: status %d, want 401 (the gate stays)", resp.StatusCode)
+		}
+	})
+}
+
 // TestDirectFloor is the spec floor for the direct playback floor (probe
 // 54f84d49b11d57df): the original bytes serve through /media/<id>/original
 // with stdlib Range handling and zero transform — and no media process is

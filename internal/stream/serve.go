@@ -4,6 +4,7 @@
 package stream
 
 import (
+	"io"
 	"net/http"
 	"os"
 	"path"
@@ -24,8 +25,11 @@ var artifactExts = map[string]string{
 // serving ONLY — playlists and segments from the artifact root under
 // /media/<itemID>/<nonce>/..., originals through the injected Original
 // resolver at /media/<itemID>/original with stdlib Range support. No sessions,
-// no media processes, no writes to library directories, byte-identical
-// responses for the same file. Every request must carry a valid media token
+// no sessions, no media processes, no writes to library directories. Segments
+// and init segments are byte-identical to the published file; playlists serve
+// the published lines with every URI carrying the requesting token (see
+// tokenizePlaylist — self-authorizing playlists for cookie-less clients).
+// Every request must carry a valid media token
 // (cookie primary, query fallback) naming the item on the path; the admin
 // credential is not accepted here, and a rejection never echoes the token.
 //
@@ -42,7 +46,8 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	granted, err := s.verify(mediaToken(r), timeNow())
+	tok := mediaToken(r)
+	granted, err := s.verify(tok, timeNow())
 	if err != nil || granted != itemID {
 		http.Error(w, "valid media token required", http.StatusUnauthorized)
 		return
@@ -51,7 +56,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveOriginal(w, r, itemID)
 		return
 	}
-	s.serveArtifact(w, r, itemID, rest)
+	s.serveArtifact(w, r, itemID, rest, tok)
 }
 
 // mediaToken extracts the request's media token: the cookie first (D-6
@@ -111,7 +116,7 @@ func (s *Service) serveOriginal(w http.ResponseWriter, r *http.Request, itemID s
 // (the tail phase's segments). Every component is charset-guarded, the
 // extension is whitelisted, and the resolved path is verified to stay under
 // Root — the surface never serves anything it did not publish.
-func (s *Service) serveArtifact(w http.ResponseWriter, r *http.Request, itemID, rest string) {
+func (s *Service) serveArtifact(w http.ResponseWriter, r *http.Request, itemID, rest, token string) {
 	nonce, name, found := strings.Cut(rest, "/")
 	if !found || !s.artifactNameOK(nonce) {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -156,13 +161,21 @@ func (s *Service) serveArtifact(w http.ResponseWriter, r *http.Request, itemID, 
 	}
 	// Playlists grow until ENDLIST (a partial build is live-polled), so they
 	// revalidate; segments and init segments are byte-identical per nonce and
-	// cache immutably (D-5).
+	// cache immutably (D-5). Served playlists are rewritten so every URI they
+	// reference carries the requesting token (self-authorizing playlists —
+	// cookie-less TV clients, incident 2026-10-31); segments serve verbatim.
+	w.Header().Set("Content-Type", ct)
 	if strings.HasSuffix(file, ".m3u8") {
 		w.Header().Set("Cache-Control", "no-cache")
-	} else {
-		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+		body, err := io.ReadAll(f)
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Write(tokenizePlaylist(body, token))
+		return
 	}
-	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	http.ServeContent(w, r, file, fi.ModTime(), f)
 }
 

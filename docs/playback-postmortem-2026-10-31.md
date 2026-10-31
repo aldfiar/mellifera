@@ -39,6 +39,15 @@ lessons for future work. Update it when a fix lands or a new finding appears.
   repacking), most episodes the TV touches answer direct at least part of the
   time. Consistent with F1+F3 combined; not a TV codec issue.
 
+- Follow-up (2026-10-31 10:01): after the fixes shipped (02:12) a *new*, clean
+  failure signature on TV — playlist `index.m3u8` answered 200 (fetched by
+  `okhttp/4.12.0`, the TV's native HTTP stack) but every `init.mp4`/`seg-*.m4s`
+  answered 401 from the webview UA, retrying in a loop → the SPA's fatal
+  banner ("Playback failed — the stream could not be played to the end").
+  This is F6 turned real: the TV splits fetching across two HTTP stacks,
+  *neither* attaching the `media_token` cookie. Desktop kept working (its
+  cookie jar attaches). Fixed same day — see F6 below.
+
 ### F2 — Why packs failed: budget evicts IN-FLIGHT builds (`.tmp-*`)
 - Evidence in ledger: `stream: head playlist: open
   data/streams/<item>/.tmp-99f789723a38b8f2/index.m3u8: no such file or
@@ -81,11 +90,21 @@ lessons for future work. Update it when a fix lands or a new finding appears.
   second `EXT-X-MAP`) doubles the surface: clients must survive a codec-map
   switch mid-playlist.
 
-### F6 — Auth is NOT the problem
+### F6 — Auth is NOT the problem (10:01 follow-up: it became one)
 - Descriptor GET sets cookie `media_token` (path=/media); segments authorize
   via cookie (200 verified). Relative segment URIs don't inherit the playlist's
   query token (bare URL → 401) — works because browsers attach the cookie.
-  No action needed for this incident; see design notes below for hardening.
+- **2026-10-31 10:01: the cookie assumption broke in the field.** A TV client
+  (YaBrowser Lite on Android WebView, `192.168.0.216`) fetched the playlist
+  through its native stack (`okhttp`, no cookie jar) and the segments through
+  the webview (cookie not attached) — every segment 401, playback dead, while
+  desktop played fine. **Shipped on `fix/playlist-token-propagation`:** the
+  /media surface now serves playlists with every URI (segment lines, rendition
+  lines, `URI="..."` attributes incl. `EXT-X-MAP`) carrying the requesting
+  token as a query parameter — serve-time rewrite only, published artifacts
+  stay token-free, the gate itself is unchanged. Playlists are
+  self-authorizing; see openspec change
+  `2026-10-31-playlist-token-propagation`.
 
 ### F7 — Stale-JS hypothesis is dead
 - `index.html` is served `no-cache`, hashed assets immutable → a TV navigation
@@ -159,6 +178,7 @@ lessons for future work. Update it when a fix lands or a new finding appears.
   request-log middleware pattern (`httplog.go`) is the model.
 - **Poster auth (F7):** cookie-session for img-tag endpoints or signed poster
   URLs.
-- **Token propagation (F6):** emit absolute segment URIs carrying the token, or
-  keep cookie auth but make it explicit in the spec — currently correctness
-  silently depends on the browser cookie jar.
+- **Token propagation (F6):** ~~emit absolute segment URIs carrying the token~~
+  **shipped 2026-10-31** as serve-time relative-URI tokenization
+  (`fix/playlist-token-propagation`) — better than absolute URIs (no host
+  knowledge baked into artifacts).
