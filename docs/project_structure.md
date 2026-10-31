@@ -578,8 +578,12 @@ file serving (no sessions, no per-play processes, no encode anywhere):
   query fallback, 4 h — never the admin secret, never logged), the
   token-gated `/media` ServeHTTP surface (playlists, segments, direct
   originals with `Range`), and `Describe` (the read-only playback
-  descriptor). The direct floor (original bytes) is unconditional for every
-  class.
+  descriptor). The direct floor (original bytes) exists for every class;
+  since `tv-playback-unblock` (2026-10-31) a floor whose container is not
+  `<video>`-native is disclaimed read-side — state `preparing`/`unsupported`
+  + additive `state_reason` (`non_native_container`/
+  `codec_not_opted_in`/`codec_unsupported`), `play_url` retained, never
+  stored.
 - **`internal/orchestrator` (NEW — pure policy core, stdlib-only imports).**
   Watch-driven serial frontier + movies pack-on-play as pure functions:
   snapshots in (store read passed IN as data), decisions out (jobs, budget

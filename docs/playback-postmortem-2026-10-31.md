@@ -90,7 +90,8 @@ lessons for future work. Update it when a fix lands or a new finding appears.
   second `EXT-X-MAP`) doubles the surface: clients must survive a codec-map
   switch mid-playlist.
 - Follow-up landed (2026-10-31, `tv-playback-unblock`, branch
-  `fix/playlist-token-propagation`, pending deploy): the honest
+  `feature/tv-playback-unblock`, commits `c46a3de` + `2e5ccff`; deployed to
+  alatoic 2026-10-31 ~19:00 MSK, live-verified on the real TV): the honest
   "unsupported/preparing" descriptor state is in — direct floors that are not
   `<video>`-native or whose codecs cannot play anywhere answer `preparing` /
   `unsupported` with an additive `state_reason` instead of a bare `play_url`
@@ -131,7 +132,8 @@ lessons for future work. Update it when a fix lands or a new finding appears.
   tail-fix working, reasons now real.
 - Full evidence + fix directions: `.tmp/playback-evidence-2026-10-31.md`.
 - Remediated by `tv-playback-unblock` (2026-10-31, branch
-  `fix/playlist-token-propagation`, pending deploy): all three fix
+  `feature/tv-playback-unblock`, commits `c46a3de` + `2e5ccff`; deployed to
+  alatoic 2026-10-31 ~19:00 MSK, live-verified on the real TV): all three fix
   directions from the evidence doc landed — see "Landed by
   `tv-playback-unblock`" below.
 
@@ -187,11 +189,12 @@ lessons for future work. Update it when a fix lands or a new finding appears.
 - Watch for the churn signature (`fronted packaging` for the same item ID
   more than once) after deploy — request/orchestrator logs now make it visible.
 
-## Landed by `tv-playback-unblock` (2026-10-31, branch `fix/playlist-token-propagation`) — pending deploy
+## Landed by `tv-playback-unblock` (2026-10-31, branch `feature/tv-playback-unblock`, commits `c46a3de` + `2e5ccff`) — deployed
 
 Kills the F8 class end to end and closes the F5 follow-up (evidence doc
-`.tmp/playback-evidence-2026-10-31.md` fix directions 1–3). Applied on the
-`fix/playlist-token-propagation` branch; NOT yet deployed:
+`.tmp/playback-evidence-2026-10-31.md` fix directions 1–3). Landed on the
+`feature/tv-playback-unblock` branch; deployed to alatoic 2026-10-31
+~19:00 MSK and live-verified on the real TV:
 
 1. **Direct-floor honesty (F5 follow-up, fix-direction 3)** — the playback
    descriptor answers `preparing` / `unsupported` with an additive
@@ -230,6 +233,25 @@ Still open (unchanged by this change): cooldown classification (infra vs
 content errors), in-flight eviction ownership (lease/manifest), F7 poster
 auth, and the F5 transcode-to-AVC lane.
 
+## Post-archive findings (2026-10-31 evening)
+
+Live TV testing after the deploy surfaced two capability gaps OUTSIDE the
+landed change (the change's honesty/diagnostics worked as designed — the
+beacon evidence named both precisely):
+
+- **HEVC packs fatal-fail on the TV webview's MSE.** A `hev1` pack dies at
+  audio append ("doesn't match SourceBuffer codecs"); H.264 packs play fine,
+  and desktop Chrome plays the same HEVC packs — the gap is the TV MSE, not
+  the artifacts. Distinct banners + beacons made this diagnosable from logs.
+- **AVI/mpeg4-ASP is honestly refused (`codec_unsupported`) and can never be
+  remux-playable** — that class needs the still-open F5 transcode lane.
+
+Also observed: the packer currently does NOT honor the `OptInCodecs` knob
+(HEVC packs were built while the knob was off).
+
+Route: a follow-up change (per-device MSE capability gate + packer knob
+enforcement) plus the open F5 transcode-to-AVC lane.
+
 ## Future design (candidates, not decisions)
 
 - **Cooldown should distinguish infra errors from content errors.** A deleted
@@ -242,7 +264,7 @@ auth, and the F5 transcode-to-AVC lane.
 - **HEVC strategy (F5):** either a transcode-to-AVC lane for mixed-client
   deployments, or codec-aware manifests + client capability detection with an
   honest "unsupported codec" UI state instead of a spinner. The honest-state
-  half **landed 2026-10-31** (`tv-playback-unblock`, pending deploy) as a
+  half **landed 2026-10-31** (`tv-playback-unblock`, deployed same day) as a
   server-declared descriptor state (`unsupported` + `state_reason`) with SPA
   reason banners — client-side capability detection proved unnecessary; the
   transcode-to-AVC lane stays open.

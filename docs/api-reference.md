@@ -251,12 +251,34 @@ Packaged-playback verb split — the read half. `200 OK` via the
 token rides the `Set-Cookie` header — deliberately NEVER a body field.
 `404` for an unknown item.
 
+Honest-descriptor addition (`tv-playback-unblock`, additive — existing
+clients keep working): a direct floor whose source container is not
+`<video>`-native (mp4/webm) carries a descriptor-only state instead of the
+bare packaging state — `preparing` (a pack can land) or `unsupported` (it
+cannot) — plus an additive `state_reason`
+(`non_native_container` | `codec_not_opted_in` | `codec_unsupported`); the
+direct floor's `play_url` is always present, and `<video>`-native floors
+keep the classic shape with no `state_reason`.
+
 ### `POST /api/v1/items/{id}/play` — play / retry packaging (browse group)
 
-The write half. Body: `{}` (plain play acknowledgement) or
-`{"retry":true}` (re-enqueue a failed packaging run — `{"queued":true}` when
-one existed) or `{"from_seconds":…}` (accepted, reserved — a v1 no-op).
-`404` unknown item; nil closure → `503`.
+The write half. Body: `{}` (plain play acknowledgement; the SPA's
+pack-on-play also sends `{"retry":false}` when the descriptor says the
+floor is preparing) or `{"retry":true}` (re-enqueue a failed packaging
+run — `{"queued":true}` when one existed) or `{"from_seconds":…}`
+(accepted, reserved — a v1 no-op). `404` unknown item; nil closure → `503`.
+
+### `POST /api/v1/playback-events` — playback failure beacon (browse group)
+
+Best-effort, rate-limited diagnostics firehose from the SPA: on playback
+failure edges (fatal hls error, direct-lane media-element error,
+preparing-state stall) the player sends one
+`{item_id, mode, phase, code, detail}` beacon (`phase` `fatal` /
+`video-error` / `stalled`). Never load-bearing: a dropped or rejected
+beacon is swallowed — no retry, no auto-requeue, no user-visible error;
+the payload carries data only, never token or credential material.
+
+### `GET /api/v1/progress?limit=` — recent playback positions
 
 ### `GET /api/v1/progress?limit=` — recent playback positions
 
