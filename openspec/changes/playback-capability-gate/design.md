@@ -223,6 +223,18 @@ specs carry the behavior, tasks carry the file map):
   `code = Reason` (`codec_not_opted_in | codec_unsupported`),
   `retryable: false` — the same 400 family as `nothing_failed`, the same
   tokens as `state_reason`.
+  **(GATE-2 amendment, 2026-10-31.)** Both refusal types' home moved at
+  the gate: `PlayRefusal` and enrich's `PolicyRefusal` now live in
+  `internal/refusal` — one tiny package carrying exactly these two
+  exports. Why: the reviewer's exported-symbol budget check (warn >8,
+  fail >12) caught `internal/api` at 13 after apply — the delta was
+  exactly `PlayRefusal` — and re-homing both into one package is the
+  budget-honest fix that also serves D1's one-vocabulary story: the
+  refusal shapes are one vocabulary (one `Reason`-carrying error type per
+  seam), not a per-package copy that could drift. `internal/api` is back
+  to 12 exports, `internal/enrich` to 11, the new package carries 2.
+  Names, shapes, and semantics are unchanged — the `errors.As` targets
+  and constructor sites were re-pointed, nothing else moved.
 - **Probe beacon edge** — the existing closed-vocab beacon, one call:
   `{item_id, mode: "hls", phase: "video-error", code:
   "device-cannot-decode", detail: "<probe mime>"}`; fire-and-forget,

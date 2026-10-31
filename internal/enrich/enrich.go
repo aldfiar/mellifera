@@ -46,9 +46,9 @@ type Deps struct {
 	// episode's own stored facts by documentVoiceoverPaths — never a client
 	// path. An error is a terminal packaging failure: the lane records a
 	// pack_failed ledger row under __streams__ and persists the failed state —
-	// EXCEPT a PolicyRefusal (playback-capability-gate D4: a policy verdict,
-	// never a pack failure — the failed state persists with the gate token,
-	// no ledger row). Metadata completion is never touched either way.
+	// EXCEPT a refusal.PolicyRefusal (playback-capability-gate D4: a policy
+	// verdict, never a pack failure — the failed state persists with the gate
+	// token, no ledger row). Metadata completion is never touched either way.
 	PackItem func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (PackOutcome, error)
 	// AfterPackPersist, when non-nil, runs exactly once AFTER the streams
 	// lane's success persistStreams with the just-persisted build's item id

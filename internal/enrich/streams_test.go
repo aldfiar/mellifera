@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -310,8 +311,9 @@ func TestStreamsLane(t *testing.T) {
 }
 
 // TestPackPolicyRefusal is the acceptance test for the build-time gate
-// (playback-capability-gate 1.3, D4): a PackItem seam returning PolicyRefusal
-// — the gate closed between enqueue and build — persists state failed with
+// (playback-capability-gate 1.3, D4): a PackItem seam returning
+// refusal.PolicyRefusal — the gate closed between enqueue and build — persists
+// state failed with
 // the gate's state_reason token and writes NO pack_failed ledger row, so the
 // item never enters a cooldown; with the knob on again the frontier's
 // eligibility (no CoolUntil — no row exists to read) re-enqueues it and the
@@ -326,7 +328,7 @@ func TestPackPolicyRefusal(t *testing.T) {
 		streamsItem(t, s, libID, "i_pack_policy")
 
 		rec := &packRecord{}
-		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, PackOutcome{}, PolicyRefusal{Reason: "codec_not_opted_in"})}, QueueConfig{})
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, PackOutcome{}, refusal.PolicyRefusal{Reason: "codec_not_opted_in"})}, QueueConfig{})
 		q.workStreams(ctx, "i_pack_policy")
 
 		st := streamsState(t, s, "i_pack_policy", "failed", time.Second)
@@ -368,7 +370,7 @@ func TestPackPolicyRefusal(t *testing.T) {
 		refused := true
 		pack := func(context.Context, string, string, map[string]any, []string) (PackOutcome, error) {
 			if refused {
-				return PackOutcome{}, PolicyRefusal{Reason: "codec_not_opted_in"}
+				return PackOutcome{}, refusal.PolicyRefusal{Reason: "codec_not_opted_in"}
 			}
 			return PackOutcome{Playlist: "/media/i_pack_heal/n1/index.m3u8", Nonce: "n1"}, nil
 		}
@@ -519,7 +521,7 @@ func TestStreamsLaneAfterPackPersist(t *testing.T) {
 			Store:   s,
 			Modules: reg,
 			PackItem: func(context.Context, string, string, map[string]any, []string) (PackOutcome, error) {
-				return PackOutcome{}, PolicyRefusal{Reason: "codec_not_opted_in"}
+				return PackOutcome{}, refusal.PolicyRefusal{Reason: "codec_not_opted_in"}
 			},
 			AfterPackPersist: func(itemID, keepNonce string) { calls++ },
 		}, QueueConfig{})

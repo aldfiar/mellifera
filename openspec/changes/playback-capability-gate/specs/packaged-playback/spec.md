@@ -129,8 +129,11 @@ read-side projections, never stored state.
 An hls answer SHALL carry the additive `codecs` field — the RFC 6381 codec
 strings of the published pack, video first, then audio in the pack lane's
 rendition order — so a client can ask the device before mounting. The
-strings SHALL be recorded at publish from the published build's init
-segments and persisted in the packaging namespace; a build predating the
+strings SHALL be recorded at publish by probing each variant playlist of
+the published build with ffprobe (the D2 amendment: a bare `EXT-X-MAP`
+init segment cannot resolve profile/level — SPS/PPS live in the codec
+description box and need media present) and persisted in the packaging
+namespace; a build predating the
 record SHALL compose the same strings read-side from the item's stored
 source ffprobe facts (a remux carries the source's streams), the recorded
 value winning whenever present. A build whose codecs cannot be composed

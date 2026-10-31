@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/mellifera/mellifera/internal/refusal"
 )
 
 // playStub records every Deps.Play call and answers from a script.
@@ -289,15 +291,15 @@ func TestPlaybackVerbs(t *testing.T) {
 }
 
 // TestPlayGateRefusal is the handler-side acceptance for the retry refusal
-// (playback-capability-gate 1.2, D4): a Deps.Play PlayRefusal maps to 400 in
-// the nothing_failed family with the gate token as the error code and
-// retryable: false on the wire, carrying no credential material (INV4);
+// (playback-capability-gate 1.2, D4): a Deps.Play refusal.PlayRefusal maps
+// to 400 in the nothing_failed family with the gate token as the error code
+// and retryable: false on the wire, carrying no credential material (INV4);
 // nothing_failed still answers for the no-failed-run case.
 func TestPlayGateRefusal(t *testing.T) {
 	t.Run("refusal_maps_to_400_gate_token", func(t *testing.T) {
 		for _, tok := range []string{"codec_not_opted_in", "codec_unsupported"} {
 			t.Run(tok, func(t *testing.T) {
-				ps := &playStub{err: PlayRefusal{Reason: tok}}
+				ps := &playStub{err: refusal.PlayRefusal{Reason: tok}}
 				h := New(Deps{AdminToken: adminToken, Store: openAPIStore(t), Play: ps.play()})
 				resp := doRequest(t, h, http.MethodPost, "/api/v1/items/it1/play", `{"retry":true}`, adminToken)
 				if resp.StatusCode != http.StatusBadRequest {

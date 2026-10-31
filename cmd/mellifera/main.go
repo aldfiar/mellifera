@@ -208,7 +208,7 @@ func main() {
 	// the server's own data space, never a library directory. The closure
 	// judges the build-time gate first (playback-capability-gate D4 — the
 	// knob may flip between enqueue and build): a closed verdict returns
-	// enrich.PolicyRefusal and Pack is never called, so the lane fails the
+	// refusal.PolicyRefusal and Pack is never called, so the lane fails the
 	// run without charging the pack_failed cooldown.
 	mediaSvc := &stream.Service{
 		Root:        cfg.streamsRoot,

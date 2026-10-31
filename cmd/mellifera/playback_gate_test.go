@@ -14,8 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mellifera/mellifera/internal/api"
-	"github.com/mellifera/mellifera/internal/enrich"
+	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -106,12 +105,12 @@ func TestPlayRetryGate(t *testing.T) {
 		if queued {
 			t.Fatal("queued = true, want false for a knob-off opt-in item")
 		}
-		var refusal api.PlayRefusal
-		if !errors.As(err, &refusal) {
-			t.Fatalf("err = %v, want api.PlayRefusal", err)
+		var gateRefusal refusal.PlayRefusal
+		if !errors.As(err, &gateRefusal) {
+			t.Fatalf("err = %v, want refusal.PlayRefusal", err)
 		}
-		if refusal.Reason != "codec_not_opted_in" {
-			t.Errorf("Reason = %q, want codec_not_opted_in (the descriptor's own token)", refusal.Reason)
+		if gateRefusal.Reason != "codec_not_opted_in" {
+			t.Errorf("Reason = %q, want codec_not_opted_in (the descriptor's own token)", gateRefusal.Reason)
 		}
 		if len(enqueued) != 0 {
 			t.Errorf("enqueued = %v, want nothing on a refusal", enqueued)
@@ -126,8 +125,8 @@ func TestPlayRetryGate(t *testing.T) {
 			t.Errorf("ledger rows = %d, want 0 — a refusal must never write one", len(failures))
 		}
 		// INV4: the refusal names the policy verdict, never a credential.
-		if strings.Contains(refusal.Error(), "token") {
-			t.Errorf("refusal message %q carries credential-shaped material", refusal.Error())
+		if strings.Contains(gateRefusal.Error(), "token") {
+			t.Errorf("refusal message %q carries credential-shaped material", gateRefusal.Error())
 		}
 	})
 
@@ -234,7 +233,7 @@ func TestRepackSweepGateRefusal(t *testing.T) {
 
 // TestPackItemGateRefusal covers the build-time gate (playback-capability-gate
 // 1.3, D4): the PackItem closure consults packGateRefusal BEFORE Pack — a
-// knob-off opt-in item returns enrich.PolicyRefusal carrying the gate's
+// knob-off opt-in item returns refusal.PolicyRefusal carrying the gate's
 // state_reason token and Pack is never called, while a knob-enabled opt-in
 // item and a gate-open item reach Pack exactly as before.
 func TestPackItemGateRefusal(t *testing.T) {
@@ -259,12 +258,12 @@ func TestPackItemGateRefusal(t *testing.T) {
 	t.Run("knob_off_optin_refuses_before_pack", func(t *testing.T) {
 		packed = false
 		err := closure(facts(t, gateFfOptIn), false)
-		var refusal enrich.PolicyRefusal
-		if !errors.As(err, &refusal) {
-			t.Fatalf("err = %v, want enrich.PolicyRefusal", err)
+		var policyRefusal refusal.PolicyRefusal
+		if !errors.As(err, &policyRefusal) {
+			t.Fatalf("err = %v, want refusal.PolicyRefusal", err)
 		}
-		if refusal.Reason != "codec_not_opted_in" {
-			t.Errorf("Reason = %q, want codec_not_opted_in (the descriptor's own token)", refusal.Reason)
+		if policyRefusal.Reason != "codec_not_opted_in" {
+			t.Errorf("Reason = %q, want codec_not_opted_in (the descriptor's own token)", policyRefusal.Reason)
 		}
 		if packed {
 			t.Error("Pack was called on a gate-closed item — the closure must refuse before it")

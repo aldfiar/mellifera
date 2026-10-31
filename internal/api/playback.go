@@ -11,6 +11,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/mellifera/mellifera/internal/refusal"
 )
 
 // Playback is the ONE playback descriptor (the GET /items/{id}/playback wire
@@ -65,22 +67,6 @@ type playbackResponse struct {
 	Sections    []map[string]any `json:"sections"`
 	Voiceovers  []map[string]any `json:"voiceovers"`
 }
-
-// PlayRefusal is the typed refusal the Deps.Play closure returns when the
-// pack gate refuses a retry (playback-capability-gate D4): the item's failed
-// packaging run is not re-enqueued because the pack lane cannot serve its
-// codecs. Reason is the gate token — exactly the descriptor's state_reason
-// vocabulary (codec_not_opted_in | codec_unsupported) — and itemPlay maps the
-// type to 400 with that token as the error code, retryable: false. It carries
-// no token/credential material (INV4) — the refusal names a policy verdict,
-// never an authorization fact.
-type PlayRefusal struct {
-	Reason string
-}
-
-// Error implements error; the message is the same honest sentence the 400
-// body carries beside the code.
-func (e PlayRefusal) Error() string { return "packaging refused: " + e.Reason }
 
 // playRequest is the body of POST /items/{id}/play. Pointers carry presence:
 // retry absent or false is a plain play acknowledgement; retry true asks for
@@ -193,13 +179,13 @@ func (a *app) itemPlay(w http.ResponseWriter, r *http.Request) {
 	retry := req.Retry != nil && *req.Retry
 	queued, err := a.deps.Play(r.Context(), chi.URLParam(r, "id"), retry, req.FromSeconds)
 	if err != nil {
-		var refusal PlayRefusal
-		if errors.As(err, &refusal) {
+		var gateRefusal refusal.PlayRefusal
+		if errors.As(err, &gateRefusal) {
 			// The gate refused the retry (D4): the same 400 family as
 			// nothing_failed, the gate token as the code — the descriptor's
 			// own state_reason token, so the SPA's canonical-error rendering
 			// needs no new shape.
-			writeError(w, http.StatusBadRequest, refusal.Reason, refusal.Error(), false)
+			writeError(w, http.StatusBadRequest, gateRefusal.Reason, gateRefusal.Error(), false)
 			return
 		}
 		if errors.Is(err, sql.ErrNoRows) {

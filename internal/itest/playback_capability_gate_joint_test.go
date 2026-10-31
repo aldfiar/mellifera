@@ -9,7 +9,7 @@
 // HTTP; no mocks). cmd/mellifera is package main and cannot be imported, so
 // its PackItem/AfterPackPersist/Play closures are mirrored here in miniature
 // (the pbNewWorld house pattern) — the decisions they JOIN are the production
-// functions: stream.PackGate, enrich.PolicyRefusal handling, api.PlayRefusal
+// functions: stream.PackGate, refusal.PolicyRefusal handling, refusal.PlayRefusal
 // mapping, stream.EvictSuperseded.
 //
 //   - (a) end-to-end codecs (2.1's record ≡ 2.2's projection ≡ the artifact
@@ -26,7 +26,7 @@
 //     and the ON-DISK state (directory listing, never a log line) keeps
 //     exactly ONE build directory — the nonce the descriptor then answers;
 //     the superseded playlist URL stops answering.
-//   - (c) gate refusal (1.2's api PlayRefusal): a knob-off opt-in item
+//   - (c) gate refusal (1.2's refusal.PlayRefusal): a knob-off opt-in item
 //     answers the descriptor's own `codec_not_opted_in` token while its
 //     state is none (the honesty projection), and once its packaging state
 //     is failed (seeded through the store, the lane's terminal shape) the
@@ -58,6 +58,7 @@ import (
 
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/enrich"
+	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
 	"github.com/mellifera/mellifera/internal/web"
@@ -78,14 +79,14 @@ type gateDescriptor struct {
 // gateNewQueue is pbNewQueue's composition root with the change's two wiring
 // lines added (cmd/mellifera main.go in miniature): the PackItem closure
 // judges the build-time gate first (a closed verdict returns
-// enrich.PolicyRefusal — the lane's policy branch, never the failure ledger),
+// refusal.PolicyRefusal — the lane's policy branch, never the failure ledger),
 // and AfterPackPersist is the real EvictSuperseded (publish replacement).
 func gateNewQueue(t *testing.T, w *pbWorld) *enrich.Queue {
 	t.Helper()
 	deps := enrich.Deps{Store: w.st, Modules: w.reg, Plugins: w.mgr}
 	deps.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
 		if gate := stream.PackGate(ffprobe, w.media.OptInCodecs); gate != stream.GateOpen {
-			return enrich.PackOutcome{}, enrich.PolicyRefusal{Reason: string(gate)}
+			return enrich.PackOutcome{}, refusal.PolicyRefusal{Reason: string(gate)}
 		}
 		build, err := w.media.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
 		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs}, err
@@ -141,7 +142,7 @@ func gateNewServer(t *testing.T, w *pbWorld, enqueue func(string) error) string 
 			}
 			ff, _ := doc["ffprobe"].(map[string]any)
 			if gate := stream.PackGate(ff, w.media.OptInCodecs); gate != stream.GateOpen {
-				return false, api.PlayRefusal{Reason: string(gate)}
+				return false, refusal.PlayRefusal{Reason: string(gate)}
 			}
 			if err := enqueue(itemID); err != nil {
 				return false, err

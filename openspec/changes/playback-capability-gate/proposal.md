@@ -26,7 +26,9 @@ can hold several builds at once.
 - **The descriptor carries the pack's codecs** (additive wire): an hls
   answer gains `codecs` — the RFC 6381 codec strings of the published
   build, video first, then audio in rendition order — recorded at publish
-  by probing the published init segments with ffprobe and composing through
+  by probing each variant playlist of the published build with ffprobe
+  (the D2 amendment: a bare init segment cannot resolve profile/level)
+  and composing through
   one pure table; builds predating the record compose the same strings
   read-side from the item's stored source ffprobe facts (a remux carries
   the source's streams). Direct answers stay byte-unchanged. An hls answer

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/refusal"
 )
 
 // streamsLaneID is the `__streams__` lane key (packaged-playback D-10): a
@@ -37,21 +39,6 @@ type PackOutcome struct {
 	Nonce    string
 	Codecs   []string
 }
-
-// PolicyRefusal is the typed build-time refusal (playback-capability-gate
-// D4): the PackItem seam returns it when the pack gate closes AFTER a job was
-// already enqueued (the knob flipped between enqueue and build). It is a
-// policy verdict, never a pack failure — workStreams persists the failed
-// state with Reason (the gate's state_reason token) and writes NO pack_failed
-// ledger row, so a knob setting never charges the flat 30-day cooldown and
-// re-enabling the knob heals through the frontier with no manual step.
-type PolicyRefusal struct {
-	Reason string
-}
-
-// Error carries the reason verbatim — the descriptor's own state_reason
-// token, so persisted documents and read-side refusals share one vocabulary.
-func (e PolicyRefusal) Error() string { return "packaging refused by policy: " + e.Reason }
 
 // EnqueuePack enqueues one packaging job for itemID into the running queue's
 // channel (the streams lane's dispatch entry — the frontier's and the play
@@ -88,7 +75,7 @@ type laneTask struct {
 // row reload immediately before the writeMu-guarded write) so a concurrent
 // metadata write can never be clobbered. Terminal failure records a
 // pack_failed ledger row under __streams__ (flat 30-day cooldown, no
-// doubling); a PolicyRefusal — the pack gate closed after enqueue,
+// doubling); a refusal.PolicyRefusal — the pack gate closed after enqueue,
 // playback-capability-gate D4 — branches BEFORE the ledger: it persists the
 // failed state with the gate token and writes NO row, so a knob setting
 // never charges the cooldown. Success clears the row (reset-on-success).
@@ -118,14 +105,14 @@ func (q *Queue) workStreams(ctx context.Context, itemID string) {
 	outcome, packErr := q.deps.PackItem(ctx, itemID, documentAbsolutePath(doc), docFFprobe(doc),
 		documentVoiceoverPaths(doc, row.RelativePath))
 	if packErr != nil {
-		var refusal PolicyRefusal
-		if errors.As(packErr, &refusal) {
+		var policyRefusal refusal.PolicyRefusal
+		if errors.As(packErr, &policyRefusal) {
 			// A policy verdict (the gate closed between enqueue and build)
 			// is never a pack failure: persist the honest failed state with
 			// the gate token and write NO pack_failed ledger row — a knob
 			// setting never charges the 30-day cooldown, and flipping the
 			// knob on heals through the frontier (no ledger to clear).
-			q.persistStreams(ctx, itemID, failedStreamsDoc(refusal.Reason))
+			q.persistStreams(ctx, itemID, failedStreamsDoc(policyRefusal.Reason))
 			return
 		}
 		q.recordPackFailure(ctx, itemID, packErr)

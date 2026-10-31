@@ -14,9 +14,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/mellifera/mellifera/internal/api"
-	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/orchestrator"
+	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
 )
@@ -75,8 +74,8 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 // (playback-capability-gate D4): a failed packaging run re-enqueues exactly
 // when the pack gate opens for the item — the same single judge the
 // descriptor and every pack seam consult (D1), so a knob-off opt-in item
-// refuses with its own state_reason token (api.PlayRefusal → 400) instead of
-// re-enqueueing a build the knob refuses, and a capable or knob-enabled item
+// refuses with its own state_reason token (refusal.PlayRefusal → 400) instead
+// of re-enqueueing a build the knob refuses, and a capable or knob-enabled item
 // re-enqueues exactly as before. Nothing failed → (false, nil), the
 // handler's 400 nothing_failed. The refusal is a policy verdict, never a
 // pack failure: no ledger row is written on this path.
@@ -88,7 +87,7 @@ func retryFailedPack(ctx context.Context, st *store.Store, enqueue func(string) 
 		return false, nil // nothing failed → 400 nothing_failed at the handler
 	}
 	if gate := stream.PackGate(itemFacts(doc), optInCodecs); gate != stream.GateOpen {
-		return false, api.PlayRefusal{Reason: string(gate)}
+		return false, refusal.PlayRefusal{Reason: string(gate)}
 	}
 	if err := enqueue(row.ID); err != nil {
 		return false, err
@@ -108,13 +107,13 @@ func itemFacts(doc map[string]any) map[string]any {
 // a job may have been enqueued while the opt-in knob was enabled and reach
 // the executor after it was disabled — the PackItem closure re-consults the
 // same single judge (D1) right before Pack, and a closed verdict is wrapped
-// in enrich.PolicyRefusal carrying the gate's state_reason token. workStreams
+// in refusal.PolicyRefusal carrying the gate's state_reason token. workStreams
 // branches that error BEFORE the failure ledger: the run ends failed with the
 // token persisted, NO pack_failed row — a knob setting never charges the
 // 30-day cooldown, and re-enabling the knob heals through the frontier.
 func packGateRefusal(ff map[string]any, optInCodecs bool) error {
 	if gate := stream.PackGate(ff, optInCodecs); gate != stream.GateOpen {
-		return enrich.PolicyRefusal{Reason: string(gate)}
+		return refusal.PolicyRefusal{Reason: string(gate)}
 	}
 	return nil
 }
