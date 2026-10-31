@@ -902,11 +902,22 @@ player from the descriptor, and the descriptor decides playability. A
 `direct` item plays its minted play URL in a native media element; an `hls`
 item plays the stream playlist through an HLS client library, attaching
 equally to a partial (head-first) and a completed build, with a failed pack
-offering a retry affordance wired to the play endpoint with `retry`. Sections
-from the descriptor SHALL render as a section list; activating a section
-SHALL seek the playing media to that section's start using standard media
-seeks, so TV remote transport keys work unchanged. Playback position SHALL
-keep reporting through the existing progress endpoint.
+offering a retry affordance wired to the play endpoint with `retry`. Before
+mounting the HLS lane, the player SHALL ask the device what it is about to
+feed it: when the descriptor carries `codecs`, the player composes ONE
+`MediaSource.isTypeSupported` probe from the video codec plus the first
+audio codec — the device's default mount — and a probe miss SHALL render an
+explicit device-unsupported banner (this device cannot decode this pack's
+codecs — never a spinner, never a cryptic fatal) and SHALL send one
+best-effort beacon through `POST /api/v1/playback-events` with the closed
+vocabulary (`mode: "hls"`, `phase: "video-error"`, the probe's mime as the
+`detail`); no HLS lane mounts. A descriptor without `codecs`, or a device
+without `MediaSource`, mounts exactly as before; a probe pass mounts with
+zero behavior change. Sections from the descriptor SHALL render as a
+section list; activating a section SHALL seek the playing media to that
+section's start using standard media seeks, so TV remote transport keys
+work unchanged. Playback position SHALL keep reporting through the existing
+progress endpoint.
 
 #### Scenario: Packaged item plays via the stream playlist and sections seek
 
@@ -974,6 +985,16 @@ grep -q 'media_type: "serial"' web/src/pages/browse/ItemDetail.test.tsx
 cd web && npx vitest run src/lib/api.test.ts src/pages/home/Home.test.tsx src/pages/collections/Collection.test.tsx
 ```
 <!-- /wf:probe -->
+
+#### Scenario: A device that cannot decode the pack sees the honest banner
+
+- **WHEN** the operator presses play on a packaged item whose descriptor carries `codecs` on a device whose `MediaSource.isTypeSupported` answers false for the video-plus-first-audio probe
+- **THEN** the device-unsupported banner renders naming the codecs — no spinner, no hls fatal, no mount — and exactly one best-effort beacon (`mode: "hls"`, `phase: "video-error"`, `code: "device-cannot-decode"`, the probe mime as `detail`) is sent
+
+#### Scenario: Capable devices and codec-less answers mount unchanged
+
+- **WHEN** a capable device plays the same packaged item (probe passes), and a build whose descriptor answers no `codecs` is opened on any device
+- **THEN** the first mounts the HLS lane exactly as before the probe existed, and the second skips the probe and mounts as before — no behavior change on either path
 
 ### Requirement: Element browsing
 
@@ -2147,3 +2168,17 @@ the Go embed directive and the node-free Go build gate stay untouched.
 
 - **WHEN** the committed `internal/web/dist` bundle and the OpenAPI contract are inspected
 - **THEN** `dist/index.html` and hashed `assets/*.js` exist, the bundle carries the pack-on-play/beacon literals from this build, both OpenAPI files list `/playback-events`, and the committed tree stays clean after a fresh build — the committed dist IS the current build
+
+### Requirement: Embedded build carries the capability-gate surface
+
+The committed embedded build (`internal/web/dist/`) SHALL be regenerated
+from this change's `web/src` via the dev-time `make web-build` path and
+committed; the regenerated OpenAPI contract
+(`internal/web/api/openapi.{json,yaml}`) SHALL list the playback
+descriptor's `codecs` field; the Go embed directive and the node-free Go
+build gate stay untouched.
+
+#### Scenario: Committed dist is the fresh build of this change's SPA
+
+- **WHEN** the committed `internal/web/dist` bundle is compared against a fresh build of this change's `web/src`
+- **THEN** `dist/index.html` and hashed `assets/*.js` exist, the bundle carries the pre-mount capability probe, both OpenAPI files list the descriptor's `codecs` field, and the committed tree stays clean after a fresh `npm run build` — the committed dist IS the current build

@@ -1,9 +1,9 @@
 # Mellifera API Reference
 
 > Scope: the current HTTP edge of the single Go binary. Grounded in
-> `internal/api/{router,handlers,playback,parsers,middleware}.go`,
-> `internal/web/{web,swagger}.go`, `internal/stream/doc.go`,
-> `internal/enrich/state.go`, and `cmd/mellifera/main.go`. Authoritative design:
+> `internal/api/{router,handlers,playback,playback_events,parsers,middleware}.go`,
+> `internal/web/{web,swagger}.go`, `internal/stream/{doc,describe,codecs}.go`,
+> `internal/refusal`, `internal/enrich/state.go`, and `cmd/mellifera/main.go`. Authoritative design:
 > `docs/architecture.md` (§2 protos, §3.1 document model, §7.3 restart, §9.1
 > schema, §11.5 Principal, §11.6 errors); behavioral requirements:
 > `openspec/specs/` (scan-library, plugin-pipeline, async-enrichment,
@@ -16,7 +16,9 @@
 > scan-library → plugin-pipeline (Phase A) → async-enrichment (B1) → web-ui
 > (Phase 1/2a); re-actualized 2026-10-09 for web-ui 2b+2c → serials-library →
 > web-ui-phase-3 → media-preview; re-actualized 2026-10-10 for packaged-playback
-> + element-pages; the per-feature records live in git history
+> + element-pages; re-actualized 2026-10-31 for playback-capability-gate
+> (the descriptor's `codecs`, the play retry's 400 refusal family, the
+> `device-cannot-decode` beacon); the per-feature records live in git history
 > and `openspec/changes/archive/`.
 
 ## 1. Surfaces and authentication
@@ -244,12 +246,25 @@ Packaged-playback verb split — the read half. `200 OK` via the
 
 ```json
 { "mode": "direct" | "hls", "state": "none|partial|complete|failed",
-  "play_url": "/media/<id>/<nonce>/index.m3u8", "sections": [ … ] }
+  "play_url": "/media/<id>/<nonce>/index.m3u8", "sections": [ … ],
+  "codecs": ["avc1.640028", "mp4a.40.2"] }
 ```
 
 `sections` carries the container-chapter projection. The fresh HMAC media
 token rides the `Set-Cookie` header — deliberately NEVER a body field.
 `404` for an unknown item.
+
+Additive `codecs` field (`playback-capability-gate`, additive — existing
+clients keep working): on an `hls` answer only, the RFC 6381 codec strings
+of the published pack — video first, then audio in rendition order.
+Recorded at publish into `doc["streams"].codecs` by ffprobe-probing each
+variant playlist of the published build (the MP4 muxer's sample entries,
+not the source's — `internal/stream/codecs.go`); a streams namespace
+predating the record composes the same strings read-side from the stored
+source ffprobe facts (a remux carries the source's streams). When neither
+composes, the field is simply absent (fail-open — never a failed pack,
+never a wrong refusal). Direct answers never carry it, and `Describe`
+never re-probes: stored facts only.
 
 Honest-descriptor addition (`tv-playback-unblock`, additive — existing
 clients keep working): a direct floor whose source container is not
@@ -268,6 +283,13 @@ floor is preparing) or `{"retry":true}` (re-enqueue a failed packaging
 run — `{"queued":true}` when one existed) or `{"from_seconds":…}`
 (accepted, reserved — a v1 no-op). `404` unknown item; nil closure → `503`.
 
+Refusal family (`playback-capability-gate`): when the pack gate refuses
+the retry, the answer is `400` in the same family as `nothing_failed` —
+`error.code` is the gate token (`codec_not_opted_in` | `codec_unsupported`,
+exactly the descriptor's `state_reason` vocabulary) with `retryable: false`
+(the typed `refusal.PlayRefusal`, `internal/refusal`). Nothing is
+re-enqueued; the SPA renders the descriptor's matching unsupported banner.
+
 ### `POST /api/v1/playback-events` — playback failure beacon (browse group)
 
 Best-effort, rate-limited diagnostics firehose from the SPA: on playback
@@ -277,6 +299,14 @@ preparing-state stall) the player sends one
 `video-error` / `stalled`). Never load-bearing: a dropped or rejected
 beacon is swallowed — no retry, no auto-requeue, no user-visible error;
 the payload carries data only, never token or credential material.
+
+The `code` value is open-form (any non-empty string — only `mode` and
+`phase` are closed vocabularies; an unknown value there is `400` bad_request).
+Additive sender (`playback-capability-gate`): the SPA's pre-mount
+`MediaSource.isTypeSupported` probe — refusing to mount an HLS stream the
+device cannot decode, in favor of an honest unsupported banner — rides the
+same shape once as `{mode:"hls", phase:"video-error",
+code:"device-cannot-decode", detail:<probed mime>}`.
 
 ### `GET /api/v1/progress?limit=` — recent playback positions
 
