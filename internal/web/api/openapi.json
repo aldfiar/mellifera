@@ -1831,6 +1831,43 @@
                 }
             }
         },
+        "/playback-events": {
+            "post": {
+                "tags": [
+                    "playback"
+                ],
+                "summary": "Record a playback-event beacon (fire-and-forget telemetry)",
+                "operationId": "playback-event-beacon",
+                "parameters": [
+                    {
+                        "description": "beacon payload",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.beaconRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "beacon accepted; entire effect is one INFO log line"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/progress": {
             "get": {
                 "tags": [
@@ -2569,6 +2606,26 @@
                 }
             }
         },
+        "api.beaconRequest": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "item_id": {
+                    "type": "string"
+                },
+                "mode": {
+                    "type": "string"
+                },
+                "phase": {
+                    "type": "string"
+                }
+            }
+        },
         "api.createLibraryRequest": {
             "type": "object",
             "properties": {
@@ -2974,6 +3031,9 @@
                     }
                 },
                 "state": {
+                    "type": "string"
+                },
+                "state_reason": {
                     "type": "string"
                 },
                 "voiceovers": {

@@ -140,6 +140,19 @@ definitions:
       retryable:
         type: boolean
     type: object
+  api.beaconRequest:
+    properties:
+      code:
+        type: string
+      detail:
+        type: string
+      item_id:
+        type: string
+      mode:
+        type: string
+      phase:
+        type: string
+    type: object
   api.createLibraryRequest:
     properties:
       description:
@@ -410,6 +423,8 @@ definitions:
           type: object
         type: array
       state:
+        type: string
+      state_reason:
         type: string
       voiceovers:
         items:
@@ -1979,6 +1994,30 @@ paths:
       summary: Poll a pairing request's status and pick up the device token once
       tags:
       - pair
+  /playback-events:
+    post:
+      operationId: playback-event-beacon
+      parameters:
+      - description: beacon payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.beaconRequest'
+      responses:
+        "204":
+          description: beacon accepted; entire effect is one INFO log line
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Record a playback-event beacon (fire-and-forget telemetry)
+      tags:
+      - playback
   /progress:
     get:
       operationId: list-progress
