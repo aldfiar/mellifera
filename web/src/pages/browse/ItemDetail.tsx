@@ -22,6 +22,7 @@ import type {
 import {
   ENDPOINTS,
   fetchSidecarText,
+  descriptorInstanceId,
   getPlayback,
   getSeries,
   hasFrameGrabberThumb,
@@ -406,10 +407,12 @@ function ItemLoadedView(props: {
   // Pack-on-play (tv-playback-unblock D6): a preparing direct descriptor is
   // not a player answer — the page fires ONE POST /play {retry:false} asking
   // the server to enqueue the packaging run, keyed on the DESCRIPTOR
-  // INSTANCE (the state+play_url identity): a poll refetch answering the
-  // same instance never re-fires; a genuinely new preparing instance does.
-  // The POST's canonical error surfaces inline (the page's ErrorState
-  // posture below) — never an auto-retry (retry: 0, and the instance ref).
+  // INSTANCE (descriptorInstanceId: state + the tokenless play_url path —
+  // the query token is re-minted per GET and is NOT identity): a poll
+  // refetch answering the same instance never re-fires; a genuinely new
+  // preparing instance does. The POST's canonical error surfaces inline
+  // (the page's ErrorState posture below) — never an auto-retry (retry: 0,
+  // and the instance ref).
   const descriptor = playback.data;
   const descriptorPreparing =
     descriptor !== undefined &&
@@ -417,7 +420,7 @@ function ItemLoadedView(props: {
     descriptor.state === "preparing";
   const packInstanceKey =
     descriptorPreparing && descriptor
-      ? `${descriptor.state}|${descriptor.play_url}`
+      ? descriptorInstanceId(descriptor)
       : null;
   const packInstanceRef = useRef<string | null>(null);
   const playPack = useMutation({

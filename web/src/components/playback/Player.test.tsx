@@ -151,13 +151,29 @@ describe("Player — packaged attach (hls.js over the stream playlist)", () => {
     expect(theVideo().getAttribute("src")).toBeNull();
   });
 
-  it("destroys the loader when the play URL changes (repack / re-mint)", () => {
+  it("destroys and rebuilds the loader when the play_url PATH changes (repack)", () => {
     const { rerender } = render(wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} />));
     rerender(wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ play_url: "/media/itm_1_9/def456/index.m3u8?token=t2" })} />));
 
     expect(hls.instances).toHaveLength(2);
     expect(hls.instances[0].destroy).toHaveBeenCalled();
     expect(hls.instances[1].loadSource).toHaveBeenCalledWith("/media/itm_1_9/def456/index.m3u8?token=t2");
+  });
+
+  it("does NOT rebuild the loader on a token re-mint (same path — D6 amended after live-TV mediaSourceRequiresReset)", () => {
+    const { rerender } = render(wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} />));
+    // The poll's refetch answers the same logical descriptor with a freshly
+    // minted token: identity (state + tokenless path) is unchanged, so the
+    // loader and its MediaSource must survive the refetch.
+    rerender(wrap(
+      <Player
+        itemId="itm_1_9"
+        descriptor={hlsDescriptor({ play_url: `${HLS_DESCRIPTOR.play_url.split("?")[0]}?token=t2` })}
+      />,
+    ));
+
+    expect(hls.instances).toHaveLength(1);
+    expect(hls.instances[0].destroy).not.toHaveBeenCalled();
   });
 });
 
@@ -461,7 +477,7 @@ describe("Player — failure surfacing (tv-playback-unblock 4.3)", () => {
       "direct",
       "video-error",
       "network",
-      "",
+      "no media error message",
     );
   });
 
@@ -507,7 +523,7 @@ describe("Player — failure surfacing (tv-playback-unblock 4.3)", () => {
       "hls",
       "fatal",
       "mediaError/bufferAppendError",
-      "",
+      "no transport status",
     );
   });
 
@@ -520,7 +536,7 @@ describe("Player — failure surfacing (tv-playback-unblock 4.3)", () => {
     expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
   });
 
-  it("clears the banner on re-attach (play URL change)", () => {
+  it("clears the banner on re-attach (play_url PATH change — a repack)", () => {
     const { rerender } = render(wrap(<Player itemId="itm_1_9" descriptor={DIRECT_DESCRIPTOR} />));
     setMediaError(theVideo(), 4, "");
     fireEvent.error(theVideo());
@@ -530,7 +546,7 @@ describe("Player — failure surfacing (tv-playback-unblock 4.3)", () => {
       wrap(
         <Player
           itemId="itm_1_9"
-          descriptor={{ ...DIRECT_DESCRIPTOR, play_url: "/media/itm_1_9/original?token=t2" }}
+          descriptor={{ ...DIRECT_DESCRIPTOR, play_url: "/media/itm_1_9/repacked/original?token=t2" }}
         />,
       ),
     );

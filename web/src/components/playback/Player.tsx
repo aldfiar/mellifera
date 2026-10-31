@@ -115,6 +115,13 @@ export default function Player(props: PlayerProps): ReactElement {
   const [ended, setEnded] = useState(false);
 
   const isHls = descriptor.mode === "hls";
+  // The attach identity (tv-playback-unblock D6, amended at GATE 2 by live-TV
+  // evidence): play_url's query token is re-minted on every descriptor GET,
+  // so the attach effects key on the tokenless PATH — a re-mint must never
+  // rebuild the h.js loader / MSE (the TV webview answers such churn with a
+  // fatal mediaSourceRequiresReset; the fresh token is still what loadSource
+  // OPENS, it just doesn't drive the effect).
+  const playPath = descriptor.play_url.split("?")[0];
 
   // beacon — one best-effort playback event per failure edge (web-ui delta
   // "Playback event beacon client"): sendPlaybackEvent already swallows every
@@ -148,9 +155,11 @@ export default function Player(props: PlayerProps): ReactElement {
       return;
     }
     reportedRef.current = 0;
-    // A banner never outlives its attach: a repack or re-mint swaps the play
-    // URL, the effect re-runs, and the surface starts clean (web-ui delta
-    // "Playback failure surfacing" — banners clear on re-attach).
+    // A banner never outlives its attach: a repack (a different play_url
+    // PATH) re-runs this effect and the surface starts clean (web-ui delta
+    // "Playback failure surfacing" — banners clear on re-attach). A re-mint
+    // (token-only change, same path) deliberately does NOT re-run — see the
+    // playPath note above.
     setError(null);
     if (isHls && Hls.isSupported()) {
       const hls = new Hls();
@@ -163,7 +172,14 @@ export default function Player(props: PlayerProps): ReactElement {
         }
         const code = `${data.type}/${data.details}`;
         const status = data.response?.code ?? null;
-        const detail = status === null ? "" : String(status);
+        // D7 requires five non-empty strings; a MEDIA_ERROR fatal carries no
+        // HTTP response — fall through to the underlying error's message so
+        // the beacon always lands (live TV 2026-10-31: detail "" 400'd away
+        // exactly on the mediaSourceRequiresReset edge the server needed).
+        const detail =
+          status !== null
+            ? String(status)
+            : (data.error?.message?.slice(0, 200) || "no transport status");
         setError({ lane: "hls", code, status, detail });
         beacon("hls", "fatal", code, detail);
       });
@@ -180,7 +196,9 @@ export default function Player(props: PlayerProps): ReactElement {
     const onVideoError = (): void => {
       const mediaError = video.error;
       const code = mediaErrorClass(mediaError);
-      const detail = mediaError?.message ?? "";
+      // Non-empty guarantee (D7 five-string shape): some browsers leave the
+      // MediaError message empty — the code already names the class.
+      const detail = mediaError?.message || "no media error message";
       setError({ lane: "direct", code, status: null, detail });
       beacon("direct", "video-error", code, detail);
     };
@@ -190,7 +208,7 @@ export default function Player(props: PlayerProps): ReactElement {
       video.removeAttribute("src");
       video.load();
     };
-  }, [descriptor.play_url, isHls, itemId]);
+  }, [playPath, isHls, itemId]);
 
   // Voiceover rendition (serial-watch-flow 5.3): the page's selection maps
   // document order → hls.audioTrack (0 = embedded, k+1 = the descriptor's
@@ -221,7 +239,7 @@ export default function Player(props: PlayerProps): ReactElement {
     return () => {
       hls.off(Hls.Events.AUDIO_TRACKS_UPDATED, apply);
     };
-  }, [voiceoverTrack, descriptor.play_url, isHls]);
+  }, [voiceoverTrack, playPath, isHls]);
 
   // Progress reporting — best-effort; the playhead edges (pause/ended) and
   // unmount flush the tail position.

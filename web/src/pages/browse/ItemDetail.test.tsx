@@ -1289,6 +1289,35 @@ describe("ItemDetail — pack-on-play wiring (tv-playback-unblock 4.2)", () => {
     expect(playSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("fires POST /play exactly once across a ROTATING play_url (token re-minted per GET — live-TV POST-storm regression)", async () => {
+    mockPackItem();
+    const playSpy = vi
+      .spyOn(apiModule, "playItem")
+      .mockResolvedValue({ queued: true });
+    // The server re-mints play_url's query token on EVERY descriptor GET
+    // (per-request expiry + HMAC): the answer is the same logical
+    // descriptor every time, only the credential rotates. Identity is
+    // state + the tokenless path (descriptorInstanceId), so exactly one
+    // POST still fires.
+    let mints = 0;
+    vi.spyOn(apiModule, "getPlayback").mockImplementation(async () => {
+      mints += 1;
+      return {
+        ...PREPARING_PLAYBACK,
+        play_url: `/media/${PACK_ITEM_ID}/original?token=mint-${mints}`,
+      };
+    });
+
+    renderAtId(PACK_ITEM_ID, freshClient());
+    await settle();
+
+    expect(playSpy).toHaveBeenCalledTimes(1);
+
+    // Four poll ticks, four fresh mints, one POST — the guard holds.
+    await flush(PREPARING_POLL_INTERVAL_MS * 4);
+    expect(playSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("mounts the ordinary player when the descriptor leaves preparing into hls", async () => {
     mockPackItem();
     vi.spyOn(apiModule, "playItem").mockResolvedValue({ queued: true });

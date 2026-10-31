@@ -54,6 +54,14 @@
     rotation question (above) still open for ruling.
   - Next: git-check (built-in last task) once the 1.1 fix receipt lands →
     GATE 2 (@wf-reviewer re-runs every duty + reads six-slot prose).
+- GIT STATE: branch feature/tv-playback-unblock (cut from the deployed
+  hotfix branch), pushed to origin. Commits: 7cbc56a (embedded artifacts),
+  c46a3de (the change, 48 files), 6c74af0 (recommendation-sorting proposal
+  recorded per user choice). git-check duty GREEN (clean tree, upstream
+  even). All 13 receipts green. GATE 2 review COMPLETE: PASS-WITH-CHANGES —
+  12/12 duties re-run green by the reviewer (plus full `go test ./...` and
+  `openspec validate --strict`), all five flags a–e ruled PASS; the single
+  change was the P2 beacon empty-detail seam (fixed below, fresh receipts).
 - Prod context (this incident, already done BEFORE this change):
   - ser_3 ep2 itm_2_e76d698d4a147d7c manually unblocked 2026-10-31 ~11:45 MSK
     (POST /play retry:false → 202 → build complete → descriptor mode=hls).
@@ -67,3 +75,39 @@
 - Pending second thread (user-approved, not started): container image slimming
   (813 MB → target ~400/230 MB; static ffmpeg + `-ldflags "-s -w"`, optional
   distroless; dispatch-lane task, separate from this change).
+
+## Post-GATE-2: live-TV incident and the fix (2026-10-31 ~18:30–19:00 MSK)
+
+The user played an unpackaged episode (itm_2_ab305a2eea05b6d4) on the TV
+immediately after the deploy: descriptor poll fired the pack-on-play
+end-to-end (build ~14 s, playlist/init/seg 200s), then the player died with
+hls.js fatal `mediaSourceRequiresReset` — and the failure beacons BOUNCED
+400 (server: five-non-empty-strings; client sent detail ""). Log evidence
+(docker logs) pinned three defects, all fixed client-side within 4.2/4.3:
+
+1. `play_url`'s query token is re-minted per GET (per-second expiry + HMAC),
+   so the D6 instance key `state|play_url` rotated every poll → SIX
+   POST /play for one page-open (orchestrator deduped the build). Fix:
+   `descriptorInstanceId` (api.ts) = state + tokenless path; ItemDetail keys
+   the POST guard on it.
+2. The Player attach effect keyed on `descriptor.play_url` → every refetch
+   (incl. the flip-adjacent invalidations at poll cadence) tore down
+   hls.js/MSE and rebuilt ~2s apart; the TV webview's MSE ended up poisoned
+   → the fatal. Desktop Chrome survived the same churn silently (already-
+   packaged items never exercised the preparing→flip path at all). Fix:
+   attach + voiceover effects key on `playPath` (tokenless path); a re-mint
+   never rebuilds (regression test pins it).
+3. hls fatal detail was `status === null ? "" : String(status)` — media
+   errors carry no HTTP status → detail "" → the server's D7 five-non-empty
+   shape 400'd the exact beacon we needed. Fix: fall back to
+   `data.error?.message` (slice 200) or "no transport status"; direct lane
+   falls back to "no media error message". This IS the reviewer's P2.
+
+Tests: two new regression tests (rotating-token one-POST in ItemDetail.test;
+no-rebuild-on-re-mint in Player.test); the old "destroys the loader on
+re-mint" and "clears banner on token-only change" tests rewritten to pin the
+correct semantics (path change = re-attach; re-mint = survive). FRESH
+receipts post-fix: 4.1 (27 tests + tsc), 4.2 (47), 4.3 (32) all green;
+4.4 re-verified after the dist regen + commit. Design.md D6 carries the
+amendment note. Pack itself verified healthy on the box: init.mp4 = avc1
+(H.264, avcC) + 2× AAC — TV-decodable; the failure was pure client churn.

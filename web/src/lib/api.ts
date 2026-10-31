@@ -1032,6 +1032,20 @@ export async function putItemParsers(
   });
 }
 
+// descriptorInstanceId — the descriptor's STABLE identity (tv-playback-unblock
+// D6, amended at GATE 2 by live-TV evidence 2026-10-31): play_url's query
+// token is RE-MINTED on every descriptor GET (per-request expiry + HMAC), so
+// the full URL cannot serve as identity — a poll refetch answering the same
+// logical descriptor would look like a new instance. The live TV fired six
+// POST /play for one page-open, and the Player rebuilt its hls.js/MSE on
+// every refetch until the webview answered mediaSourceRequiresReset. The
+// identity is the answer's SUBSTANCE: state + the tokenless play_url path.
+// The fresh token stays in play_url — it is what the player OPENS, never
+// what it compares.
+export function descriptorInstanceId(d: PlaybackDescriptor): string {
+  return `${d.state}|${d.play_url.split("?")[0]}`;
+}
+
 // getPlayback — GET /api/v1/items/{id}/playback (handlers.go itemPlayback,
 // packaged-playback). Read-only descriptor: mode/state/play_url/sections.
 // The handler ALSO sets the cookie-primary media token on the response — the
