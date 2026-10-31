@@ -140,7 +140,7 @@ func pbNewWorld(t *testing.T) *pbWorld {
 			if err := json.Unmarshal(row.Document, &doc); err != nil {
 				return api.Playback{}, err
 			}
-			mode, state, playURL, sections, voiceovers, stateReason := media.Describe(itemID, doc)
+			mode, state, playURL, sections, voiceovers, stateReason, _ := media.Describe(itemID, doc)
 			tok, _ := media.Issue(itemID, time.Now())
 			return api.Playback{Mode: mode, State: state, PlayURL: playURL, StateReason: stateReason, Sections: sections, Voiceovers: voiceovers, Token: tok}, nil
 		},

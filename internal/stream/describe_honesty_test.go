@@ -150,7 +150,7 @@ func TestDescribeHonesty(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			s := &Service{Secret: []byte("k"), OptInCodecs: tc.optIn, Root: t.TempDir()}
-			mode, state, playURL, _, _, reason := s.Describe("it", tc.doc)
+			mode, state, playURL, _, _, reason, _ := s.Describe("it", tc.doc)
 			if mode != tc.wantMode || state != tc.wantState {
 				t.Fatalf("mode/state = %q/%q, want %q/%q", mode, state, tc.wantMode, tc.wantState)
 			}
@@ -184,7 +184,7 @@ func TestDescribeHonesty(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		mode, state, _, _, _, reason := s.Describe("it", d)
+		mode, state, _, _, _, reason, _ := s.Describe("it", d)
 		if mode != ModeDirect || state != StatePreparing || reason != ReasonNonNativeContainer {
 			t.Fatalf("descriptor = %q/%q/%q, want the preparing projection", mode, state, reason)
 		}

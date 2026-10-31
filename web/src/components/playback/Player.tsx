@@ -162,6 +162,34 @@ export default function Player(props: PlayerProps): ReactElement {
     // playPath note above.
     setError(null);
     if (isHls && Hls.isSupported()) {
+      // The pre-mount capability probe (playback-capability-gate 3.1, D3):
+      // when the descriptor names the pack's codecs, compose ONE probe —
+      // video codec plus the first audio codec, the device's default mount —
+      // and ask MediaSource BEFORE any loader exists. A miss renders the
+      // honest device-unsupported banner (never a spinner, never the loader's
+      // cryptic fatal) and beacons device-cannot-decode once; no mount
+      // happens. Absent/empty codecs (legacy packs, fail-open) or a device
+      // without MediaSource skips the probe entirely — the mount below is
+      // byte-for-byte today's; a probe pass mounts with zero behavior
+      // change. Clear-on-re-attach is inherited: the setError(null) above
+      // re-runs with every attach (playPath-keyed, D6).
+      const codecs = descriptor.codecs;
+      if (codecs && codecs.length > 0 && typeof MediaSource !== "undefined") {
+        const probeMime =
+          codecs.length > 1
+            ? `video/mp4; codecs="${codecs[0]},${codecs[1]}"`
+            : `video/mp4; codecs="${codecs[0]}"`;
+        if (!MediaSource.isTypeSupported(probeMime)) {
+          setError({
+            lane: "hls",
+            code: "device-cannot-decode",
+            status: null,
+            detail: probeMime,
+          });
+          beacon("hls", "video-error", "device-cannot-decode", probeMime);
+          return;
+        }
+      }
       const hls = new Hls();
       hlsRef.current = hls;
       hls.loadSource(descriptor.play_url);
@@ -423,6 +451,13 @@ export default function Player(props: PlayerProps): ReactElement {
 // network class; the hls lane carries the error type/details and the failing
 // request's HTTP status when one is present.
 function errorText(error: PlayerError): string {
+  // The pre-mount probe's miss (playback-capability-gate 3.1): the device
+  // cannot decode the pack's codecs — its own wording, distinct from the
+  // media-error classes and from the loader's stream failure; the probe mime
+  // in the detail carries the codec names.
+  if (error.lane === "hls" && error.code === "device-cannot-decode") {
+    return `Ошибка видео: устройство не поддерживает декодирование кодеков этого потока (device-cannot-decode: ${error.detail}).`;
+  }
   if (error.lane === "hls") {
     const status = error.status === null ? "" : ` (HTTP ${error.status})`;
     return `Ошибка потока: ${error.code}${status}. Попробуйте перепаковку или повторное воспроизведение.`;

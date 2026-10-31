@@ -305,6 +305,15 @@ export interface PlaybackDescriptor {
   // optional in TS like every additive field: absence means "no reason to
   // surface", never a type hole.
   state_reason?: PlaybackStateReason;
+  // codecs — the additive capability-probe list (playback-capability-gate,
+  // omitempty): the pack's decoded codec names, video FIRST then audio in
+  // rendition order — the exact order the Player's pre-mount probe composes
+  // ('video/mp4; codecs="<video>,<first audio>"'). Present on hls answers
+  // whose codecs could be composed; absent when they could not (fail-open —
+  // the legacy packs predate the recording) and on direct answers (the probe
+  // gates only the hls mount). Optional in TS like every additive field:
+  // absence or an empty list means "no probe possible", never a type hole.
+  codecs?: string[];
 }
 
 // playback.go Playback.Voiceovers — one voiceover entry (serial-watch-flow

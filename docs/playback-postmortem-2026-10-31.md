@@ -249,8 +249,42 @@ beacon evidence named both precisely):
 Also observed: the packer currently does NOT honor the `OptInCodecs` knob
 (HEVC packs were built while the knob was off).
 
-Route: a follow-up change (per-device MSE capability gate + packer knob
-enforcement) plus the open F5 transcode-to-AVC lane.
+Also ruled the same day (human ruling on artifact replacement): one current
+build per item — a repack replaces the item's previous build directories at
+publish instead of leaving them in place until budget eviction.
+
+Route (updated 2026-10-31 evening): all three findings close in openspec
+change `playback-capability-gate` (`openspec/changes/playback-capability-gate`)
+— APPLIED on the `feature/tv-playback-unblock` branch (tasks green), pending
+merge and deploy:
+
+- **HEVC-on-TV MSE fatal** → the descriptor now carries the pack's codecs
+  (additive `codecs` — RFC 6381 strings recorded at publish, legacy builds
+  composed read-side from the stored source ffprobe facts) and the SPA runs
+  a `MediaSource.isTypeSupported` pre-mount probe on the default mount — a
+  probe miss is an honest per-device banner plus one beacon line, never the
+  cryptic append fatal.
+- **The packer knob gap** → one `PackGate` judge is consulted on EVERY pack
+  seam (describe, frontier packability, the play verb's retry, the integrity
+  repack sweep, the build executor); a policy refusal
+  (`codec_not_opted_in` / `codec_unsupported`) never lands a `pack_failed`
+  ledger row — no 30-day cooldown charged to a knob setting, and flipping
+  the knob on heals through the frontier with no manual step.
+- **The artifact replacement ruling** → publishing a fresh build evicts the
+  item's previous build directories immediately, after the document write
+  that names the new build (`.tmp-*` staging stays untouchable — the F2
+  lesson, now a rule; budget recency accounting untouched); a client
+  holding a superseded playlist URL recovers by refetching the descriptor.
+
+Still deliberately open, unchanged by the gate:
+
+- **The F5 transcode-to-AVC lane** — the only lane that can ever make
+  HEVC-on-TV or the AVI/mpeg4-ASP class actually playable; the gate makes
+  the refusal honest, not playable.
+- **Manifest / master-playlist CODECS attributes** — deliberately not part
+  of `playback-capability-gate` (the probe rides the descriptor, never the
+  playlist); routed to the F5 design as a named line (see the change's
+  design.md Open Questions).
 
 ## Future design (candidates, not decisions)
 

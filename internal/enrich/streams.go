@@ -28,11 +28,30 @@ const streamsOwner = "streams"
 
 // PackOutcome is one published packaging build, returned over the Deps.PackItem
 // seam (Interface 2). Playlist is the /media-relative artifact pointer under
-// the run's build-nonce directory; Nonce is that directory's name.
+// the run's build-nonce directory; Nonce is that directory's name. Codecs is
+// the build's recorded RFC 6381 codec strings (playback-capability-gate D2 —
+// video first, then audio in rendition order; nil when uncomposable, which
+// rides the completion write as an absent key).
 type PackOutcome struct {
 	Playlist string
 	Nonce    string
+	Codecs   []string
 }
+
+// PolicyRefusal is the typed build-time refusal (playback-capability-gate
+// D4): the PackItem seam returns it when the pack gate closes AFTER a job was
+// already enqueued (the knob flipped between enqueue and build). It is a
+// policy verdict, never a pack failure — workStreams persists the failed
+// state with Reason (the gate's state_reason token) and writes NO pack_failed
+// ledger row, so a knob setting never charges the flat 30-day cooldown and
+// re-enabling the knob heals through the frontier with no manual step.
+type PolicyRefusal struct {
+	Reason string
+}
+
+// Error carries the reason verbatim — the descriptor's own state_reason
+// token, so persisted documents and read-side refusals share one vocabulary.
+func (e PolicyRefusal) Error() string { return "packaging refused by policy: " + e.Reason }
 
 // EnqueuePack enqueues one packaging job for itemID into the running queue's
 // channel (the streams lane's dispatch entry — the frontier's and the play
@@ -69,7 +88,11 @@ type laneTask struct {
 // row reload immediately before the writeMu-guarded write) so a concurrent
 // metadata write can never be clobbered. Terminal failure records a
 // pack_failed ledger row under __streams__ (flat 30-day cooldown, no
-// doubling); success clears the row (reset-on-success). Metadata completion —
+// doubling); a PolicyRefusal — the pack gate closed after enqueue,
+// playback-capability-gate D4 — branches BEFORE the ledger: it persists the
+// failed state with the gate token and writes NO row, so a knob setting
+// never charges the cooldown. Success clears the row (reset-on-success).
+// Metadata completion —
 // lifecycle states, metadata namespaces, _stages — is untouched either way.
 // A lane with a nil PackItem seam is disabled: the task is a no-op.
 func (q *Queue) workStreams(ctx context.Context, itemID string) {
@@ -95,18 +118,42 @@ func (q *Queue) workStreams(ctx context.Context, itemID string) {
 	outcome, packErr := q.deps.PackItem(ctx, itemID, documentAbsolutePath(doc), docFFprobe(doc),
 		documentVoiceoverPaths(doc, row.RelativePath))
 	if packErr != nil {
+		var refusal PolicyRefusal
+		if errors.As(packErr, &refusal) {
+			// A policy verdict (the gate closed between enqueue and build)
+			// is never a pack failure: persist the honest failed state with
+			// the gate token and write NO pack_failed ledger row — a knob
+			// setting never charges the 30-day cooldown, and flipping the
+			// knob on heals through the frontier (no ledger to clear).
+			q.persistStreams(ctx, itemID, failedStreamsDoc(refusal.Reason))
+			return
+		}
 		q.recordPackFailure(ctx, itemID, packErr)
-		q.persistStreams(ctx, itemID, failedStreamsDoc(packErr))
+		q.persistStreams(ctx, itemID, failedStreamsDoc(packErr.Error()))
 		return
 	}
 	q.storeWrite(func() error { // reset-on-success
 		return q.deps.Store.ClearFailure(ctx, itemID, streamsLaneID)
 	})
-	q.persistStreams(ctx, itemID, map[string]any{
+	success := map[string]any{
 		"state":    "complete",
 		"playlist": outcome.Playlist,
 		"nonce":    outcome.Nonce,
-	})
+	}
+	if len(outcome.Codecs) > 0 {
+		// The codec record rides the completion write (playback-capability-gate
+		// D2); an uncomposable record (nil) stays an absent key.
+		success["codecs"] = outcome.Codecs
+	}
+	q.persistStreams(ctx, itemID, success)
+	// Publish replacement (playback-capability-gate D5): only AFTER the
+	// success persist — the document names the new build, so evicting the
+	// superseded directories can never strand the descriptor's integrity
+	// guard on a deleted current build. The failure paths above return
+	// before this line; a landed pack is never re-failed by eviction.
+	if q.deps.AfterPackPersist != nil {
+		q.deps.AfterPackPersist(itemID, outcome.Nonce)
+	}
 }
 
 // renewLease extends itemID's lease at half-TTL intervals until done closes —
@@ -176,12 +223,14 @@ func (q *Queue) persistStreams(ctx context.Context, itemID string, streams map[s
 
 // failedStreamsDoc is the persisted failure state: state failed + the failure
 // timestamp (the cooldown's display half; the authoritative cooldown lives in
-// the ledger row).
-func failedStreamsDoc(cause error) map[string]any {
+// the ledger row) + the free-text reason. On the policy-refusal path reason
+// is exactly the gate's state_reason token (D1 — one vocabulary); on a real
+// pack failure it is the cause's message.
+func failedStreamsDoc(reason string) map[string]any {
 	return map[string]any{
 		"state":     "failed",
 		"failed_at": now().UTC().Format(time.RFC3339),
-		"reason":    cause.Error(),
+		"reason":    reason,
 	}
 }
 

@@ -40,7 +40,10 @@ import (
 // ffprobe carries the stored facts for one decision only: when the probed
 // duration is at most HeadChunk the whole file IS the head chunk, so the tail
 // phase is skipped (a seek past EOF would mint a junk fragment). Absent facts
-// simply run both phases. A cancelled context (or any ffmpeg failure) is an
+// simply run both phases. After the build publishes, the returned Build.Codecs
+// records the build's RFC 6381 codec strings, composed from probing the
+// published variant playlists (codecs.go D2) — nil when uncomposable, which
+// never fails the pack. A cancelled context (or any ffmpeg failure) is an
 // error; partial directories are cleaned up and nothing is returned, so the
 // caller persists no pointer.
 func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (Build, error) {
@@ -66,16 +69,22 @@ func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[
 		return Build{}, err
 	}
 	tmp := filepath.Join(s.Root, itemID, ".tmp-"+nonce)
+	resolved := resolvableVoiceovers(voiceovers)
 
-	if err := s.packInto(ctx, itemID, nonce, absPath, ffprobe, resolvableVoiceovers(voiceovers), tmp, final); err != nil {
+	if err := s.packInto(ctx, itemID, nonce, absPath, ffprobe, resolved, tmp, final); err != nil {
 		os.RemoveAll(tmp) // best-effort cleanup; nothing is referenced yet
 		os.RemoveAll(final)
 		return Build{}, err
 	}
 	os.RemoveAll(tmp)
+	// The codec record rides the published artifact (D2): probe the build's
+	// variant playlists and compose through the table. Fail-open — a nil
+	// record never fails a landed pack.
+	codecs := s.buildCodecs(ctx, final, variantLayout(len(resolved)))
 	return Build{
 		Playlist: mediaPrefix + "/" + itemID + "/" + nonce + "/index.m3u8",
 		Nonce:    nonce,
+		Codecs:   codecs,
 	}, nil
 }
 

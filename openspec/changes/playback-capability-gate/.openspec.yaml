@@ -1,0 +1,6 @@
+schema: lite
+created: 2026-10-31
+goal: "No device ever sees a cryptic fatal for a pack its decoder cannot take:
+  the descriptor names the pack's codecs, the SPA answers honestly before
+  attach, the packer and the descriptor agree on what may be packed, and one
+  episode keeps one build"

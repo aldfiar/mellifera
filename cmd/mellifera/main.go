@@ -205,7 +205,11 @@ func main() {
 	// Packaged-playback pack lane (D-3/D-4/D-5): the enrich queue's PackItem
 	// seam closes over the stream Service (Interface 2 — enrich never imports
 	// stream; this closure is the only bridge). The artifact root lives inside
-	// the server's own data space, never a library directory.
+	// the server's own data space, never a library directory. The closure
+	// judges the build-time gate first (playback-capability-gate D4 — the
+	// knob may flip between enqueue and build): a closed verdict returns
+	// enrich.PolicyRefusal and Pack is never called, so the lane fails the
+	// run without charging the pack_failed cooldown.
 	mediaSvc := &stream.Service{
 		Root:        cfg.streamsRoot,
 		Secret:      cfg.mediaSecret,
@@ -213,9 +217,17 @@ func main() {
 		OptInCodecs: cfg.optInCodecs, // descriptor honesty shares the pack lane's knob
 	}
 	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
+		if err := packGateRefusal(ffprobe, mediaSvc.OptInCodecs); err != nil {
+			return enrich.PackOutcome{}, err
+		}
 		build, err := mediaSvc.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
-		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce}, err
+		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs}, err
 	}
+	// Publish replacement (playback-capability-gate D5): after the lane
+	// persists the new build the document names it, so evicting the item's
+	// superseded build directories is safe. Best-effort — EvictSuperseded
+	// never fails the landed pack; budget LRU still owns cross-item pressure.
+	scanDeps.Enrich.AfterPackPersist = mediaSvc.EvictSuperseded
 	// Async enrich queue (arch §4.4): a bounded worker pool that derives pending
 	// (item, plugin) work from items + the ledger and drains it for the process
 	// lifetime. Constructed + started BEFORE the server serves so the first
@@ -326,19 +338,7 @@ func main() {
 				// direct floor answers everything else. queued=true → 202.
 				return packOnPlay(ctx, st, enrichQueue.EnqueuePack, row, cfg.optInCodecs)
 			}
-			var doc map[string]any
-			if err := json.Unmarshal(row.Document, &doc); err != nil {
-				return false, err
-			}
-			streams, _ := doc["streams"].(map[string]any)
-			state, _ := streams["state"].(string)
-			if state != stream.StateFailed {
-				return false, nil // nothing failed → 400 nothing_failed at the handler
-			}
-			if err := enrichQueue.EnqueuePack(itemID); err != nil {
-				return false, err
-			}
-			return true, nil // 202 accepted
+			return retryFailedPack(ctx, st, enrichQueue.EnqueuePack, row, cfg.optInCodecs)
 		},
 		// Stop-frame re-grab (continue-nextup-media D-1..D-4): the watch-event
 		// seam — a per-item debounced, request-detached re-grab of the

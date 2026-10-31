@@ -30,11 +30,16 @@ import (
 // is the fresh media token
 // for the cookie-primary delivery — deliberately excluded from the JSON body
 // (INV4: the token rides the Set-Cookie header, never a copyable body field).
+// Codecs is the additive codec record (playback-capability-gate D6): the
+// pack's RFC 6381 strings, answered on hls descriptors only and omitted when
+// the build's codecs could not be composed (fail-open) — direct descriptors
+// never carry it.
 type Playback struct {
 	Mode        string           `json:"mode"`
 	State       string           `json:"state"`
 	PlayURL     string           `json:"play_url"`
 	StateReason string           `json:"state_reason,omitempty"`
+	Codecs      []string         `json:"codecs,omitempty"`
 	Sections    []map[string]any `json:"sections"`
 	Voiceovers  []map[string]any `json:"voiceovers"`
 	Token       string           `json:"-"`
@@ -56,9 +61,26 @@ type playbackResponse struct {
 	State       string           `json:"state"`
 	PlayURL     string           `json:"play_url"`
 	StateReason string           `json:"state_reason,omitempty"`
+	Codecs      []string         `json:"codecs,omitempty"`
 	Sections    []map[string]any `json:"sections"`
 	Voiceovers  []map[string]any `json:"voiceovers"`
 }
+
+// PlayRefusal is the typed refusal the Deps.Play closure returns when the
+// pack gate refuses a retry (playback-capability-gate D4): the item's failed
+// packaging run is not re-enqueued because the pack lane cannot serve its
+// codecs. Reason is the gate token — exactly the descriptor's state_reason
+// vocabulary (codec_not_opted_in | codec_unsupported) — and itemPlay maps the
+// type to 400 with that token as the error code, retryable: false. It carries
+// no token/credential material (INV4) — the refusal names a policy verdict,
+// never an authorization fact.
+type PlayRefusal struct {
+	Reason string
+}
+
+// Error implements error; the message is the same honest sentence the 400
+// body carries beside the code.
+func (e PlayRefusal) Error() string { return "packaging refused: " + e.Reason }
 
 // playRequest is the body of POST /items/{id}/play. Pointers carry presence:
 // retry absent or false is a plain play acknowledgement; retry true asks for
@@ -117,6 +139,7 @@ func (a *app) itemPlayback(w http.ResponseWriter, r *http.Request) {
 		State:       pb.State,
 		PlayURL:     pb.PlayURL,
 		StateReason: pb.StateReason,
+		Codecs:      wireArray(pb.Codecs),
 		Sections:    wireArray(pb.Sections),
 		Voiceovers:  wireArray(pb.Voiceovers),
 	})
@@ -127,9 +150,9 @@ func (a *app) itemPlayback(w http.ResponseWriter, r *http.Request) {
 // nil slice, and Go marshals nil as null — but the SPA reads
 // .sections.length unguarded (the vip joint's array-ness contract), so the
 // wire answers [] for empty. Pinned end-to-end by TestPlaybackUnblockJoint.
-func wireArray(s []map[string]any) []map[string]any {
+func wireArray[T any](s []T) []T {
 	if s == nil {
-		return []map[string]any{}
+		return []T{}
 	}
 	return s
 }
@@ -137,7 +160,8 @@ func wireArray(s []map[string]any) []map[string]any {
 // itemPlay: parse {id} + body → Deps.Play (ONE domain call) → write
 // playResponse. The ONLY playback mutation (D-7): retry=true re-enqueues a
 // failed packaging run (202 when one existed, 400 "nothing failed"
-// otherwise); retry absent/false is a plain acknowledgement (200). An
+// otherwise, 400 carrying the gate token when the pack gate refuses — D4);
+// retry absent/false is a plain acknowledgement (200). An
 // unknown item → 404; a malformed body or a negative from_seconds → 400
 // BEFORE the domain call. from_seconds is otherwise reserved (no-op in v1).
 //
@@ -169,6 +193,15 @@ func (a *app) itemPlay(w http.ResponseWriter, r *http.Request) {
 	retry := req.Retry != nil && *req.Retry
 	queued, err := a.deps.Play(r.Context(), chi.URLParam(r, "id"), retry, req.FromSeconds)
 	if err != nil {
+		var refusal PlayRefusal
+		if errors.As(err, &refusal) {
+			// The gate refused the retry (D4): the same 400 family as
+			// nothing_failed, the gate token as the code — the descriptor's
+			// own state_reason token, so the SPA's canonical-error rendering
+			// needs no new shape.
+			writeError(w, http.StatusBadRequest, refusal.Reason, refusal.Error(), false)
+			return
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "item "+chi.URLParam(r, "id")+" not found", false)
 			return

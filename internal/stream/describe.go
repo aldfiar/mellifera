@@ -98,12 +98,20 @@ const (
 //     (the D5 guard's wire shape is byte-identical). Cooldown-blind by design:
 //     a preparing item whose enqueue would be cooldown-refused stalls
 //     honestly — the ledger is not a document fact.
+//   - codecs: the RFC 6381 codec strings of the published pack, video first
+//     then audio in rendition order (playback-capability-gate D2/D6) —
+//     answered on hls answers only, nil on every direct answer. The recorded
+//     value (doc["streams"].codecs, persisted at publish) wins; a namespace
+//     predating the record composes the same strings read-side from the
+//     stored source ffprobe facts (a remux carries the source's streams);
+//     a build whose codecs cannot be composed either way answers none
+//     (fail-open). Stored facts only — never a re-probe, never a write.
 //   - integrity guard (D5): a COMPLETE state additionally runs the read-only
 //     ValidateBuild over the nonce the namespace carries; a broken or evicted
 //     build answers the direct floor instead of a playlist the player would
 //     die on. Partial builds and nonce-less namespaces are exempt — their
 //     wire shape is byte-identical to the pre-guard descriptor.
-func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any, stateReason string) {
+func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any, stateReason string, codecs []string) {
 	s.normalize()
 	state = streamState(doc["streams"])
 	voiceovers = projectVoiceovers(doc["parsed"])
@@ -111,7 +119,7 @@ func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, play
 	token, _ := s.Issue(itemID, timeNow())
 	if state == StatePartial || state == StateComplete {
 		if playlist := streamPlaylist(doc["streams"]); playlist != "" && s.buildHealthy(itemID, state, doc["streams"]) {
-			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, chapters, voiceovers, ""
+			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, chapters, voiceovers, "", describeCodecs(doc["streams"], doc["ffprobe"])
 		}
 	}
 	reason := s.floorReason(doc["ffprobe"], state)
@@ -126,18 +134,57 @@ func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, play
 			state = StatePreparing
 		}
 	}
-	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, chapters, voiceovers, reason
+	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, chapters, voiceovers, reason, nil
+}
+
+// describeCodecs resolves the descriptor's additive codecs field for one hls
+// answer (playback-capability-gate D2): the recorded value from the stored
+// streams namespace wins whenever it is present; a namespace predating the
+// record composes the same strings read-side from the stored source ffprobe
+// facts. Pure — the document is already in hand; nothing is re-probed, and
+// an uncomposable build answers nil (fail-open, the field is simply absent).
+func describeCodecs(streams, ffprobe any) []string {
+	if cs := recordedCodecs(streams); len(cs) > 0 {
+		return cs
+	}
+	return legacyCodecs(ffprobe)
+}
+
+// recordedCodecs reads the codec record the lane persisted at publish
+// (doc["streams"].codecs — Interfaces §1, the read side). Nil when the
+// namespace predates the record, when the value is unreadable, or when any
+// entry is not a non-empty string — the legacy composition then gets its
+// chance (D2: the recorded value wins, a broken one never answers).
+func recordedCodecs(streams any) []string {
+	m, ok := streams.(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := m["codecs"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, c := range raw {
+		s, ok := c.(string)
+		if !ok || s == "" {
+			return nil // an unreadable record is no record at all
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // floorReason resolves the descriptor's state_reason for the direct floor
 // (tv-playback-unblock D1/D3 — pure over stored facts): "" for a native
 // container or any state the honesty projection does not answer; for a
 // failed state only the non-native marker (the state itself keeps its value
-// and its retry affordance); for a none-state non-native floor the Classify
-// verdict with the opt-in knob judged explicitly — pack → a pack can land,
-// opt_in → preparing only while the Service's knob is on (otherwise the
-// codecs are the unmet gate), direct_only (the fail-safe verdict for absent
-// facts too, INV2) → packaging cannot help.
+// and its retry affordance); for a none-state non-native floor the PackGate
+// verdict rides through (playback-capability-gate D1 — the same single judge
+// every pack seam consults): gate open → a pack can land (the reason is the
+// container alone), codec_not_opted_in → the opt-in codecs with the knob off,
+// codec_unsupported (the gate's fail-safe for direct_only and absent facts
+// too, INV2) → packaging cannot help.
 func (s *Service) floorReason(ffprobe any, state string) string {
 	if containerNative(ffprobe) {
 		return ""
@@ -152,15 +199,12 @@ func (s *Service) floorReason(ffprobe any, state string) string {
 	if !ok {
 		return ReasonCodecUnsupported
 	}
-	switch Classify(f, true) { // judge codecs with the knob out of the way
-	case ClassPack:
+	switch PackGate(f, s.OptInCodecs) {
+	case GateOpen:
 		return ReasonNonNativeContainer
-	case ClassOptIn:
-		if s.OptInCodecs {
-			return ReasonNonNativeContainer
-		}
+	case Gate(ReasonCodecNotOptedIn):
 		return ReasonCodecNotOptedIn
-	default:
+	default: // ReasonCodecUnsupported
 		return ReasonCodecUnsupported
 	}
 }

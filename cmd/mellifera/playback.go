@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/api"
+	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/orchestrator"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
@@ -69,6 +71,54 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 	return true, nil
 }
 
+// retryFailedPack executes the retry decision for POST /play {retry:true}
+// (playback-capability-gate D4): a failed packaging run re-enqueues exactly
+// when the pack gate opens for the item — the same single judge the
+// descriptor and every pack seam consult (D1), so a knob-off opt-in item
+// refuses with its own state_reason token (api.PlayRefusal → 400) instead of
+// re-enqueueing a build the knob refuses, and a capable or knob-enabled item
+// re-enqueues exactly as before. Nothing failed → (false, nil), the
+// handler's 400 nothing_failed. The refusal is a policy verdict, never a
+// pack failure: no ledger row is written on this path.
+func retryFailedPack(ctx context.Context, st *store.Store, enqueue func(string) error, row store.Item, optInCodecs bool) (bool, error) {
+	doc := decodeItemDoc(row.Document)
+	streams, _ := doc["streams"].(map[string]any)
+	state, _ := streams["state"].(string)
+	if state != stream.StateFailed {
+		return false, nil // nothing failed → 400 nothing_failed at the handler
+	}
+	if gate := stream.PackGate(itemFacts(doc), optInCodecs); gate != stream.GateOpen {
+		return false, api.PlayRefusal{Reason: string(gate)}
+	}
+	if err := enqueue(row.ID); err != nil {
+		return false, err
+	}
+	return true, nil // 202 accepted
+}
+
+// itemFacts reads the stored ffprobe blob out of an item document — the
+// verbatim facts every PackGate verdict judges (INV1/INV2). Absent or
+// unreadable facts read as nil, which PackGate fails safe on.
+func itemFacts(doc map[string]any) map[string]any {
+	ff, _ := doc["ffprobe"].(map[string]any)
+	return ff
+}
+
+// packGateRefusal judges the BUILD-TIME gate (playback-capability-gate D4):
+// a job may have been enqueued while the opt-in knob was enabled and reach
+// the executor after it was disabled — the PackItem closure re-consults the
+// same single judge (D1) right before Pack, and a closed verdict is wrapped
+// in enrich.PolicyRefusal carrying the gate's state_reason token. workStreams
+// branches that error BEFORE the failure ledger: the run ends failed with the
+// token persisted, NO pack_failed row — a knob setting never charges the
+// 30-day cooldown, and re-enabling the knob heals through the frontier.
+func packGateRefusal(ff map[string]any, optInCodecs bool) error {
+	if gate := stream.PackGate(ff, optInCodecs); gate != stream.GateOpen {
+		return enrich.PolicyRefusal{Reason: string(gate)}
+	}
+	return nil
+}
+
 // newSweep returns the periodic sweep closure: one pass = the watch-driven
 // frontier (enqueue decisions → the streams lane) + budget accounting with
 // LRU eviction (evict decisions → .trash sibling then delete) + the integrity
@@ -81,7 +131,7 @@ func newSweep(st *store.Store, root string, validate func(itemID, nonce string) 
 	return func(ctx context.Context) {
 		fronted := sweepFrontier(ctx, st, enqueue, optInCodecs)
 		sweepBudget(ctx, st, root, budgetBytes, fronted)
-		sweepIntegrity(ctx, st, root, validate, enqueue)
+		sweepIntegrity(ctx, st, root, validate, enqueue, optInCodecs)
 	}
 }
 
@@ -252,15 +302,21 @@ func resetStreamsState(ctx context.Context, st *store.Store, itemID, nonce strin
 // published-build state is complete gets the build its streams namespace
 // points at validated, the judge returns exactly the broken ones as repack
 // jobs, and each job re-enters the streams lane under a fresh build nonce. A
-// failed repack flips the state to failed + cooldown — out of this pass's
-// complete-state scope, so no re-enqueue storm; every error is logged, never
-// fatal — the next sweep retries.
-func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error) {
+// gate-closed job (playback-capability-gate D4 — the pack lane cannot serve
+// the item's codecs under the current knob) is refused with ONE INFO line
+// naming the gate token and nothing else: no enqueue, and no ledger row — a
+// policy refusal is never a pack failure, and the sweep must not loop on a
+// refusal it can never heal; flipping the knob lets the next pass front it
+// again. A failed repack flips the state to failed + cooldown — out of this
+// pass's complete-state scope, so no re-enqueue storm; every error is logged,
+// never fatal — the next sweep retries.
+func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, optInCodecs bool) {
 	idDirs, err := os.ReadDir(root)
 	if err != nil {
 		return // no artifact root yet
 	}
 	items := make([]orchestrator.IntegrityItem, 0)
+	gates := make(map[string]stream.Gate)
 	for _, idDir := range idDirs {
 		if !idDir.IsDir() {
 			continue
@@ -275,7 +331,8 @@ func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate 
 		if row.Status == "deleted" {
 			continue
 		}
-		streams, _ := decodeItemDoc(row.Document)["streams"].(map[string]any)
+		doc := decodeItemDoc(row.Document)
+		streams, _ := doc["streams"].(map[string]any)
 		state, _ := streams["state"].(string)
 		if state != stream.StateComplete {
 			continue // the floor guard owns partial; the cooldown owns failed
@@ -284,8 +341,17 @@ func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate 
 		items = append(items, orchestrator.IntegrityItem{
 			ItemID: idDir.Name(), Healthy: validate(idDir.Name(), nonce) == nil,
 		})
+		// The gate rides the walk — the refusal is decided HERE, before any
+		// enqueue exists to reach build time (a refusal never enters the lane,
+		// so workStreams never sees it from this side).
+		gates[idDir.Name()] = stream.PackGate(itemFacts(doc), optInCodecs)
 	}
 	for _, job := range orchestrator.Repacks(items) {
+		if gate := gates[job.ItemID]; gate != stream.GateOpen {
+			slog.Info("orchestrator: repack refused by pack gate",
+				"item", job.ItemID, "reason", string(gate))
+			continue // no enqueue, no ledger row — the knob owns the heal
+		}
 		if err := enqueue(job.ItemID); err != nil {
 			slog.Warn("orchestrator: repack enqueue failed", "item", job.ItemID, "error", err)
 			continue
@@ -295,17 +361,16 @@ func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate 
 }
 
 // episodeFromDoc projects one item document into the orchestrator's narrow
-// Episode input: the classification gate (with the opt-in codec knob folded
-// in), the published-build state (partial or complete = already packaged),
-// and the pack_failed cooldown deadline (zero when none).
+// Episode input: the pack gate (playback-capability-gate D1 — the same single
+// judge the descriptor and every pack seam consult), the published-build
+// state (partial or complete = already packaged), and the pack_failed
+// cooldown deadline (zero when none).
 func episodeFromDoc(itemID string, doc map[string]any, cool map[string]time.Time, optInCodecs bool) orchestrator.Episode {
-	ff, _ := doc["ffprobe"].(map[string]any)
 	streams, _ := doc["streams"].(map[string]any)
 	state, _ := streams["state"].(string)
-	class := stream.Classify(ff, optInCodecs)
 	return orchestrator.Episode{
 		ItemID:    itemID,
-		Packable:  class == stream.ClassPack || class == stream.ClassOptIn,
+		Packable:  stream.PackGate(itemFacts(doc), optInCodecs) == stream.GateOpen,
 		Packaged:  state == stream.StatePartial || state == stream.StateComplete,
 		CoolUntil: cool[itemID],
 	}

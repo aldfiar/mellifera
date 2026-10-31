@@ -138,6 +138,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("Player — packaged attach (hls.js over the stream playlist)", () => {
@@ -441,6 +442,14 @@ function setMediaError(video: HTMLVideoElement, code: number, message: string): 
   });
 }
 
+// stubMediaSource — plants the MediaSource the probe reads (playback-capability-gate
+// 3.1; jsdom has none of its own, which is exactly why every OTHER vector in
+// this file rides the no-MediaSource skip path unchanged). Per-test, restored
+// by the afterEach unstubAllGlobals like the api spies above.
+function stubMediaSource(supported: boolean): void {
+  vi.stubGlobal("MediaSource", { isTypeSupported: vi.fn(() => supported) });
+}
+
 describe("Player — failure surfacing (tv-playback-unblock 4.3)", () => {
   it("renders the undecodable-container banner and beacons once on a direct-lane video error", () => {
     renderPlayer(DIRECT_DESCRIPTOR);
@@ -565,5 +574,86 @@ describe("Player — failure surfacing (tv-playback-unblock 4.3)", () => {
     video.currentTime = 42;
     fireEvent.pause(video);
     expect(apiModule.putProgress).toHaveBeenCalledWith("itm_1_9", 42);
+  });
+});
+
+describe("Player — pre-mount capability probe (playback-capability-gate 3.1)", () => {
+  // The pack's codecs, video first then audio — the wire shape the landed
+  // server work composes (internal/api playback.go Codecs, omitempty).
+  const PACK_CODECS = ["avc1.64001f", "mp4a.40.2"];
+
+  it("renders the device-unsupported banner, beacons once and does NOT mount on a probe miss", () => {
+    stubMediaSource(false);
+    renderPlayer(hlsDescriptor({ codecs: PACK_CODECS }));
+
+    const banner = screen.getByRole("alert");
+    // Honest device wording naming the codecs (they ride the probe mime in
+    // the detail) — no loader fatal, no spinner, no mount.
+    expect(banner.textContent).toContain("device-cannot-decode");
+    expect(banner.textContent).toContain("avc1.64001f");
+    expect(hls.instances).toHaveLength(0);
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledTimes(1);
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "hls",
+      "video-error",
+      "device-cannot-decode",
+      'video/mp4; codecs="avc1.64001f,mp4a.40.2"',
+    );
+  });
+
+  it("mounts with zero behavior change when the probe passes", () => {
+    stubMediaSource(true);
+    renderPlayer(hlsDescriptor({ codecs: PACK_CODECS }));
+
+    expect(hls.instances).toHaveLength(1);
+    expect(hls.instances[0].loadSource).toHaveBeenCalledWith(HLS_DESCRIPTOR.play_url);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
+  });
+
+  it("skips the probe and mounts exactly as today when the descriptor answers no codecs", () => {
+    // Absent (the field is omitempty — legacy packs predate the recording)
+    // and empty alike mean "no probe possible", fail-open.
+    renderPlayer(HLS_DESCRIPTOR);
+    expect(hls.instances).toHaveLength(1);
+
+    hls.instances.length = 0;
+    renderPlayer(hlsDescriptor({ codecs: [] }));
+    expect(hls.instances).toHaveLength(1);
+  });
+
+  it("mounts exactly as today when MediaSource is absent even with codecs present", () => {
+    // jsdom defines no MediaSource — the same floor every other vector in
+    // this file rides; codecs on the wire must not change that path.
+    renderPlayer(hlsDescriptor({ codecs: PACK_CODECS }));
+    expect(hls.instances).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("clears the device banner on re-attach (inherited setError(null))", () => {
+    stubMediaSource(false);
+    const { rerender } = render(
+      wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ codecs: PACK_CODECS })} />),
+    );
+    expect(screen.queryByRole("alert")).not.toBeNull();
+
+    // A repack swaps the play_url PATH — the attach effect re-runs, the
+    // surface starts clean, and the (codec-less) new descriptor mounts.
+    // (A token re-mint deliberately does NOT re-run — D6 — so the PATH is
+    // what must move here, exactly as in the repack vector above.)
+    rerender(
+      wrap(
+        <Player
+          itemId="itm_1_9"
+          descriptor={{
+            ...HLS_DESCRIPTOR,
+            play_url: "/media/itm_1_9/repacked/index.m3u8?token=t2",
+          }}
+        />,
+      ),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(hls.instances).toHaveLength(1);
   });
 });

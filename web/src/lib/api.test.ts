@@ -580,6 +580,36 @@ describe("playback descriptor + beacon client (tv-playback-unblock)", () => {
     expect(hls.state_reason).toBeUndefined();
   });
 
+  it("getPlayback parses the codec list verbatim on hls answers; absent stays absent (playback-capability-gate)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        mode: "hls",
+        state: "complete",
+        play_url: "/media/itm_7_abc/index.m3u8?token=media-tok",
+        sections: [],
+        // video first, then audio in rendition order — the order the Player's
+        // pre-mount probe composes
+        codecs: ["avc1.64001f", "mp4a.40.2"],
+      }),
+    );
+
+    const out: PlaybackDescriptor = await getPlayback("itm_7_abc");
+    expect(out.codecs).toEqual(["avc1.64001f", "mp4a.40.2"]);
+
+    // a legacy answer (omitempty) carries no codecs — absence is "no probe
+    // possible", never an empty list
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        mode: "hls",
+        state: "complete",
+        play_url: "/media/itm_7_abc/index.m3u8?token=media-tok",
+        sections: [],
+      }),
+    );
+    const legacy = await getPlayback("itm_7_abc");
+    expect(legacy.codecs).toBeUndefined();
+  });
+
   it("sendPlaybackEvent POSTs the exact five-field payload through the authenticated wrapper to a 204", async () => {
     setDeviceToken("dev-token-1"); // browse role: the device token rides
     const fetchSpy = vi

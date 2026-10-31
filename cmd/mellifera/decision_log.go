@@ -44,7 +44,7 @@ func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.S
 	if err := json.Unmarshal(row.Document, &doc); err != nil {
 		return api.Playback{}, err
 	}
-	mode, state, playURL, sections, voiceovers, stateReason := mediaSvc.Describe(itemID, doc)
+	mode, state, playURL, sections, voiceovers, stateReason, codecs := mediaSvc.Describe(itemID, doc)
 	token, _ := mediaSvc.Issue(itemID, time.Now()) // cookie-primary delivery
 	logPlaybackDecision(itemID, mode, state,
 		playbackDecisionReason(mode, state, stateReason, streamCooldowns(ctx, st)[itemID], time.Now()))
@@ -53,6 +53,7 @@ func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.S
 		State:       state,
 		PlayURL:     playURL,
 		StateReason: stateReason,
+		Codecs:      codecs,
 		Sections:    sections,
 		Voiceovers:  voiceovers,
 		Token:       token,

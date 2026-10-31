@@ -8,9 +8,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -80,12 +82,19 @@ type Service struct {
 
 // Build is one published packaging run: the artifact pointer (a /media-relative
 // playlist URL under the run's build-nonce directory) and the nonce itself.
+// Codecs is the build's recorded codec truth (playback-capability-gate D2):
+// the RFC 6381 codec strings composed from probing the published variant
+// playlists — video first, then audio in the pinned rendition order, deduped.
+// Nil means the record could not be composed (a probe failed or a stream
+// fell outside the composition table) — fail-open: the pack still lands and
+// the build mounts exactly as an unrecorded build always has.
 // A returned build is COMPLETE (its playlist ends with ENDLIST); a head-first
 // partial was published transiently mid-Pack and is observable only while the
 // run is in flight (INV-head-first).
 type Build struct {
-	Playlist string `json:"playlist"` // e.g. /media/<itemID>/<nonce>/index.m3u8
-	Nonce    string `json:"nonce"`
+	Playlist string   `json:"playlist"` // e.g. /media/<itemID>/<nonce>/index.m3u8
+	Nonce    string   `json:"nonce"`
+	Codecs   []string `json:"codecs,omitempty"` // RFC 6381 strings; nil = uncomposable (fail-open)
 }
 
 // idCharset guards every path segment resolved from an HTTP request or used to
@@ -138,4 +147,36 @@ func (s *Service) buildDir(itemID, nonce string) (string, error) {
 // ensureRoot creates the artifact root (server data space) on demand.
 func (s *Service) ensureRoot() error {
 	return os.MkdirAll(s.Root, 0o755)
+}
+
+// EvictSuperseded enforces the publish-replacement rule (playback-capability-
+// gate D5): one current build per item. Every directory under the item's
+// artifact root (Root/itemID) except the keepNonce build directory is removed.
+// Hard edges, by construction: `.tmp-*` staging names are never touched (an
+// in-flight build of the same item survives), other items are never touched
+// (only the item's own directory is read), keepNonce is always kept, and a
+// stray non-directory entry is never touched. Best-effort for the landed pack:
+// a failed removal logs WARN and the sweep continues — eviction never fails
+// the pack that just persisted. Unsafe path components refuse with a WARN
+// before any directory is read.
+func (s *Service) EvictSuperseded(itemID, keepNonce string) {
+	if _, err := s.buildDir(itemID, keepNonce); err != nil {
+		slog.Warn("streams: superseded eviction refused unsafe path", "item", itemID, "nonce", keepNonce, "error", err)
+		return
+	}
+	entries, err := os.ReadDir(filepath.Join(s.Root, itemID))
+	if err != nil {
+		return // no item directory: nothing was ever published; nothing to evict
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == keepNonce || strings.HasPrefix(entry.Name(), ".tmp-") {
+			continue
+		}
+		path := filepath.Join(s.Root, itemID, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			slog.Warn("streams: superseded eviction failed", "path", path, "error", err)
+			continue
+		}
+		slog.Info("streams: evicted artifact directory", "path", path)
+	}
 }
