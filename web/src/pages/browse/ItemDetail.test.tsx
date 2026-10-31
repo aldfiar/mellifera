@@ -7,7 +7,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as apiModule from "@/lib/api";
 import type { ItemResponse, LibraryDTO, PlaybackDescriptor } from "@/lib/api";
 import { TOKEN_KEY } from "@/lib/auth";
-import ItemDetail, { type BrowseHandoff } from "@/pages/browse/ItemDetail";
+import ItemDetail, {
+  PREPARING_POLL_INTERVAL_MS,
+  PREPARING_POLL_WINDOW_MS,
+  type BrowseHandoff,
+} from "@/pages/browse/ItemDetail";
 
 // Group-2 slice: ItemDetail → useItem → getItem (the S5-style consumer joint
 // for /api/v1/items/{id}). getItem is mocked at the api seam, so the page's
@@ -1173,6 +1177,262 @@ describe("ItemDetail — structural video-ness (ready serial episode plays)", ()
     expect(screen.getByRole("region", { name: "Media stage" })).toBeDefined();
     expect(screen.getByText("Play from the start.")).toBeDefined();
     expect(theVideo()).not.toBeNull();
+  });
+});
+
+// ---- Pack-on-play wiring (tv-playback-unblock 4.2) --------------------------
+//
+// A preparing direct descriptor is NOT a player answer: the page fires
+// POST /play {retry:false} ONCE per descriptor instance, renders the
+// Preparing surface in the player's place, polls the descriptor on a
+// bounded interval (exits: hls → player mounts; failed → the existing retry
+// affordance; window exhausted → honest stall + one beacon), renders the
+// state_reason banner for unsupported, and surfaces the POST's canonical
+// error inline without auto-retry. All seams mocked at the api module; the
+// poll runs on fake timers against the exported SPA constants (D6's ~2 s /
+// ~5 min posture).
+describe("ItemDetail — pack-on-play wiring (tv-playback-unblock 4.2)", () => {
+  const PACK_ITEM_ID = "itm_pack_1";
+
+  const PACK_ITEM: ItemResponse = {
+    item: {
+      ...ITEM_RESPONSE.item,
+      id: PACK_ITEM_ID,
+      status: "ready",
+      document: {},
+    },
+  };
+
+  const PREPARING_PLAYBACK: PlaybackDescriptor = {
+    mode: "direct",
+    state: "preparing",
+    state_reason: "non_native_container",
+    play_url: `/media/${PACK_ITEM_ID}/original?token=tok`,
+    sections: [],
+  };
+
+  const FAILED_PLAYBACK: PlaybackDescriptor = {
+    mode: "direct",
+    state: "failed",
+    play_url: `/media/${PACK_ITEM_ID}/original?token=tok`,
+    sections: [],
+  };
+
+  const UNSUPPORTED_PLAYBACK: PlaybackDescriptor = {
+    mode: "direct",
+    state: "unsupported",
+    state_reason: "codec_unsupported",
+    play_url: `/media/${PACK_ITEM_ID}/original?token=tok`,
+    sections: [],
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // flush — advance the fake clock (and drain the microtasks the timers'
+  // callbacks and query/mutation resolution chain behind them).
+  async function flush(ms = PREPARING_POLL_INTERVAL_MS): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  // settle — the two turns a fresh render needs under fake timers: the item
+  // query resolves (turn 1), which then arms the descriptor query (turn 2).
+  async function settle(): Promise<void> {
+    await flush();
+    await flush();
+  }
+
+  function mockPackItem(): void {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(PACK_ITEM);
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+    // The progress PUT is Player-internal and irrelevant here.
+    vi.spyOn(apiModule, "putProgress").mockResolvedValue({
+      item_id: PACK_ITEM_ID,
+      position_seconds: 0,
+      updated_at: "",
+    });
+    vi.spyOn(apiModule, "sendPlaybackEvent").mockResolvedValue(undefined);
+  }
+
+  it("fires POST /play {retry:false} exactly once per preparing instance and renders the Preparing surface with no media element", async () => {
+    mockPackItem();
+    const playSpy = vi
+      .spyOn(apiModule, "playItem")
+      .mockResolvedValue({ queued: true });
+    vi.spyOn(apiModule, "getPlayback").mockResolvedValue({
+      ...PREPARING_PLAYBACK,
+    });
+
+    renderAtId(PACK_ITEM_ID, freshClient());
+    await settle();
+
+    // The Preparing surface REPLACES the player attach: no Player region,
+    // no <video>, one honest line.
+    expect(screen.queryByRole("region", { name: "Player" })).toBeNull();
+    expect(document.querySelector("video")).toBeNull();
+    expect(screen.getByText("Подготовка к воспроизведению…")).toBeDefined();
+
+    // The POST fired once, with the pack-on-play verb shape.
+    expect(playSpy).toHaveBeenCalledTimes(1);
+    expect(playSpy).toHaveBeenCalledWith(PACK_ITEM_ID, { retry: false });
+
+    // Poll ticks answer the SAME descriptor instance — no re-fire.
+    await flush(PREPARING_POLL_INTERVAL_MS * 3);
+    expect(playSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("mounts the ordinary player when the descriptor leaves preparing into hls", async () => {
+    mockPackItem();
+    vi.spyOn(apiModule, "playItem").mockResolvedValue({ queued: true });
+    // The first two descriptor answers are preparing (the mount fetch and
+    // the POST-success invalidation refetch); the POLL's refetch then flips
+    // the state to hls.
+    let descriptorCalls = 0;
+    vi.spyOn(apiModule, "getPlayback").mockImplementation(async () => {
+      descriptorCalls += 1;
+      return descriptorCalls <= 2
+        ? { ...PREPARING_PLAYBACK }
+        : { ...HLS_PLAYBACK };
+    });
+
+    renderAtId(PACK_ITEM_ID, freshClient());
+    await settle();
+    expect(screen.queryByRole("region", { name: "Player" })).toBeNull();
+
+    await flush(PREPARING_POLL_INTERVAL_MS * 2);
+
+    // The ordinary packaged player mounts from the new descriptor.
+    expect(screen.getByRole("region", { name: "Player" })).toBeDefined();
+    expect(theVideo()).not.toBeNull();
+    expect(screen.queryByText("Подготовка к воспроизведению…")).toBeNull();
+  });
+
+  it("hands a polled failed answer to the existing retry affordance with no second auto-POST", async () => {
+    mockPackItem();
+    const playSpy = vi
+      .spyOn(apiModule, "playItem")
+      .mockResolvedValue({ queued: true });
+    let descriptorCalls = 0;
+    vi.spyOn(apiModule, "getPlayback").mockImplementation(async () => {
+      descriptorCalls += 1;
+      return descriptorCalls <= 2
+        ? { ...PREPARING_PLAYBACK }
+        : { ...FAILED_PLAYBACK };
+    });
+
+    renderAtId(PACK_ITEM_ID, freshClient());
+    await settle();
+    await flush(PREPARING_POLL_INTERVAL_MS * 2);
+
+    // The Player mounts the failed state's retry affordance (POST /play
+    // {retry:true} — the existing affordance, untouched).
+    expect(
+      screen.getByRole("button", { name: "Retry packaging" }),
+    ).toBeDefined();
+    // The auto-POST stayed at ONE for the preparing instance.
+    expect(playSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the honest stall state, stops polling, and beacons once when the poll window exhausts", async () => {
+    mockPackItem();
+    vi.spyOn(apiModule, "playItem").mockResolvedValue({ queued: true });
+    const getSpy = vi
+      .spyOn(apiModule, "getPlayback")
+      .mockResolvedValue({ ...PREPARING_PLAYBACK });
+    const sendSpy = vi.spyOn(apiModule, "sendPlaybackEvent");
+
+    renderAtId(PACK_ITEM_ID, freshClient());
+    await settle();
+
+    // The whole bounded window (fake clock) with the descriptor answering
+    // preparing throughout.
+    await flush(PREPARING_POLL_WINDOW_MS);
+
+    // The honest still-preparing stall state, and exactly one stall beacon.
+    expect(
+      screen.getByText(
+        "Подготовка занимает дольше обычного — упакованная версия ещё не готова.",
+      ),
+    ).toBeDefined();
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(sendSpy).toHaveBeenCalledWith(
+      PACK_ITEM_ID,
+      "direct",
+      "stalled",
+      "preparing_window_exhausted",
+      expect.any(String),
+    );
+
+    // The poll stopped: no further descriptor fetches after the window.
+    const callsAtStall = getSpy.mock.calls.length;
+    await flush(PREPARING_POLL_INTERVAL_MS * 3);
+    expect(getSpy.mock.calls.length).toBe(callsAtStall);
+  });
+
+  it("renders the state_reason banner for unsupported with no player and no polling", async () => {
+    mockPackItem();
+    const playSpy = vi
+      .spyOn(apiModule, "playItem")
+      .mockResolvedValue({ queued: true });
+    const getSpy = vi
+      .spyOn(apiModule, "getPlayback")
+      .mockResolvedValue({ ...UNSUPPORTED_PLAYBACK });
+
+    renderAtId(PACK_ITEM_ID, freshClient());
+    await settle();
+
+    // The reason banner names the state_reason's meaning — no player, no
+    // spinner, no preparing line.
+    expect(
+      screen.getByText(
+        "Кодек файла нельзя упаковать для этого браузера — воспроизведение невозможно.",
+      ),
+    ).toBeDefined();
+    expect(screen.queryByRole("region", { name: "Player" })).toBeNull();
+    expect(document.querySelector("video")).toBeNull();
+    expect(screen.queryByText("Подготовка к воспроизведению…")).toBeNull();
+
+    // No auto-POST and no poll: one descriptor fetch ever.
+    expect(playSpy).not.toHaveBeenCalled();
+    const calls = getSpy.mock.calls.length;
+    await flush(PREPARING_POLL_INTERVAL_MS * 5);
+    expect(getSpy.mock.calls.length).toBe(calls);
+  });
+
+  it("surfaces the play POST's canonical error inline without auto-retry", async () => {
+    mockPackItem();
+    const playSpy = vi
+      .spyOn(apiModule, "playItem")
+      .mockRejectedValue(
+        new apiModule.ApiError(400, {
+          code: "bad_request",
+          message: "the packaging queue refused the request",
+          retryable: false,
+        }),
+      );
+    vi.spyOn(apiModule, "getPlayback").mockResolvedValue({
+      ...PREPARING_PLAYBACK,
+    });
+
+    renderAtId(PACK_ITEM_ID, freshClient());
+    await settle();
+    await flush(PREPARING_POLL_INTERVAL_MS * 2);
+
+    // Canonical code + message inline.
+    expect(screen.getByText("bad_request")).toBeDefined();
+    expect(
+      screen.getByText("the packaging queue refused the request"),
+    ).toBeDefined();
+    // No auto-retry: one POST ever.
+    expect(playSpy).toHaveBeenCalledTimes(1);
   });
 });
 

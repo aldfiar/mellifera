@@ -36,8 +36,9 @@ type Serial struct {
 }
 
 // FrontierIn is the frontier's input snapshot: every serial of every
-// streams-gated library, the set of items with stored watch progress
-// (position > 0), and the evaluation clock (injected — this package never
+// streams-gated library, the set of watched item ids (completion-aware —
+// the caller judges the predicate where the documents are; this package
+// never reads one), and the evaluation clock (injected — this package never
 // reads a clock).
 type FrontierIn struct {
 	Serials []Serial

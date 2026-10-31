@@ -211,6 +211,57 @@ func TestPlaybackVerbs(t *testing.T) {
 			t.Fatalf("authenticated POST status = %d, want 202 (browse group admits admin)", resp.StatusCode)
 		}
 	})
+
+	// Descriptor honesty wire (tv-playback-unblock): state_reason rides the
+	// wire ADDITIVELY — present only on preparing/unsupported answers and
+	// failed-with-non-native-floor answers, omitted everywhere else (hls and
+	// native-container floors carry none), with the play_url retained on the
+	// disclaimed answers.
+	t.Run("state_reason_carried_only_on_honesty_answers", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			mode       string
+			state      string
+			reason     string
+			wantOnWire bool
+		}{
+			{"preparing_direct_floor", "direct", "preparing", "non_native_container", true},
+			{"unsupported_direct_floor", "direct", "unsupported", "codec_unsupported", true},
+			{"failed_non_native_floor", "direct", "failed", "non_native_container", true},
+			{"hls_answer_carries_none", "hls", "complete", "", false},
+			{"native_none_carries_none", "direct", "none", "", false},
+		}
+		for _, tc := range cases {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				pb := func(context.Context, string) (Playback, error) {
+					return Playback{
+						Mode:        tc.mode,
+						State:       tc.state,
+						PlayURL:     "/media/it1/original?token=tok",
+						StateReason: tc.reason,
+						Token:       "fresh-media-token",
+					}, nil
+				}
+				resp := doRequest(t, newHandler(pb, &playStub{}), http.MethodGet, "/api/v1/items/it1/playback", "", adminToken)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("status = %d, want 200", resp.StatusCode)
+				}
+				raw := readAll(t, resp)
+				if tc.wantOnWire {
+					want := `"state_reason":"` + tc.reason + `"`
+					if !strings.Contains(raw, want) {
+						t.Fatalf("body = %s, want %s on the wire", raw, want)
+					}
+					if !strings.Contains(raw, `"state":"`+tc.state+`"`) || !strings.Contains(raw, `"play_url":"/media/it1/original?token=tok"`) {
+						t.Fatalf("body = %s, want state %q and the retained play_url", raw, tc.state)
+					}
+				} else if strings.Contains(raw, "state_reason") {
+					t.Fatalf("body = %s, want no state_reason field (omitempty)", raw)
+				}
+			})
+		}
+	})
 }
 
 // readAll drains a response body as a string or fails the test.

@@ -285,9 +285,11 @@ func TestSerialWatchFlowJointE2E(t *testing.T) {
 			t.Fatalf("decode descriptor: %v (body=%s)", err, body)
 		}
 		// No pack ran: the direct floor stands and the fetch changed no
-		// packaging state.
-		if desc.Mode != "direct" || desc.State != "none" {
-			t.Fatalf("descriptor = mode %q state %q, want direct/none (nothing packed)", desc.Mode, desc.State)
+		// packaging state. The packable MKV floor answers the honesty
+		// projection's preparing state (tv-playback-unblock D1 — read-side;
+		// the persisted namespace still sits at none).
+		if desc.Mode != "direct" || desc.State != "preparing" {
+			t.Fatalf("descriptor = mode %q state %q, want direct/preparing (nothing packed)", desc.Mode, desc.State)
 		}
 		if !strings.HasPrefix(desc.PlayURL, "/media/") {
 			t.Errorf("play_url = %q, want the /media direct floor", desc.PlayURL)

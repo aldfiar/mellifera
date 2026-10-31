@@ -18,9 +18,25 @@ import (
 const tokenVersion = "mellifera-media-v1"
 
 // errBadToken is the ONLY failure token verification reports — the reason is
-// never surfaced (missing, expired, foreign-key, or wrong-item all read
-// identically to a client, and no token value ever reaches a message or log).
+// never surfaced to a client (missing, expired, foreign-key, or wrong-item
+// all read identically on the wire, and no token value ever reaches a message
+// or log). The internal classification for the /media rejection log lives in
+// tokenReason below.
 var errBadToken = errors.New("stream: bad media token")
+
+// tokenReason classifies WHY a presented credential failed verification — the
+// reason class the /media rejection log carries (spec "Token-gated playback
+// serving"): a present credential that is unreadable or unauthentic is
+// malformed, one past its TTL is expired. The other two classes are the
+// gate's observations, never the token's: missing (no credential present at
+// all) and wrong-item (it verified but names another item) are judged in
+// serve.go.
+type tokenReason string
+
+const (
+	reasonMalformed tokenReason = "malformed"
+	reasonExpired   tokenReason = "expired"
+)
 
 // Issue mints a short-lived HMAC media token scoped to itemID (D-6): the
 // payload is the version domain, the item, and the expiry; the MAC is
@@ -37,27 +53,45 @@ func (s *Service) Issue(itemID string, now time.Time) (token string, expires tim
 }
 
 // verify checks a media token's MAC and expiry and returns the item it grants.
-// Any structural, cryptographic, or temporal failure is errBadToken.
+// Any structural, cryptographic, or temporal failure is errBadToken. It stays
+// the plain grant check; the classified refinement is verifyReason.
 func (s *Service) verify(token string, now time.Time) (string, error) {
+	itemID, _, ok := s.verifyReason(token, now)
+	if !ok {
+		return "", errBadToken
+	}
+	return itemID, nil
+}
+
+// verifyReason refines verify with the failure class the /media rejection log
+// needs: on success it returns the granted item and true; on failure the
+// reason class (malformed or expired) and false. Whether the failure is
+// fatal for the request — and whether a granted item is the wrong one for the
+// path — is the gate's judgment in serve.go, so no credential is ever
+// double-verified.
+func (s *Service) verifyReason(token string, now time.Time) (string, tokenReason, bool) {
 	parts := strings.Split(token, "|")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" {
-		return "", errBadToken
+		return "", reasonMalformed, false
 	}
 	itemID := parts[0]
 	expiry, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || expiry <= now.Unix() {
-		return "", errBadToken
+	if err != nil {
+		return "", reasonMalformed, false
+	}
+	if expiry <= now.Unix() {
+		return "", reasonExpired, false
 	}
 	mac := hmac.New(sha256.New, s.Secret)
 	mac.Write([]byte(tokenVersion))
 	mac.Write([]byte(itemID + "|" + parts[1]))
 	if !hmac.Equal([]byte(encodeHex(mac.Sum(nil))), []byte(parts[2])) {
-		return "", errBadToken
+		return "", reasonMalformed, false
 	}
 	if !idCharset.MatchString(itemID) || itemID == "." || itemID == ".." {
-		return "", errBadToken // a token can never name a path outside Root
+		return "", reasonMalformed, false // a token can never name a path outside Root
 	}
-	return itemID, nil
+	return itemID, "", true
 }
 
 // encodeHex is the lowercase-hex MAC encoding (the token rides in a cookie and

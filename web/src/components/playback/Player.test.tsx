@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactElement } from "react";
@@ -121,6 +121,9 @@ beforeEach(() => {
     position_seconds: 0,
     updated_at: "",
   });
+  // The failure beacon (tv-playback-unblock 4.3): spied like putProgress so
+  // no vector reaches the network; the rejected-beacon vector overrides it.
+  vi.spyOn(apiModule, "sendPlaybackEvent").mockResolvedValue(undefined);
   // AutoNext's overlay reads (watch-flow-polish 3.3): wrap() normally
   // serves them from its seeds; these spies are the backstop so a refetch
   // can never reach the network in a player vector.
@@ -391,5 +394,160 @@ describe("Player — poster (fix-episode-playback 3.1)", () => {
     cleanup();
     renderPlayer(DIRECT_DESCRIPTOR);
     expect(theVideo().hasAttribute("poster")).toBe(false);
+  });
+});
+
+// tv-playback-unblock 4.3 — failure surfacing (web-ui delta "Playback
+// failure surfacing" + "Playback event beacon client"): the direct lane's
+// media error event becomes a named class banner + one best-effort beacon
+// (previously the lane failed silently), hls fatals carry type/details/HTTP
+// status, banners clear on re-attach, and progress reporting never notices.
+// Media errors ride numeric codes — happy-dom does not expose the
+// MediaError constructor constants.
+
+// fireHlsFatal — drives the ERROR listener the component registered on the
+// mocked loader (the seam jsdom/happy-dom has no real hls.js behind).
+function fireHlsFatal(data: Record<string, unknown>): void {
+  const call = hls.instances[0].on.mock.calls.find(([event]) => event === "error");
+  expect(call).toBeDefined();
+  const handler = call![1] as (event: unknown, data: Record<string, unknown>) => void;
+  act(() => {
+    handler(null, data);
+  });
+}
+
+// setMediaError — plants the media element's error object (happy-dom leaves
+// video.error null; the component reads it off the event's target).
+function setMediaError(video: HTMLVideoElement, code: number, message: string): void {
+  Object.defineProperty(video, "error", {
+    configurable: true,
+    value: { code, message },
+  });
+}
+
+describe("Player — failure surfacing (tv-playback-unblock 4.3)", () => {
+  it("renders the undecodable-container banner and beacons once on a direct-lane video error", () => {
+    renderPlayer(DIRECT_DESCRIPTOR);
+    const video = theVideo();
+    setMediaError(video, 4, "DEMUXER_ERROR_COULD_NOT_OPEN");
+
+    fireEvent.error(video);
+
+    // Source-not-supported is its own class — the undecodable container.
+    const banner = screen.getByRole("alert");
+    expect(banner.getAttribute("data-media-error-class")).toBe("source-not-supported");
+    expect(banner.textContent).toContain("не декодируется");
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledTimes(1);
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "direct",
+      "video-error",
+      "source-not-supported",
+      "DEMUXER_ERROR_COULD_NOT_OPEN",
+    );
+  });
+
+  it("renders a distinct class for the network media error", () => {
+    renderPlayer(DIRECT_DESCRIPTOR);
+    setMediaError(theVideo(), 2, "");
+
+    fireEvent.error(theVideo());
+
+    const banner = screen.getByRole("alert");
+    expect(banner.getAttribute("data-media-error-class")).toBe("network");
+    expect(banner.textContent).not.toContain("не декодируется");
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "direct",
+      "video-error",
+      "network",
+      "",
+    );
+  });
+
+  it("renders no banner without an error event", () => {
+    renderPlayer(DIRECT_DESCRIPTOR);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
+  });
+
+  it("renders the hls fatal banner with type, details and HTTP status, and beacons once", () => {
+    renderPlayer(HLS_DESCRIPTOR);
+
+    fireHlsFatal({
+      fatal: true,
+      type: "networkError",
+      details: "manifestLoadError",
+      response: { code: 403 },
+    });
+
+    const banner = screen.getByRole("alert");
+    expect(banner.textContent).toContain("networkError/manifestLoadError");
+    expect(banner.textContent).toContain("HTTP 403");
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledTimes(1);
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "hls",
+      "fatal",
+      "networkError/manifestLoadError",
+      "403",
+    );
+  });
+
+  it("omits the status from banner and beacon when the fatal carries no response", () => {
+    renderPlayer(HLS_DESCRIPTOR);
+
+    fireHlsFatal({ fatal: true, type: "mediaError", details: "bufferAppendError" });
+
+    const banner = screen.getByRole("alert");
+    expect(banner.textContent).toContain("mediaError/bufferAppendError");
+    expect(banner.textContent).not.toContain("HTTP");
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "hls",
+      "fatal",
+      "mediaError/bufferAppendError",
+      "",
+    );
+  });
+
+  it("sends no beacon and renders no banner for a NON-fatal hls error", () => {
+    renderPlayer(HLS_DESCRIPTOR);
+
+    fireHlsFatal({ fatal: false, type: "networkError", details: "bufferStalledError" });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
+  });
+
+  it("clears the banner on re-attach (play URL change)", () => {
+    const { rerender } = render(wrap(<Player itemId="itm_1_9" descriptor={DIRECT_DESCRIPTOR} />));
+    setMediaError(theVideo(), 4, "");
+    fireEvent.error(theVideo());
+    expect(screen.queryByRole("alert")).not.toBeNull();
+
+    rerender(
+      wrap(
+        <Player
+          itemId="itm_1_9"
+          descriptor={{ ...DIRECT_DESCRIPTOR, play_url: "/media/itm_1_9/original?token=t2" }}
+        />,
+      ),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("swallows a failing beacon send and keeps progress reporting working", () => {
+    vi.spyOn(apiModule, "sendPlaybackEvent").mockRejectedValue(new Error("offline"));
+    renderPlayer(DIRECT_DESCRIPTOR);
+    const video = theVideo();
+    setMediaError(video, 4, "");
+
+    expect(() => fireEvent.error(video)).not.toThrow();
+
+    // Progress reporting is untouched by the failure surface.
+    video.currentTime = 42;
+    fireEvent.pause(video);
+    expect(apiModule.putProgress).toHaveBeenCalledWith("itm_1_9", 42);
   });
 });

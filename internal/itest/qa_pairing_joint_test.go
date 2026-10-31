@@ -87,9 +87,9 @@ func TestPairingJointFlow(t *testing.T) {
 			if err := json.Unmarshal(row.Document, &doc); err != nil {
 				return api.Playback{}, err
 			}
-			mode, state, playURL, sections, voiceovers := media.Describe(itemID, doc)
+			mode, state, playURL, sections, voiceovers, stateReason := media.Describe(itemID, doc)
 			tok, _ := media.Issue(itemID, time.Now())
-			return api.Playback{Mode: mode, State: state, PlayURL: playURL, Sections: sections, Voiceovers: voiceovers, Token: tok}, nil
+			return api.Playback{Mode: mode, State: state, PlayURL: playURL, StateReason: stateReason, Sections: sections, Voiceovers: voiceovers, Token: tok}, nil
 		},
 	})
 	// The COMPOSED surface (web.Handler over api.New) — the exact surface
@@ -189,8 +189,8 @@ func TestPairingJointFlow(t *testing.T) {
 	if status := doRequest(t, client, http.MethodGet, srv.URL+"/api/v1/items/qa-pair-item/playback", deviceToken, nil, &pb); status != http.StatusOK {
 		t.Fatalf("device GET /items/qa-pair-item/playback: HTTP %d, want 200 (RoleClient through the browse group)", status)
 	}
-	if pb.Mode != "direct" || pb.State != "none" || pb.PlayURL == "" {
-		t.Fatalf("descriptor = %+v, want the direct floor over the unpacked fixture (mode direct, state none, a play_url)", pb)
+	if pb.Mode != "direct" || pb.State != "unsupported" || pb.PlayURL == "" {
+		t.Fatalf("descriptor = %+v, want the direct floor over the unpacked fixture (mode direct, a play_url; the empty document carries no ffprobe facts, so the honesty projection fails safe to unsupported)", pb)
 	}
 	var forbidden struct {
 		Error struct {

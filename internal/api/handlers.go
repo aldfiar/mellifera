@@ -27,6 +27,11 @@ import (
 // constructor callers touch.
 type app struct {
 	deps Deps
+	// beacons is the playback-event beacon's per-client rate limiter
+	// (tv-playback-unblock D7) — handler-local state, built in New (never a
+	// Deps closure: there is no domain behind it), one instance per router
+	// so tests get fresh budgets.
+	beacons *beaconLimiter
 }
 
 // Pagination defaults. limit clamps to defaultLimit; a client limit above

@@ -15,6 +15,7 @@ import type {
   ApiError,
   ItemDTO,
   ModulePresentation,
+  PlaybackStateReason,
   SeriesDTO,
   VoiceoverDTO,
 } from "@/lib/api";
@@ -29,6 +30,7 @@ import {
   isServedArtPath,
   isVideoItem,
   playItem,
+  sendPlaybackEvent,
 } from "@/lib/api";
 import {
   useArtworkObjectUrl,
@@ -115,10 +117,12 @@ import {
 // seams — useItem for the document, useLibrary for the additive module
 // presentation (its failure degrades the badges/footer, never the page), plus
 // the packaged-playback pair (getPlayback via useQuery; playItem via
-// useMutation — the retry affordance, D-7's only playback mutation). Error
-// edges: ApiError code "not_found" (HTTP 404) → a clear not-found state,
-// never a crash; any other failure → the canonical error (code + message)
-// surfaced inline.
+// useMutation — the retry affordance {retry:true} and the pack-on-play
+// {retry:false} one POST per preparing descriptor instance,
+// tv-playback-unblock D6) and the best-effort stall beacon
+// (sendPlaybackEvent, swallowed outcomes). Error edges: ApiError code
+// "not_found" (HTTP 404) → a clear not-found state, never a crash; any other
+// failure → the canonical error (code + message) surfaced inline.
 
 // present — a value a viewer can read (identity + footer share the posture:
 // undefined/null/"" are absence; everything else renders verbatim).
@@ -130,6 +134,15 @@ function present(value: unknown): boolean {
 // "~2.5s"): manual navigation resets the timer by tearing this interval down
 // and re-arming it (6.4).
 const SLIDESHOW_INTERVAL_MS = 2500;
+
+// PREPARING_POLL_* — the pack-on-play poll posture (tv-playback-unblock D6,
+// SPA constants inside the design's pinned ranges): while the descriptor
+// answers preparing the page refetches it every ~2 s, bounded by a HARD
+// ~5 min window — exhausted, the poll stops and the page settles into the
+// honest still-preparing stall state (beaconed once). Exported for the
+// ItemDetail tests, which drive the poll on fake timers.
+export const PREPARING_POLL_INTERVAL_MS = 2000;
+export const PREPARING_POLL_WINDOW_MS = 5 * 60 * 1000;
 
 // BrowseHandoff — the ordered-view state every grid surface hands into the
 // detail page (element-pages 6.2): `items` is the loaded view's item ids in
@@ -390,6 +403,75 @@ function ItemLoadedView(props: {
     },
   });
 
+  // Pack-on-play (tv-playback-unblock D6): a preparing direct descriptor is
+  // not a player answer — the page fires ONE POST /play {retry:false} asking
+  // the server to enqueue the packaging run, keyed on the DESCRIPTOR
+  // INSTANCE (the state+play_url identity): a poll refetch answering the
+  // same instance never re-fires; a genuinely new preparing instance does.
+  // The POST's canonical error surfaces inline (the page's ErrorState
+  // posture below) — never an auto-retry (retry: 0, and the instance ref).
+  const descriptor = playback.data;
+  const descriptorPreparing =
+    descriptor !== undefined &&
+    descriptor.mode === "direct" &&
+    descriptor.state === "preparing";
+  const packInstanceKey =
+    descriptorPreparing && descriptor
+      ? `${descriptor.state}|${descriptor.play_url}`
+      : null;
+  const packInstanceRef = useRef<string | null>(null);
+  const playPack = useMutation({
+    mutationFn: () => playItem(item.id, { retry: false }),
+    retry: 0,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["playback", item.id] });
+    },
+  });
+  const playPackMutate = playPack.mutate;
+  useEffect(() => {
+    if (packInstanceKey === null || packInstanceRef.current === packInstanceKey) {
+      return;
+    }
+    packInstanceRef.current = packInstanceKey;
+    playPackMutate();
+  }, [packInstanceKey, playPackMutate]);
+
+  // The bounded preparing poll (D6): while the descriptor stays preparing,
+  // refetch it on a short interval. The window is HARD: exhausted, polling
+  // stops, the page settles into the honest stall state, and the stall is
+  // beaconed once (fire-and-forget — sendPlaybackEvent never rejects).
+  // Leaving preparing (hls mounted, failed handed to retry, unsupported)
+  // tears the interval down and clears the stall.
+  const [stalled, setStalled] = useState(false);
+  const refetchDescriptor = playback.refetch;
+  useEffect(() => {
+    if (packInstanceKey === null || stalled) {
+      return;
+    }
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      if (Date.now() - startedAt >= PREPARING_POLL_WINDOW_MS) {
+        window.clearInterval(timer);
+        setStalled(true);
+        void sendPlaybackEvent(
+          item.id,
+          "direct",
+          "stalled",
+          "preparing_window_exhausted",
+          "the preparing poll window exhausted without a descriptor state change",
+        );
+        return;
+      }
+      void refetchDescriptor();
+    }, PREPARING_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [packInstanceKey, stalled, item.id, refetchDescriptor]);
+  useEffect(() => {
+    if (packInstanceKey === null) {
+      setStalled(false);
+    }
+  }, [packInstanceKey]);
+
   // Watch controls (serial-watch-flow 5.1–5.3). Subtitles: the document's
   // subtitle sidecars, one selectable entry (off + each sidecar, language-
   // then-folder-then-file labels, .sub listed not-renderable); a selection
@@ -460,9 +542,16 @@ function ItemLoadedView(props: {
   ];
 
   // watchReady — the watch view is live: the video lane mounts its Player
-  // (the descriptor resolved). The keyboard listener and the legend gate on
-  // it — no player, no transport surface to drive.
-  const watchReady = isVideoItem(item) && playback.data !== undefined;
+  // (the descriptor resolved into a playable answer — hls or a natively
+  // playable direct floor). The preparing/unsupported/stall states replace
+  // the player with their own surfaces, so the keyboard listener and the
+  // legend gate OFF there — no player, no transport surface to drive.
+  const watchReady =
+    isVideoItem(item) &&
+    descriptor !== undefined &&
+    !descriptorPreparing &&
+    descriptor.state !== "unsupported" &&
+    !stalled;
 
   const mediaStage = hero !== null ? (
     <HeroImage
@@ -471,26 +560,36 @@ function ItemLoadedView(props: {
       style={{ maxHeight: photoStageMaxH(PHOTO_STAGE_CHROME_PX) }}
     />
   ) : null;
-  const player = isVideoItem(item) && playback.data ? (
-    <Player
-      itemId={item.id}
-      descriptor={playback.data}
-      onRetry={() => playRetry.mutate()}
-      retrying={playRetry.isPending}
-      subtitleTrackUrl={subtitleTrack.url}
-      voiceoverTrack={voiceover}
-      poster={hasFrameGrabberThumb(doc) ? hero : null}
-    />
-  ) : null;
+  // The media stage (tv-playback-unblock): an unsupported descriptor renders
+  // the honest reason banner, a preparing one the Preparing surface — both
+  // REPLACE the player attach (no <video>, no raw-original src, never a bare
+  // spinner); only a playable answer mounts the Player.
+  const player = !isVideoItem(item) || descriptor === undefined
+    ? null
+    : descriptor.state === "unsupported"
+      ? <UnsupportedBanner reason={descriptor.state_reason} />
+      : descriptorPreparing
+        ? <PreparingSurface stalled={stalled} />
+        : (
+          <Player
+            itemId={item.id}
+            descriptor={descriptor}
+            onRetry={() => playRetry.mutate()}
+            retrying={playRetry.isPending}
+            subtitleTrackUrl={subtitleTrack.url}
+            voiceoverTrack={voiceover}
+            poster={hasFrameGrabberThumb(doc) ? hero : null}
+          />
+        );
   const watchControls =
-    isVideoItem(item) && playback.data ? (
+    watchReady && descriptor ? (
       <TrackControls
         sidecars={sidecars}
         selectedSubtitle={selectedSubtitle}
         onSubtitleSelect={setSelectedSubtitle}
         subtitleFailed={subtitleTrack.failed}
         voiceovers={voiceovers}
-        hlsMode={playback.data.mode === "hls"}
+        hlsMode={descriptor.mode === "hls"}
         voiceover={voiceover}
         onVoiceoverSelect={setVoiceover}
       />
@@ -666,6 +765,12 @@ function ItemLoadedView(props: {
             className="flex min-w-0 flex-col gap-3"
           >
             {player}
+            {/* The pack-on-play POST's canonical error, inline (code +
+                message; a retryable error offers its manual button — never
+                an auto-retry). */}
+            {playPack.error ? (
+              <ErrorState error={playPack.error as ApiError} />
+            ) : null}
             {watchReady ? <PlayerLegend /> : null}
             {watchControls}
           </section>
@@ -1421,5 +1526,69 @@ function HeroImage(props: {
       style={props.style}
       onError={() => setFailed(true)}
     />
+  );
+}
+
+// PreparingSurface — the pack-on-play preparing state's stage
+// (tv-playback-unblock): REPLACES the player attach while the descriptor
+// answers preparing — no <video>, no raw-original src. The stall variant
+// (the bounded poll window exhausted) keeps the same surface but names what
+// happened and what to do next — the page never spins forever and never
+// pretends progress.
+function PreparingSurface(props: { stalled: boolean }): ReactElement {
+  return (
+    <div
+      role="status"
+      className="flex min-h-40 flex-col items-center justify-center gap-2 rounded-lg border bg-card p-6 text-center"
+    >
+      <p className="text-sm font-medium">
+        {props.stalled
+          ? "Подготовка занимает дольше обычного — упакованная версия ещё не готова."
+          : "Подготовка к воспроизведению…"}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {props.stalled
+          ? "Упаковка не собралась в отведённое время (например, очередь сборки занята). Попробуйте открыть страницу позже."
+          : "Упакованная версия собирается — страница обновится сама."}
+      </p>
+    </div>
+  );
+}
+
+// unsupportedReasonText — the not-playable banner's wording, derived from
+// the descriptor's state_reason (tv-playback-unblock: "anything else would
+// render a lie") — never a bare "failed". Takes a plain string so a
+// divergent server vocabulary lands in the honest fallback, not a type hole.
+function unsupportedReasonText(reason: string | undefined): string {
+  switch (reason) {
+    case "non_native_container":
+      return "Контейнер файла браузер напрямую не воспроизводит, а упакованная версия недоступна.";
+    case "codec_not_opted_in":
+      return "Кодек файла не включён в упаковку потоков — упакуйте его на сервере, чтобы смотреть.";
+    case "codec_unsupported":
+      return "Кодек файла нельзя упаковать для этого браузера — воспроизведение невозможно.";
+    default:
+      return "Причина не сообщена — этот элемент нельзя воспроизвести.";
+  }
+}
+
+// UnsupportedBanner — the honest not-playable state (tv-playback-unblock):
+// the state_reason's meaning, spelled out. No player attach, no spinner,
+// no polling rides this state — the page stays explorable.
+function UnsupportedBanner(props: {
+  reason?: PlaybackStateReason;
+}): ReactElement {
+  return (
+    <div
+      role="alert"
+      className="flex min-h-40 flex-col items-center justify-center gap-2 rounded-lg border bg-card p-6 text-center"
+    >
+      <p className="text-sm font-medium">
+        Этот элемент сейчас нельзя воспроизвести.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {unsupportedReasonText(props.reason)}
+      </p>
+    </div>
   );
 }

@@ -6,6 +6,7 @@ package stream
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -65,10 +66,12 @@ func get(t *testing.T, srv *httptest.Server, path string, header http.Header) *h
 	return resp
 }
 
-// TestMediaToken is the spec floor for "Media tokens + /media surface" (probe
-// bd3cab860208a495): cookie-primary with query fallback, 4 h TTL, the item the
-// token names is the only one it serves, the admin credential is not accepted,
-// and no token value is ever logged.
+// TestMediaToken is the spec floor for "Token-gated playback serving" (probe
+// bd3cab860208a495): the cookie and the query parameter are both collected and
+// EITHER verifying as the path item grants (D4 — a stale credential never
+// shadows a valid one), the 4 h TTL holds, the item the token names is the
+// only one it serves, the admin credential is not accepted, credential-less
+// requests stay 401, and no token value is ever logged.
 func TestMediaToken(t *testing.T) {
 	s, srv, playlist, _ := tokenServe(t)
 	token, _ := s.Issue("it_tok", timeNow())
@@ -94,6 +97,83 @@ func TestMediaToken(t *testing.T) {
 		}
 		if !bytes.Equal(readBody(t, resp), playlist) {
 			t.Fatal("query-token body differs from the cookie-token body")
+		}
+	})
+
+	t.Run("dual_credentials_either_grants", func(t *testing.T) {
+		// D4 dual-credential gate: the cookie and the query parameter are
+		// collected independently and EITHER verifying as the path item
+		// grants — a stale credential never shadows a valid one.
+		staleCookie := mustOtherItemToken(t, s) // valid token naming item B
+		expired := mustExpiredToken(t, s)
+		cases := []struct {
+			name       string
+			cookieTok  string // "" = no cookie
+			queryTok   string // "" = no query parameter
+			wantStatus int
+		}{
+			{"stale_wrong_item_cookie_plus_valid_query_granted", staleCookie, token, http.StatusOK},
+			{"stale_wrong_item_cookie_alone_rejected", staleCookie, "", http.StatusUnauthorized},
+			{"valid_cookie_plus_stale_query_granted", token, staleCookie, http.StatusOK},
+			{"both_valid_granted", token, token, http.StatusOK},
+			{"expired_cookie_plus_valid_query_granted", expired, token, http.StatusOK},
+			{"expired_cookie_alone_rejected", expired, "", http.StatusUnauthorized},
+			{"malformed_cookie_plus_valid_query_granted", "not-a-token", token, http.StatusOK},
+			{"both_wrong_item_rejected", staleCookie, mustOtherItemToken(t, s), http.StatusUnauthorized},
+			{"credential_less_rejected", "", "", http.StatusUnauthorized},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				path := "/media/it_tok/nonce01/index.m3u8"
+				if tc.queryTok != "" {
+					path += "?token=" + tc.queryTok
+				}
+				var header http.Header
+				if tc.cookieTok != "" {
+					header = http.Header{"Cookie": {"media_token=" + tc.cookieTok}}
+				}
+				if resp := get(t, srv, path, header); resp.StatusCode != tc.wantStatus {
+					t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+				}
+			})
+		}
+	})
+
+	t.Run("granting_query_token_propagates_despite_stale_cookie", func(t *testing.T) {
+		// The TV flow over the dual gate: the stale cookie does not grant,
+		// the query token does — and the served playlist embeds THAT granting
+		// token, so the lifted URI serves cookie-less.
+		build := filepath.Join(s.Root, "it_tok", "nonce03")
+		if err := os.MkdirAll(build, 0o755); err != nil {
+			t.Fatalf("mkdir build: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(build, "index.m3u8"),
+			[]byte("#EXTM3U\n#EXTINF:4.0,\nseg-00000.m4s\n"), 0o644); err != nil {
+			t.Fatalf("write playlist: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(build, "seg-00000.m4s"), []byte("seg"), 0o644); err != nil {
+			t.Fatalf("write segment: %v", err)
+		}
+		stale := mustOtherItemToken(t, s)
+		resp := get(t, srv, "/media/it_tok/nonce03/index.m3u8?token="+token,
+			http.Header{"Cookie": {"media_token=" + stale}})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (the query token grants)", resp.StatusCode)
+		}
+		uri := ""
+		for _, l := range strings.Split(string(readBody(t, resp)), "\n") {
+			l = strings.TrimSpace(l)
+			if l != "" && !strings.HasPrefix(l, "#") {
+				uri = l
+				break
+			}
+		}
+		if uri == "" || !strings.Contains(uri, "token="+token) {
+			t.Fatalf("first playlist URI = %q, want the granting query token embedded", uri)
+		}
+		segResp := get(t, srv, "/media/it_tok/nonce03/"+uri, nil)
+		if segResp.StatusCode != http.StatusOK {
+			t.Fatalf("verbatim %q: status %d, want 200", uri, segResp.StatusCode)
 		}
 	})
 
@@ -177,7 +257,7 @@ func TestSections(t *testing.T) {
 		// The PRIMARY shape is real ffprobe output: titles nested under
 		// tags.title (`ffprobe -show_chapters` never emits a top-level
 		// chapter title — the tags carry it).
-		_, _, _, sections, _ := s.Describe("it", doc(map[string]any{
+		_, _, _, sections, _, _ := s.Describe("it", doc(map[string]any{
 			"chapters": []any{
 				map[string]any{"start_time": "5.5", "end_time": "9.25", "tags": map[string]any{"title": "middle"}},
 				map[string]any{"start_time": "0", "end_time": "5.5", "tags": map[string]any{"title": "intro"}},
@@ -203,7 +283,7 @@ func TestSections(t *testing.T) {
 	t.Run("top_level_title_fallback", func(t *testing.T) {
 		// Secondary shape: a top-level chapter title (no tags) still carries
 		// through — the projection accepts both.
-		_, _, _, sections, _ := s.Describe("it", doc(map[string]any{
+		_, _, _, sections, _, _ := s.Describe("it", doc(map[string]any{
 			"chapters": []any{
 				map[string]any{"start_time": "1", "end_time": "2", "title": "top-level"},
 				map[string]any{"start_time": "2", "end_time": "3", "tags": map[string]any{"not_a_title": "x"}},
@@ -221,7 +301,7 @@ func TestSections(t *testing.T) {
 	})
 
 	t.Run("raw_time_base_fallback", func(t *testing.T) {
-		_, _, _, sections, _ := s.Describe("it", doc(map[string]any{
+		_, _, _, sections, _, _ := s.Describe("it", doc(map[string]any{
 			"chapters": []any{map[string]any{"start": 1500.0, "time_base": "1/1000", "title": "raw"}},
 		}))
 		if len(sections) != 1 || sections[0]["start"] != 1.5 {
@@ -230,12 +310,12 @@ func TestSections(t *testing.T) {
 	})
 
 	t.Run("unusable_chapter_dropped_and_absent_probe_nil", func(t *testing.T) {
-		if _, _, _, got, _ := s.Describe("it", doc(map[string]any{
+		if _, _, _, got, _, _ := s.Describe("it", doc(map[string]any{
 			"chapters": []any{map[string]any{"title": "no boundaries"}},
 		})); len(got) != 0 {
 			t.Fatalf("sections = %v, want the boundary-less chapter dropped", got)
 		}
-		if _, _, _, got, _ := s.Describe("it", map[string]any{}); got != nil {
+		if _, _, _, got, _, _ := s.Describe("it", map[string]any{}); got != nil {
 			t.Fatalf("sections = %v, want nil without ffprobe", got)
 		}
 	})
@@ -244,11 +324,18 @@ func TestSections(t *testing.T) {
 		s.Root = t.TempDir() // the complete-build guard stats the build on disk
 		cases := []struct {
 			name, streamsState, playlist, nonce, wantMode string
+			// wantState pins the descriptor's state answer; "" derives it
+			// from streamsState (absent namespace reads as none). The honesty
+			// projection (tv-playback-unblock D1) overrides it for the
+			// factless floor: the no_packaging document carries NO ffprobe
+			// facts, so the fail-safe posture (INV2 — degraded facts classify
+			// direct_only) answers unsupported, never a bare none.
+			wantState string
 		}{
-			{"no_packaging", "", "", "", ModeDirect},
-			{"failed_pack", StateFailed, "/media/it/bad/index.m3u8", "", ModeDirect},
-			{"partial_build", StatePartial, "/media/it/n1/index.m3u8", "", ModeHls},
-			{"complete_build", StateComplete, "/media/it/n1/index.m3u8", "n1", ModeHls},
+			{"no_packaging", "", "", "", ModeDirect, StateUnsupported},
+			{"failed_pack", StateFailed, "/media/it/bad/index.m3u8", "", ModeDirect, ""},
+			{"partial_build", StatePartial, "/media/it/n1/index.m3u8", "", ModeHls, ""},
+			{"complete_build", StateComplete, "/media/it/n1/index.m3u8", "n1", ModeHls, ""},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -264,13 +351,16 @@ func TestSections(t *testing.T) {
 					}
 					d["streams"] = ns
 				}
-				mode, state, playURL, _, _ := s.Describe("it", d)
+				mode, state, playURL, _, _, _ := s.Describe("it", d)
 				if mode != tc.wantMode {
 					t.Fatalf("mode = %q, want %q", mode, tc.wantMode)
 				}
-				wantState := tc.streamsState
+				wantState := tc.wantState
 				if wantState == "" {
-					wantState = StateNone
+					wantState = tc.streamsState
+					if wantState == "" {
+						wantState = StateNone
+					}
 				}
 				if state != wantState {
 					t.Fatalf("state = %q, want %q", state, wantState)
@@ -559,7 +649,7 @@ func TestDescribeBrokenBuild(t *testing.T) {
 
 	t.Run("referenced_segment_missing_answers_direct", func(t *testing.T) {
 		handBuild(t, s.Root, "it", "n1", healthyPlaylist, "init.mp4", "seg-00000.m4s") // seg-00001 referenced but never written
-		mode, state, playURL, _, _ := s.Describe("it", completeDoc("it", "n1"))
+		mode, state, playURL, _, _, _ := s.Describe("it", completeDoc("it", "n1"))
 		if mode != ModeDirect || state != StateComplete {
 			t.Fatalf("mode/state = %q/%q, want %q/%q (broken build takes the floor)", mode, state, ModeDirect, StateComplete)
 		}
@@ -572,7 +662,7 @@ func TestDescribeBrokenBuild(t *testing.T) {
 		handBuild(t, s.Root, "it", "n2",
 			"#EXTM3U\n#EXTINF:4.0,\nseg-00000.m4s\n#EXT-X-ENDLIST\n",
 			"seg-00000.m4s", "t/seg-00001.m4s") // published under t/, never listed
-		mode, state, playURL, _, _ := s.Describe("it", completeDoc("it", "n2"))
+		mode, state, playURL, _, _, _ := s.Describe("it", completeDoc("it", "n2"))
 		if mode != ModeDirect || state != StateComplete {
 			t.Fatalf("mode/state = %q/%q, want %q/%q (stranded segment takes the floor)", mode, state, ModeDirect, StateComplete)
 		}
@@ -583,7 +673,7 @@ func TestDescribeBrokenBuild(t *testing.T) {
 
 	t.Run("healthy_build_answers_hls", func(t *testing.T) {
 		handBuild(t, s.Root, "it", "n3", healthyPlaylist, "init.mp4", "seg-00000.m4s", "seg-00001.m4s")
-		mode, state, playURL, _, _ := s.Describe("it", completeDoc("it", "n3"))
+		mode, state, playURL, _, _, _ := s.Describe("it", completeDoc("it", "n3"))
 		if mode != ModeHls || state != StateComplete {
 			t.Fatalf("mode/state = %q/%q, want %q/%q", mode, state, ModeHls, StateComplete)
 		}
@@ -685,8 +775,9 @@ func TestValidateBuild(t *testing.T) {
 	})
 }
 
-// logBuffer is a slog handler that accumulates every record's message, so a
-// test can assert nothing sensitive was ever logged.
+// logBuffer is a slog handler that accumulates every record's message plus
+// its attributes as "key=value" lines, so a test can assert what was logged
+// — and that nothing sensitive ever was.
 type logBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -697,6 +788,10 @@ func (h *logBuffer) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.buf.WriteString(r.Message)
+	r.Attrs(func(a slog.Attr) bool {
+		fmt.Fprintf(&h.buf, " %s=%v", a.Key, a.Value.Resolve())
+		return true
+	})
 	h.buf.WriteByte('\n')
 	return nil
 }
@@ -706,4 +801,128 @@ func (h *logBuffer) String() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.buf.String()
+}
+
+// TestMediaRejectionLog is the spec floor for the 401 rejection diagnostics
+// (task 1.3; spec "Token-gated playback serving"): every rejection logs ONE
+// line naming the credential kind (none/cookie/query), the reason class
+// (missing/malformed/expired/wrong-item), and the client User-Agent; the
+// client-facing body stays the static string; granted requests log nothing;
+// and no token value ever reaches any line.
+func TestMediaRejectionLog(t *testing.T) {
+	s, srv, _, _ := tokenServe(t)
+	token, _ := s.Issue("it_tok", timeNow())
+	const staticBody = "valid media token required\n"
+
+	// capture swaps the default slog logger for the test's duration and
+	// returns the buffer (the only log sink the handler writes to).
+	capture := func(t *testing.T) *logBuffer {
+		t.Helper()
+		buf := &logBuffer{}
+		prev := slog.Default()
+		slog.SetDefault(slog.New(buf))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+		return buf
+	}
+
+	t.Run("classified_lines_per_rejection", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			path       string
+			cookieTok  string // "" = no cookie
+			ua         string
+			wantKind   string
+			wantClass  string
+			wantStatus int
+		}{
+			{"no_credentials", "/media/it_tok/nonce01/index.m3u8", "", "ua-none/1.0", "none", "missing", http.StatusUnauthorized},
+			{"wrong_item_cookie", "/media/it_tok/nonce01/index.m3u8", mustOtherItemToken(t, s), "ua-cookie/1.0", "cookie", "wrong-item", http.StatusUnauthorized},
+			{"wrong_item_query", "/media/it_tok/nonce01/index.m3u8?token=" + mustOtherItemToken(t, s), "", "ua-query/1.0", "query", "wrong-item", http.StatusUnauthorized},
+			{"malformed_cookie", "/media/it_tok/nonce01/index.m3u8", "not-a-token", "ua-malformed/1.0", "cookie", "malformed", http.StatusUnauthorized},
+			{"expired_query", "/media/it_tok/nonce01/index.m3u8?token=" + mustExpiredToken(t, s), "", "ua-expired/1.0", "query", "expired", http.StatusUnauthorized},
+			{"foreign_key_query_is_malformed", "/media/it_tok/nonce01/index.m3u8?token=" + mustForeignToken(t), "", "ua-foreign/1.0", "query", "malformed", http.StatusUnauthorized},
+			{"query_present_cookie_absent_names_query", "/media/it_tok/nonce01/index.m3u8?token=not-a-token", "", "ua-qonly/1.0", "query", "malformed", http.StatusUnauthorized},
+			{"first_failure_in_gate_order", "/media/it_tok/nonce01/index.m3u8?token=not-a-token", "not-a-cookie-token", "ua-first/1.0", "cookie", "malformed", http.StatusUnauthorized},
+			{"admin_bearer_is_just_missing", "/media/it_tok/nonce01/index.m3u8", "", "ua-bearer/1.0", "none", "missing", http.StatusUnauthorized},
+		}
+		for i, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				buf := capture(t)
+				req, err := http.NewRequest(http.MethodGet, srv.URL+tc.path, nil)
+				if err != nil {
+					t.Fatalf("new request: %v", err)
+				}
+				req.Header.Set("User-Agent", tc.ua)
+				if tc.cookieTok != "" {
+					req.Header.Set("Cookie", "media_token="+tc.cookieTok)
+				}
+				resp, err := srv.Client().Do(req)
+				if err != nil {
+					t.Fatalf("GET: %v", err)
+				}
+				body := readBody(t, resp)
+				if resp.StatusCode != tc.wantStatus {
+					t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+				}
+				if string(body) != staticBody {
+					t.Fatalf("body = %q, want the static rejection body", body)
+				}
+				lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+				if len(lines) != 1 || lines[0] == "" {
+					t.Fatalf("log lines = %q, want exactly one rejection line", lines)
+				}
+				line := lines[0]
+				for _, want := range []string{
+					"kind=" + tc.wantKind,
+					"class=" + tc.wantClass,
+					"ua=" + tc.ua,
+				} {
+					if !strings.Contains(line, want) {
+						t.Fatalf("rejection line %q lacks %q", line, want)
+					}
+				}
+				if i == 0 && !strings.Contains(line, "media: rejected") {
+					t.Fatalf("rejection line %q lacks the media: rejected message", line)
+				}
+			})
+		}
+	})
+
+	t.Run("granted_requests_log_nothing", func(t *testing.T) {
+		buf := capture(t)
+		if resp := get(t, srv, "/media/it_tok/nonce01/index.m3u8?token="+token, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if buf.String() != "" {
+			t.Fatalf("a granted request logged: %q", buf.String())
+		}
+	})
+
+	t.Run("stale_cookie_plus_valid_query_grants_without_a_line", func(t *testing.T) {
+		// The D4 grant: the stale credential's failure is never logged when
+		// the other credential grants.
+		buf := capture(t)
+		resp := get(t, srv, "/media/it_tok/nonce01/index.m3u8?token="+token,
+			http.Header{"Cookie": {"media_token=" + mustOtherItemToken(t, s)}})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if buf.String() != "" {
+			t.Fatalf("a granted dual-credential request logged: %q", buf.String())
+		}
+	})
+
+	t.Run("tokens_stay_out_of_every_line", func(t *testing.T) {
+		buf := capture(t)
+		expired := mustExpiredToken(t, s)
+		get(t, srv, "/media/it_tok/nonce01/index.m3u8?token="+token, nil)                                  // served
+		get(t, srv, "/media/it_tok/nonce01/index.m3u8?token="+expired, nil)                                // rejected
+		get(t, srv, "/media/it_tok/nonce01/index.m3u8", nil)                                               // rejected
+		get(t, srv, "/media/it_tok/nonce01/index.m3u8", http.Header{"Cookie": {"media_token=" + expired}}) // rejected
+		for _, secret := range []string{token, expired} {
+			if strings.Contains(buf.String(), secret) {
+				t.Fatal("a media token value reached the rejection log")
+			}
+		}
+	})
 }

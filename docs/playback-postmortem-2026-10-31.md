@@ -89,6 +89,13 @@ lessons for future work. Update it when a fix lands or a new finding appears.
   playlist (original + translated audio track via `#EXT-X-DISCONTINUITY` and a
   second `EXT-X-MAP`) doubles the surface: clients must survive a codec-map
   switch mid-playlist.
+- Follow-up landed (2026-10-31, `tv-playback-unblock`, branch
+  `fix/playlist-token-propagation`, pending deploy): the honest
+  "unsupported/preparing" descriptor state is in — direct floors that are not
+  `<video>`-native or whose codecs cannot play anywhere answer `preparing` /
+  `unsupported` with an additive `state_reason` instead of a bare `play_url`
+  (see "Landed by `tv-playback-unblock`" below). The remux-vs-transcode
+  policy decision itself stays open.
 
 ### F6 — Auth is NOT the problem (10:01 follow-up: it became one)
 - Descriptor GET sets cookie `media_token` (path=/media); segments authorize
@@ -105,6 +112,28 @@ lessons for future work. Update it when a fix lands or a new finding appears.
   stay token-free, the gate itself is unchanged. Playlists are
   self-authorizing; see openspec change
   `2026-10-31-playlist-token-propagation`.
+
+### F8 — Unpackaged "watched" serial has NO path to a build (2026-10-31, after 44c2322)
+- Symptom: TV spinner on ser_3 ep 2 (`itm_2_e76d698d4a147d7c`, Hotaru no
+  Yomeiri, Matroska+HEVC). Descriptor `mode=direct state=none`; direct floor
+  serves raw MKV; zero POSTs in logs.
+- Three-gate chain: (a) frontier skips the serial — BOTH its episodes carry
+  `position > 0` progress from 2026-10-24 (pre-knob, nothing ever packed) and
+  last-watched == final episode ⇒ "whole serial watched" skip
+  (`frontier.go:87`), no carve-out for never-packaged serials; (b) pack-on-play
+  (D-8, `main.go:336-341`) needs `POST /play {retry:false}` — the SPA only
+  ever sends `{retry:true}` (ItemDetail.tsx:385), so it is dead code from the
+  UI; (c) direct floor + MKV = undecodable spinner.
+- Server pipeline healthy: sibling packed item answered `mode=hls
+  state=complete` in the same session; sweep idle-quiet (0 jobs — everything
+  else packed, 58/60 GiB). Also: 3 NEW pack_failed rows 22:54–22:58 Oct 30
+  (missing source files under /media/kofe/ongoing, cooldown to Nov 29) — F4
+  tail-fix working, reasons now real.
+- Full evidence + fix directions: `.tmp/playback-evidence-2026-10-31.md`.
+- Remediated by `tv-playback-unblock` (2026-10-31, branch
+  `fix/playlist-token-propagation`, pending deploy): all three fix
+  directions from the evidence doc landed — see "Landed by
+  `tv-playback-unblock`" below.
 
 ### F7 — Stale-JS hypothesis is dead
 - `index.html` is served `no-cache`, hashed assets immutable → a TV navigation
@@ -158,6 +187,49 @@ lessons for future work. Update it when a fix lands or a new finding appears.
 - Watch for the churn signature (`fronted packaging` for the same item ID
   more than once) after deploy — request/orchestrator logs now make it visible.
 
+## Landed by `tv-playback-unblock` (2026-10-31, branch `fix/playlist-token-propagation`) — pending deploy
+
+Kills the F8 class end to end and closes the F5 follow-up (evidence doc
+`.tmp/playback-evidence-2026-10-31.md` fix directions 1–3). Applied on the
+`fix/playlist-token-propagation` branch; NOT yet deployed:
+
+1. **Direct-floor honesty (F5 follow-up, fix-direction 3)** — the playback
+   descriptor answers `preparing` / `unsupported` with an additive
+   `state_reason` (`non_native_container` / `codec_not_opted_in` /
+   `codec_unsupported`) whenever the direct floor's source container is not
+   `<video>`-native (mp4/webm) or its codecs cannot play anywhere;
+   `play_url` is retained (additive wire change, existing clients keep
+   working). An undecodable MKV never silently attaches to `<video>` again.
+2. **Pack-on-play wired from the SPA (F8 gate b, fix-direction 1)** —
+   ItemDetail fires `POST /play {retry:false}` when the descriptor says the
+   floor is preparing, renders an explicit Preparing state, and polls the
+   descriptor until the answer flips to `hls` or `failed` (the existing
+   retry affordance takes over). The previously dead D-8 server half now has
+   a caller.
+3. **Completion-aware watched semantics (F8 gate a, fix-direction 2)** — the
+   frontier's watched signal is no longer any `position > 0`: an item counts
+   as watched at ≥90% of its known duration or once the position passes a
+   classified credits/ending section's start (missing facts stay
+   conservative; 100% is never required), so a mid-episode serial's
+   unwatched tail is proactively built again. Proactive (frontier) packing
+   stays unwatched-only — a fully watched never-packaged serial still skips
+   (pack-on-play is its path, never a sweep enqueue or a budget-eviction
+   pin).
+4. **Diagnostics** — one INFO decision line per playback descriptor GET
+   (item, mode, state, gating reason when direct); the /media 401 rejection
+   path logs credential kind + reason class + User-Agent (never token
+   values); a best-effort rate-limited `POST /api/v1/playback-events`
+   beacon; distinct SPA error banners for direct-lane `video.onerror` and
+   hls.js fatal errors — no more silent eternal spinner on either lane.
+5. **Media-gate hardening** — the /media gate tries the cookie AND the query
+   token and grants when EITHER verifies as naming the path item, so a stale
+   cookie naming a different item no longer shadows a valid `?token=`;
+   credential-less requests still 401.
+
+Still open (unchanged by this change): cooldown classification (infra vs
+content errors), in-flight eviction ownership (lease/manifest), F7 poster
+auth, and the F5 transcode-to-AVC lane.
+
 ## Future design (candidates, not decisions)
 
 - **Cooldown should distinguish infra errors from content errors.** A deleted
@@ -169,7 +241,11 @@ lessons for future work. Update it when a fix lands or a new finding appears.
   make "don't touch, a worker owns this" explicit and self-describing.
 - **HEVC strategy (F5):** either a transcode-to-AVC lane for mixed-client
   deployments, or codec-aware manifests + client capability detection with an
-  honest "unsupported codec" UI state instead of a spinner.
+  honest "unsupported codec" UI state instead of a spinner. The honest-state
+  half **landed 2026-10-31** (`tv-playback-unblock`, pending deploy) as a
+  server-declared descriptor state (`unsupported` + `state_reason`) with SPA
+  reason banners — client-side capability detection proved unnecessary; the
+  transcode-to-AVC lane stays open.
 - **Container-aware classification:** MKV+H.264 already packs (this episode
   proved the classifier right) — keep it; document that direct floor is only
   safe for `<video>`-native containers (mp4/webm), never MKV.

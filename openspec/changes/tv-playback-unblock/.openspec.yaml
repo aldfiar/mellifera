@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-10-31
+goal: "TV playback never silently spins: any packable video item reaches HLS
+  from the play button; failures are visible on both ends."

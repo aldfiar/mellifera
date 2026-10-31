@@ -22,16 +22,22 @@ import (
 // episode-linked audio sidecars as {index, label} in document order
 // (serial-watch-flow D-2 — read-only stored facts; the build maps document
 // order to audio rendition k+1, 0 is the embedded audio); PlayURL is the
-// token-carrying /media URL the player opens. Token is the fresh media token
+// token-carrying /media URL the player opens. StateReason is the additive
+// descriptor honesty reason (tv-playback-unblock D1): why the direct floor is
+// not <video>-playable — non_native_container | codec_not_opted_in |
+// codec_unsupported — present only on preparing/unsupported/failed-with-
+// non-native-floor answers, empty on hls and native-container answers. Token
+// is the fresh media token
 // for the cookie-primary delivery — deliberately excluded from the JSON body
 // (INV4: the token rides the Set-Cookie header, never a copyable body field).
 type Playback struct {
-	Mode       string           `json:"mode"`
-	State      string           `json:"state"`
-	PlayURL    string           `json:"play_url"`
-	Sections   []map[string]any `json:"sections"`
-	Voiceovers []map[string]any `json:"voiceovers"`
-	Token      string           `json:"-"`
+	Mode        string           `json:"mode"`
+	State       string           `json:"state"`
+	PlayURL     string           `json:"play_url"`
+	StateReason string           `json:"state_reason,omitempty"`
+	Sections    []map[string]any `json:"sections"`
+	Voiceovers  []map[string]any `json:"voiceovers"`
+	Token       string           `json:"-"`
 }
 
 // mediaCookieName / mediaCookieMaxAge are the cookie-primary token delivery
@@ -46,11 +52,12 @@ const (
 // playbackResponse is the wire shape for GET /items/{id}/playback: the
 // descriptor without the token (INV4 — the token goes only into Set-Cookie).
 type playbackResponse struct {
-	Mode       string           `json:"mode"`
-	State      string           `json:"state"`
-	PlayURL    string           `json:"play_url"`
-	Sections   []map[string]any `json:"sections"`
-	Voiceovers []map[string]any `json:"voiceovers"`
+	Mode        string           `json:"mode"`
+	State       string           `json:"state"`
+	PlayURL     string           `json:"play_url"`
+	StateReason string           `json:"state_reason,omitempty"`
+	Sections    []map[string]any `json:"sections"`
+	Voiceovers  []map[string]any `json:"voiceovers"`
 }
 
 // playRequest is the body of POST /items/{id}/play. Pointers carry presence:
@@ -106,12 +113,25 @@ func (a *app) itemPlayback(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, playbackResponse{
-		Mode:       pb.Mode,
-		State:      pb.State,
-		PlayURL:    pb.PlayURL,
-		Sections:   pb.Sections,
-		Voiceovers: pb.Voiceovers,
+		Mode:        pb.Mode,
+		State:       pb.State,
+		PlayURL:     pb.PlayURL,
+		StateReason: pb.StateReason,
+		Sections:    wireArray(pb.Sections),
+		Voiceovers:  wireArray(pb.Voiceovers),
 	})
+}
+
+// wireArray guards the descriptor's array fields against a JSON null: a
+// chapter-less or voiceover-less item arrives from the domain closure as a
+// nil slice, and Go marshals nil as null — but the SPA reads
+// .sections.length unguarded (the vip joint's array-ness contract), so the
+// wire answers [] for empty. Pinned end-to-end by TestPlaybackUnblockJoint.
+func wireArray(s []map[string]any) []map[string]any {
+	if s == nil {
+		return []map[string]any{}
+	}
+	return s
 }
 
 // itemPlay: parse {id} + body → Deps.Play (ONE domain call) → write

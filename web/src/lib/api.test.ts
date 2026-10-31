@@ -11,14 +11,17 @@ import {
   getAdminDevices,
   getAdminPairings,
   getItem,
+  getPlayback,
   hasFrameGrabberThumb,
   hasOriginalFile,
   listItems,
   revokeDevice,
+  sendPlaybackEvent,
   startPairing,
   waitPairing,
   type LibrariesResponse,
   type ListItemsParams,
+  type PlaybackDescriptor,
 } from "@/lib/api";
 import { DEVICE_TOKEN_KEY, setDeviceToken, setToken, TOKEN_KEY } from "@/lib/auth";
 
@@ -508,5 +511,131 @@ describe("pairing client — device-pairing (wire shapes + endpoint paths)", () 
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
     expect(localStorage.getItem(DEVICE_TOKEN_KEY)).toBeNull(); // device cleared too (D8)
     expect(assignSpy).toHaveBeenCalledWith("/login"); // admin rotation unchanged
+  });
+});
+
+// Playback descriptor honesty + the failure beacon (tv-playback-unblock).
+// The descriptor type grew state_reason + the preparing/unsupported states
+// (server-side landed: internal/stream describe.go / internal/api
+// playback.go); the beacon client posts through the authenticated wrapper
+// and swallows EVERY outcome — the beacon is never load-bearing (web-ui
+// delta "Playback event beacon client").
+describe("playback descriptor + beacon client (tv-playback-unblock)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("getPlayback parses the honesty descriptor verbatim — preparing + state_reason, play_url retained", async () => {
+    setDeviceToken("dev-token-1");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        mode: "direct",
+        state: "preparing",
+        state_reason: "non_native_container",
+        play_url: "/media/itm_7_abc?token=media-tok",
+        sections: [],
+      }),
+    );
+
+    const out: PlaybackDescriptor = await getPlayback("itm_7_abc");
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe("/api/v1/items/itm_7_abc/playback");
+    // verbatim wire mirror — the honesty answer keeps the floor play_url
+    expect(out.mode).toBe("direct");
+    expect(out.state).toBe("preparing");
+    expect(out.state_reason).toBe("non_native_container");
+    expect(out.play_url).toBe("/media/itm_7_abc?token=media-tok");
+  });
+
+  it("getPlayback parses the unsupported + codec reasons; hls answers omit state_reason", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        mode: "direct",
+        state: "unsupported",
+        state_reason: "codec_unsupported",
+        play_url: "/media/itm_7_abc?token=media-tok",
+        sections: [],
+      }),
+    );
+
+    const out = await getPlayback("itm_7_abc");
+    expect(out.state).toBe("unsupported");
+    expect(out.state_reason).toBe("codec_unsupported");
+
+    // an hls (or native direct) answer carries no reason — absence is the
+    // honest "nothing to surface", never an empty string
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        mode: "hls",
+        state: "complete",
+        play_url: "/media/itm_7_abc/index.m3u8?token=media-tok",
+        sections: [],
+      }),
+    );
+    const hls = await getPlayback("itm_7_abc");
+    expect(hls.state_reason).toBeUndefined();
+  });
+
+  it("sendPlaybackEvent POSTs the exact five-field payload through the authenticated wrapper to a 204", async () => {
+    setDeviceToken("dev-token-1"); // browse role: the device token rides
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    await sendPlaybackEvent(
+      "itm_7_abc",
+      "hls",
+      "fatal",
+      "networkError",
+      "manifest load failed with HTTP 503",
+    );
+
+    const [path, init] = fetchSpy.mock.calls[0]!;
+    expect(path).toBe("/api/v1/playback-events");
+    expect(init?.method).toBe("POST");
+    const headers = init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer dev-token-1");
+    expect(headers["Content-Type"]).toBe("application/json");
+    // data only — five strings, verbatim beaconRequest mirror (INV4: no
+    // credential material in the payload)
+    expect(JSON.parse(init?.body as string)).toEqual({
+      item_id: "itm_7_abc",
+      mode: "hls",
+      phase: "fatal",
+      code: "networkError",
+      detail: "manifest load failed with HTTP 503",
+    });
+  });
+
+  it("sendPlaybackEvent swallows a 429 rate_limited answer — resolves, never rejects, never retries", async () => {
+    setToken("t1");
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse(429, {
+          error: { code: "rate_limited", message: "too many playback events; slow down", retryable: false },
+        }),
+      );
+
+    await expect(
+      sendPlaybackEvent("itm_7_abc", "direct", "video-error", "MEDIA_ERR_SRC_NOT_SUPPORTED", "no supported source"),
+    ).resolves.toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledTimes(1); // no retry behind the swallow
+  });
+
+  it("sendPlaybackEvent swallows a network failure — the dropped beacon surfaces nothing", async () => {
+    setToken("t1");
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await expect(
+      sendPlaybackEvent("itm_7_abc", "direct", "stalled", "preparing_stall", "poll window exhausted"),
+    ).resolves.toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });

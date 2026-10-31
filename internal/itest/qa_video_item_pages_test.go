@@ -177,9 +177,12 @@ func TestVideoItemPagesJointE2E(t *testing.T) {
 
 		// The unpacked branch of the direct|hls contract: nothing packed in
 		// this test, so the unconditional direct floor stands (hls requires
-		// a published build) and the state sits in the packaging vocabulary.
-		if d.Mode != stream.ModeDirect || d.State != stream.StateNone {
-			t.Fatalf("descriptor = mode %q state %q, want direct/none (nothing packed; hls needs a published build)", d.Mode, d.State)
+		// a published build). The fixture is a packable MKV (matroska facts),
+		// so the descriptor honesty projection (tv-playback-unblock D1)
+		// answers the descriptor-only preparing state — read-side, the
+		// persisted namespace still sits at none.
+		if d.Mode != stream.ModeDirect || d.State != stream.StatePreparing {
+			t.Fatalf("descriptor = mode %q state %q, want direct/preparing (nothing packed; hls needs a published build; a packable MKV floor answers preparing)", d.Mode, d.State)
 		}
 
 		// The token-carrying play_url: the /media floor with the fresh media

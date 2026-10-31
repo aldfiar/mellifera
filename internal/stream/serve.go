@@ -5,6 +5,7 @@ package stream
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path"
@@ -29,12 +30,16 @@ var artifactExts = map[string]string{
 // and init segments are byte-identical to the published file; playlists serve
 // the published lines with every URI carrying the requesting token (see
 // tokenizePlaylist — self-authorizing playlists for cookie-less clients).
-// Every request must carry a valid media token
-// (cookie primary, query fallback) naming the item on the path; the admin
+// Every request must carry a media credential (the cookie and/or the query
+// parameter) whose token verifies as naming the item on the path — EITHER one
+// grants (D4 dual-credential gate: a stale cookie never shadows a valid query
+// token, nor vice versa); a credential-less request is 401. The admin
 // credential is not accepted here, and a rejection never echoes the token.
 //
-// Token values are never logged: this handler writes no request logs, and its
-// only error texts are the static strings below.
+// Token values are never logged: the handler's only log output is the ONE
+// classified line per 401 rejection (credential kind, reason class,
+// User-Agent — never the token), and its error texts are the static strings
+// below (a rejection never echoes the reason to the client).
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -46,9 +51,42 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	tok := mediaToken(r)
-	granted, err := s.verify(tok, timeNow())
-	if err != nil || granted != itemID {
+	now := timeNow()
+	tok := ""
+	credKind, credClass := "", ""
+	for _, cred := range mediaCredentials(r) { // cookie first (D-6); EITHER grants
+		if cred.value == "" {
+			continue
+		}
+		item, reason, ok := s.verifyReason(cred.value, now)
+		if ok && item == itemID {
+			tok = cred.value // the grant — no rejection to diagnose
+			break
+		}
+		if credClass == "" {
+			// First failure in gate order names the rejection: the failing
+			// credential's kind plus its class — malformed/expired from
+			// verification, wrong-item when it verified but names another
+			// item.
+			credKind = cred.kind
+			credClass = string(reasonWrongItem)
+			if !ok {
+				credClass = string(reason)
+			}
+		}
+	}
+	if tok == "" {
+		if credClass == "" {
+			credKind, credClass = credKindNone, string(reasonMissing)
+		}
+		// One classified diagnostic line per rejection (spec "Token-gated
+		// playback serving"): the credential kind, the reason class, and the
+		// User-Agent — NEVER the token value, and the body stays static (no
+		// reason echo to the client).
+		slog.Info("media: rejected",
+			"kind", credKind,
+			"class", credClass,
+			"ua", r.UserAgent())
 		http.Error(w, "valid media token required", http.StatusUnauthorized)
 		return
 	}
@@ -59,13 +97,42 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.serveArtifact(w, r, itemID, rest, tok)
 }
 
-// mediaToken extracts the request's media token: the cookie first (D-6
-// cookie-primary), the query parameter as the cookie-less fallback.
-func mediaToken(r *http.Request) string {
-	if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
-		return c.Value
+// mediaCredentialKind completes the rejection log's credential-kind
+// vocabulary (none / cookie / query): none is what a request with no
+// credential at all logs, the other two name the delivery that failed.
+const credKindNone = "none"
+
+// reasonMissing completes the rejection log's reason-class vocabulary
+// (missing / malformed / expired / wrong-item): the only class no token can
+// report itself — there was nothing to verify.
+const reasonMissing tokenReason = "missing"
+
+// reasonWrongItem is the rejection class for a credential that verifies but
+// names a different item than the path — judged at the gate, where the path
+// item is known, not inside token verification.
+const reasonWrongItem tokenReason = "wrong-item"
+
+// mediaCredential is one presented credential: its log kind (cookie/query)
+// and its raw value — empty when that delivery carried nothing.
+type mediaCredential struct {
+	kind  string
+	value string
+}
+
+// mediaCredentials returns the request's media credentials in gate order: the
+// cookie first (D-6 cookie-primary), then the query parameter. The gate
+// grants when EITHER verifies as naming the path item — a stale credential
+// never shadows a valid one (D4 dual-credential gate); a request carrying
+// neither stays a 401.
+func mediaCredentials(r *http.Request) []mediaCredential {
+	cookie := ""
+	if c, err := r.Cookie(cookieName); err == nil {
+		cookie = c.Value
 	}
-	return r.URL.Query().Get(tokenQuery)
+	return []mediaCredential{
+		{"cookie", cookie},
+		{"query", r.URL.Query().Get(tokenQuery)},
+	}
 }
 
 // splitMediaPath parses "/media/<itemID>/<rest>" (the mount prefix web.Options

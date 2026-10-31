@@ -61,9 +61,11 @@ func TestPlaybackRoundTrip(t *testing.T) {
 	}
 
 	// --- direct floor BEFORE any packaging: E02 answers mode direct at its
-	// original bytes through the token-gated mount ---
-	if pb := pbDescriptor(t, w, e02.ID); pb.Mode != "direct" || pb.State != "none" {
-		t.Fatalf("E02 descriptor before packaging = mode %q state %q, want direct/none", pb.Mode, pb.State)
+	// original bytes through the token-gated mount. The packable MKV floor
+	// answers the honesty projection's preparing state (tv-playback-unblock
+	// D1 — a pack can land; the persisted namespace still sits at none).
+	if pb := pbDescriptor(t, w, e02.ID); pb.Mode != "direct" || pb.State != "preparing" {
+		t.Fatalf("E02 descriptor before packaging = mode %q state %q, want direct/preparing", pb.Mode, pb.State)
 	}
 	origStatus, origBody, _ := pbDo(t, w.client, http.MethodGet, w.baseURL+pbDescriptor(t, w, e02.ID).PlayURL, "", nil)
 	if origStatus != http.StatusOK || len(origBody) == 0 {

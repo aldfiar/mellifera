@@ -40,7 +40,10 @@
 //   - PluginHealth: one plugin's liveness (exported seam input; built by the closure).
 //   - EnrichStats: the enrich-queue snapshot (exported seam input; built by the closure).
 //   - Playback: the playback descriptor (exported seam input; built by the
-//     Deps.Playback closure; its Token rides Set-Cookie only, json:"-").
+//     Deps.Playback closure; its Token rides Set-Cookie only, json:"-";
+//     StateReason is the additive descriptor honesty reason — present only
+//     on preparing/unsupported/failed-with-non-native-floor answers,
+//     omitted on hls and native-container answers).
 //
 // # Invariants
 //

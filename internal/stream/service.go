@@ -62,6 +62,13 @@ type Service struct {
 	Secret []byte
 	// Original resolves an item's original file path for the direct floor.
 	Original func(ctx context.Context, itemID string) (string, bool)
+	// OptInCodecs is the opt-in codec knob (the same gate the composition
+	// root passes to Classify callers): while false (the zero value and the
+	// production default), HEVC/AC-3 items' non-native floors answer
+	// unsupported with reason codec_not_opted_in; while true they answer
+	// preparing — a pack can land. Describe reads it; the pack lane itself
+	// is unaffected.
+	OptInCodecs bool
 
 	TokenTTL    time.Duration             // media token lifetime (default 4h)
 	HeadChunk   time.Duration             // head-first first chunk (default 600s)

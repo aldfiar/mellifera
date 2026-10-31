@@ -31,6 +31,25 @@ const (
 	ModeHls    = "hls"
 )
 
+// Descriptor honesty states (tv-playback-unblock D1): READ-SIDE projections a
+// descriptor answers instead of the bare packaging state — never persisted.
+// The persisted doc["streams"] namespace carries only the states above;
+// StatePreparing means the direct floor is not <video>-native but a pack CAN
+// land, StateUnsupported that packaging cannot help. state_reason names why.
+const (
+	StatePreparing   = "preparing"
+	StateUnsupported = "unsupported"
+)
+
+// state_reason vocabulary (tv-playback-unblock D1/D3) — a closed set naming
+// why a direct floor is not <video>-playable. Empty string on every other
+// answer (hls, native-container floors, broken builds).
+const (
+	ReasonNonNativeContainer = "non_native_container"
+	ReasonCodecNotOptedIn    = "codec_not_opted_in"
+	ReasonCodecUnsupported   = "codec_unsupported"
+)
+
 // SectionKindChapter is the only section kind produced in v1 (projected from
 // container chapters). SectionKindMarker is reserved for future
 // plugin-detected boundaries and MUST NOT be produced (spec: "Sections from
@@ -58,22 +77,117 @@ const (
 //   - voiceovers: the episode document's episode-linked audio sidecars
 //     projected to {index, label} in document order (serial-watch-flow D-2) —
 //     stored facts only, never a re-probe, never a packaging-state write.
+//   - stateReason: why the direct floor is not <video>-playable, one of the
+//     Reason* constants ("" otherwise). Honesty projection (tv-playback-unblock
+//     D1/D3 — stored facts only, never a re-probe, never client input): the
+//     ffprobe format_name decides whether the floor's container is <video>-
+//     native (mp4 family or webm; EVERYTHING else — matroska/mkv, avi,
+//     mpegts, … — is not, judged from format_name substrings). A non-native
+//     none-state floor projects state preparing (a pack can land: class pack,
+//     or opt_in while the Service's opt-in knob is on) or unsupported
+//     (direct_only codecs; opt_in with the knob off) with the reason naming
+//     which: non_native_container, codec_not_opted_in, or codec_unsupported.
+//     The matroska family's shared demuxer reports "matroska,webm" for MKV
+//     and WebM alike, so a format_name containing "matroska" reads NOT native
+//     even though it also names webm — an MKV misread as native would hand
+//     the player an undecodable floor, while a WebM misread as not-native
+//     merely answers preparing for a pack that will land anyway. A failed
+//     state keeps its value and retry affordance, carrying only the
+//     non-native marker when the floor itself is not <video>-native; partial/
+//     complete/broken-build states keep their persisted value with no reason
+//     (the D5 guard's wire shape is byte-identical). Cooldown-blind by design:
+//     a preparing item whose enqueue would be cooldown-refused stalls
+//     honestly — the ledger is not a document fact.
 //   - integrity guard (D5): a COMPLETE state additionally runs the read-only
 //     ValidateBuild over the nonce the namespace carries; a broken or evicted
 //     build answers the direct floor instead of a playlist the player would
 //     die on. Partial builds and nonce-less namespaces are exempt — their
 //     wire shape is byte-identical to the pre-guard descriptor.
-func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any) {
+func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any, stateReason string) {
 	s.normalize()
 	state = streamState(doc["streams"])
 	voiceovers = projectVoiceovers(doc["parsed"])
+	chapters := projectChapters(doc["ffprobe"])
 	token, _ := s.Issue(itemID, timeNow())
 	if state == StatePartial || state == StateComplete {
 		if playlist := streamPlaylist(doc["streams"]); playlist != "" && s.buildHealthy(itemID, state, doc["streams"]) {
-			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, projectChapters(doc["ffprobe"]), voiceovers
+			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, chapters, voiceovers, ""
 		}
 	}
-	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, projectChapters(doc["ffprobe"]), voiceovers
+	reason := s.floorReason(doc["ffprobe"], state)
+	if state == StateNone && reason != "" {
+		// The honesty projection (D1): a none-state floor the client cannot
+		// decode answers a descriptor-only state — preparing when a pack can
+		// land (the reason is the container alone), unsupported when the
+		// codecs are the unmet gate. Never persisted: doc["streams"] keeps
+		// its none value.
+		state = StateUnsupported
+		if reason == ReasonNonNativeContainer {
+			state = StatePreparing
+		}
+	}
+	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, chapters, voiceovers, reason
+}
+
+// floorReason resolves the descriptor's state_reason for the direct floor
+// (tv-playback-unblock D1/D3 — pure over stored facts): "" for a native
+// container or any state the honesty projection does not answer; for a
+// failed state only the non-native marker (the state itself keeps its value
+// and its retry affordance); for a none-state non-native floor the Classify
+// verdict with the opt-in knob judged explicitly — pack → a pack can land,
+// opt_in → preparing only while the Service's knob is on (otherwise the
+// codecs are the unmet gate), direct_only (the fail-safe verdict for absent
+// facts too, INV2) → packaging cannot help.
+func (s *Service) floorReason(ffprobe any, state string) string {
+	if containerNative(ffprobe) {
+		return ""
+	}
+	if state == StateFailed {
+		return ReasonNonNativeContainer
+	}
+	if state != StateNone {
+		return "" // partial/complete/broken-build keep their persisted value
+	}
+	f, ok := ffprobe.(map[string]any)
+	if !ok {
+		return ReasonCodecUnsupported
+	}
+	switch Classify(f, true) { // judge codecs with the knob out of the way
+	case ClassPack:
+		return ReasonNonNativeContainer
+	case ClassOptIn:
+		if s.OptInCodecs {
+			return ReasonNonNativeContainer
+		}
+		return ReasonCodecNotOptedIn
+	default:
+		return ReasonCodecUnsupported
+	}
+}
+
+// containerNative reports whether the probed container is one a <video>
+// element decodes natively: the mp4 family or webm — everything else
+// (matroska/mkv, avi, mpegts, …) is not. Judged from the ffprobe format
+// blob's format_name substrings; absent or unreadable facts read NOT native
+// (fail-safe, INV2 — a floor disclaimed by mistake merely answers preparing,
+// while an undecodable floor presented as native breaks playback).
+func containerNative(ffprobe any) bool {
+	f, ok := ffprobe.(map[string]any)
+	if !ok {
+		return false
+	}
+	format, _ := f["format"].(map[string]any)
+	name, _ := format["format_name"].(string)
+	name = strings.ToLower(name)
+	if strings.Contains(name, "matroska") {
+		return false // the shared demuxer names webm too — the tag cannot disambiguate
+	}
+	for _, good := range []string{"mp4", "m4a", "m4v", "mov", "webm"} {
+		if strings.Contains(name, good) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildHealthy gates the hls answer on the stored build still existing on

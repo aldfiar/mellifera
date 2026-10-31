@@ -100,7 +100,8 @@ func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) er
 		return nil
 	}
 	cool := streamCooldowns(ctx, st)
-	watched, _ := watchState(ctx, st)
+	positions, _ := watchState(ctx, st)
+	watched := make(map[string]bool)
 	in := orchestrator.FrontierIn{Watched: watched, Now: time.Now()}
 	for _, l := range libs {
 		series, err := st.QuerySeries(ctx, l.ID, "")
@@ -114,10 +115,7 @@ func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) er
 				slog.Warn("orchestrator: query episodes failed", "series", sr.ID, "error", err)
 				continue
 			}
-			eps := make([]orchestrator.Episode, 0, len(items))
-			for _, it := range items {
-				eps = append(eps, episodeFromDoc(it.ID, decodeItemDoc(it.Document), cool, optInCodecs))
-			}
+			eps := projectEpisodes(items, cool, optInCodecs, positions, watched)
 			// The gate rides the row — the policy owns the skip (one judge).
 			in.Serials = append(in.Serials, orchestrator.Serial{
 				LibraryID: l.ID, StreamsEnabled: l.StreamsEnabled, Episodes: eps,
@@ -152,7 +150,7 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 	if err != nil {
 		return // no artifact root yet
 	}
-	_, watched := watchState(ctx, st)
+	_, recency := watchState(ctx, st)
 	dirs := make([]orchestrator.ArtifactDir, 0)
 	for _, idDir := range idDirs {
 		if !idDir.IsDir() {
@@ -179,7 +177,7 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 	for _, d := range dirs {
 		owner[d.Path] = d.ItemID
 	}
-	for _, path := range orchestrator.Evictions(dirs, watched, fronted, budgetBytes) {
+	for _, path := range orchestrator.Evictions(dirs, recency, fronted, budgetBytes) {
 		if id := owner[path]; fronted[id] {
 			// The budget could not be met from non-fronted artifacts alone:
 			// the frontier will repack this and evict it again — the churn
@@ -331,25 +329,26 @@ func streamCooldowns(ctx context.Context, st *store.Store) map[string]time.Time 
 }
 
 // watchState reads the playback-progress LRU clock once per sweep: the
-// watched set (any row with a positive position — the frontier's watch
-// signal) and the per-item recency stamps (eviction order).
-func watchState(ctx context.Context, st *store.Store) (map[string]bool, map[string]time.Time) {
+// per-item positions (the completion-aware watched predicate's input — this
+// read carries no watch judgment; the fold lives where the episode documents
+// are, in the serial loop's projectEpisodes) and the per-item recency stamps
+// (eviction order — any-progress-based, deliberately untouched by the watched
+// predicate: the budget LRU clock is a separate signal, design D5).
+func watchState(ctx context.Context, st *store.Store) (map[string]float64, map[string]time.Time) {
 	rows, err := st.ListProgress(ctx, watchScanLimit)
 	if err != nil {
 		slog.Warn("orchestrator: list progress failed", "error", err)
-		return map[string]bool{}, map[string]time.Time{}
+		return map[string]float64{}, map[string]time.Time{}
 	}
-	watched := make(map[string]bool, len(rows))
+	positions := make(map[string]float64, len(rows))
 	recency := make(map[string]time.Time, len(rows))
 	for _, p := range rows {
-		if p.PositionSeconds > 0 {
-			watched[p.ItemID] = true
-		}
+		positions[p.ItemID] = float64(p.PositionSeconds)
 		if t, err := time.Parse(time.RFC3339Nano, p.UpdatedAt); err == nil {
 			recency[p.ItemID] = t
 		}
 	}
-	return watched, recency
+	return positions, recency
 }
 
 // nonces lists the build-directory names under one item's artifact directory.

@@ -259,8 +259,8 @@ func TestStreamsJoint(t *testing.T) {
 		pbScanLibrary(t, w, libID)
 		pbAwaitIdle(t, q, 30*time.Second)
 		dropped := pbDescriptor(t, w, itemID)
-		if dropped.Mode != "direct" || dropped.State != "none" {
-			t.Fatalf("descriptor after changed rescan = mode %q state %q, want direct/none (changed base drops streams)", dropped.Mode, dropped.State)
+		if dropped.Mode != "direct" || dropped.State != "preparing" {
+			t.Fatalf("descriptor after changed rescan = mode %q state %q, want direct/preparing (changed base drops streams; the packable MKV floor answers the honesty projection)", dropped.Mode, dropped.State)
 		}
 		it, err := w.st.GetItem(context.Background(), itemID)
 		if err != nil {

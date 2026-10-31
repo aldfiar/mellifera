@@ -207,9 +207,10 @@ func main() {
 	// stream; this closure is the only bridge). The artifact root lives inside
 	// the server's own data space, never a library directory.
 	mediaSvc := &stream.Service{
-		Root:     cfg.streamsRoot,
-		Secret:   cfg.mediaSecret,
-		Original: originalResolver(st),
+		Root:        cfg.streamsRoot,
+		Secret:      cfg.mediaSecret,
+		Original:    originalResolver(st),
+		OptInCodecs: cfg.optInCodecs, // descriptor honesty shares the pack lane's knob
 	}
 	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
 		build, err := mediaSvc.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
@@ -303,26 +304,11 @@ func main() {
 		Status: statusClosure,
 		// Playback descriptor (D-7): pure delegation over the stream Service's
 		// Describe + a fresh media token (the anti-corruption seam keeps api
-		// free of a stream import, mirroring Status above).
+		// free of a stream import, mirroring Status above). The decision log
+		// (tv-playback-unblock D8) rides the same closure — one INFO line per
+		// descriptor GET; see decision_log.go.
 		Playback: func(ctx context.Context, itemID string) (api.Playback, error) {
-			row, err := st.GetItem(ctx, itemID)
-			if err != nil {
-				return api.Playback{}, err // sql.ErrNoRows → 404 at the handler
-			}
-			var doc map[string]any
-			if err := json.Unmarshal(row.Document, &doc); err != nil {
-				return api.Playback{}, err
-			}
-			mode, state, playURL, sections, voiceovers := mediaSvc.Describe(itemID, doc)
-			token, _ := mediaSvc.Issue(itemID, time.Now()) // cookie-primary delivery
-			return api.Playback{
-				Mode:       mode,
-				State:      state,
-				PlayURL:    playURL,
-				Sections:   sections,
-				Voiceovers: voiceovers,
-				Token:      token,
-			}, nil
+			return playbackDescriptor(ctx, st, mediaSvc, itemID)
 		},
 		// Play verb (D-7 — the ONLY playback mutation): retry re-enqueues a
 		// failed packaging run through the streams lane; fromSeconds is
@@ -676,7 +662,7 @@ func loadConfig() config {
 		// default 32; `0` disables the cap entirely. Non-positive reads as
 		// off (the orchestrator's Evictions contract), so the knob can never
 		// accidentally evict everything.
-		orchBudgetGB:      envInt("MELLIFERA_ORCH_BUDGET_GB", 32),
+		orchBudgetGB: envInt("MELLIFERA_ORCH_BUDGET_GB", 32),
 		// Opt-in codec knob (D-2's env surface — default off, the locked
 		// default): while false, Classify folds HEVC/AC-3 items to
 		// direct_only (the direct floor serves them); true makes them

@@ -265,7 +265,7 @@ func TestVoiceoverTracks(t *testing.T) {
 				map[string]any{"relative_path": "theme.flac", "kind": "audio"}, // no folder, no language
 			},
 		}}
-		_, _, _, _, voiceovers := s.Describe("it", d)
+		_, _, _, _, voiceovers, _ := s.Describe("it", d)
 		if len(voiceovers) != 3 {
 			t.Fatalf("voiceovers = %v, want 3 audio entries (subtitles never project)", voiceovers)
 		}
@@ -290,7 +290,7 @@ func TestVoiceoverTracks(t *testing.T) {
 			"no_sidecar": {"parsed": map[string]any{"absolute_path": "/lib/f.mkv"}},
 			"empty":      {"parsed": map[string]any{"sidecars": []any{}}},
 		} {
-			_, _, _, _, voiceovers := s.Describe("it", d)
+			_, _, _, _, voiceovers, _ := s.Describe("it", d)
 			if voiceovers == nil || len(voiceovers) != 0 {
 				t.Fatalf("%s: voiceovers = %#v, want an empty list", name, voiceovers)
 			}
@@ -314,8 +314,8 @@ func TestVoiceoverTracks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		mode1, state1, url1, _, vo1 := s.Describe("it", d)
-		mode2, state2, url2, _, vo2 := s.Describe("it", d)
+		mode1, state1, url1, _, vo1, _ := s.Describe("it", d)
+		mode2, state2, url2, _, vo2, _ := s.Describe("it", d)
 		after, err := json.Marshal(d)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
