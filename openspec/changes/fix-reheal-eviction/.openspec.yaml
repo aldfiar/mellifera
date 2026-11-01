@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-11-01
+goal: "Pack supersession never kills a live playback session: playback-aware
+  retention replaces evict-on-publish"

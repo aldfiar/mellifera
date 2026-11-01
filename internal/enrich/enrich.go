@@ -51,14 +51,6 @@ type Deps struct {
 	// verdict, never a pack failure — the failed state persists with the gate
 	// token, no ledger row). Metadata completion is never touched either way.
 	PackItem func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (pack.PackOutcome, error)
-	// AfterPackPersist, when non-nil, runs exactly once AFTER the streams
-	// lane's success persistStreams with the just-persisted build's item id
-	// and nonce (playback-capability-gate D5): the document already names the
-	// new build, so the composition root can safely evict the item's
-	// superseded build directories. It is never called on the failure path
-	// (a pack failure or a policy refusal). Best-effort by contract — the
-	// callee must never fail the landed pack. nil (tests, sync runs) = no-op.
-	AfterPackPersist func(itemID, keepNonce string)
 	// FetchGate spaces each plugin's outbound fetches at least its
 	// min_interval_ms apart (enrichment D-5: pacing is contract conformance
 	// the core enforces server-side). Wired flat in cmd/mellifera beside
