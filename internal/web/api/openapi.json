@@ -3023,6 +3023,9 @@
                         "type": "string"
                     }
                 },
+                "layout": {
+                    "type": "string"
+                },
                 "mode": {
                     "type": "string"
                 },

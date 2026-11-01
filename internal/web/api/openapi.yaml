@@ -417,6 +417,8 @@ definitions:
         items:
           type: string
         type: array
+      layout:
+        type: string
       mode:
         type: string
       play_url:
