@@ -325,7 +325,7 @@ func main() {
 		// (tv-playback-unblock D8) rides the same closure — one INFO line per
 		// descriptor GET; see decision_log.go.
 		Playback: func(ctx context.Context, itemID string) (api.Playback, error) {
-			return playbackDescriptor(ctx, st, mediaSvc, itemID)
+			return playbackDescriptor(ctx, st, mediaSvc, enrichQueue.EnqueuePack, cfg.optInCodecs, itemID)
 		},
 		// Play verb (D-7 — the ONLY playback mutation): retry re-enqueues a
 		// failed packaging run through the streams lane; fromSeconds is

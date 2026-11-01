@@ -142,9 +142,18 @@ func TestPlaybackDecisionLog(t *testing.T) {
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			buf.Reset()
-			pb, err := playbackDescriptor(ctx, st, mediaSvc, tc.id)
+			// No seeded item is a legacy build (complete + nonce, no master),
+			// so the lazy repack trigger must never fire on this path — the
+			// descriptor GET stays enqueue-free here (repack-descriptor-
+			// trigger: the decision rides only the stale-build shape).
+			enqueued := []string{}
+			pb, err := playbackDescriptor(ctx, st, mediaSvc,
+				func(id string) error { enqueued = append(enqueued, id); return nil }, false, tc.id)
 			if err != nil {
 				t.Fatalf("playbackDescriptor(%s): %v", tc.id, err)
+			}
+			if len(enqueued) != 0 {
+				t.Fatalf("enqueued = %v, want nothing — a decision-log GET is never a repack trigger here", enqueued)
 			}
 			if pb.Mode != tc.mode || pb.State != tc.state {
 				t.Fatalf("descriptor = %s/%s, want %s/%s", pb.Mode, pb.State, tc.mode, tc.state)

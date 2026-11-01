@@ -33,9 +33,18 @@ const (
 
 // playbackDescriptor is the api.Deps.Playback closure body (D-7): pure
 // delegation over the stream Service's Describe + a fresh media token, then
-// the ONE decision-log line. Read-only by contract: nothing here enqueues or
-// writes — the descriptor GET never mutates packaging state.
-func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.Service, itemID string) (api.Playback, error) {
+// the ONE decision-log line. The descriptor GET is the verb every playback
+// actually hits (the SPA mounts the player from the descriptor's play_url —
+// POST /play is only the failed-state retry affordance), so the closure also
+// runs the SAME lazy repack-on-play decision the play verb runs
+// (repack-descriptor-trigger): a legacy build enqueues exactly ONE repack
+// through the ordinary EnqueuePack path while the GET still answers the
+// current old build. enqueue is the shared EnqueuePack seam (the play verb's
+// own); optInCodecs is the pack gate's opt-in knob. Otherwise read-only by
+// contract: nothing here WRITES packaging state — the enqueue is the
+// lane's normal trigger, the answer never changes for it, and the lane's
+// per-item lease absorbs repeated GETs (never re-enqueued per request).
+func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.Service, enqueue func(string) error, optInCodecs bool, itemID string) (api.Playback, error) {
 	row, err := st.GetItem(ctx, itemID)
 	if err != nil {
 		return api.Playback{}, err // sql.ErrNoRows → 404 at the handler
@@ -44,6 +53,15 @@ func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.S
 	if err := json.Unmarshal(row.Document, &doc); err != nil {
 		return api.Playback{}, err
 	}
+	// Lazy repack trigger (repack-descriptor-trigger), BEFORE the answer is
+	// composed: the same stale-build decision as the play verb, byte-for-byte
+	// legacyRepackOnPlay semantics — complete state + a build nonce + no
+	// master marker, PackGate pre-check, ONE orchestrator line, enqueue into
+	// the dedup seam. The return values are deliberately dropped: the GET
+	// never blocks on the decision and never changes its answer — the
+	// descriptor below still serves the current old build while the repack
+	// runs.
+	legacyRepackOnPlay(enqueue, doc, itemID, optInCodecs)
 	mode, state, playURL, sections, voiceovers, stateReason, codecs, codecsSrc := mediaSvc.Describe(itemID, doc)
 	token, _ := mediaSvc.Issue(itemID, time.Now()) // cookie-primary delivery
 	logPlaybackDecision(itemID, mode, state,

@@ -14,8 +14,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
+	"github.com/mellifera/mellifera/internal/stream"
 )
 
 // Gate-fixture ffprobe blobs (synthetic verbatim facts — the same shapes
@@ -393,6 +395,165 @@ func TestPlayLazyRepack(t *testing.T) {
 		}
 		if skips != 1 {
 			t.Errorf("skip lines = %d, want exactly 1 (buf = %s)", skips, buf.String())
+		}
+		// Hard negative: the skip is a policy verdict, never a pack failure —
+		// no pack_failed ledger row may exist.
+		failures, err := st.ListFailures(ctx)
+		if err != nil {
+			t.Fatalf("ListFailures: %v", err)
+		}
+		if len(failures) != 0 {
+			t.Errorf("ledger rows = %d, want 0 — the skip must never write one", len(failures))
+		}
+	})
+}
+
+// TestDescriptorLazyRepack is the acceptance test for the descriptor-path
+// lazy repack trigger (repack-descriptor-trigger 1.1): the playback
+// descriptor GET — the verb every playback actually hits (the SPA mounts the
+// player from the descriptor's play_url) — runs the SAME stale-build
+// decision as the play verb. A legacy build (state complete + a build nonce,
+// no master marker) enqueues exactly ONE repack through the ordinary
+// EnqueuePack seam while the GET still ANSWERS the current old build; a
+// repeated GET while the repack runs is lease-absorbed, never re-enqueued
+// per request; a current (marker-carrying) build never enqueues; a
+// gate-closed stale item logs ONE "legacy repack skipped" INFO line naming
+// the item and the token and answers without enqueueing. The play verb's own
+// path is unchanged (TestPlayLazyRepack). Both lines hold INV4: no media
+// token and no play URL ever ride a captured line.
+func TestDescriptorLazyRepack(t *testing.T) {
+	st, ctx := gateSeedStore(t, map[string]map[string]any{
+		"it_legacy":       gateStreamsDoc(gateFfOpen, "complete", "n1"),
+		"it_current":      gateStreamsDoc(gateFfOpen, "complete", "n1"),
+		"it_stale_closed": gateStreamsDoc(gateFfOptIn, "complete", "n1"),
+	})
+	// The current build carries the marker the success persist writes
+	// (internal/enrich streams lane); the legacy docs stay marker-free.
+	r := mustRow(t, st, ctx, "it_current")
+	doc := decodeItemDoc(r.Document)
+	doc["streams"].(map[string]any)["master"] = true
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	r.Document = b
+	if err := st.PutItem(ctx, r); err != nil {
+		t.Fatalf("PutItem it_current: %v", err)
+	}
+
+	mediaSvc := &stream.Service{Root: t.TempDir(), Secret: []byte("descriptor-repack-test-secret")}
+
+	// enqueue mirrors the real seam's contract: the closure enqueues
+	// unconditionally into EnqueuePack, and the lane's per-item lease absorbs
+	// the repeats — a held item's re-enqueue is dropped here exactly as the
+	// lease drops a task whose item's run is pending or running.
+	var enqueued []string
+	held := map[string]bool{}
+	enqueue := func(id string) error {
+		if held[id] {
+			return nil // the lease: the pending/running repack owns the item
+		}
+		held[id] = true
+		enqueued = append(enqueued, id)
+		return nil
+	}
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	// describe drives the real api.Deps.Playback closure body once.
+	describe := func(t *testing.T, id string, optIn bool) api.Playback {
+		t.Helper()
+		pb, err := playbackDescriptor(ctx, st, mediaSvc, enqueue, optIn, id)
+		if err != nil {
+			t.Fatalf("playbackDescriptor(%s): %v", id, err)
+		}
+		return pb
+	}
+	// countLines counts the captured lines whose msg names the given phrase.
+	countLines := func(phrase string) int {
+		n := 0
+		for _, ln := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			if strings.Contains(ln, phrase) {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("stale_build_enqueues_once_and_still_answers", func(t *testing.T) {
+		buf.Reset()
+		enqueued = nil
+		held = map[string]bool{}
+		pb := describe(t, "it_legacy", false)
+		if len(enqueued) != 1 || enqueued[0] != "it_legacy" {
+			t.Errorf("enqueued = %v, want exactly it_legacy, once", enqueued)
+		}
+		if queued := countLines("legacy repack queued"); queued != 1 {
+			t.Errorf("queued lines = %d, want exactly 1 (buf = %s)", queued, buf.String())
+		}
+		// The GET answers the current old build while the repack runs: the
+		// answer is unchanged — a playable play_url still rides back.
+		if pb.PlayURL == "" {
+			t.Error("play_url = empty, want the descriptor to still answer the old build")
+		}
+		// A repeated GET while the repack runs is lease-absorbed: still
+		// exactly one enqueue, and the answer again.
+		pb2 := describe(t, "it_legacy", false)
+		if len(enqueued) != 1 {
+			t.Errorf("enqueued = %v after a repeat GET, want the lease to absorb it", enqueued)
+		}
+		if pb2.PlayURL == "" {
+			t.Error("repeat GET play_url = empty, want the old build again")
+		}
+		// INV4: no captured line ever carries the media token or the play URL.
+		if strings.Contains(buf.String(), pb.Token) {
+			t.Errorf("log = %q carries the media token", buf.String())
+		}
+		if strings.Contains(buf.String(), pb.PlayURL) {
+			t.Errorf("log = %q carries the play URL", buf.String())
+		}
+	})
+
+	t.Run("current_build_never_enqueues", func(t *testing.T) {
+		buf.Reset()
+		enqueued = nil
+		pb := describe(t, "it_current", false)
+		if len(enqueued) != 0 {
+			t.Errorf("enqueued = %v, want nothing for a marker-carrying build", enqueued)
+		}
+		if strings.Contains(buf.String(), "legacy repack") {
+			t.Errorf("log = %q, want no legacy-repack line for a current build", buf.String())
+		}
+		if pb.PlayURL == "" {
+			t.Error("play_url = empty, want the descriptor to answer as before")
+		}
+	})
+
+	t.Run("gate_closed_answers_without_enqueue", func(t *testing.T) {
+		buf.Reset()
+		enqueued = nil
+		pb := describe(t, "it_stale_closed", false) // the opt-in knob is off
+		if len(enqueued) != 0 {
+			t.Errorf("enqueued = %v, want nothing on a closed gate", enqueued)
+		}
+		if skips := countLines("legacy repack skipped"); skips != 1 {
+			t.Errorf("skip lines = %d, want exactly 1 (buf = %s)", skips, buf.String())
+		}
+		for _, ln := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			if strings.Contains(ln, "legacy repack skipped") &&
+				(!strings.Contains(ln, "it_stale_closed") || !strings.Contains(ln, "codec_not_opted_in")) {
+				t.Errorf("skip line = %q, want the item and the codec_not_opted_in token", ln)
+			}
+			if strings.Contains(ln, "legacy repack queued") {
+				t.Errorf("gate-closed item queued anyway: %q", ln)
+			}
+		}
+		// The gate-closed GET still answers its existing build.
+		if pb.PlayURL == "" {
+			t.Error("play_url = empty, want the gate-closed GET to keep answering")
 		}
 		// Hard negative: the skip is a policy verdict, never a pack failure —
 		// no pack_failed ledger row may exist.
