@@ -12,6 +12,18 @@ import { createPortal } from "react-dom";
 //
 //   open            — false renders nothing (overlay state is local, never
 //                     URL state; a route change unmounts and discards it).
+//   [History Back]  — on open the shell pushes ONE history entry (an overlay
+//                     marker on the state); a popstate popping it runs the
+//                     consumer's close policy (onEscape-else-onClose — the
+//                     Esc matrix), so Android TV Back — a history-back, not
+//                     a key — closes the overlay identically to Esc and
+//                     never exits the SPA. Any other close path (Esc keydown,
+//                     scrim click-away, completed action, route-change
+//                     unmount) consumes the entry via history.back() under a
+//                     suppress flag. The shell only ever consumes an entry
+//                     it pushed and still current: Back at the root of
+//                     history stays plain router-back, and open/close cycles
+//                     never accumulate stale overlay entries.
 //   onClose         — scrim click-away (and Esc when no onEscape is given).
 //   onEscape        — Esc key press; a consumer with a view walk (view →
 //                     menu → close) or a pending-mutation guard implements
@@ -29,6 +41,14 @@ import { createPortal } from "react-dom";
 
 const FOCUSABLE_SEL =
   "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])";
+
+// The overlay history marker: the state key the shell stamps its single
+// pushed entry with. The value is a monotonic per-push token, so two shells
+// (or two generations of one shell) never mistake each other's entry for
+// their own. Exported for the module's test file only.
+export const OVERLAY_HISTORY_KEY = "mellifera:overlay";
+
+let overlayHistorySeq = 0;
 
 function focusables(panel: HTMLElement): HTMLElement[] {
   return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE_SEL)).filter(
@@ -72,6 +92,93 @@ export function DialogShell(props: {
       props.returnFocusRef?.current?.focus();
     };
   }, [open, props.returnFocusRef]);
+
+  // History Back (the overlay history contract): push on open, popstate runs
+  // the close policy, every other close path consumes the entry. The close
+  // policy is read through a latest-props ref so the effect keys on `open`
+  // alone — a policy identity change mid-open (a consumer's inline closure
+  // re-created per render) must never re-push the entry.
+  const policyRef = useRef(props);
+  policyRef.current = props;
+  const entryTokenRef = useRef(0); // our live entry's token; 0 = none on the stack
+  const consumedTokenRef = useRef(0); // entry a pending consumption is about to consume
+  const consumeTimerRef = useRef(0); // the deferred consumption's timer id
+  const suppressRef = useRef(false); // a consumption traversal of ours is in flight
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    // Cancel a pending consumption from a just-closed generation (or
+    // StrictMode dev's interleaved cleanup) and re-adopt the entry it was
+    // about to consume — the stack still sits on our marker, so pushing a
+    // second entry would leak one.
+    if (consumeTimerRef.current !== 0) {
+      window.clearTimeout(consumeTimerRef.current);
+      consumeTimerRef.current = 0;
+    }
+    const current = window.history.state as Record<string, unknown> | null;
+    if (
+      consumedTokenRef.current !== 0 &&
+      current &&
+      current[OVERLAY_HISTORY_KEY] === consumedTokenRef.current
+    ) {
+      entryTokenRef.current = consumedTokenRef.current;
+    } else {
+      const token = ++overlayHistorySeq;
+      entryTokenRef.current = token;
+      window.history.pushState({ [OVERLAY_HISTORY_KEY]: token }, "");
+    }
+    consumedTokenRef.current = 0;
+    suppressRef.current = false;
+
+    // popstate carries the state of the entry we LANDED ON, never the popped
+    // one — so the check is inverted: a traversal landing anywhere but our
+    // own entry means ours was traversed away from, i.e. the user's Back.
+    const onPopState = (e: PopStateEvent): void => {
+      const token = entryTokenRef.current;
+      if (token === 0) {
+        return; // consumed already — a popped-but-closed overlay closes nothing twice
+      }
+      if (suppressRef.current) {
+        suppressRef.current = false;
+        return; // a consumption traversal of ours — never a close
+      }
+      const landed = e.state as Record<string, unknown> | null;
+      if (landed && landed[OVERLAY_HISTORY_KEY] === token) {
+        return; // landed ON our entry (a sibling consumed theirs above us, or a Forward) — ours was not popped
+      }
+      entryTokenRef.current = 0;
+      const policy = policyRef.current;
+      if (policy.onEscape) {
+        policy.onEscape();
+      } else {
+        policy.onClose();
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      const token = entryTokenRef.current;
+      if (token === 0) {
+        return; // the user's Back already consumed it — nothing to unwind
+      }
+      entryTokenRef.current = 0;
+      // Consume only while our entry is still the CURRENT one: a route-change
+      // unmount pushes the new route on top, and a blind back() would pop
+      // that instead of our marker. The consumption is deferred one task so
+      // an immediately-following re-open (StrictMode dev's setup → cleanup →
+      // setup) cancels it and re-adopts the entry instead of pushing twice.
+      const state = window.history.state as Record<string, unknown> | null;
+      if (state && state[OVERLAY_HISTORY_KEY] === token) {
+        consumedTokenRef.current = token;
+        suppressRef.current = true;
+        consumeTimerRef.current = window.setTimeout(() => {
+          consumeTimerRef.current = 0;
+          window.history.back();
+        }, 0);
+      }
+    };
+  }, [open]);
 
   if (!open) {
     return null;
