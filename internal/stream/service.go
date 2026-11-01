@@ -8,9 +8,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -62,6 +64,13 @@ type Service struct {
 	Secret []byte
 	// Original resolves an item's original file path for the direct floor.
 	Original func(ctx context.Context, itemID string) (string, bool)
+	// OptInCodecs is the opt-in codec knob (the same gate the composition
+	// root passes to Classify callers): while false (the zero value and the
+	// production default), HEVC/AC-3 items' non-native floors answer
+	// unsupported with reason codec_not_opted_in; while true they answer
+	// preparing — a pack can land. Describe reads it; the pack lane itself
+	// is unaffected.
+	OptInCodecs bool
 
 	TokenTTL    time.Duration             // media token lifetime (default 4h)
 	HeadChunk   time.Duration             // head-first first chunk (default 600s)
@@ -73,12 +82,23 @@ type Service struct {
 
 // Build is one published packaging run: the artifact pointer (a /media-relative
 // playlist URL under the run's build-nonce directory) and the nonce itself.
+// Codecs is the build's recorded codec truth (playback-capability-gate D2):
+// the RFC 6381 codec strings composed from probing the published variant
+// playlists — video first, then audio in the pinned rendition order, deduped.
+// Nil means the record could not be composed (a probe failed or a stream
+// fell outside the composition table) — fail-open: the pack still lands and
+// the build mounts exactly as an unrecorded build always has.
+// Layout names the build's audio layout (fix-tv-unblock-2): "single-variant"
+// (the muxed degenerate) or "rendition" (one variant per audio stream) —
+// layoutName at publish, threaded out for the success persist.
 // A returned build is COMPLETE (its playlist ends with ENDLIST); a head-first
 // partial was published transiently mid-Pack and is observable only while the
 // run is in flight (INV-head-first).
 type Build struct {
-	Playlist string `json:"playlist"` // e.g. /media/<itemID>/<nonce>/index.m3u8
-	Nonce    string `json:"nonce"`
+	Playlist string   `json:"playlist"`         // e.g. /media/<itemID>/<nonce>/index.m3u8
+	Nonce    string   `json:"nonce"`            // the build-nonce directory name
+	Codecs   []string `json:"codecs,omitempty"` // RFC 6381 strings; nil = uncomposable (fail-open)
+	Layout   string   `json:"layout,omitempty"` // "single-variant" | "rendition"; the success persist's layout key
 }
 
 // idCharset guards every path segment resolved from an HTTP request or used to
@@ -131,4 +151,36 @@ func (s *Service) buildDir(itemID, nonce string) (string, error) {
 // ensureRoot creates the artifact root (server data space) on demand.
 func (s *Service) ensureRoot() error {
 	return os.MkdirAll(s.Root, 0o755)
+}
+
+// EvictSuperseded enforces the publish-replacement rule (playback-capability-
+// gate D5): one current build per item. Every directory under the item's
+// artifact root (Root/itemID) except the keepNonce build directory is removed.
+// Hard edges, by construction: `.tmp-*` staging names are never touched (an
+// in-flight build of the same item survives), other items are never touched
+// (only the item's own directory is read), keepNonce is always kept, and a
+// stray non-directory entry is never touched. Best-effort for the landed pack:
+// a failed removal logs WARN and the sweep continues — eviction never fails
+// the pack that just persisted. Unsafe path components refuse with a WARN
+// before any directory is read.
+func (s *Service) EvictSuperseded(itemID, keepNonce string) {
+	if _, err := s.buildDir(itemID, keepNonce); err != nil {
+		slog.Warn("streams: superseded eviction refused unsafe path", "item", itemID, "nonce", keepNonce, "error", err)
+		return
+	}
+	entries, err := os.ReadDir(filepath.Join(s.Root, itemID))
+	if err != nil {
+		return // no item directory: nothing was ever published; nothing to evict
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == keepNonce || strings.HasPrefix(entry.Name(), ".tmp-") {
+			continue
+		}
+		path := filepath.Join(s.Root, itemID, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			slog.Warn("streams: superseded eviction failed", "path", path, "error", err)
+			continue
+		}
+		slog.Info("streams: evicted artifact directory", "path", path)
+	}
 }

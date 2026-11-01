@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/mellifera/mellifera/internal/refusal"
 )
 
 // playStub records every Deps.Play call and answers from a script.
@@ -41,6 +43,8 @@ func TestPlaybackVerbs(t *testing.T) {
 		Mode:       "hls",
 		State:      "complete",
 		PlayURL:    "/media/it1/nonce01/index.m3u8?token=tok",
+		Codecs:     []string{"avc1.640029", "mp4a.40.2"},
+		Layout:     "rendition",
 		Sections:   []map[string]any{{"kind": "chapter", "start": 0.0, "end": 5.5, "title": "intro"}},
 		Voiceovers: []map[string]any{{"index": 0, "label": "Japanese"}},
 		Token:      "fresh-media-token",
@@ -108,6 +112,17 @@ func TestPlaybackVerbs(t *testing.T) {
 		if len(d.Voiceovers) != 1 || d.Voiceovers[0]["label"] != "Japanese" {
 			t.Fatalf("descriptor voiceovers = %+v, want the voiceover projection carried on the wire", d.Voiceovers)
 		}
+		// The hls answer carries the additive codecs record (playback-
+		// capability-gate D6) — present, in the descriptor's order.
+		if len(d.Codecs) != 2 || d.Codecs[0] != "avc1.640029" || d.Codecs[1] != "mp4a.40.2" {
+			t.Fatalf("descriptor codecs = %+v, want the pack's record carried on the wire", d.Codecs)
+		}
+		// The additive layout record rides the wire too (fix-tv-unblock-2
+		// Interfaces 1) — the layoutName vocabulary verbatim, the string the
+		// SPA compares.
+		if d.Layout != "rendition" {
+			t.Fatalf("descriptor layout = %+v, want the build's layout carried on the wire", d.Layout)
+		}
 	})
 
 	t.Run("descriptor_without_voiceovers_has_empty_wire_field", func(t *testing.T) {
@@ -124,6 +139,29 @@ func TestPlaybackVerbs(t *testing.T) {
 		}
 		if len(d.Voiceovers) != 0 {
 			t.Fatalf("voiceovers = %+v, want none when the descriptor carries no sidecars", d.Voiceovers)
+		}
+		// Direct answers never carry codecs — the field describes the pack
+		// (D6) — and an uncomposable hls record omits it too (fail-open).
+		if raw := readAll(t, resp); strings.Contains(raw, "codecs") {
+			t.Fatalf("body = %s, want no codecs field on a direct answer", raw)
+		}
+		// A layout-less answer omits layout the same way (fix-tv-unblock-2
+		// Interfaces 1) — fail-open absence, never an empty string.
+		if raw := readAll(t, resp); strings.Contains(raw, "layout") {
+			t.Fatalf("body = %s, want no layout field when none recorded", raw)
+		}
+	})
+
+	t.Run("uncomposable_hls_omits_codecs", func(t *testing.T) {
+		pb := func(context.Context, string) (Playback, error) {
+			return Playback{Mode: "hls", State: "partial", PlayURL: "/media/it1/n0/index.m3u8?token=t"}, nil
+		}
+		resp := doRequest(t, newHandler(pb, nil), http.MethodGet, "/api/v1/items/it1/playback", "", adminToken)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if raw := readAll(t, resp); strings.Contains(raw, "codecs") {
+			t.Fatalf("body = %s, want no codecs field when none composed (fail-open)", raw)
 		}
 	})
 
@@ -209,6 +247,101 @@ func TestPlaybackVerbs(t *testing.T) {
 		}
 		if resp := doRequest(t, h, http.MethodPost, "/api/v1/items/it1/play", `{"retry":true}`, adminToken); resp.StatusCode != http.StatusAccepted {
 			t.Fatalf("authenticated POST status = %d, want 202 (browse group admits admin)", resp.StatusCode)
+		}
+	})
+
+	// Descriptor honesty wire (tv-playback-unblock): state_reason rides the
+	// wire ADDITIVELY — present only on preparing/unsupported answers and
+	// failed-with-non-native-floor answers, omitted everywhere else (hls and
+	// native-container floors carry none), with the play_url retained on the
+	// disclaimed answers.
+	t.Run("state_reason_carried_only_on_honesty_answers", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			mode       string
+			state      string
+			reason     string
+			wantOnWire bool
+		}{
+			{"preparing_direct_floor", "direct", "preparing", "non_native_container", true},
+			{"unsupported_direct_floor", "direct", "unsupported", "codec_unsupported", true},
+			{"failed_non_native_floor", "direct", "failed", "non_native_container", true},
+			{"hls_answer_carries_none", "hls", "complete", "", false},
+			{"native_none_carries_none", "direct", "none", "", false},
+		}
+		for _, tc := range cases {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				pb := func(context.Context, string) (Playback, error) {
+					return Playback{
+						Mode:        tc.mode,
+						State:       tc.state,
+						PlayURL:     "/media/it1/original?token=tok",
+						StateReason: tc.reason,
+						Token:       "fresh-media-token",
+					}, nil
+				}
+				resp := doRequest(t, newHandler(pb, &playStub{}), http.MethodGet, "/api/v1/items/it1/playback", "", adminToken)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("status = %d, want 200", resp.StatusCode)
+				}
+				raw := readAll(t, resp)
+				if tc.wantOnWire {
+					want := `"state_reason":"` + tc.reason + `"`
+					if !strings.Contains(raw, want) {
+						t.Fatalf("body = %s, want %s on the wire", raw, want)
+					}
+					if !strings.Contains(raw, `"state":"`+tc.state+`"`) || !strings.Contains(raw, `"play_url":"/media/it1/original?token=tok"`) {
+						t.Fatalf("body = %s, want state %q and the retained play_url", raw, tc.state)
+					}
+				} else if strings.Contains(raw, "state_reason") {
+					t.Fatalf("body = %s, want no state_reason field (omitempty)", raw)
+				}
+			})
+		}
+	})
+}
+
+// TestPlayGateRefusal is the handler-side acceptance for the retry refusal
+// (playback-capability-gate 1.2, D4): a Deps.Play refusal.PlayRefusal maps
+// to 400 in the nothing_failed family with the gate token as the error code
+// and retryable: false on the wire, carrying no credential material (INV4);
+// nothing_failed still answers for the no-failed-run case.
+func TestPlayGateRefusal(t *testing.T) {
+	t.Run("refusal_maps_to_400_gate_token", func(t *testing.T) {
+		for _, tok := range []string{"codec_not_opted_in", "codec_unsupported"} {
+			t.Run(tok, func(t *testing.T) {
+				ps := &playStub{err: refusal.PlayRefusal{Reason: tok}}
+				h := New(Deps{AdminToken: adminToken, Store: openAPIStore(t), Play: ps.play()})
+				resp := doRequest(t, h, http.MethodPost, "/api/v1/items/it1/play", `{"retry":true}`, adminToken)
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400", resp.StatusCode)
+				}
+				eb := decodeError(t, resp)
+				if eb.Error.Code != tok {
+					t.Fatalf("error code = %q, want the gate token %q exactly", eb.Error.Code, tok)
+				}
+				if eb.Error.Retryable {
+					t.Fatal("retryable = true, want false — a policy refusal is not transient")
+				}
+				// INV4: no credential material rides the refusal path — the
+				// admin token must not leak into the body.
+				if raw := readAll(t, resp); strings.Contains(raw, adminToken) {
+					t.Fatalf("body = %s, want no credential material", raw)
+				}
+			})
+		}
+	})
+
+	t.Run("nothing_failed_still_answers", func(t *testing.T) {
+		ps := &playStub{queued: false}
+		h := New(Deps{AdminToken: adminToken, Store: openAPIStore(t), Play: ps.play()})
+		resp := doRequest(t, h, http.MethodPost, "/api/v1/items/it1/play", `{"retry":true}`, adminToken)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		}
+		if eb := decodeError(t, resp); eb.Error.Code != "nothing_failed" {
+			t.Fatalf("error code = %q, want nothing_failed", eb.Error.Code)
 		}
 	})
 }

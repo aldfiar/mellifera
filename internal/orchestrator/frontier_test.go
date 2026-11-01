@@ -151,7 +151,7 @@ func TestFrontier(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := Frontier(tc.in)
+			got, _ := Frontier(tc.in)
 			ids := make([]string, len(got))
 			for i, j := range got {
 				ids[i] = j.ItemID
@@ -176,7 +176,7 @@ func TestFrontierJobShape(t *testing.T) {
 		Watched: map[string]bool{"w1": true},
 		Now:     testNow,
 	}
-	got := Frontier(in)
+	got, _ := Frontier(in)
 	if len(got) != 1 {
 		t.Fatalf("Frontier() = %d jobs, want 1", len(got))
 	}
@@ -184,9 +184,59 @@ func TestFrontierJobShape(t *testing.T) {
 		t.Fatalf("Frontier() job = %+v, want library 7 reason %q", got[0], reasonNext)
 	}
 
-	pilot := Frontier(FrontierIn{Serials: in.Serials, Watched: map[string]bool{}, Now: testNow})
+	pilot, _ := Frontier(FrontierIn{Serials: in.Serials, Watched: map[string]bool{}, Now: testNow})
 	if len(pilot) != 1 || pilot[0].ItemID != "w1" || pilot[0].Reason != reasonPilot {
 		t.Fatalf("Frontier() pilot = %+v, want w1/%q", pilot, reasonPilot)
+	}
+}
+
+// TestFrontierWorkingSet pins the churn-break contract: the working set is
+// the frontier POSITION of every gated, not-fully-watched serial — pinned
+// whether or not a job was emitted. A packaged or cooling position emits no
+// job today but is exactly what the frontier repacks after any eviction;
+// pinning only job-emitting ticks empties the set the moment fresh builds
+// exist (postmortem 2026-10-31, F3).
+func TestFrontierWorkingSet(t *testing.T) {
+	in := FrontierIn{
+		Serials: []Serial{
+			// job-eligible position; packaged position (no job, still fronted);
+			serial(1, ep("a1"), Episode{ItemID: "a2", Packable: true, Packaged: true}, ep("a3")),
+			// cooling position (no job, still fronted)
+			serial(2, ep("b1"), Episode{ItemID: "b2", Packable: true, CoolUntil: coolFuture}),
+			// streams-disabled gate: nothing fronts
+			{LibraryID: 3, StreamsEnabled: false, Episodes: []Episode{ep("c1"), ep("c2")}},
+			// fully watched: nothing is past the frontier
+			serial(4, ep("d1"), ep("d2")),
+		},
+		Watched: map[string]bool{"a1": true, "b1": true, "d1": true, "d2": true},
+		Now:     testNow,
+	}
+	jobs, fronted := Frontier(in)
+	if len(jobs) != 0 {
+		t.Fatalf("Frontier() jobs = %v, want none (positions packaged/cooling/gated)", jobs)
+	}
+	want := map[string]bool{"a2": true, "b2": true}
+	if len(fronted) != len(want) {
+		t.Fatalf("Frontier() working set = %v, want %v", fronted, want)
+	}
+	for id := range want {
+		if !fronted[id] {
+			t.Fatalf("Frontier() working set missing %q (got %v)", id, fronted)
+		}
+	}
+
+	// The eligible-only snapshot still fronts AND jobs its positions.
+	clear := FrontierIn{
+		Serials: []Serial{serial(1, ep("a1"), ep("a2"), ep("a3"))},
+		Watched: map[string]bool{"a1": true},
+		Now:     testNow,
+	}
+	clearJobs, clearFronted := Frontier(clear)
+	if len(clearJobs) != 1 || clearJobs[0].ItemID != "a2" {
+		t.Fatalf("Frontier() jobs = %v, want [a2]", clearJobs)
+	}
+	if !clearFronted["a2"] {
+		t.Fatalf("Frontier() working set = %v, want a2 (jobs ⊆ working set)", clearFronted)
 	}
 }
 

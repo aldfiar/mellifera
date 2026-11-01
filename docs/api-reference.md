@@ -1,9 +1,9 @@
 # Mellifera API Reference
 
 > Scope: the current HTTP edge of the single Go binary. Grounded in
-> `internal/api/{router,handlers,playback,parsers,middleware}.go`,
-> `internal/web/{web,swagger}.go`, `internal/stream/doc.go`,
-> `internal/enrich/state.go`, and `cmd/mellifera/main.go`. Authoritative design:
+> `internal/api/{router,handlers,playback,playback_events,parsers,middleware}.go`,
+> `internal/web/{web,swagger}.go`, `internal/stream/{doc,describe,codecs,pack,master}.go`,
+> `internal/refusal`, `internal/enrich/state.go`, and `cmd/mellifera/main.go`. Authoritative design:
 > `docs/architecture.md` (§2 protos, §3.1 document model, §7.3 restart, §9.1
 > schema, §11.5 Principal, §11.6 errors); behavioral requirements:
 > `openspec/specs/` (scan-library, plugin-pipeline, async-enrichment,
@@ -16,7 +16,12 @@
 > scan-library → plugin-pipeline (Phase A) → async-enrichment (B1) → web-ui
 > (Phase 1/2a); re-actualized 2026-10-09 for web-ui 2b+2c → serials-library →
 > web-ui-phase-3 → media-preview; re-actualized 2026-10-10 for packaged-playback
-> + element-pages; the per-feature records live in git history
+> + element-pages; re-actualized 2026-10-31 for playback-capability-gate
+> (the descriptor's `codecs`, the play retry's 400 refusal family, the
+> `device-cannot-decode` beacon); re-actualized 2026-11-01 for
+> pack-manifest-audio (the play URL now serves a lane-composed RFC 8216
+> master playlist — video variants under `rend0/` — and the legacy
+> read-side codecs composition); the per-feature records live in git history
 > and `openspec/changes/archive/`.
 
 ## 1. Surfaces and authentication
@@ -244,19 +249,106 @@ Packaged-playback verb split — the read half. `200 OK` via the
 
 ```json
 { "mode": "direct" | "hls", "state": "none|partial|complete|failed",
-  "play_url": "/media/<id>/<nonce>/index.m3u8", "sections": [ … ] }
+  "play_url": "/media/<id>/<nonce>/index.m3u8", "sections": [ … ],
+  "codecs": ["avc1.640028", "mp4a.40.2"] }
 ```
 
 `sections` carries the container-chapter projection. The fresh HMAC media
 token rides the `Set-Cookie` header — deliberately NEVER a body field.
 `404` for an unknown item.
 
+Additive `codecs` field (`playback-capability-gate`, additive — existing
+clients keep working): on an `hls` answer only, the RFC 6381 codec strings
+of the published pack — video first, then audio in rendition order.
+Recorded at publish into `doc["streams"].codecs` by ffprobe-probing each
+variant playlist — at the head-first publish, over the finalized scratch
+copies (one ffprobe per variant per pack; the MP4 muxer's sample entries,
+not the source's — `internal/stream/codecs.go`); a streams namespace
+predating the record composes the same strings read-side from the stored
+source ffprobe facts (a remux carries the source's streams; a hevc source
+tag already naming a sample entry — `hvc1`/`hev1` — composes verbatim,
+anything else — e.g. a Matroska container artifact — composes as `hvc1` —
+`pack-manifest-audio`). When neither
+composes, the field is simply absent (fail-open — never a failed pack,
+never a wrong refusal). Direct answers never carry it, and `Describe`
+never re-probes: stored facts only.
+
+Additive `layout` field (`fix-tv-unblock-2`, additive — existing clients
+keep working): on an `hls` answer only, the audio layout the pack lane
+decided at publish — `single-variant` (total audio ≤ 1: one muxed variant)
+or `rendition` (total audio > 1: the video variant + one audio rendition
+per stream, embedded and sidecar alike). Persisted into
+`doc["streams"].layout` at the success write and threaded through
+`Describe`'s 9th return; omitted for builds predating the record
+(fail-open — such builds re-heal via the lazy repack wave, and the
+descriptor GET that precedes mounting is itself the wave's trigger, so the
+field appears on the next fetch). Direct answers never carry it.
+
+Master-playlist note (`pack-manifest-audio` — playlist shape only, no field
+changes; DEFAULT rule amended by `fix-tv-unblock-2`): the play URL keeps
+naming `index.m3u8`, which is now the lane-composed RFC 8216 master playlist
+on every pack — one `EXT-X-STREAM-INF` variant (the video, published under
+`rend0/`, with CODECS when composed) and audio renditions only as
+`EXT-X-MEDIA` group members. Exactly one `DEFAULT=YES` rides the most
+compatible track — the first AAC audio rendition in rendition order (embedded
+audio in source order, then voiceover sidecars in document order; ties →
+source order; no AAC anywhere → the first rendition). Every other audio
+rendition is `DEFAULT=NO,AUTOSELECT=YES` — voiceovers stay selectable.
+Builds published before the master shape keep their legacy flat-root layout
+and serve untouched; they heal by repack — the lazy repack gate
+(`cmd/mellifera/playback.go`) reads the stored packaging marker as a RULE
+VERSION (boolean `true` = version 1, a JSON number = its version, absent =
+0) and re-packs once when it predates `enrich.MasterRuleVersion` (2), so
+every previously-packed build re-heals on its next play or descriptor GET.
+
+Honest-descriptor addition (`tv-playback-unblock`, additive — existing
+clients keep working): a direct floor whose source container is not
+`<video>`-native (mp4/webm) carries a descriptor-only state instead of the
+bare packaging state — `preparing` (a pack can land) or `unsupported` (it
+cannot) — plus an additive `state_reason`
+(`non_native_container` | `codec_not_opted_in` | `codec_unsupported`); the
+direct floor's `play_url` is always present, and `<video>`-native floors
+keep the classic shape with no `state_reason`.
+
 ### `POST /api/v1/items/{id}/play` — play / retry packaging (browse group)
 
-The write half. Body: `{}` (plain play acknowledgement) or
-`{"retry":true}` (re-enqueue a failed packaging run — `{"queued":true}` when
-one existed) or `{"from_seconds":…}` (accepted, reserved — a v1 no-op).
-`404` unknown item; nil closure → `503`.
+The write half. Body: `{}` (plain play acknowledgement; the SPA's
+pack-on-play also sends `{"retry":false}` when the descriptor says the
+floor is preparing) or `{"retry":true}` (re-enqueue a failed packaging
+run — `{"queued":true}` when one existed) or `{"from_seconds":…}`
+(accepted, reserved — a v1 no-op). `404` unknown item; nil closure → `503`.
+
+Refusal family (`playback-capability-gate`): when the pack gate refuses
+the retry, the answer is `400` in the same family as `nothing_failed` —
+`error.code` is the gate token (`codec_not_opted_in` | `codec_unsupported`,
+exactly the descriptor's `state_reason` vocabulary) with `retryable: false`
+(the typed `refusal.PlayRefusal`, `internal/refusal`). Nothing is
+re-enqueued; the SPA renders the descriptor's matching unsupported banner.
+
+### `POST /api/v1/playback-events` — playback failure beacon (browse group)
+
+Best-effort, rate-limited diagnostics firehose from the SPA: on playback
+failure edges (fatal hls error, direct-lane media-element error,
+preparing-state stall) the player sends one
+`{item_id, mode, phase, code, detail}` beacon (`phase` `fatal` /
+`video-error` / `stalled`). Never load-bearing: a dropped or rejected
+beacon is swallowed — no retry, no auto-requeue, no user-visible error;
+the payload carries data only, never token or credential material.
+
+The `code` value is open-form (any non-empty string — only `mode` and
+`phase` are closed vocabularies; an unknown value there is `400` bad_request).
+Additive sender (`playback-capability-gate`): the SPA's pre-mount
+`MediaSource.isTypeSupported` probe — refusing to mount an HLS stream the
+device cannot decode, in favor of an honest unsupported banner — rides the
+same shape once as `{mode:"hls", phase:"video-error",
+code:"device-cannot-decode", detail:<probed mime>}`. Additive sender
+(`fix-tv-unblock-2`): an MSE-less device (native HLS only) facing a
+descriptor with `layout:"rendition"` refuses pre-mount with a classified
+banner and one beacon — `{mode:"hls", phase:"video-error",
+code:"rendition-layout-unsupported", detail:"rendition"}` — mounting
+nothing; `single-variant`/absent layouts mount the direct floor as before.
+
+### `GET /api/v1/progress?limit=` — recent playback positions
 
 ### `GET /api/v1/progress?limit=` — recent playback positions
 

@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import Hls from "hls.js/light";
 
 import type { PlaybackDescriptor } from "@/lib/api";
-import { putProgress } from "@/lib/api";
+import { putProgress, sendPlaybackEvent } from "@/lib/api";
+import type { PlaybackEventMode, PlaybackEventPhase } from "@/lib/api";
 import { skipSections } from "@/lib/skipSections";
 import SkipChip from "@/components/playback/SkipChip";
 import AutoNext from "@/components/playback/AutoNext";
@@ -44,6 +45,38 @@ import AutoNext from "@/components/playback/AutoNext";
 // has moved ≥5 s since the last report (plus the pause/ended/unmount edges).
 const PROGRESS_DRIFT_SECONDS = 5;
 
+// MEDIA_ERROR_CLASSES — the DOM MediaError.code vocabulary (tv-playback-unblock
+// 4.3) as bare numbers: the constructor constants are not universally exposed
+// (happy-dom among them), the codes themselves are stable by spec. The class
+// names the failure for the banner and the beacon; "source-not-supported" is
+// the undecodable-container case — the class the direct floor fails with.
+const MEDIA_ERROR_CLASSES: Record<number, string> = {
+  1: "aborted", // MEDIA_ERR_ABORTED
+  2: "network", // MEDIA_ERR_NETWORK
+  3: "decode", // MEDIA_ERR_DECODE
+  4: "source-not-supported", // MEDIA_ERR_SRC_NOT_SUPPORTED
+};
+
+// mediaErrorClass — the banner/beacon name for a media element's error, or
+// "unknown" when the element carries none (the event without the object).
+function mediaErrorClass(error: MediaError | null): string {
+  if (!error) {
+    return "unknown";
+  }
+  return MEDIA_ERROR_CLASSES[error.code] ?? "unknown";
+}
+
+// PlayerError — the surfacing banner's content, lane-tagged so the two
+// lanes' wordings stay distinct (web-ui delta "Playback failure surfacing"):
+// the direct lane names the media error class, the hls lane carries
+// type/details and the failing request's HTTP status when one is present.
+interface PlayerError {
+  lane: "direct" | "hls";
+  code: string;
+  status: number | null;
+  detail: string;
+}
+
 export interface PlayerProps {
   itemId: string;
   descriptor: PlaybackDescriptor;
@@ -71,7 +104,7 @@ export default function Player(props: PlayerProps): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<InstanceType<typeof Hls> | null>(null);
   const reportedRef = useRef(0);
-  const [fatal, setFatal] = useState(false);
+  const [error, setError] = useState<PlayerError | null>(null);
   // Playhead read for the overlay chip: `timeupdate` is the standard
   // position signal — the chip itself decides in-range rendering, no
   // throttling here (the progress reporting throttle below is separate).
@@ -82,6 +115,29 @@ export default function Player(props: PlayerProps): ReactElement {
   const [ended, setEnded] = useState(false);
 
   const isHls = descriptor.mode === "hls";
+  // The attach identity (tv-playback-unblock D6, amended at GATE 2 by live-TV
+  // evidence): play_url's query token is re-minted on every descriptor GET,
+  // so the attach effects key on the tokenless PATH — a re-mint must never
+  // rebuild the h.js loader / MSE (the TV webview answers such churn with a
+  // fatal mediaSourceRequiresReset; the fresh token is still what loadSource
+  // OPENS, it just doesn't drive the effect).
+  const playPath = descriptor.play_url.split("?")[0];
+
+  // beacon — one best-effort playback event per failure edge (web-ui delta
+  // "Playback event beacon client"): sendPlaybackEvent already swallows every
+  // outcome (never rejects, never retries — the api.ts swallow-everything
+  // posture); the catch only keeps the floating promise from ever becoming an
+  // unhandled rejection, and progress reporting never touches this path.
+  const beacon = (
+    mode: PlaybackEventMode,
+    phase: PlaybackEventPhase,
+    code: string,
+    detail: string,
+  ): void => {
+    sendPlaybackEvent(itemId, mode, phase, code, detail).catch(() => {
+      // swallowed — the beacon is never load-bearing
+    });
+  };
 
   // The classified intro/credits ranges (watch-flow-polish 3.1, D2): pure
   // SPA-side classification of the served sections — re-derived only when
@@ -99,16 +155,61 @@ export default function Player(props: PlayerProps): ReactElement {
       return;
     }
     reportedRef.current = 0;
-    setFatal(false);
+    // A banner never outlives its attach: a repack (a different play_url
+    // PATH) re-runs this effect and the surface starts clean (web-ui delta
+    // "Playback failure surfacing" — banners clear on re-attach). A re-mint
+    // (token-only change, same path) deliberately does NOT re-run — see the
+    // playPath note above.
+    setError(null);
     if (isHls && Hls.isSupported()) {
+      // The pre-mount capability probe (playback-capability-gate 3.1, D3):
+      // when the descriptor names the pack's codecs, compose ONE probe —
+      // video codec plus the first audio codec, the device's default mount —
+      // and ask MediaSource BEFORE any loader exists. A miss renders the
+      // honest device-unsupported banner (never a spinner, never the loader's
+      // cryptic fatal) and beacons device-cannot-decode once; no mount
+      // happens. Absent/empty codecs (legacy packs, fail-open) or a device
+      // without MediaSource skips the probe entirely — the mount below is
+      // byte-for-byte today's; a probe pass mounts with zero behavior
+      // change. Clear-on-re-attach is inherited: the setError(null) above
+      // re-runs with every attach (playPath-keyed, D6).
+      const codecs = descriptor.codecs;
+      if (codecs && codecs.length > 0 && typeof MediaSource !== "undefined") {
+        const probeMime =
+          codecs.length > 1
+            ? `video/mp4; codecs="${codecs[0]},${codecs[1]}"`
+            : `video/mp4; codecs="${codecs[0]}"`;
+        if (!MediaSource.isTypeSupported(probeMime)) {
+          setError({
+            lane: "hls",
+            code: "device-cannot-decode",
+            status: null,
+            detail: probeMime,
+          });
+          beacon("hls", "video-error", "device-cannot-decode", probeMime);
+          return;
+        }
+      }
       const hls = new Hls();
       hlsRef.current = hls;
       hls.loadSource(descriptor.play_url);
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          setFatal(true);
+        if (!data.fatal) {
+          return;
         }
+        const code = `${data.type}/${data.details}`;
+        const status = data.response?.code ?? null;
+        // D7 requires five non-empty strings; a MEDIA_ERROR fatal carries no
+        // HTTP response — fall through to the underlying error's message so
+        // the beacon always lands (live TV 2026-10-31: detail "" 400'd away
+        // exactly on the mediaSourceRequiresReset edge the server needed).
+        const detail =
+          status !== null
+            ? String(status)
+            : (data.error?.message?.slice(0, 200) || "no transport status");
+        setError({ lane: "hls", code, status, detail });
+        beacon("hls", "fatal", code, detail);
       });
       return () => {
         hls.destroy();
@@ -116,12 +217,48 @@ export default function Player(props: PlayerProps): ReactElement {
       };
     }
     // Direct floor (and HLS on native-HLS browsers): standard src playback.
+    // The media element's error event is the lane's only failure signal —
+    // previously it failed silently (the eternal-spinner postmortem edge);
+    // the class banner plus the beacon is the fix (tv-playback-unblock 4.3).
+    //
+    // The refusal (fix-tv-unblock-2 2.2): on this path an MSE-less browser
+    // (native HLS parse only) cannot honor a rendition layout's audio
+    // groups — a plain src mount renders the video variant ALONE, silent
+    // (root cause A). A rendition descriptor refuses honestly instead:
+    // exactly the capability probe's dead-end surface (banner + one beacon,
+    // no mount — D6), with the beacon riding the closed phase vocabulary
+    // (video-error) and its detail just the layout string (INV4-clean — no
+    // URL, no token). single-variant or an absent layout (legacy builds,
+    // fail-open) mounts the floor exactly as below — the flat floor stays
+    // the MSE-less path's working lane. Clear-on-re-attach is inherited:
+    // the setError(null) above re-runs with every attach.
+    if (isHls && descriptor.layout === "rendition") {
+      setError({
+        lane: "hls",
+        code: "rendition-layout-unsupported",
+        status: null,
+        detail: "rendition",
+      });
+      beacon("hls", "video-error", "rendition-layout-unsupported", "rendition");
+      return;
+    }
     video.src = descriptor.play_url;
+    const onVideoError = (): void => {
+      const mediaError = video.error;
+      const code = mediaErrorClass(mediaError);
+      // Non-empty guarantee (D7 five-string shape): some browsers leave the
+      // MediaError message empty — the code already names the class.
+      const detail = mediaError?.message || "no media error message";
+      setError({ lane: "direct", code, status: null, detail });
+      beacon("direct", "video-error", code, detail);
+    };
+    video.addEventListener("error", onVideoError);
     return () => {
+      video.removeEventListener("error", onVideoError);
       video.removeAttribute("src");
       video.load();
     };
-  }, [descriptor.play_url, isHls]);
+  }, [playPath, isHls, itemId]);
 
   // Voiceover rendition (serial-watch-flow 5.3): the page's selection maps
   // document order → hls.audioTrack (0 = embedded, k+1 = the descriptor's
@@ -152,7 +289,7 @@ export default function Player(props: PlayerProps): ReactElement {
     return () => {
       hls.off(Hls.Events.AUDIO_TRACKS_UPDATED, apply);
     };
-  }, [voiceoverTrack, descriptor.play_url, isHls]);
+  }, [voiceoverTrack, playPath, isHls]);
 
   // Progress reporting — best-effort; the playhead edges (pause/ended) and
   // unmount flush the tail position.
@@ -238,9 +375,13 @@ export default function Player(props: PlayerProps): ReactElement {
 
   return (
     <section aria-label="Player" className="flex flex-col gap-3">
-      {fatal ? (
-        <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          Playback failed — the stream could not be played to the end.
+      {error ? (
+        <p
+          role="alert"
+          data-media-error-class={error.code}
+          className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+        >
+          {errorText(error)}
         </p>
       ) : null}
       <div className="relative">
@@ -324,6 +465,44 @@ export default function Player(props: PlayerProps): ReactElement {
       ) : null}
     </section>
   );
+}
+
+// errorText — the banners' component-local Russian wording (web-ui delta
+// "Playback failure surfacing"): the direct lane names the media error class
+// — source-not-supported is the undecodable container, distinct from the
+// network class; the hls lane carries the error type/details and the failing
+// request's HTTP status when one is present.
+function errorText(error: PlayerError): string {
+  // The pre-mount probe's miss (playback-capability-gate 3.1): the device
+  // cannot decode the pack's codecs — its own wording, distinct from the
+  // media-error classes and from the loader's stream failure; the probe mime
+  // in the detail carries the codec names.
+  if (error.lane === "hls" && error.code === "device-cannot-decode") {
+    return `Ошибка видео: устройство не поддерживает декодирование кодеков этого потока (device-cannot-decode: ${error.detail}).`;
+  }
+  // The MSE-less refusal (fix-tv-unblock-2 2.2): the device can parse HLS
+  // natively but has no MSE, so a multi-audio rendition build would play
+  // video-only — the wording names the layout honestly, without the
+  // repack invitation (a repack cannot help this device).
+  if (error.lane === "hls" && error.code === "rendition-layout-unsupported") {
+    return "Ошибка видео: устройство не поддерживает воспроизведение потока с несколькими звуковыми дорожками (rendition-layout-unsupported).";
+  }
+  if (error.lane === "hls") {
+    const status = error.status === null ? "" : ` (HTTP ${error.status})`;
+    return `Ошибка потока: ${error.code}${status}. Попробуйте перепаковку или повторное воспроизведение.`;
+  }
+  switch (error.code) {
+    case "source-not-supported":
+      return "Ошибка видео: контейнер не декодируется этим браузером (source-not-supported).";
+    case "network":
+      return "Ошибка видео: сбой сети при загрузке (network).";
+    case "decode":
+      return "Ошибка видео: сбой декодирования (decode).";
+    case "aborted":
+      return "Ошибка видео: загрузка прервана (aborted).";
+    default:
+      return "Ошибка видео: неизвестная ошибка воспроизведения (unknown).";
+  }
 }
 
 // formatTime renders a section start as m:ss / h:mm:ss (the seek target).

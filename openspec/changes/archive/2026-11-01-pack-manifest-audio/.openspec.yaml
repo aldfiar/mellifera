@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-11-01
+goal: Multi-audio packs play with audio on every device, HEVC flat packs mount
+  without a SourceBuffer fatal on capable devices, and pre-record Matroska packs
+  answer banner-honest codecs

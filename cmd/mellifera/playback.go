@@ -8,13 +8,17 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mellifera/mellifera/internal/orchestrator"
+	"github.com/mellifera/mellifera/internal/pack"
+	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
 )
@@ -42,28 +46,239 @@ const (
 	// clock and the watched set over at most this many most-recent rows —
 	// far beyond any realistic continue-watching surface.
 	watchScanLimit = 10_000
-
-	// optInCodecs is the opt-in codec knob at its locked default (D-2): off.
-	// Classify folds it in, so opt-in codecs read direct_only until a knob
-	// surface ships.
-	optInCodecs = false
 )
 
 // packOnPlay executes the pack-on-play decision (D-8) for POST /play: the
 // played item is enqueued into the streams lane exactly when the policy says
 // so (packable, nothing published yet, outside its failure cooldown); the
 // direct floor serves everything else. queued reports the enqueue so the
-// play verb can answer 202.
-func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error, row store.Item) (bool, error) {
-	ep := episodeFromDoc(row.ID, decodeItemDoc(row.Document), streamCooldowns(ctx, st))
+// play verb can answer 202. optInCodecs is the opt-in codec knob (D-2's env
+// surface — MELLIFERA_STREAM_OPT_IN_CODECS, default off): HEVC/AC-3 items
+// are packable only while it is enabled.
+func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error, row store.Item, optInCodecs bool) (bool, error) {
+	doc := decodeItemDoc(row.Document)
+	if queued, handled := legacyRepackOnPlay(enqueue, doc, row.ID, optInCodecs); handled {
+		return queued, nil // the stale-build decision answered the play
+	}
+	ep := episodeFromDoc(row.ID, doc, streamCooldowns(ctx, st), optInCodecs)
 	if !orchestrator.OnPlay(ep, time.Now()) {
 		return false, nil // direct floor serves it — never pre-warm (D-8)
 	}
 	if err := enqueue(row.ID); err != nil {
-		return false, err
+		// A momentarily full (or stopped) queue must never break the play
+		// itself: fall back to the direct floor (queued=false, no 202) and
+		// let the next sweep tick — or the user's retry — re-attempt the
+		// pack. The enqueue seam's contract: an error here is transient
+		// backpressure, not a play-blocking condition.
+		slog.Warn("orchestrator: pack-on-play enqueue deferred", "item", row.ID, "error", err)
+		return false, nil
 	}
 	slog.Info("orchestrator: pack-on-play", "item", row.ID)
 	return true, nil
+}
+
+// legacyRepackOnPlay is the lazy re-heal decision (pack-manifest-audio D5,
+// re-versioned by fix-tv-unblock-2 Interfaces 2): a stored namespace in state
+// complete with a build nonce whose pack-lane RULE VERSION is older than
+// pack.MasterRuleVersion predates the current pack rule — boolean `true`
+// reads as v1 (the legacy unversioned write), a JSON number as its integer
+// version, absence (or anything else) as 0 — and the play that asked for it
+// enqueues exactly ONE repack through the ordinary EnqueuePack path; plays
+// landing while the repack is pending or running are absorbed by the lane's
+// per-item lease (never re-enqueued per tick), and the success persist
+// rewrites the version, closing the window. The decision reads ONLY the
+// stored namespace doc — never the playlist on disk. A gate-closed stale
+// item (the PackGate pre-check, the retry-path precedent) skips with ONE
+// INFO line naming the gate token — no enqueue, no state change, no ledger
+// row: the old build keeps serving until the knob opens (the sweep-refusal
+// pattern). A queue-full enqueue is transient backpressure, the pack-on-play
+// contract: the old build keeps serving and a later play or the frontier
+// re-attempts. handled reports that the stale-build decision answered the
+// play; queued reports the enqueue (202). A build at the current version —
+// or a FUTURE one, so an older constant never re-heals a newer build — or
+// any non-complete state is not stale: handled=false hands the play back to
+// the ordinary pack-on-play decision.
+func legacyRepackOnPlay(enqueue func(string) error, doc map[string]any, itemID string, optInCodecs bool) (queued, handled bool) {
+	streams, _ := doc["streams"].(map[string]any)
+	state, _ := streams["state"].(string)
+	nonce, _ := streams["nonce"].(string)
+	if state != stream.StateComplete || nonce == "" || masterRuleVersion(streams) >= pack.MasterRuleVersion {
+		return false, false
+	}
+	if gate := stream.PackGate(itemFacts(doc), optInCodecs); gate != stream.GateOpen {
+		slog.Info("orchestrator: legacy repack skipped", "item", itemID, "reason", string(gate))
+		return false, true
+	}
+	if err := enqueue(itemID); err != nil {
+		slog.Warn("orchestrator: legacy repack enqueue deferred", "item", itemID, "error", err)
+		return false, true
+	}
+	slog.Info("orchestrator: legacy repack queued", "item", itemID)
+	return true, true
+}
+
+// masterRuleVersion reads the pack-lane rule version off a stored streams
+// namespace (fix-tv-unblock-2 Interfaces 2): boolean `true` is the legacy v1
+// write, a JSON number its integer version, anything else or absent 0.
+// JSON decoding shapes namespace numbers as float64 — the version is read
+// through a `case float64`, never a raw int type-assert, or every recorded
+// version would read 0 and the re-heal wave would loop forever.
+func masterRuleVersion(streams map[string]any) int {
+	switch v := streams["master"].(type) {
+	case bool:
+		if v {
+			return 1
+		}
+	case float64:
+		return int(v)
+	}
+	return 0
+}
+
+// retryFailedPack executes the retry decision for POST /play {retry:true}
+// (playback-capability-gate D4): a failed packaging run re-enqueues exactly
+// when the pack gate opens for the item — the same single judge the
+// descriptor and every pack seam consult (D1), so a knob-off opt-in item
+// refuses with its own state_reason token (refusal.PlayRefusal → 400) instead
+// of re-enqueueing a build the knob refuses, and a capable or knob-enabled item
+// re-enqueues exactly as before. Nothing failed → (false, nil), the
+// handler's 400 nothing_failed. The refusal is a policy verdict, never a
+// pack failure: no ledger row is written on this path.
+func retryFailedPack(ctx context.Context, st *store.Store, enqueue func(string) error, row store.Item, optInCodecs bool) (bool, error) {
+	doc := decodeItemDoc(row.Document)
+	streams, _ := doc["streams"].(map[string]any)
+	state, _ := streams["state"].(string)
+	if state != stream.StateFailed {
+		return false, nil // nothing failed → 400 nothing_failed at the handler
+	}
+	if gate := stream.PackGate(itemFacts(doc), optInCodecs); gate != stream.GateOpen {
+		return false, refusal.PlayRefusal{Reason: string(gate)}
+	}
+	if err := enqueue(row.ID); err != nil {
+		return false, err
+	}
+	return true, nil // 202 accepted
+}
+
+// itemFacts reads the stored ffprobe blob out of an item document — the
+// verbatim facts every PackGate verdict judges (INV1/INV2). Absent or
+// unreadable facts read as nil, which PackGate fails safe on.
+func itemFacts(doc map[string]any) map[string]any {
+	ff, _ := doc["ffprobe"].(map[string]any)
+	return ff
+}
+
+// packGateRefusal judges the BUILD-TIME gate (playback-capability-gate D4):
+// a job may have been enqueued while the opt-in knob was enabled and reach
+// the executor after it was disabled — the PackItem closure re-consults the
+// same single judge (D1) right before Pack, and a closed verdict is wrapped
+// in refusal.PolicyRefusal carrying the gate's state_reason token. workStreams
+// branches that error BEFORE the failure ledger: the run ends failed with the
+// token persisted, NO pack_failed row — a knob setting never charges the
+// 30-day cooldown, and re-enabling the knob heals through the frontier.
+func packGateRefusal(ff map[string]any, optInCodecs bool) error {
+	if gate := stream.PackGate(ff, optInCodecs); gate != stream.GateOpen {
+		return refusal.PolicyRefusal{Reason: string(gate)}
+	}
+	return nil
+}
+
+// logPackGate emits the job-start line (pack-manifest-audio D7): ONE
+// "pack: gate" INFO line per pack job, logged immediately before Pack runs —
+// item, class, gate, codecs. The class is the codecs' nature judged with the
+// knob out of the way (Classify(ff, true) — the same primitive verdict
+// PackGate judges), so the pair stays informative under every knob position:
+// a knob-off opt-in item reads class=opt_in gate=codec_not_opted_in instead
+// of folding into the unsupported crowd; the gate field owns the knob's
+// verdict (`open` or the refusal token — on a refusal the token rides here
+// and the flow ends with the closure's PolicyRefusal, enrich stays
+// line-silent, the persisted failed state is the record). INV4: item id,
+// class name, gate token, codec-fact rendering only — never a token value, a
+// play URL, or a path.
+func logPackGate(itemID string, ff map[string]any, gate stream.Gate) {
+	verdict := "open"
+	if gate != stream.GateOpen {
+		verdict = string(gate)
+	}
+	slog.Info("pack: gate", "item", itemID, "class", string(stream.Classify(ff, true)),
+		"gate", verdict, "codecs", packGateCodecs(ff))
+}
+
+// packGateCodecs renders the stored ffprobe facts into one compact codec-fact
+// string (pack-manifest-audio D7): the first video stream's codec/profile,
+// then the audio codecs with multiplicity — the real Matroska shape renders
+// `hevc Main 10, aac LC ×2`; a single h264/aac pair renders `h264, aac`.
+// Pure over the verbatim facts: absent, empty, or unreadable facts render
+// `none`; a panic is impossible by construction — every map/array read is a
+// checked assertion and fully-empty renders are skipped, never joined.
+func packGateCodecs(ff map[string]any) string {
+	streams, _ := ff["streams"].([]any)
+	var video map[string]any
+	var audio []map[string]any
+	for _, s := range streams {
+		m, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch m["codec_type"] {
+		case "video":
+			if video == nil {
+				video = m
+			}
+		case "audio":
+			audio = append(audio, m)
+		}
+	}
+	parts := make([]string, 0, 1+len(audio))
+	if r := streamFactRender(video); r != "" {
+		parts = append(parts, r)
+	}
+	counts := make(map[string]int, len(audio))
+	order := make([]string, 0, len(audio))
+	for _, a := range audio {
+		r := streamFactRender(a)
+		if r == "" {
+			continue
+		}
+		if counts[r] == 0 {
+			order = append(order, r)
+		}
+		counts[r]++
+	}
+	for _, r := range order {
+		if n := counts[r]; n > 1 {
+			parts = append(parts, fmt.Sprintf("%s ×%d", r, n))
+		} else {
+			parts = append(parts, r)
+		}
+	}
+	if len(parts) == 0 {
+		return "none" // facts absent, unreadable, or codec-less — the compact empty marker
+	}
+	return strings.Join(parts, ", ")
+}
+
+// streamFactRender renders one stream's codec facts as `codec profile`
+// (either half omitted when the facts lack it); a stream with neither reads
+// empty and the caller skips it. Facts are verbatim — never trust casing.
+func streamFactRender(s map[string]any) string {
+	if s == nil {
+		return ""
+	}
+	name, _ := s["codec_name"].(string)
+	name = strings.ToLower(strings.TrimSpace(name))
+	profile, _ := s["profile"].(string)
+	profile = strings.TrimSpace(profile)
+	switch {
+	case name == "" && profile == "":
+		return ""
+	case profile == "":
+		return name
+	case name == "":
+		return profile
+	default:
+		return name + " " + profile
+	}
 }
 
 // newSweep returns the periodic sweep closure: one pass = the watch-driven
@@ -74,25 +289,31 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 // next tick retries. validate is the wired stream.Service.ValidateBuild,
 // injected as a func (the enqueue seam's pattern) so the sweep stays
 // testable without package main.
-func newSweep(st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, budgetBytes int64) func(context.Context) {
+func newSweep(st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, budgetBytes int64, optInCodecs bool) func(context.Context) {
 	return func(ctx context.Context) {
-		sweepFrontier(ctx, st, enqueue)
-		sweepBudget(ctx, st, root, budgetBytes)
-		sweepIntegrity(ctx, st, root, validate, enqueue)
+		fronted := sweepFrontier(ctx, st, enqueue, optInCodecs)
+		sweepBudget(ctx, st, root, budgetBytes, fronted)
+		sweepIntegrity(ctx, st, root, validate, enqueue, optInCodecs)
 	}
 }
 
 // sweepFrontier builds the frontier's input snapshot from the store — every
 // library's serials with their gate, the watched set, the cooldown map —
 // and executes the returned jobs through the streams lane's enqueue seam.
-func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) error) {
+// It returns the fronted item-ID set — the frontier's WORKING SET, wanted
+// built whether or not this pass could enqueue it (a queue-full defer is
+// still fronted) — which the budget sweep pins against eviction (see
+// Evictions): the set of things the frontier will (re)pack must not be its
+// own recurring eviction victim.
+func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) error, optInCodecs bool) map[string]bool {
 	libs, err := st.ListLibraries(ctx)
 	if err != nil {
 		slog.Warn("orchestrator: list libraries failed", "error", err)
-		return
+		return nil
 	}
 	cool := streamCooldowns(ctx, st)
-	watched, _ := watchState(ctx, st)
+	positions, _ := watchState(ctx, st)
+	watched := make(map[string]bool)
 	in := orchestrator.FrontierIn{Watched: watched, Now: time.Now()}
 	for _, l := range libs {
 		series, err := st.QuerySeries(ctx, l.ID, "")
@@ -106,17 +327,15 @@ func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) er
 				slog.Warn("orchestrator: query episodes failed", "series", sr.ID, "error", err)
 				continue
 			}
-			eps := make([]orchestrator.Episode, 0, len(items))
-			for _, it := range items {
-				eps = append(eps, episodeFromDoc(it.ID, decodeItemDoc(it.Document), cool))
-			}
+			eps := projectEpisodes(items, cool, optInCodecs, positions, watched)
 			// The gate rides the row — the policy owns the skip (one judge).
 			in.Serials = append(in.Serials, orchestrator.Serial{
 				LibraryID: l.ID, StreamsEnabled: l.StreamsEnabled, Episodes: eps,
 			})
 		}
 	}
-	for _, job := range orchestrator.Frontier(in) {
+	jobs, fronted := orchestrator.Frontier(in)
+	for _, job := range jobs {
 		if err := enqueue(job.ItemID); err != nil {
 			slog.Warn("orchestrator: enqueue failed", "item", job.ItemID, "reason", job.Reason, "error", err)
 			continue
@@ -124,14 +343,18 @@ func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) er
 		slog.Info("orchestrator: fronted packaging", "item", job.ItemID,
 			"library", job.LibraryID, "reason", job.Reason)
 	}
+	return fronted
 }
 
 // sweepBudget walks the artifact root into the disk-truth snapshot (build
 // dirs under <itemID>/<nonce>, orphans included — a directory whose item row
-// is gone or deleted) and executes the returned evictions. An unreadable
-// store read marks the item live (never evict blind); a missing root means
-// nothing was ever packaged.
-func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes int64) {
+// is gone or deleted) and executes the returned evictions. fronted is the
+// frontier's working set (sweepFrontier's return) — pinned against eviction;
+// if the budget cannot be met without evicting pinned builds, that is the
+// operator signal that the budget sits below the working set, logged loudly.
+// An unreadable store read marks the item live (never evict blind); a
+// missing root means nothing was ever packaged.
+func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes int64, fronted map[string]bool) {
 	if budgetBytes <= 0 {
 		return // the cap is off — do not even walk the disk
 	}
@@ -139,7 +362,7 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 	if err != nil {
 		return // no artifact root yet
 	}
-	_, watched := watchState(ctx, st)
+	_, recency := watchState(ctx, st)
 	dirs := make([]orchestrator.ArtifactDir, 0)
 	for _, idDir := range idDirs {
 		if !idDir.IsDir() {
@@ -162,25 +385,78 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 			})
 		}
 	}
-	for _, path := range orchestrator.Evictions(dirs, watched, budgetBytes) {
-		evictDir(path)
+	owner := make(map[string]string, len(dirs)) // path → item id, for the pinned-eviction warning
+	for _, d := range dirs {
+		owner[d.Path] = d.ItemID
+	}
+	for _, path := range orchestrator.Evictions(dirs, recency, fronted, budgetBytes) {
+		if id := owner[path]; fronted[id] {
+			// The budget could not be met from non-fronted artifacts alone:
+			// the frontier will repack this and evict it again — the churn
+			// the pin exists to break. Loud and rare: the operator's signal
+			// to raise MELLIFERA_ORCH_BUDGET_GB above the working set.
+			slog.Warn("orchestrator: budget below frontier working set — evicting a fronted build", "item", id, "path", path)
+		}
+		if evictDir(path) {
+			resetStreamsState(ctx, st, owner[path], filepath.Base(path))
+		}
 	}
 }
 
 // evictDir moves one artifact directory aside (the .trash sibling — a client
 // mid-fetch never sees a half-deleted tree) and then deletes it. Best-effort:
-// a failed move leaves the artifact for the next sweep.
-func evictDir(path string) {
+// a failed move leaves the artifact for the next sweep. It reports whether the
+// directory is gone — the caller's cue to unpublish the build record.
+func evictDir(path string) bool {
 	trash := path + ".trash"
 	if err := os.Rename(path, trash); err != nil {
 		slog.Warn("orchestrator: eviction move failed", "path", path, "error", err)
-		return
+		return false
 	}
 	if err := os.RemoveAll(trash); err != nil {
 		slog.Warn("orchestrator: trash removal failed", "path", trash, "error", err)
-		return
+		return false
 	}
 	slog.Info("orchestrator: evicted artifact directory", "path", path)
+	return true
+}
+
+// resetStreamsState unpublishes the item's build record after a budget
+// eviction took its directory: eviction is a policy act, not corruption, so
+// the record must not keep advertising a complete build the disk no longer
+// has — the integrity sweep would heal it straight back into the lane and
+// the budget sweep would evict it again (the evict→repack loop). The write
+// follows the lane's persistStreams pattern (Interfaces §1): a fresh row
+// reload, replace only doc["streams"], PutItem — never a blind overwrite of
+// the row. Only the published build's own nonce is reset: a stale-nonce
+// directory is not the build the record points at. Best-effort, like the
+// sweep itself: a failed write leaves the loop in place for one more pass —
+// the next eviction of the same item retries the unpublish.
+func resetStreamsState(ctx context.Context, st *store.Store, itemID, nonce string) {
+	row, err := st.GetItem(ctx, itemID)
+	if err != nil {
+		return // orphaned or unreadable: nothing published to unpublish
+	}
+	doc := decodeItemDoc(row.Document)
+	streams, _ := doc["streams"].(map[string]any)
+	if state, _ := streams["state"].(string); state != stream.StateComplete {
+		return // partial belongs to the floor guard, failed to the cooldown
+	}
+	if cur, _ := streams["nonce"].(string); cur != nonce {
+		return // the evicted directory was a stale nonce, not the published build
+	}
+	doc["streams"] = map[string]any{"state": stream.StateNone}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		slog.Warn("orchestrator: eviction unpublish marshal failed", "item", itemID, "error", err)
+		return
+	}
+	row.Document = b
+	if err := st.PutItem(ctx, row); err != nil {
+		slog.Warn("orchestrator: eviction unpublish write failed", "item", itemID, "error", err)
+		return
+	}
+	slog.Info("orchestrator: evicted build unpublished", "item", itemID)
 }
 
 // sweepIntegrity walks the artifact root like sweepBudget (item dirs, live
@@ -188,15 +464,21 @@ func evictDir(path string) {
 // published-build state is complete gets the build its streams namespace
 // points at validated, the judge returns exactly the broken ones as repack
 // jobs, and each job re-enters the streams lane under a fresh build nonce. A
-// failed repack flips the state to failed + cooldown — out of this pass's
-// complete-state scope, so no re-enqueue storm; every error is logged, never
-// fatal — the next sweep retries.
-func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error) {
+// gate-closed job (playback-capability-gate D4 — the pack lane cannot serve
+// the item's codecs under the current knob) is refused with ONE INFO line
+// naming the gate token and nothing else: no enqueue, and no ledger row — a
+// policy refusal is never a pack failure, and the sweep must not loop on a
+// refusal it can never heal; flipping the knob lets the next pass front it
+// again. A failed repack flips the state to failed + cooldown — out of this
+// pass's complete-state scope, so no re-enqueue storm; every error is logged,
+// never fatal — the next sweep retries.
+func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, optInCodecs bool) {
 	idDirs, err := os.ReadDir(root)
 	if err != nil {
 		return // no artifact root yet
 	}
 	items := make([]orchestrator.IntegrityItem, 0)
+	gates := make(map[string]stream.Gate)
 	for _, idDir := range idDirs {
 		if !idDir.IsDir() {
 			continue
@@ -211,7 +493,8 @@ func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate 
 		if row.Status == "deleted" {
 			continue
 		}
-		streams, _ := decodeItemDoc(row.Document)["streams"].(map[string]any)
+		doc := decodeItemDoc(row.Document)
+		streams, _ := doc["streams"].(map[string]any)
 		state, _ := streams["state"].(string)
 		if state != stream.StateComplete {
 			continue // the floor guard owns partial; the cooldown owns failed
@@ -220,8 +503,17 @@ func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate 
 		items = append(items, orchestrator.IntegrityItem{
 			ItemID: idDir.Name(), Healthy: validate(idDir.Name(), nonce) == nil,
 		})
+		// The gate rides the walk — the refusal is decided HERE, before any
+		// enqueue exists to reach build time (a refusal never enters the lane,
+		// so workStreams never sees it from this side).
+		gates[idDir.Name()] = stream.PackGate(itemFacts(doc), optInCodecs)
 	}
 	for _, job := range orchestrator.Repacks(items) {
+		if gate := gates[job.ItemID]; gate != stream.GateOpen {
+			slog.Info("orchestrator: repack refused by pack gate",
+				"item", job.ItemID, "reason", string(gate))
+			continue // no enqueue, no ledger row — the knob owns the heal
+		}
 		if err := enqueue(job.ItemID); err != nil {
 			slog.Warn("orchestrator: repack enqueue failed", "item", job.ItemID, "error", err)
 			continue
@@ -231,17 +523,16 @@ func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate 
 }
 
 // episodeFromDoc projects one item document into the orchestrator's narrow
-// Episode input: the classification gate (with the opt-in knob folded at its
-// default), the published-build state (partial or complete = already
-// packaged), and the pack_failed cooldown deadline (zero when none).
-func episodeFromDoc(itemID string, doc map[string]any, cool map[string]time.Time) orchestrator.Episode {
-	ff, _ := doc["ffprobe"].(map[string]any)
+// Episode input: the pack gate (playback-capability-gate D1 — the same single
+// judge the descriptor and every pack seam consult), the published-build
+// state (partial or complete = already packaged), and the pack_failed
+// cooldown deadline (zero when none).
+func episodeFromDoc(itemID string, doc map[string]any, cool map[string]time.Time, optInCodecs bool) orchestrator.Episode {
 	streams, _ := doc["streams"].(map[string]any)
 	state, _ := streams["state"].(string)
-	class := stream.Classify(ff, optInCodecs)
 	return orchestrator.Episode{
 		ItemID:    itemID,
-		Packable:  class == stream.ClassPack || class == stream.ClassOptIn,
+		Packable:  stream.PackGate(itemFacts(doc), optInCodecs) == stream.GateOpen,
 		Packaged:  state == stream.StatePartial || state == stream.StateComplete,
 		CoolUntil: cool[itemID],
 	}
@@ -265,25 +556,26 @@ func streamCooldowns(ctx context.Context, st *store.Store) map[string]time.Time 
 }
 
 // watchState reads the playback-progress LRU clock once per sweep: the
-// watched set (any row with a positive position — the frontier's watch
-// signal) and the per-item recency stamps (eviction order).
-func watchState(ctx context.Context, st *store.Store) (map[string]bool, map[string]time.Time) {
+// per-item positions (the completion-aware watched predicate's input — this
+// read carries no watch judgment; the fold lives where the episode documents
+// are, in the serial loop's projectEpisodes) and the per-item recency stamps
+// (eviction order — any-progress-based, deliberately untouched by the watched
+// predicate: the budget LRU clock is a separate signal, design D5).
+func watchState(ctx context.Context, st *store.Store) (map[string]float64, map[string]time.Time) {
 	rows, err := st.ListProgress(ctx, watchScanLimit)
 	if err != nil {
 		slog.Warn("orchestrator: list progress failed", "error", err)
-		return map[string]bool{}, map[string]time.Time{}
+		return map[string]float64{}, map[string]time.Time{}
 	}
-	watched := make(map[string]bool, len(rows))
+	positions := make(map[string]float64, len(rows))
 	recency := make(map[string]time.Time, len(rows))
 	for _, p := range rows {
-		if p.PositionSeconds > 0 {
-			watched[p.ItemID] = true
-		}
+		positions[p.ItemID] = float64(p.PositionSeconds)
 		if t, err := time.Parse(time.RFC3339Nano, p.UpdatedAt); err == nil {
 			recency[p.ItemID] = t
 		}
 	}
-	return watched, recency
+	return positions, recency
 }
 
 // nonces lists the build-directory names under one item's artifact directory.

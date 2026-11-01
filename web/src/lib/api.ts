@@ -255,12 +255,28 @@ export interface ItemsResponse {
   items: ItemDTO[];
 }
 
+// PlaybackStateReason — the descriptor's honesty-reason vocabulary
+// (internal/stream describe.go Reason* constants, tv-playback-unblock): WHY
+// the direct floor is not natively playable. non_native_container = the
+// container itself is not <video>-native (a pack CAN land — state
+// preparing); codec_not_opted_in / codec_unsupported = the codec is not
+// packaged-in / not packable (state unsupported). A union (not string), the
+// MediaVariant precedent: the SPA's not-playable banner wording derives from
+// these exact values — anything else would render a lie.
+export type PlaybackStateReason =
+  | "non_native_container"
+  | "codec_not_opted_in"
+  | "codec_unsupported";
+
 // handlers.go playbackResponse — the ONE wire shape for GET
 // /api/v1/items/{id}/playback (packaged-playback). mode is "direct" | "hls";
-// state is the packaging state "none" | "partial" | "complete" | "failed";
-// play_url is the token-carrying /media URL the player opens (the descriptor
-// ALSO sets the cookie-primary media token — the query token in the URL is
-// the cookie-less fallback); sections lists the chapter-kind projections.
+// state is the packaging state "none" | "partial" | "complete" | "failed"
+// plus the honesty states "preparing" | "unsupported" (tv-playback-unblock:
+// the direct floor answers honestly instead of handing over an unplayable
+// original); play_url is the token-carrying /media URL the player opens (the
+// descriptor ALSO sets the cookie-primary media token — the query token in
+// the URL is the cookie-less fallback) and is RETAINED on every answer,
+// disclaimed ones included; sections lists the chapter-kind projections.
 export interface PlaybackSection {
   kind: string; // "chapter" in v1; "marker" reserved, never produced
   start: number;
@@ -282,6 +298,32 @@ export interface PlaybackDescriptor {
   // TS: an episode without audio sidecars (or a descriptor predating the
   // projection) omits the field — absence is an empty list, never an error.
   voiceovers?: VoiceoverDTO[];
+  // state_reason — the additive honesty reason (tv-playback-unblock,
+  // omitempty): present ONLY on the honesty answers — preparing/unsupported,
+  // and the failed answer that carries the non-native floor — and names why
+  // the direct floor is not natively playable. Absent on hls/native answers,
+  // optional in TS like every additive field: absence means "no reason to
+  // surface", never a type hole.
+  state_reason?: PlaybackStateReason;
+  // codecs — the additive capability-probe list (playback-capability-gate,
+  // omitempty): the pack's decoded codec names, video FIRST then audio in
+  // rendition order — the exact order the Player's pre-mount probe composes
+  // ('video/mp4; codecs="<video>,<first audio>"'). Present on hls answers
+  // whose codecs could be composed; absent when they could not (fail-open —
+  // the legacy packs predate the recording) and on direct answers (the probe
+  // gates only the hls mount). Optional in TS like every additive field:
+  // absence or an empty list means "no probe possible", never a type hole.
+  codecs?: string[];
+  // layout — the additive pack-layout record (fix-tv-unblock-2, omitempty):
+  // how the packaged build composes its audio — "single-variant" (the flat
+  // one-audio master, every device's floor) or "rendition" (one variant per
+  // audio stream, only an MSE player can honor the audio groups). Present on
+  // hls answers from builds recorded under the current rule; absent on
+  // legacy builds (fail-open — they re-heal on the lazy repack wave) and on
+  // direct answers (the codecs precedent). Optional in TS like every
+  // additive field: absence means "mount the floor as before", never a type
+  // hole.
+  layout?: "single-variant" | "rendition";
 }
 
 // playback.go Playback.Voiceovers — one voiceover entry (serial-watch-flow
@@ -830,6 +872,14 @@ export const ENDPOINTS = {
   // failed packaging run; from_seconds is reserved server-side).
   playback: (id: string): string => `/api/v1/items/${id}/playback`,
   play: (id: string): string => `/api/v1/items/${id}/play`,
+  // playbackEvents — POST /api/v1/playback-events (playback_events.go
+  // playbackEvent, tv-playback-unblock): the fire-and-forget failure beacon
+  // (fatal hls error / direct-lane media error / preparing stall). 204 no
+  // body; 400 bad_request for a malformed payload; 429 rate_limited past the
+  // per-client burst. Browse role group — device tokens ride the same
+  // wrapper as every other browse call. Only sendPlaybackEvent should call
+  // it: the sender owns the swallow-everything posture.
+  playbackEvents: "/api/v1/playback-events",
   // progressItem — PUT /api/v1/progress/{item_id} (the player's position
   // reporting channel; same browse bearer posture as every other call).
   progressItem: (id: string): string => `/api/v1/progress/${id}`,
@@ -1050,6 +1100,20 @@ export async function putItemParsers(
   });
 }
 
+// descriptorInstanceId — the descriptor's STABLE identity (tv-playback-unblock
+// D6, amended at GATE 2 by live-TV evidence 2026-10-31): play_url's query
+// token is RE-MINTED on every descriptor GET (per-request expiry + HMAC), so
+// the full URL cannot serve as identity — a poll refetch answering the same
+// logical descriptor would look like a new instance. The live TV fired six
+// POST /play for one page-open, and the Player rebuilt its hls.js/MSE on
+// every refetch until the webview answered mediaSourceRequiresReset. The
+// identity is the answer's SUBSTANCE: state + the tokenless play_url path.
+// The fresh token stays in play_url — it is what the player OPENS, never
+// what it compares.
+export function descriptorInstanceId(d: PlaybackDescriptor): string {
+  return `${d.state}|${d.play_url.split("?")[0]}`;
+}
+
 // getPlayback — GET /api/v1/items/{id}/playback (handlers.go itemPlayback,
 // packaged-playback). Read-only descriptor: mode/state/play_url/sections.
 // The handler ALSO sets the cookie-primary media token on the response — the
@@ -1089,6 +1153,52 @@ export async function putProgress(
     method: "PUT",
     body: { position_seconds: positionSeconds } as unknown as BodyInit,
   });
+}
+
+// PlaybackEventMode / PlaybackEventPhase — the beacon's closed vocabularies
+// (playback_events.go beaconModes / beaconPhases, tv-playback-unblock): mode
+// names the lane the failure happened in, phase the observed edge (fatal =
+// hls.js fatal error, video-error = direct-lane media-element error,
+// stalled = the preparing poll window exhausting). The server 400s anything
+// outside the vocabulary, so the client types them as unions (the
+// MediaVariant precedent) — an illegal value is unrepresentable at compile
+// time.
+export type PlaybackEventMode = "direct" | "hls";
+export type PlaybackEventPhase = "fatal" | "video-error" | "stalled";
+
+// sendPlaybackEvent — POST /api/v1/playback-events (playback_events.go
+// playbackEvent, tv-playback-unblock): the best-effort failure beacon the
+// item page and player fire on the edges they already observe. Rides
+// apiRequestVoid — the same bearer posture (browse role: the admin OR the
+// paired device's token) and canonical-error parsing as every browse call —
+// and SWALLOWS EVERY OUTCOME: the payload is pure telemetry, so a dropped
+// fetch, a 400 bad_request, or a 429 rate_limited must never reject, retry,
+// or surface. The payload carries data only — five strings, never a token
+// or credential material (server INV4: nothing token-shaped can enter the
+// shape, so nothing token-shaped can be logged).
+export async function sendPlaybackEvent(
+  itemId: string,
+  mode: PlaybackEventMode,
+  phase: PlaybackEventPhase,
+  code: string,
+  detail: string,
+): Promise<void> {
+  try {
+    await apiRequestVoid(ENDPOINTS.playbackEvents, {
+      method: "POST",
+      // apiRequestVoid does not stringify (its 204 parse would throw on
+      // JSON.parse("")) — the pre-stringified body bridge putLibrarySource
+      // shares; the explicit Content-Type keeps the request canonical.
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ item_id: itemId, mode, phase, code, detail }),
+    });
+  } catch {
+    // Swallow-everything posture (web-ui delta "Playback event beacon
+    // client"): a dropped or rejected beacon is swallowed — no retry, no
+    // surfacing. A 401 still routes through apiRequestVoid's handle401 (the
+    // shared INV-401-source-of-truth rotation — the session is equally dead
+    // for progress reporting); every other failure dies here, silently.
+  }
 }
 
 // ---- Watch defaults: the served auto-next countdown (watch-flow-polish) ----

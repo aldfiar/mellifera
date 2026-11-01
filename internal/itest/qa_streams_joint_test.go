@@ -23,7 +23,6 @@ package itest
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -31,7 +30,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mellifera/mellifera/internal/enrich"
+	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -129,16 +128,16 @@ func TestStreamsJoint(t *testing.T) {
 		t.Cleanup(release) // never let a cleanup hang on a still-blocked worker
 		var calls atomic.Int32
 		entered := make(chan struct{}, 8)
-		pack := func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
+		pack := func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (pack.PackOutcome, error) {
 			calls.Add(1)
 			entered <- struct{}{}
 			select {
 			case <-gate:
 			case <-ctx.Done():
-				return enrich.PackOutcome{}, ctx.Err()
+				return pack.PackOutcome{}, ctx.Err()
 			}
 			build, err := w.media.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
-			return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce}, err
+			return pack.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce}, err
 		}
 		qq := w.pbNewQueue(t, pack, leaseTTL)
 
@@ -259,8 +258,8 @@ func TestStreamsJoint(t *testing.T) {
 		pbScanLibrary(t, w, libID)
 		pbAwaitIdle(t, q, 30*time.Second)
 		dropped := pbDescriptor(t, w, itemID)
-		if dropped.Mode != "direct" || dropped.State != "none" {
-			t.Fatalf("descriptor after changed rescan = mode %q state %q, want direct/none (changed base drops streams)", dropped.Mode, dropped.State)
+		if dropped.Mode != "direct" || dropped.State != "preparing" {
+			t.Fatalf("descriptor after changed rescan = mode %q state %q, want direct/preparing (changed base drops streams; the packable MKV floor answers the honesty projection)", dropped.Mode, dropped.State)
 		}
 		it, err := w.st.GetItem(context.Background(), itemID)
 		if err != nil {
@@ -276,16 +275,18 @@ func TestStreamsJoint(t *testing.T) {
 	})
 }
 
-// assertPlayable fetches a playlist URL (token carried in its query) and
-// asserts a complete, byte-servable build.
+// assertPlayable fetches a play URL (token carried in its query) — the served
+// composed master — and asserts a complete, byte-servable build: the master
+// answers EXTM3U and the variant playlist it names (rend0/index.m3u8) carries
+// the complete-build marker.
 func assertPlayable(t *testing.T, w *pbWorld, playURL string) {
 	t.Helper()
-	status, body, _ := pbDo(t, w.client, http.MethodGet, w.baseURL+playURL, "", nil)
-	if status != http.StatusOK {
-		t.Fatalf("playlist %s: status %d, want 200", playURL, status)
+	_, master, variant := pbVariantPlaylist(t, w.client, w.baseURL, playURL)
+	if !strings.Contains(string(master), "#EXTM3U") {
+		t.Fatalf("master %s missing EXTM3U:\n%s", playURL, master)
 	}
-	if !strings.Contains(string(body), "#EXTM3U") || !strings.Contains(string(body), "#EXT-X-ENDLIST") {
-		t.Fatalf("playlist %s missing a complete build marker:\n%s", playURL, body)
+	if !strings.Contains(string(variant), "#EXTM3U") || !strings.Contains(string(variant), "#EXT-X-ENDLIST") {
+		t.Fatalf("variant playlist of %s missing a complete build marker:\n%s", playURL, variant)
 	}
 }
 

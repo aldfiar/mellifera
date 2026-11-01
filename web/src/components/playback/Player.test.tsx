@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactElement } from "react";
@@ -121,6 +121,9 @@ beforeEach(() => {
     position_seconds: 0,
     updated_at: "",
   });
+  // The failure beacon (tv-playback-unblock 4.3): spied like putProgress so
+  // no vector reaches the network; the rejected-beacon vector overrides it.
+  vi.spyOn(apiModule, "sendPlaybackEvent").mockResolvedValue(undefined);
   // AutoNext's overlay reads (watch-flow-polish 3.3): wrap() normally
   // serves them from its seeds; these spies are the backstop so a refetch
   // can never reach the network in a player vector.
@@ -135,6 +138,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("Player — packaged attach (hls.js over the stream playlist)", () => {
@@ -148,13 +152,29 @@ describe("Player — packaged attach (hls.js over the stream playlist)", () => {
     expect(theVideo().getAttribute("src")).toBeNull();
   });
 
-  it("destroys the loader when the play URL changes (repack / re-mint)", () => {
+  it("destroys and rebuilds the loader when the play_url PATH changes (repack)", () => {
     const { rerender } = render(wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} />));
     rerender(wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ play_url: "/media/itm_1_9/def456/index.m3u8?token=t2" })} />));
 
     expect(hls.instances).toHaveLength(2);
     expect(hls.instances[0].destroy).toHaveBeenCalled();
     expect(hls.instances[1].loadSource).toHaveBeenCalledWith("/media/itm_1_9/def456/index.m3u8?token=t2");
+  });
+
+  it("does NOT rebuild the loader on a token re-mint (same path — D6 amended after live-TV mediaSourceRequiresReset)", () => {
+    const { rerender } = render(wrap(<Player itemId="itm_1_9" descriptor={HLS_DESCRIPTOR} />));
+    // The poll's refetch answers the same logical descriptor with a freshly
+    // minted token: identity (state + tokenless path) is unchanged, so the
+    // loader and its MediaSource must survive the refetch.
+    rerender(wrap(
+      <Player
+        itemId="itm_1_9"
+        descriptor={hlsDescriptor({ play_url: `${HLS_DESCRIPTOR.play_url.split("?")[0]}?token=t2` })}
+      />,
+    ));
+
+    expect(hls.instances).toHaveLength(1);
+    expect(hls.instances[0].destroy).not.toHaveBeenCalled();
   });
 });
 
@@ -185,11 +205,102 @@ describe("Player — direct native path", () => {
   });
 
   it("falls back to the native src when MSE is unavailable (native-HLS browsers)", () => {
+    // Re-based on the EXPLICIT single-variant fixture (fix-tv-unblock-2
+    // 2.2): the flat floor is the MSE-less path's working lane, and this
+    // pin keeps pinning exactly that — a rendition layout refuses instead.
+    hls.FakeHls.isSupported.mockReturnValue(false);
+    renderPlayer(hlsDescriptor({ layout: "single-variant" }));
+
+    expect(hls.instances).toHaveLength(0);
+    expect(theVideo().getAttribute("src")).toBe(HLS_DESCRIPTOR.play_url);
+    expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
+  });
+
+  it("mounts the native src for a layout-absent (legacy) descriptor when MSE is unavailable", () => {
+    // Fail-open (the codecs precedent): a build predating the layout
+    // record mounts the floor exactly as before the refusal existed.
     hls.FakeHls.isSupported.mockReturnValue(false);
     renderPlayer(HLS_DESCRIPTOR);
 
     expect(hls.instances).toHaveLength(0);
     expect(theVideo().getAttribute("src")).toBe(HLS_DESCRIPTOR.play_url);
+    expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
+  });
+});
+
+// Lane selection vs native-HLS claiming browsers (fix-tv-unblock-2 root
+// cause A): a browser whose canPlayType('application/vnd.apple.mpegurl') is
+// truthy (Safari, TV WebViews) must still take the hls.js lane whenever MSE
+// is present — hls.js is the only lane that honors the master's EXT-X-MEDIA
+// audio group; the native parse renders the video variant alone, silent.
+describe("Player — lane selection (native-HLS claiming browsers)", () => {
+  it("takes the hls loader when MSE is supported even though the browser claims native HLS", () => {
+    vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("probably");
+    renderPlayer(HLS_DESCRIPTOR);
+
+    expect(hls.instances).toHaveLength(1);
+    expect(hls.instances[0].loadSource).toHaveBeenCalledWith(HLS_DESCRIPTOR.play_url);
+    expect(theVideo().getAttribute("src")).toBeNull();
+  });
+
+  it("refuses a rendition-layout descriptor on an MSE-less native-HLS device", () => {
+    // The TV's shape (root cause A): native-HLS claims, NO MSE. The design
+    // pins the fix shape (D6 — the capability probe's dead-end surface):
+    // the classified banner (its own rendition-layout-unsupported class)
+    // plus exactly ONE beacon, and NO mount — the native parse would render
+    // the video variant alone, silent.
+    vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("probably");
+    hls.FakeHls.isSupported.mockReturnValue(false);
+    renderPlayer(hlsDescriptor({ layout: "rendition" }));
+
+    // The classified banner on the refusal surface — not a media-error
+    // class, not device-cannot-decode.
+    const banner = screen.getByRole("alert");
+    expect(banner.getAttribute("data-media-error-class")).toBe("rendition-layout-unsupported");
+    expect(banner.textContent).toContain("rendition-layout-unsupported");
+    expect(banner.textContent).toContain("звуковыми дорожками");
+    // Exactly ONE beacon, the pinned five-string shape — the detail is the
+    // layout string, INV4-clean (no URL, no token).
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledTimes(1);
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "hls",
+      "video-error",
+      "rendition-layout-unsupported",
+      "rendition",
+    );
+    // NO mount: zero hls instances, the <video> carries no src.
+    expect(hls.instances).toHaveLength(0);
+    expect(theVideo().getAttribute("src")).toBeNull();
+  });
+
+  it("clears the refusal banner on re-attach (inherited setError(null))", () => {
+    hls.FakeHls.isSupported.mockReturnValue(false);
+    const { rerender } = render(
+      wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ layout: "rendition" })} />),
+    );
+    expect(screen.queryByRole("alert")).not.toBeNull();
+
+    // A repack swaps the play_url PATH — the attach effect re-runs, the
+    // surface starts clean, and the (re-healed, single-variant) descriptor
+    // mounts the floor. (A token re-mint deliberately does NOT re-run — D6
+    // — so the PATH is what must move here, exactly as in the repack
+    // vectors above.)
+    rerender(
+      wrap(
+        <Player
+          itemId="itm_1_9"
+          descriptor={hlsDescriptor({
+            play_url: "/media/itm_1_9/repacked/index.m3u8?token=t2",
+            layout: "single-variant",
+          })}
+        />,
+      ),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(theVideo().getAttribute("src")).toBe(
+      "/media/itm_1_9/repacked/index.m3u8?token=t2",
+    );
   });
 });
 
@@ -391,5 +502,249 @@ describe("Player — poster (fix-episode-playback 3.1)", () => {
     cleanup();
     renderPlayer(DIRECT_DESCRIPTOR);
     expect(theVideo().hasAttribute("poster")).toBe(false);
+  });
+});
+
+// tv-playback-unblock 4.3 — failure surfacing (web-ui delta "Playback
+// failure surfacing" + "Playback event beacon client"): the direct lane's
+// media error event becomes a named class banner + one best-effort beacon
+// (previously the lane failed silently), hls fatals carry type/details/HTTP
+// status, banners clear on re-attach, and progress reporting never notices.
+// Media errors ride numeric codes — happy-dom does not expose the
+// MediaError constructor constants.
+
+// fireHlsFatal — drives the ERROR listener the component registered on the
+// mocked loader (the seam jsdom/happy-dom has no real hls.js behind).
+function fireHlsFatal(data: Record<string, unknown>): void {
+  const call = hls.instances[0].on.mock.calls.find(([event]) => event === "error");
+  expect(call).toBeDefined();
+  const handler = call![1] as (event: unknown, data: Record<string, unknown>) => void;
+  act(() => {
+    handler(null, data);
+  });
+}
+
+// setMediaError — plants the media element's error object (happy-dom leaves
+// video.error null; the component reads it off the event's target).
+function setMediaError(video: HTMLVideoElement, code: number, message: string): void {
+  Object.defineProperty(video, "error", {
+    configurable: true,
+    value: { code, message },
+  });
+}
+
+// stubMediaSource — plants the MediaSource the probe reads (playback-capability-gate
+// 3.1; jsdom has none of its own, which is exactly why every OTHER vector in
+// this file rides the no-MediaSource skip path unchanged). Per-test, restored
+// by the afterEach unstubAllGlobals like the api spies above.
+function stubMediaSource(supported: boolean): void {
+  vi.stubGlobal("MediaSource", { isTypeSupported: vi.fn(() => supported) });
+}
+
+describe("Player — failure surfacing (tv-playback-unblock 4.3)", () => {
+  it("renders the undecodable-container banner and beacons once on a direct-lane video error", () => {
+    renderPlayer(DIRECT_DESCRIPTOR);
+    const video = theVideo();
+    setMediaError(video, 4, "DEMUXER_ERROR_COULD_NOT_OPEN");
+
+    fireEvent.error(video);
+
+    // Source-not-supported is its own class — the undecodable container.
+    const banner = screen.getByRole("alert");
+    expect(banner.getAttribute("data-media-error-class")).toBe("source-not-supported");
+    expect(banner.textContent).toContain("не декодируется");
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledTimes(1);
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "direct",
+      "video-error",
+      "source-not-supported",
+      "DEMUXER_ERROR_COULD_NOT_OPEN",
+    );
+  });
+
+  it("renders a distinct class for the network media error", () => {
+    renderPlayer(DIRECT_DESCRIPTOR);
+    setMediaError(theVideo(), 2, "");
+
+    fireEvent.error(theVideo());
+
+    const banner = screen.getByRole("alert");
+    expect(banner.getAttribute("data-media-error-class")).toBe("network");
+    expect(banner.textContent).not.toContain("не декодируется");
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "direct",
+      "video-error",
+      "network",
+      "no media error message",
+    );
+  });
+
+  it("renders no banner without an error event", () => {
+    renderPlayer(DIRECT_DESCRIPTOR);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
+  });
+
+  it("renders the hls fatal banner with type, details and HTTP status, and beacons once", () => {
+    renderPlayer(HLS_DESCRIPTOR);
+
+    fireHlsFatal({
+      fatal: true,
+      type: "networkError",
+      details: "manifestLoadError",
+      response: { code: 403 },
+    });
+
+    const banner = screen.getByRole("alert");
+    expect(banner.textContent).toContain("networkError/manifestLoadError");
+    expect(banner.textContent).toContain("HTTP 403");
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledTimes(1);
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "hls",
+      "fatal",
+      "networkError/manifestLoadError",
+      "403",
+    );
+  });
+
+  it("omits the status from banner and beacon when the fatal carries no response", () => {
+    renderPlayer(HLS_DESCRIPTOR);
+
+    fireHlsFatal({ fatal: true, type: "mediaError", details: "bufferAppendError" });
+
+    const banner = screen.getByRole("alert");
+    expect(banner.textContent).toContain("mediaError/bufferAppendError");
+    expect(banner.textContent).not.toContain("HTTP");
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "hls",
+      "fatal",
+      "mediaError/bufferAppendError",
+      "no transport status",
+    );
+  });
+
+  it("sends no beacon and renders no banner for a NON-fatal hls error", () => {
+    renderPlayer(HLS_DESCRIPTOR);
+
+    fireHlsFatal({ fatal: false, type: "networkError", details: "bufferStalledError" });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
+  });
+
+  it("clears the banner on re-attach (play_url PATH change — a repack)", () => {
+    const { rerender } = render(wrap(<Player itemId="itm_1_9" descriptor={DIRECT_DESCRIPTOR} />));
+    setMediaError(theVideo(), 4, "");
+    fireEvent.error(theVideo());
+    expect(screen.queryByRole("alert")).not.toBeNull();
+
+    rerender(
+      wrap(
+        <Player
+          itemId="itm_1_9"
+          descriptor={{ ...DIRECT_DESCRIPTOR, play_url: "/media/itm_1_9/repacked/original?token=t2" }}
+        />,
+      ),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("swallows a failing beacon send and keeps progress reporting working", () => {
+    vi.spyOn(apiModule, "sendPlaybackEvent").mockRejectedValue(new Error("offline"));
+    renderPlayer(DIRECT_DESCRIPTOR);
+    const video = theVideo();
+    setMediaError(video, 4, "");
+
+    expect(() => fireEvent.error(video)).not.toThrow();
+
+    // Progress reporting is untouched by the failure surface.
+    video.currentTime = 42;
+    fireEvent.pause(video);
+    expect(apiModule.putProgress).toHaveBeenCalledWith("itm_1_9", 42);
+  });
+});
+
+describe("Player — pre-mount capability probe (playback-capability-gate 3.1)", () => {
+  // The pack's codecs, video first then audio — the wire shape the landed
+  // server work composes (internal/api playback.go Codecs, omitempty).
+  const PACK_CODECS = ["avc1.64001f", "mp4a.40.2"];
+
+  it("renders the device-unsupported banner, beacons once and does NOT mount on a probe miss", () => {
+    stubMediaSource(false);
+    renderPlayer(hlsDescriptor({ codecs: PACK_CODECS }));
+
+    const banner = screen.getByRole("alert");
+    // Honest device wording naming the codecs (they ride the probe mime in
+    // the detail) — no loader fatal, no spinner, no mount.
+    expect(banner.textContent).toContain("device-cannot-decode");
+    expect(banner.textContent).toContain("avc1.64001f");
+    expect(hls.instances).toHaveLength(0);
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledTimes(1);
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "hls",
+      "video-error",
+      "device-cannot-decode",
+      'video/mp4; codecs="avc1.64001f,mp4a.40.2"',
+    );
+  });
+
+  it("mounts with zero behavior change when the probe passes", () => {
+    stubMediaSource(true);
+    renderPlayer(hlsDescriptor({ codecs: PACK_CODECS }));
+
+    expect(hls.instances).toHaveLength(1);
+    expect(hls.instances[0].loadSource).toHaveBeenCalledWith(HLS_DESCRIPTOR.play_url);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
+  });
+
+  it("skips the probe and mounts exactly as today when the descriptor answers no codecs", () => {
+    // Absent (the field is omitempty — legacy packs predate the recording)
+    // and empty alike mean "no probe possible", fail-open.
+    renderPlayer(HLS_DESCRIPTOR);
+    expect(hls.instances).toHaveLength(1);
+
+    hls.instances.length = 0;
+    renderPlayer(hlsDescriptor({ codecs: [] }));
+    expect(hls.instances).toHaveLength(1);
+  });
+
+  it("mounts exactly as today when MediaSource is absent even with codecs present", () => {
+    // jsdom defines no MediaSource — the same floor every other vector in
+    // this file rides; codecs on the wire must not change that path.
+    renderPlayer(hlsDescriptor({ codecs: PACK_CODECS }));
+    expect(hls.instances).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("clears the device banner on re-attach (inherited setError(null))", () => {
+    stubMediaSource(false);
+    const { rerender } = render(
+      wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ codecs: PACK_CODECS })} />),
+    );
+    expect(screen.queryByRole("alert")).not.toBeNull();
+
+    // A repack swaps the play_url PATH — the attach effect re-runs, the
+    // surface starts clean, and the (codec-less) new descriptor mounts.
+    // (A token re-mint deliberately does NOT re-run — D6 — so the PATH is
+    // what must move here, exactly as in the repack vector above.)
+    rerender(
+      wrap(
+        <Player
+          itemId="itm_1_9"
+          descriptor={{
+            ...HLS_DESCRIPTOR,
+            play_url: "/media/itm_1_9/repacked/index.m3u8?token=t2",
+          }}
+        />,
+      ),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(hls.instances).toHaveLength(1);
   });
 });

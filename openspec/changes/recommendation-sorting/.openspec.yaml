@@ -1,0 +1,8 @@
+schema: lite
+created: 2026-10-24
+goal: Interest-aware ordering on library and continue surfaces — an internal
+  recommendation score (partially-watched and new-episode context above an
+  equal-weight tag affinity component, learned from completed watches by a
+  janitor background task) reorders collections, the continue rail, and next
+  up; alphabetical order remains the deterministic tiebreak and the explicit
+  opt-out.

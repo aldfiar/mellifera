@@ -37,7 +37,13 @@ func TestPackLane(t *testing.T) {
 		}
 		buildDir := filepath.Join(s.Root, "it1", build.Nonce)
 
-		play, err := os.ReadFile(filepath.Join(buildDir, "index.m3u8"))
+		// The build root holds ONLY the composed master (pack-manifest-audio
+		// D3): one variant line referencing rend0, no media entries of its own.
+		master := readFile(t, filepath.Join(buildDir, "index.m3u8"))
+		if !strings.Contains(master, "rend0/index.m3u8") || strings.Contains(master, "seg-") {
+			t.Fatalf("build root is not a master over rend0:\n%s", master)
+		}
+		play, err := os.ReadFile(filepath.Join(buildDir, "rend0", "index.m3u8"))
 		if err != nil {
 			t.Fatalf("published playlist: %v", err)
 		}
@@ -47,7 +53,7 @@ func TestPackLane(t *testing.T) {
 				t.Fatalf("published playlist missing %q:\n%s", want, pl)
 			}
 		}
-		if _, err := os.Stat(filepath.Join(buildDir, "init.mp4")); err != nil {
+		if _, err := os.Stat(filepath.Join(buildDir, "rend0", "init.mp4")); err != nil {
 			t.Fatalf("head init segment missing: %v", err)
 		}
 		if n := countPrefix(pl, "seg-"); n < 2 {
@@ -56,15 +62,15 @@ func TestPackLane(t *testing.T) {
 
 		// Stream-copy only: the published init segment carries the fixture's
 		// video + audio and NO subtitle track (-sn dropped it).
-		kinds := streamKinds(probeStreams(t, filepath.Join(buildDir, "init.mp4")))
+		kinds := streamKinds(probeStreams(t, filepath.Join(buildDir, "rend0", "init.mp4")))
 		if kinds["video"] != 1 || kinds["audio"] < 1 {
-			t.Fatalf("init.mp4 streams = %v, want 1 video + audio", kinds)
+			t.Fatalf("rend0/init.mp4 streams = %v, want 1 video + audio", kinds)
 		}
 		if kinds["subtitle"] != 0 {
-			t.Fatalf("init.mp4 carries %d subtitle streams; the pack lane must drop them (-sn)", kinds["subtitle"])
+			t.Fatalf("init segment carries %d subtitle streams; the pack lane must drop them (-sn)", kinds["subtitle"])
 		}
 		// The whole published playlist probes as playable media.
-		kinds = streamKinds(probeStreams(t, buildDir+"/index.m3u8"))
+		kinds = streamKinds(probeStreams(t, buildDir+"/rend0/index.m3u8"))
 		if kinds["video"] != 1 || kinds["audio"] < 1 || kinds["subtitle"] != 0 {
 			t.Fatalf("published playlist streams = %v, want remuxed media only", kinds)
 		}
@@ -80,7 +86,7 @@ func TestPackLane(t *testing.T) {
 			t.Fatalf("Pack: %v", err)
 		}
 		buildDir := filepath.Join(s.Root, "it_short", build.Nonce)
-		pl := readFile(t, filepath.Join(buildDir, "index.m3u8"))
+		pl := readFile(t, filepath.Join(buildDir, "rend0", "index.m3u8"))
 		if strings.Contains(pl, "#EXT-X-DISCONTINUITY") {
 			t.Fatalf("short file ran a tail phase (spurious discontinuity):\n%s", pl)
 		}
@@ -142,8 +148,8 @@ func TestPackLane(t *testing.T) {
 			seekTo  bool // tail: -ss before -i
 			limitTo bool // head: -t duration cap
 		}{
-			{"head", packHeadArgs("/in/f.mkv", nil, 600*time.Second, 4*time.Second, dir), false, true},
-			{"tail", packTailArgs("/in/f.mkv", nil, 600*time.Second, 4*time.Second, dir), true, false},
+			{"head", packHeadArgs("/in/f.mkv", 0, nil, 600*time.Second, 4*time.Second, dir), false, true},
+			{"tail", packTailArgs("/in/f.mkv", 0, nil, 600*time.Second, 4*time.Second, dir), true, false},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -152,6 +158,10 @@ func TestPackLane(t *testing.T) {
 					"-nostdin", "\x00-i\x00", "-map\x000:v:0", "-map\x000:a",
 					"-sn\x00-dn", "-c\x00copy", "-f\x00hls",
 					"-hls_segment_type\x00fmp4",
+					// D3: the single-variant build writes its variant tree
+					// under rend0/ — the root stays the composed master's.
+					"-hls_segment_filename\x00/out/rend0/seg-%05d.m4s",
+					"\x00/out/rend0/index.m3u8",
 				} {
 					if !strings.Contains(joined, want) {
 						t.Fatalf("args missing %q: %q", want, joined)
@@ -237,7 +247,14 @@ func TestHeadFirst(t *testing.T) {
 	if headPlaylist == "" {
 		t.Fatal("afterHead hook never fired — the head phase was not observed mid-run")
 	}
-	final := readFile(t, filepath.Join(s.Root, "it_hf", build.Nonce, "index.m3u8"))
+	buildDir := filepath.Join(s.Root, "it_hf", build.Nonce)
+	// The root is the composed master; the growing media playlist lives at
+	// rend0/index.m3u8 (pack-manifest-audio D3).
+	master := readFile(t, filepath.Join(buildDir, "index.m3u8"))
+	if !strings.Contains(master, "rend0/index.m3u8") || strings.Contains(master, "#EXT-X-ENDLIST") {
+		t.Fatalf("build root is not the static master over rend0:\n%s", master)
+	}
+	final := readFile(t, filepath.Join(buildDir, "rend0", "index.m3u8"))
 	if !strings.Contains(final, "#EXT-X-ENDLIST") {
 		t.Fatalf("completed build missing ENDLIST:\n%s", final)
 	}
@@ -251,8 +268,10 @@ func TestHeadFirst(t *testing.T) {
 }
 
 // TestHeadOnlySegmentsPublished pins the whole-file-within-head-chunk publish
-// (probe 3694483270be0ea8): the legacy single-variant head-only build publishes
-// its segments WITH the playlist — the playlist is finalized inside tmp and the
+// (probe 3694483270be0ea8): the single-variant head-only build publishes the
+// same shape as every fresh build (pack-manifest-audio D3 — the composed
+// master at the root, the variant tree under rend0/) and publishes its
+// segments WITH the playlist — the playlist is finalized inside tmp and the
 // whole directory renames into place, so Pack's tmp cleanup cannot strand the
 // segments behind a published playlist. After Pack, every reference in the
 // published playlist must resolve relative to the playlist's own directory
@@ -269,7 +288,14 @@ func TestHeadOnlySegmentsPublished(t *testing.T) {
 		t.Fatalf("Pack: %v", err)
 	}
 	buildDir := filepath.Join(s.Root, "it_head_only", build.Nonce)
-	playlistPath := filepath.Join(buildDir, "index.m3u8")
+	// The root holds only the master; the media playlist is rend0/index.m3u8.
+	master := readFile(t, filepath.Join(buildDir, "index.m3u8"))
+	if !strings.Contains(master, "#EXT-X-STREAM-INF:") || !strings.Contains(master, "rend0/index.m3u8") ||
+		strings.Contains(master, "seg-") {
+		t.Fatalf("head-only build root is not the composed master over rend0:\n%s", master)
+	}
+	rendDir := filepath.Join(buildDir, "rend0")
+	playlistPath := filepath.Join(rendDir, "index.m3u8")
 	pl := readFile(t, playlistPath)
 	if !strings.Contains(pl, "#EXT-X-ENDLIST") {
 		t.Fatalf("head-only playlist missing ENDLIST:\n%s", pl)
@@ -301,16 +327,16 @@ func TestHeadOnlySegmentsPublished(t *testing.T) {
 	}
 	// REACHABILITY — every ref must exist relative to the playlist dir.
 	for _, ref := range refs {
-		if _, err := os.Stat(filepath.Join(buildDir, ref)); err != nil {
+		if _, err := os.Stat(filepath.Join(rendDir, ref)); err != nil {
 			t.Errorf("playlist references %q: not found relative to the playlist dir (player 404)", ref)
 		}
 	}
-	// COVERAGE — the playlist lists every segment published under the build
+	// COVERAGE — the playlist lists every segment published under the variant
 	// dir (a whole-file build has no t/ tree; everything is a head segment).
 	onDisk := 0
-	entries, err := os.ReadDir(buildDir)
+	entries, err := os.ReadDir(rendDir)
 	if err != nil {
-		t.Fatalf("build dir: %v", err)
+		t.Fatalf("rend0 dir: %v", err)
 	}
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasPrefix(e.Name(), "seg-") {
@@ -325,6 +351,6 @@ func TestHeadOnlySegmentsPublished(t *testing.T) {
 	}
 	if listed != onDisk {
 		t.Errorf("playlist lists %d segments but %d were published under %s: the head-only publish stranded segments",
-			listed, onDisk, buildDir)
+			listed, onDisk, rendDir)
 	}
 }

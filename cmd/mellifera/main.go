@@ -43,6 +43,7 @@ import (
 	"github.com/mellifera/mellifera/internal/art"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
+	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/scan"
@@ -205,16 +206,34 @@ func main() {
 	// Packaged-playback pack lane (D-3/D-4/D-5): the enrich queue's PackItem
 	// seam closes over the stream Service (Interface 2 — enrich never imports
 	// stream; this closure is the only bridge). The artifact root lives inside
-	// the server's own data space, never a library directory.
+	// the server's own data space, never a library directory. The closure
+	// judges the build-time gate first (playback-capability-gate D4 — the
+	// knob may flip between enqueue and build): a closed verdict returns
+	// refusal.PolicyRefusal and Pack is never called, so the lane fails the
+	// run without charging the pack_failed cooldown.
 	mediaSvc := &stream.Service{
-		Root:     cfg.streamsRoot,
-		Secret:   cfg.mediaSecret,
-		Original: originalResolver(st),
+		Root:        cfg.streamsRoot,
+		Secret:      cfg.mediaSecret,
+		Original:    originalResolver(st),
+		OptInCodecs: cfg.optInCodecs, // descriptor honesty shares the pack lane's knob
 	}
-	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
+	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (pack.PackOutcome, error) {
+		// Job-start gate line (pack-manifest-audio D7): ONE "pack: gate" line
+		// per pack job, before Pack — on a refusal the token rides the line and
+		// the PolicyRefusal below ends the flow (no publish line; the persisted
+		// failed state is enrich's record).
+		logPackGate(itemID, ffprobe, stream.PackGate(ffprobe, mediaSvc.OptInCodecs))
+		if err := packGateRefusal(ffprobe, mediaSvc.OptInCodecs); err != nil {
+			return pack.PackOutcome{}, err
+		}
 		build, err := mediaSvc.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
-		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce}, err
+		return pack.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
 	}
+	// Publish replacement (playback-capability-gate D5): after the lane
+	// persists the new build the document names it, so evicting the item's
+	// superseded build directories is safe. Best-effort — EvictSuperseded
+	// never fails the landed pack; budget LRU still owns cross-item pressure.
+	scanDeps.Enrich.AfterPackPersist = mediaSvc.EvictSuperseded
 	// Client-relayed-fetch (D2/D4/D5): the enrich Relay — the deferred-handoff
 	// transport over the relay_jobs store. Built BEFORE NewQueue, which copies
 	// the Deps struct (a later assignment would miss the queue's copy): the
@@ -323,26 +342,11 @@ func main() {
 		Status: statusClosure,
 		// Playback descriptor (D-7): pure delegation over the stream Service's
 		// Describe + a fresh media token (the anti-corruption seam keeps api
-		// free of a stream import, mirroring Status above).
+		// free of a stream import, mirroring Status above). The decision log
+		// (tv-playback-unblock D8) rides the same closure — one INFO line per
+		// descriptor GET; see decision_log.go.
 		Playback: func(ctx context.Context, itemID string) (api.Playback, error) {
-			row, err := st.GetItem(ctx, itemID)
-			if err != nil {
-				return api.Playback{}, err // sql.ErrNoRows → 404 at the handler
-			}
-			var doc map[string]any
-			if err := json.Unmarshal(row.Document, &doc); err != nil {
-				return api.Playback{}, err
-			}
-			mode, state, playURL, sections, voiceovers := mediaSvc.Describe(itemID, doc)
-			token, _ := mediaSvc.Issue(itemID, time.Now()) // cookie-primary delivery
-			return api.Playback{
-				Mode:       mode,
-				State:      state,
-				PlayURL:    playURL,
-				Sections:   sections,
-				Voiceovers: voiceovers,
-				Token:      token,
-			}, nil
+			return playbackDescriptor(ctx, st, mediaSvc, enrichQueue.EnqueuePack, cfg.optInCodecs, itemID)
 		},
 		// Play verb (D-7 — the ONLY playback mutation): retry re-enqueues a
 		// failed packaging run through the streams lane; fromSeconds is
@@ -358,21 +362,9 @@ func main() {
 				// never fronts, or any unpackaged packable item) gets its
 				// packaging enqueued by the play that asked for it; the
 				// direct floor answers everything else. queued=true → 202.
-				return packOnPlay(ctx, st, enrichQueue.EnqueuePack, row)
+				return packOnPlay(ctx, st, enrichQueue.EnqueuePack, row, cfg.optInCodecs)
 			}
-			var doc map[string]any
-			if err := json.Unmarshal(row.Document, &doc); err != nil {
-				return false, err
-			}
-			streams, _ := doc["streams"].(map[string]any)
-			state, _ := streams["state"].(string)
-			if state != stream.StateFailed {
-				return false, nil // nothing failed → 400 nothing_failed at the handler
-			}
-			if err := enrichQueue.EnqueuePack(itemID); err != nil {
-				return false, err
-			}
-			return true, nil // 202 accepted
+			return retryFailedPack(ctx, st, enrichQueue.EnqueuePack, row, cfg.optInCodecs)
 		},
 		// Stop-frame re-grab (continue-nextup-media D-1..D-4): the watch-event
 		// seam — a per-item debounced, request-detached re-grab of the
@@ -582,7 +574,7 @@ func main() {
 	// stream Service's own ValidateBuild method value (the enqueue seam's
 	// func-injection pattern); the budget knob is GiB (default 32; 0 = off —
 	// see loadConfig).
-	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30)
+	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30, cfg.optInCodecs)
 	// artSettle is the registry's art task (artwork): ONE settle+GC pass per
 	// tick — the shared document walk acquires every live non-placeholder
 	// poster URL and reclaims blobs on reference loss. Errors are logged,
@@ -612,7 +604,7 @@ func main() {
 	// SPA + Swagger surface (INV-single-handler — no second http.Server).
 	// DevMode loosens the cache headers for the Vite dev proxy
 	// (MELLIFERA_WEB_DEV).
-	handler := web.Handler(apiHandler, web.Options{DevMode: cfg.webDev, Media: mediaSvc})
+	handler := requestLog(web.Handler(apiHandler, web.Options{DevMode: cfg.webDev, Media: mediaSvc}))
 
 	srv := &http.Server{
 		Addr:              cfg.listenAddr,
@@ -655,6 +647,7 @@ type config struct {
 	artInterval       time.Duration
 	mediaSecret       []byte
 	orchBudgetGB      int
+	optInCodecs       bool
 	adminToken        string
 	baseScannerPath   string
 	serialScannerPath string
@@ -704,7 +697,12 @@ func loadConfig() config {
 		// default 32; `0` disables the cap entirely. Non-positive reads as
 		// off (the orchestrator's Evictions contract), so the knob can never
 		// accidentally evict everything.
-		orchBudgetGB:      envInt("MELLIFERA_ORCH_BUDGET_GB", 32),
+		orchBudgetGB: envInt("MELLIFERA_ORCH_BUDGET_GB", 32),
+		// Opt-in codec knob (D-2's env surface — default off, the locked
+		// default): while false, Classify folds HEVC/AC-3 items to
+		// direct_only (the direct floor serves them); true makes them
+		// packable through the remux lane like any hostile-container item.
+		optInCodecs:       envBool("MELLIFERA_STREAM_OPT_IN_CODECS", false),
 		adminToken:        adminToken,
 		baseScannerPath:   envOr("MELLIFERA_BASE_SCANNER", "bin/base-scanner"),
 		serialScannerPath: envOr("MELLIFERA_SERIAL_SCANNER", "bin/serial-scanner"),

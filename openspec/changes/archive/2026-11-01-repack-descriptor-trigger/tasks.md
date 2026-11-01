@@ -1,0 +1,6 @@
+# dispatch - one-shot task
+
+## g1 - dispatch
+
+- [ ] 1.1 Descriptor-path lazy repack trigger: the playback descriptor closure in cmd/mellifera (GET /items/{id}/playback) runs the same stale-build condition as the play verb — streams.state complete + a build nonce + no master marker → PackGate pre-check, on a closed verdict ONE orchestrator: legacy repack skipped INFO line (item + refusal token), no enqueue, no state change, else ONE orchestrator: legacy repack queued INFO line and the enqueue through the existing EnqueuePack path (reuse the legacyRepackOnPlay semantics; the play-verb path stays working unchanged); the descriptor answers the current old build while the repack runs, and the per-item lease absorbs repeated GETs (never re-enqueued per request); pinned by a slog-capture test TestDescriptorLazyRepack in cmd/mellifera (stale build enqueues once, current build never, gate-closed answers without enqueue); author the spec delta at specs/packaged-playback/spec.md re-basing the lazy-repack requirement trigger from the play verb to the playback descriptor GET; INV4 holds (no token, no play URL in new lines)
+  verify: set -e; go test ./cmd/mellifera -run 'TestPlayLazyRepack|TestDescriptorLazyRepack' || exit 1

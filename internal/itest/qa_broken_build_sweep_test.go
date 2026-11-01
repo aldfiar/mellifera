@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"io/fs"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -113,9 +112,8 @@ func TestBrokenBuildRepackSweep(t *testing.T) {
 	if !strings.Contains(pb.PlayURL, "/"+newNonce+"/index.m3u8?token=") {
 		t.Fatalf("play URL = %q, want the fresh nonce's playlist with a token", pb.PlayURL)
 	}
-	plStatus, plBody, _ := pbDo(t, w.client, http.MethodGet, w.baseURL+pb.PlayURL, "", nil)
-	if plStatus != http.StatusOK || !strings.Contains(string(plBody), "#EXT-X-ENDLIST") {
-		t.Fatalf("fresh playlist GET: status %d len %d, want 200 with the complete playlist", plStatus, len(plBody))
+	if _, _, freshVariant := pbVariantPlaylist(t, w.client, w.baseURL, pb.PlayURL); !strings.Contains(string(freshVariant), "#EXT-X-ENDLIST") {
+		t.Fatalf("fresh variant playlist: want the complete playlist (ENDLIST), body %q", freshVariant)
 	}
 
 	// --- loop safety: the healed item never re-jobs — the stale corrupt build
@@ -176,11 +174,15 @@ func (w *pbWorld) pbIntegritySweep(t *testing.T, validate func(itemID, nonce str
 // tail segment file is deleted (a playlist reference that would 404 in the
 // player) and the playlist is truncated to a window of its LAST entries —
 // earlier published segments stranded on disk, ENDLIST kept so the build
-// still claims completeness. Asserts both defects are live before returning,
+// still claims completeness. The playlist corrupted is the build's variant
+// playlist (rend0/index.m3u8 — the build root holds the composed master
+// alone); its references resolve relative to its own directory, the tail
+// entries riding ../t/rend0/. Asserts both defects are live before returning,
 // so the caller's floor-guard assertion can never pass on an unbroken build.
 func pbCorruptTail(t *testing.T, artDir string) {
 	t.Helper()
-	plPath := filepath.Join(artDir, "index.m3u8")
+	plDir := filepath.Join(artDir, "rend0")
+	plPath := filepath.Join(plDir, "index.m3u8")
 	raw, err := os.ReadFile(plPath)
 	if err != nil {
 		t.Fatalf("read published playlist: %v", err)
@@ -203,7 +205,7 @@ func pbCorruptTail(t *testing.T, artDir string) {
 			e.extinf, e.hasExtinf = i-1, true
 		}
 		entries = append(entries, e)
-		if strings.HasPrefix(l, "t/") {
+		if strings.Contains(l, "/t/") {
 			lastTail = l
 		}
 	}
@@ -215,7 +217,7 @@ func pbCorruptTail(t *testing.T, artDir string) {
 	}
 	// Defect 1: delete the LAST tail segment — the entry the kept window still
 	// references, so the reference resolves to a missing file.
-	if err := os.Remove(filepath.Join(artDir, filepath.FromSlash(lastTail))); err != nil {
+	if err := os.Remove(filepath.Join(plDir, filepath.FromSlash(lastTail))); err != nil {
 		t.Fatalf("delete tail segment %s: %v", lastTail, err)
 	}
 	// Defect 2: truncate to the last window (never the whole list) — the
@@ -252,7 +254,7 @@ func pbCorruptTail(t *testing.T, artDir string) {
 	}
 	stranded := 0
 	for _, e := range dropped {
-		if _, err := os.Stat(filepath.Join(artDir, filepath.FromSlash(strings.TrimSpace(lines[e.uri])))); err == nil {
+		if _, err := os.Stat(filepath.Join(plDir, filepath.FromSlash(strings.TrimSpace(lines[e.uri])))); err == nil {
 			stranded++
 		}
 	}

@@ -11,6 +11,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/mellifera/mellifera/internal/refusal"
 )
 
 // Playback is the ONE playback descriptor (the GET /items/{id}/playback wire
@@ -22,16 +24,32 @@ import (
 // episode-linked audio sidecars as {index, label} in document order
 // (serial-watch-flow D-2 — read-only stored facts; the build maps document
 // order to audio rendition k+1, 0 is the embedded audio); PlayURL is the
-// token-carrying /media URL the player opens. Token is the fresh media token
+// token-carrying /media URL the player opens. StateReason is the additive
+// descriptor honesty reason (tv-playback-unblock D1): why the direct floor is
+// not <video>-playable — non_native_container | codec_not_opted_in |
+// codec_unsupported — present only on preparing/unsupported/failed-with-
+// non-native-floor answers, empty on hls and native-container answers. Token
+// is the fresh media token
 // for the cookie-primary delivery — deliberately excluded from the JSON body
 // (INV4: the token rides the Set-Cookie header, never a copyable body field).
+// Codecs is the additive codec record (playback-capability-gate D6): the
+// pack's RFC 6381 strings, answered on hls descriptors only and omitted when
+// the build's codecs could not be composed (fail-open) — direct descriptors
+// never carry it. Layout is the additive build layout record
+// (fix-tv-unblock-2 Interfaces 1): "single-variant" | "rendition", the audio
+// layout the pack lane decided at publish, answered on hls descriptors only
+// and omitted when the build predates the layout record (fail-open) — direct
+// descriptors never carry it.
 type Playback struct {
-	Mode       string           `json:"mode"`
-	State      string           `json:"state"`
-	PlayURL    string           `json:"play_url"`
-	Sections   []map[string]any `json:"sections"`
-	Voiceovers []map[string]any `json:"voiceovers"`
-	Token      string           `json:"-"`
+	Mode        string           `json:"mode"`
+	State       string           `json:"state"`
+	PlayURL     string           `json:"play_url"`
+	StateReason string           `json:"state_reason,omitempty"`
+	Codecs      []string         `json:"codecs,omitempty"`
+	Layout      string           `json:"layout,omitempty"`
+	Sections    []map[string]any `json:"sections"`
+	Voiceovers  []map[string]any `json:"voiceovers"`
+	Token       string           `json:"-"`
 }
 
 // mediaCookieName / mediaCookieMaxAge are the cookie-primary token delivery
@@ -46,11 +64,14 @@ const (
 // playbackResponse is the wire shape for GET /items/{id}/playback: the
 // descriptor without the token (INV4 — the token goes only into Set-Cookie).
 type playbackResponse struct {
-	Mode       string           `json:"mode"`
-	State      string           `json:"state"`
-	PlayURL    string           `json:"play_url"`
-	Sections   []map[string]any `json:"sections"`
-	Voiceovers []map[string]any `json:"voiceovers"`
+	Mode        string           `json:"mode"`
+	State       string           `json:"state"`
+	PlayURL     string           `json:"play_url"`
+	StateReason string           `json:"state_reason,omitempty"`
+	Codecs      []string         `json:"codecs,omitempty"`
+	Layout      string           `json:"layout,omitempty"`
+	Sections    []map[string]any `json:"sections"`
+	Voiceovers  []map[string]any `json:"voiceovers"`
 }
 
 // playRequest is the body of POST /items/{id}/play. Pointers carry presence:
@@ -106,18 +127,34 @@ func (a *app) itemPlayback(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, playbackResponse{
-		Mode:       pb.Mode,
-		State:      pb.State,
-		PlayURL:    pb.PlayURL,
-		Sections:   pb.Sections,
-		Voiceovers: pb.Voiceovers,
+		Mode:        pb.Mode,
+		State:       pb.State,
+		PlayURL:     pb.PlayURL,
+		StateReason: pb.StateReason,
+		Codecs:      wireArray(pb.Codecs),
+		Layout:      pb.Layout,
+		Sections:    wireArray(pb.Sections),
+		Voiceovers:  wireArray(pb.Voiceovers),
 	})
+}
+
+// wireArray guards the descriptor's array fields against a JSON null: a
+// chapter-less or voiceover-less item arrives from the domain closure as a
+// nil slice, and Go marshals nil as null — but the SPA reads
+// .sections.length unguarded (the vip joint's array-ness contract), so the
+// wire answers [] for empty. Pinned end-to-end by TestPlaybackUnblockJoint.
+func wireArray[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
 
 // itemPlay: parse {id} + body → Deps.Play (ONE domain call) → write
 // playResponse. The ONLY playback mutation (D-7): retry=true re-enqueues a
 // failed packaging run (202 when one existed, 400 "nothing failed"
-// otherwise); retry absent/false is a plain acknowledgement (200). An
+// otherwise, 400 carrying the gate token when the pack gate refuses — D4);
+// retry absent/false is a plain acknowledgement (200). An
 // unknown item → 404; a malformed body or a negative from_seconds → 400
 // BEFORE the domain call. from_seconds is otherwise reserved (no-op in v1).
 //
@@ -149,6 +186,15 @@ func (a *app) itemPlay(w http.ResponseWriter, r *http.Request) {
 	retry := req.Retry != nil && *req.Retry
 	queued, err := a.deps.Play(r.Context(), chi.URLParam(r, "id"), retry, req.FromSeconds)
 	if err != nil {
+		var gateRefusal refusal.PlayRefusal
+		if errors.As(err, &gateRefusal) {
+			// The gate refused the retry (D4): the same 400 family as
+			// nothing_failed, the gate token as the code — the descriptor's
+			// own state_reason token, so the SPA's canonical-error rendering
+			// needs no new shape.
+			writeError(w, http.StatusBadRequest, gateRefusal.Reason, gateRefusal.Error(), false)
+			return
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "item "+chi.URLParam(r, "id")+" not found", false)
 			return

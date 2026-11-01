@@ -90,6 +90,46 @@ func Classify(ffprobe map[string]any, optInCodecs bool) Class {
 	return ClassPack
 }
 
+// Gate is the pack lane's opt-in verdict (playback-capability-gate D1 — the
+// single judge every pack seam consults, so the descriptor's honesty promise
+// and the packer's refusals carry the same tokens from the same predicate).
+// The allowed value is GateOpen (the empty string — the zero value reads
+// allowed by design, the descriptor's own "no reason" shape); the refusal
+// values are exactly the state_reason tokens ReasonCodecNotOptedIn and
+// ReasonCodecUnsupported.
+type Gate string
+
+// GateOpen is the allowed verdict: the pack lane may run for the item.
+const GateOpen Gate = ""
+
+// PackGate judges whether the pack lane may run for one item — pure over the
+// stored ffprobe facts Classify reads (the same purity contract, INV1/INV2;
+// Classify stays the primitive, untouched). The codecs are judged with the
+// knob out of the way (Classify(ff, true)) and the knob folded explicitly, so
+// a knob-off opt-in item names its real reason instead of folding into the
+// unsupported crowd:
+//
+//   - pack-class codecs (browser-decodable, hostile container) → GateOpen;
+//   - opt-in codecs with the knob enabled → GateOpen;
+//   - opt-in codecs with the knob disabled → ReasonCodecNotOptedIn;
+//   - anything else closes with ReasonCodecUnsupported — genuinely
+//     unremuxable codecs and absent/unreadable facts (fail-safe, INV2), and
+//     the direct class (a native, already-decodable item the pack lane never
+//     needs; nothing the lane could remux into service).
+func PackGate(ff map[string]any, optInCodecs bool) Gate {
+	switch Classify(ff, true) { // judge codecs with the knob out of the way
+	case ClassPack:
+		return GateOpen
+	case ClassOptIn:
+		if optInCodecs {
+			return GateOpen
+		}
+		return Gate(ReasonCodecNotOptedIn)
+	default:
+		return Gate(ReasonCodecUnsupported)
+	}
+}
+
 // videoAudioStreams splits the ffprobe "streams" array into the first video
 // stream (the pack lane carries exactly one — D-3: -map 0:v:0) and the audio
 // streams, in file order. A non-array or empty value yields (nil, nil).

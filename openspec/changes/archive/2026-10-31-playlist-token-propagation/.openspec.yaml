@@ -1,0 +1,9 @@
+schema: lite
+created: 2026-10-31
+goal: Playlists served by the /media surface are self-authorizing — every URI
+  they reference carries the requesting request's validated media token as a
+  query parameter, so playback never depends on the client attaching the
+  media_token cookie (the 2026-10-31 TV incident — a client splitting fetches
+  across a native HTTP stack and a webview met 401 on every segment).
+  Serve-time rewrite only — published artifacts stay token-free, the token
+  gate itself is unchanged.

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/pack"
+	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -63,8 +65,8 @@ type packRecord struct {
 
 // packSeam returns a Deps.PackItem func-field over the record: it counts calls,
 // captures its inputs, sleeps delay, and returns outcome/err.
-func packSeam(rec *packRecord, delay time.Duration, outcome PackOutcome, err error) func(context.Context, string, string, map[string]any, []string) (PackOutcome, error) {
-	return func(_ context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (PackOutcome, error) {
+func packSeam(rec *packRecord, delay time.Duration, outcome pack.PackOutcome, err error) func(context.Context, string, string, map[string]any, []string) (pack.PackOutcome, error) {
+	return func(_ context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (pack.PackOutcome, error) {
 		atomic.AddInt32(&rec.calls, 1)
 		rec.itemID, rec.absPath, rec.ffprobe, rec.voiceovers = itemID, absPath, ffprobe, voiceovers
 		if delay > 0 {
@@ -87,12 +89,22 @@ func TestStreamsLane(t *testing.T) {
 		before := streamsItem(t, s, libID, "i_pack_ok")
 
 		rec := &packRecord{}
-		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, PackOutcome{Playlist: "/media/i_pack_ok/ab12cd34/index.m3u8", Nonce: "ab12cd34"}, nil)}, QueueConfig{})
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, pack.PackOutcome{Playlist: "/media/i_pack_ok/ab12cd34/index.m3u8", Nonce: "ab12cd34"}, nil)}, QueueConfig{})
 		q.workStreams(ctx, "i_pack_ok")
 
 		st := streamsState(t, s, "i_pack_ok", "complete", time.Second)
 		if st["playlist"] != "/media/i_pack_ok/ab12cd34/index.m3u8" || st["nonce"] != "ab12cd34" {
-			t.Fatalf("persisted streams = %v, want the PackOutcome pointer", st)
+			t.Fatalf("persisted streams = %v, want the pack.PackOutcome pointer", st)
+		}
+		// A codec-less outcome (playback-capability-gate D2) persists as an
+		// absent key — never an empty array.
+		if _, ok := st["codecs"]; ok {
+			t.Fatalf("persisted streams carries codecs %v, want an absent key on a codec-less outcome", st["codecs"])
+		}
+		// A layout-less outcome (fix-tv-unblock-2 Interfaces 1) persists as an
+		// absent key too — absence is the fail-open signal the SPA reads.
+		if _, ok := st["layout"]; ok {
+			t.Fatalf("persisted streams carries layout %v, want an absent key on a layout-less outcome", st["layout"])
 		}
 		// The seam received the item id, the stamped absolute path, and the
 		// stored ffprobe facts (Interface 2 wiring). The fixture carries no
@@ -112,6 +124,51 @@ func TestStreamsLane(t *testing.T) {
 			if r.ItemID == "i_pack_ok" && r.PluginID == streamsLaneID {
 				t.Fatalf("pack ledger row written on success: %+v", r)
 			}
+		}
+	})
+
+	// The recorded codec record rides the completion write (playback-capability-
+	// gate D2): doc["streams"].codecs, in the pack.PackOutcome's rendition order.
+	t.Run("success_persists_recorded_codecs", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_pack_cdc")
+
+		rec := &packRecord{}
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, pack.PackOutcome{
+			Playlist: "/media/i_pack_cdc/ab12cd34/index.m3u8",
+			Nonce:    "ab12cd34",
+			Codecs:   []string{"avc1.640029", "mp4a.40.2"},
+		}, nil)}, QueueConfig{})
+		q.workStreams(ctx, "i_pack_cdc")
+
+		st := streamsState(t, s, "i_pack_cdc", "complete", time.Second)
+		got, ok := st["codecs"].([]any)
+		if !ok || len(got) != 2 || got[0] != "avc1.640029" || got[1] != "mp4a.40.2" {
+			t.Fatalf("persisted codecs = %v, want the pack.PackOutcome record in rendition order", st["codecs"])
+		}
+	})
+
+	// The layout record rides the completion write (fix-tv-unblock-2
+	// Interfaces 1): doc["streams"].layout, the lane's layoutName vocabulary
+	// verbatim ("single-variant" | "rendition") — the string the SPA
+	// compares.
+	t.Run("success_persists_layout_when_recorded", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_pack_layout")
+
+		rec := &packRecord{}
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, pack.PackOutcome{
+			Playlist: "/media/i_pack_layout/ab12cd34/index.m3u8",
+			Nonce:    "ab12cd34",
+			Layout:   "rendition",
+		}, nil)}, QueueConfig{})
+		q.workStreams(ctx, "i_pack_layout")
+
+		st := streamsState(t, s, "i_pack_layout", "complete", time.Second)
+		if st["layout"] != "rendition" {
+			t.Fatalf("persisted layout = %v, want the pack.PackOutcome's layoutName value verbatim", st["layout"])
 		}
 	})
 
@@ -138,7 +195,7 @@ func TestStreamsLane(t *testing.T) {
 		}
 
 		rec := &packRecord{}
-		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, PackOutcome{Playlist: "/p", Nonce: "n"}, nil)}, QueueConfig{})
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, pack.PackOutcome{Playlist: "/p", Nonce: "n"}, nil)}, QueueConfig{})
 		q.workStreams(ctx, "i_pack_vo")
 
 		// Only the episode-linked AUDIO sidecars pass, in document order, as
@@ -165,7 +222,7 @@ func TestStreamsLane(t *testing.T) {
 		before := streamsItem(t, s, libID, "i_pack_fail")
 
 		rec := &packRecord{}
-		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, PackOutcome{}, errors.New("ffmpeg exploded"))}, QueueConfig{Backoff: time.Millisecond})
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, pack.PackOutcome{}, errors.New("ffmpeg exploded"))}, QueueConfig{Backoff: time.Millisecond})
 		q.workStreams(ctx, "i_pack_fail")
 
 		st := streamsState(t, s, "i_pack_fail", "failed", time.Second)
@@ -204,7 +261,7 @@ func TestStreamsLane(t *testing.T) {
 		streamsItem(t, s, libID, "i_pack_lease")
 
 		rec := &packRecord{}
-		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 40*time.Millisecond, PackOutcome{Playlist: "/p", Nonce: "n"}, nil)}, QueueConfig{LeaseTTL: time.Minute})
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 40*time.Millisecond, pack.PackOutcome{Playlist: "/p", Nonce: "n"}, nil)}, QueueConfig{LeaseTTL: time.Minute})
 		var wg sync.WaitGroup
 		start := make(chan struct{})
 		for i := 0; i < 2; i++ {
@@ -228,7 +285,7 @@ func TestStreamsLane(t *testing.T) {
 		streamsItem(t, s, libID, "i_pack_renew")
 
 		rec := &packRecord{}
-		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 120*time.Millisecond, PackOutcome{Playlist: "/p", Nonce: "n"}, nil)}, QueueConfig{LeaseTTL: 40 * time.Millisecond})
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 120*time.Millisecond, pack.PackOutcome{Playlist: "/p", Nonce: "n"}, nil)}, QueueConfig{LeaseTTL: 40 * time.Millisecond})
 
 		done := make(chan struct{})
 		go func() { defer close(done); q.workStreams(ctx, "i_pack_renew") }()
@@ -263,7 +320,7 @@ func TestStreamsLane(t *testing.T) {
 		streamsItem(t, s, libID, "i_pack_q")
 
 		rec := &packRecord{}
-		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, PackOutcome{Playlist: "/media/i_pack_q/n0/index.m3u8", Nonce: "n0"}, nil)}, QueueConfig{})
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, pack.PackOutcome{Playlist: "/media/i_pack_q/n0/index.m3u8", Nonce: "n0"}, nil)}, QueueConfig{})
 		// The fixture item still owes tmdb/frame-grabber metadata work, and the
 		// Start sweep derives it; without a resolver the metadata drain would
 		// nil-deref at chain.go:61 (races the lane drain, flaking the package).
@@ -279,6 +336,99 @@ func TestStreamsLane(t *testing.T) {
 			t.Fatalf("EnqueuePack: %v", err)
 		}
 		streamsState(t, s, "i_pack_q", "complete", 2*time.Second)
+	})
+}
+
+// TestPackPolicyRefusal is the acceptance test for the build-time gate
+// (playback-capability-gate 1.3, D4): a PackItem seam returning
+// refusal.PolicyRefusal — the gate closed between enqueue and build — persists
+// state failed with
+// the gate's state_reason token and writes NO pack_failed ledger row, so the
+// item never enters a cooldown; with the knob on again the frontier's
+// eligibility (no CoolUntil — no row exists to read) re-enqueues it and the
+// heal run completes, the ledger still empty.
+func TestPackPolicyRefusal(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("refusal_persists_failed_without_a_ledger_row", func(t *testing.T) {
+		withFixedClock(t, time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC))
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_pack_policy")
+
+		rec := &packRecord{}
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, pack.PackOutcome{}, refusal.PolicyRefusal{Reason: "codec_not_opted_in"})}, QueueConfig{})
+		q.workStreams(ctx, "i_pack_policy")
+
+		st := streamsState(t, s, "i_pack_policy", "failed", time.Second)
+		// The reason is the BARE gate token — the descriptor's own
+		// state_reason spelling (D1), never a wrapped error message.
+		if st["reason"] != "codec_not_opted_in" {
+			t.Fatalf("reason = %v, want the bare codec_not_opted_in token", st["reason"])
+		}
+		if st["failed_at"] == "" {
+			t.Fatalf("failed streams doc missing failed_at: %v", st)
+		}
+		rows, err := s.ListFailures(ctx)
+		if err != nil {
+			t.Fatalf("ListFailures: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("ledger rows = %d, want 0 — a policy refusal never charges the cooldown", len(rows))
+		}
+	})
+
+	t.Run("real_pack_failure_still_records_the_row", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_pack_realfail")
+
+		rec := &packRecord{}
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, pack.PackOutcome{}, errors.New("ffmpeg exploded"))}, QueueConfig{})
+		q.workStreams(ctx, "i_pack_realfail")
+
+		streamsState(t, s, "i_pack_realfail", "failed", time.Second)
+		packLedgerRow(t, s, "i_pack_realfail") // fails the test when absent
+	})
+
+	t.Run("knob_on_heals_through_frontier_eligibility", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_pack_heal")
+
+		refused := true
+		pack := func(context.Context, string, string, map[string]any, []string) (pack.PackOutcome, error) {
+			if refused {
+				return pack.PackOutcome{}, refusal.PolicyRefusal{Reason: "codec_not_opted_in"}
+			}
+			return pack.PackOutcome{Playlist: "/media/i_pack_heal/n1/index.m3u8", Nonce: "n1"}, nil
+		}
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: pack}, QueueConfig{})
+		q.workStreams(ctx, "i_pack_heal")
+		streamsState(t, s, "i_pack_heal", "failed", time.Second)
+
+		// Knob on: no ledger row exists, so the frontier's CoolUntil is zero
+		// and the re-enqueue reaches the lane; the healed run completes.
+		refused = false
+		q.resolve = mapResolver{}.resolver()
+		if err := q.Start(ctx); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer q.Stop()
+		if err := q.EnqueuePack("i_pack_heal"); err != nil {
+			t.Fatalf("EnqueuePack: %v", err)
+		}
+		st := streamsState(t, s, "i_pack_heal", "complete", 2*time.Second)
+		if st["nonce"] != "n1" {
+			t.Fatalf("nonce = %v, want the healed build n1", st["nonce"])
+		}
+		rows, err := s.ListFailures(ctx)
+		if err != nil {
+			t.Fatalf("ListFailures: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("ledger rows = %d, want 0 — the heal needs no ledger to clear", len(rows))
+		}
 	})
 }
 
@@ -325,4 +475,152 @@ func assertMetadataUntouched(t *testing.T, beforeRaw, afterRaw json.RawMessage) 
 			t.Fatalf("metadata namespace %s changed by the streams lane:\nbefore %s\nafter  %s", ns, before[ns], after[ns])
 		}
 	}
+}
+
+// TestStreamsLaneAfterPackPersist is the acceptance test for the eviction seam
+// (playback-capability-gate D5): a non-nil Deps.AfterPackPersist runs exactly
+// once with the persisted build's item id and nonce, only AFTER the success
+// persistStreams — the document already names the new build when the seam
+// fires — and never on the failure path (pack error or policy refusal). nil
+// stays a no-op.
+func TestStreamsLaneAfterPackPersist(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("success_calls_seam_after_persist", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_evict_ok")
+
+		type call struct {
+			itemID, keepNonce string
+			persistedState    string // doc["streams"].state as observed INSIDE the seam
+			persistedNonce    string
+		}
+		var calls []call
+		q := NewQueue(Deps{
+			Store:    s,
+			Modules:  reg,
+			PackItem: packSeam(&packRecord{}, 0, pack.PackOutcome{Playlist: "/media/i_evict_ok/ab12cd34/index.m3u8", Nonce: "ab12cd34"}, nil),
+			AfterPackPersist: func(itemID, keepNonce string) {
+				doc := decodeDoc(mustGetItem(t, s, itemID).Document)
+				st, _ := doc["streams"].(map[string]any)
+				state, _ := st["state"].(string)
+				nonce, _ := st["nonce"].(string)
+				calls = append(calls, call{itemID, keepNonce, state, nonce})
+			},
+		}, QueueConfig{})
+		q.workStreams(ctx, "i_evict_ok")
+
+		if len(calls) != 1 {
+			t.Fatalf("AfterPackPersist calls = %d, want exactly 1", len(calls))
+		}
+		got := calls[0]
+		if got.itemID != "i_evict_ok" || got.keepNonce != "ab12cd34" {
+			t.Fatalf("AfterPackPersist args = (%q, %q), want (i_evict_ok, ab12cd34)", got.itemID, got.keepNonce)
+		}
+		// The ordering is load-bearing (D5): when the seam fires, the document
+		// already names the new build — the eviction can never delete the
+		// descriptor's current build.
+		if got.persistedState != "complete" || got.persistedNonce != "ab12cd34" {
+			t.Fatalf("seam ran before the success persist: observed streams state=%q nonce=%q, want complete/ab12cd34", got.persistedState, got.persistedNonce)
+		}
+	})
+
+	t.Run("failure_path_never_calls_seam", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_evict_fail")
+
+		calls := 0
+		q := NewQueue(Deps{
+			Store:            s,
+			Modules:          reg,
+			PackItem:         packSeam(&packRecord{}, 0, pack.PackOutcome{}, errors.New("ffmpeg exploded")),
+			AfterPackPersist: func(itemID, keepNonce string) { calls++ },
+		}, QueueConfig{Backoff: time.Millisecond})
+		q.workStreams(ctx, "i_evict_fail")
+		if calls != 0 {
+			t.Fatalf("AfterPackPersist called %d times on the pack-failure path, want 0", calls)
+		}
+
+		// The policy-refusal branch (playback-capability-gate D4) is also a
+		// failure path: a knob setting never evicts either.
+		streamsItem(t, s, libID, "i_evict_refuse")
+		q2 := NewQueue(Deps{
+			Store:   s,
+			Modules: reg,
+			PackItem: func(context.Context, string, string, map[string]any, []string) (pack.PackOutcome, error) {
+				return pack.PackOutcome{}, refusal.PolicyRefusal{Reason: "codec_not_opted_in"}
+			},
+			AfterPackPersist: func(itemID, keepNonce string) { calls++ },
+		}, QueueConfig{})
+		q2.workStreams(ctx, "i_evict_refuse")
+		if calls != 0 {
+			t.Fatalf("AfterPackPersist called %d times on the policy-refusal path, want 0", calls)
+		}
+	})
+}
+
+// TestStreamsMasterMarker pins the pack-lane rule version (pack-manifest-audio
+// 3.1, D5; re-versioned by fix-tv-unblock-2 Interfaces 2): every success
+// persist writes `master` as the NUMBER pack.MasterRuleVersion into the streams
+// namespace — honest by construction, since every fresh pack (rendition and
+// single-variant) is composed at the current rule — while both failure
+// persists (real failure and policy refusal) stay version-free, so absence
+// (version 0) is the legacy signal the lazy re-heal gate reads. A hand-seeded
+// legacy doc (complete + nonce, pre-version shape) reads back marker-absent.
+func TestStreamsMasterMarker(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("success_persist_carries_the_rule_version_number", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_master_ok")
+
+		rec := &packRecord{}
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, pack.PackOutcome{Playlist: "/media/i_master_ok/ab12cd34/index.m3u8", Nonce: "ab12cd34"}, nil)}, QueueConfig{})
+		q.workStreams(ctx, "i_master_ok")
+
+		st := streamsState(t, s, "i_master_ok", "complete", time.Second)
+		// The stored doc round-trips through JSON: the written constant reads
+		// back as a float64 — a raw `!=` against int can never hold.
+		v, ok := st["master"].(float64)
+		if !ok || v != float64(pack.MasterRuleVersion) {
+			t.Fatalf("persisted streams = %v, want master: %d (the rule version number) on the success doc", st, pack.MasterRuleVersion)
+		}
+	})
+
+	t.Run("failure_persists_stay_marker_free", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_master_fail")
+		streamsItem(t, s, libID, "i_master_refuse")
+
+		qFail := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(&packRecord{}, 0, pack.PackOutcome{}, errors.New("ffmpeg exploded"))}, QueueConfig{Backoff: time.Millisecond})
+		qFail.workStreams(ctx, "i_master_fail")
+		qRefuse := NewQueue(Deps{Store: s, Modules: reg, PackItem: func(context.Context, string, string, map[string]any, []string) (pack.PackOutcome, error) {
+			return pack.PackOutcome{}, refusal.PolicyRefusal{Reason: "codec_not_opted_in"}
+		}}, QueueConfig{})
+		qRefuse.workStreams(ctx, "i_master_refuse")
+
+		for _, id := range []string{"i_master_fail", "i_master_refuse"} {
+			st := streamsState(t, s, id, "failed", time.Second)
+			if _, ok := st["master"]; ok {
+				t.Fatalf("failed streams doc for %s carries master %v, want an absent key — absence is the signal", id, st["master"])
+			}
+		}
+	})
+
+	t.Run("hand_seeded_legacy_doc_reads_marker_absent", func(t *testing.T) {
+		s, _ := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		doc := baseDoc("Movies/Legacy Layout.mkv")
+		doc["streams"] = map[string]any{"state": "complete", "nonce": "ab12cd34", "playlist": "/media/x/index.m3u8"}
+		putItem(t, s, "i_master_legacy", libID, statusReady, doc)
+
+		st := streamsState(t, s, "i_master_legacy", "complete", time.Second)
+		if _, ok := st["master"]; ok {
+			t.Fatalf("legacy doc carries master %v, want an absent key (it predates the master lane)", st["master"])
+		}
+	})
 }

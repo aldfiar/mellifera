@@ -269,7 +269,7 @@ func (p Principal) IsAdmin() bool { return p.Role == RoleAdmin }
 // (INV-authn-precedes-authz). Handlers never fork on Role — the group is the
 // only gate (arch §11.5).
 func New(deps Deps) http.Handler {
-	h := &app{deps: deps}
+	h := &app{deps: deps, beacons: newBeaconLimiter()}
 	r := chi.NewRouter()
 	r.Route("/api/v1", func(r chi.Router) { mountV1Routes(r, h) })
 	return r
@@ -343,6 +343,12 @@ func mountV1Routes(r chi.Router, h *app) {
 		// served verbatim (never env-read here). Read-only viewer data, so
 		// the browse group beside progress.
 		r.Get("/watch-defaults", h.watchDefaults)
+		// Playback-event beacon (tv-playback-unblock D7): the TV's fire-and-
+		// forget failure telemetry — a viewer action, so the browse group
+		// (a pairing-minted client session must reach it). Top-level under
+		// /api/v1, never nested under /items: the item_id is unvalidated
+		// data (no store read), not a route parameter.
+		r.Post("/playback-events", h.playbackEvent)
 		// Relay claim (client-relayed-fetch D7): the oldest claimable fetch
 		// job handed to ANY authenticated principal — a viewer-side transport
 		// action, not an operator mutation, so the browse group (admin+client;

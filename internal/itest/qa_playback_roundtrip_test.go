@@ -61,9 +61,11 @@ func TestPlaybackRoundTrip(t *testing.T) {
 	}
 
 	// --- direct floor BEFORE any packaging: E02 answers mode direct at its
-	// original bytes through the token-gated mount ---
-	if pb := pbDescriptor(t, w, e02.ID); pb.Mode != "direct" || pb.State != "none" {
-		t.Fatalf("E02 descriptor before packaging = mode %q state %q, want direct/none", pb.Mode, pb.State)
+	// original bytes through the token-gated mount. The packable MKV floor
+	// answers the honesty projection's preparing state (tv-playback-unblock
+	// D1 — a pack can land; the persisted namespace still sits at none).
+	if pb := pbDescriptor(t, w, e02.ID); pb.Mode != "direct" || pb.State != "preparing" {
+		t.Fatalf("E02 descriptor before packaging = mode %q state %q, want direct/preparing", pb.Mode, pb.State)
 	}
 	origStatus, origBody, _ := pbDo(t, w.client, http.MethodGet, w.baseURL+pbDescriptor(t, w, e02.ID).PlayURL, "", nil)
 	if origStatus != http.StatusOK || len(origBody) == 0 {
@@ -82,12 +84,14 @@ func TestPlaybackRoundTrip(t *testing.T) {
 	streams := pbAwaitStreams(t, w.st, e01.ID, "complete", 60*time.Second)
 	pbAwaitIdle(t, q, 30*time.Second)
 
-	// The artifact exists on disk under the persisted build-nonce directory.
+	// The artifact exists on disk under the persisted build-nonce directory:
+	// the build root holds the composed master alone; the variant playlist,
+	// init, and segments live under rend0/ (pack-manifest-audio layout).
 	nonce, _ := streams["nonce"].(string)
 	if nonce == "" {
 		t.Fatalf("persisted streams missing nonce: %v", streams)
 	}
-	artDir := filepath.Join(w.root, e01.ID, nonce)
+	artDir := filepath.Join(w.root, e01.ID, nonce, "rend0")
 	entries, err := os.ReadDir(artDir)
 	if err != nil {
 		t.Fatalf("artifact dir %s: %v", artDir, err)
@@ -129,20 +133,26 @@ func TestPlaybackRoundTrip(t *testing.T) {
 		t.Fatalf("Set-Cookie = %v, want the media_token cookie-primary delivery", cookies)
 	}
 
-	// --- token-gated serve: the playlist bytes, then a segment, then rejection ---
-	plStatus, plBody, _ := pbDo(t, w.client, http.MethodGet, w.baseURL+pb.PlayURL, "", nil)
-	if plStatus != http.StatusOK {
-		t.Fatalf("playlist with token: status %d, want 200", plStatus)
+	// --- token-gated serve: the master, then the variant playlist it names,
+	// then a segment, then rejection ---
+	variantURL, master, vBody := pbVariantPlaylist(t, w.client, w.baseURL, pb.PlayURL)
+	if !strings.Contains(string(master), "#EXTM3U") {
+		t.Fatalf("served master missing EXTM3U:\n%s", master)
 	}
-	playlist := string(plBody)
+	playlist := string(vBody)
 	if !strings.Contains(playlist, "#EXTM3U") || !strings.Contains(playlist, "#EXT-X-ENDLIST") {
-		t.Fatalf("playlist missing EXTM3U/ENDLIST (complete build):\n%s", playlist)
+		t.Fatalf("variant playlist missing EXTM3U/ENDLIST (complete build):\n%s", playlist)
 	}
 	if !strings.Contains(playlist, "#EXT-X-DISCONTINUITY") || !strings.Contains(playlist, "t/") {
-		t.Fatalf("playlist missing the two-phase tail merge markers:\n%s", playlist)
+		t.Fatalf("variant playlist missing the two-phase tail merge markers:\n%s", playlist)
 	}
 	segURI := pbFirstSegment(playlist)
-	segStatus, segBody, segHeader := pbDo(t, w.client, http.MethodGet, w.baseURL+pbPlaylistURI(pb.PlayURL, segURI), "", nil)
+	// Self-authorizing playlist (incident 2026-10-31): the served segment URI
+	// itself carries the token, so a cookie-less TV client can play it.
+	if !strings.Contains(segURI, "token=") {
+		t.Fatalf("segment URI %q carries no token — playlists must be self-authorizing", segURI)
+	}
+	segStatus, segBody, segHeader := pbDo(t, w.client, http.MethodGet, w.baseURL+pbPlaylistURI(variantURL, segURI), "", nil)
 	if segStatus != http.StatusOK || len(segBody) == 0 {
 		t.Fatalf("segment %s: status %d len %d, want 200 with bytes", segURI, segStatus, len(segBody))
 	}
@@ -197,11 +207,16 @@ func pbFirstSegment(playlist string) string {
 }
 
 // pbPlaylistURI resolves a playlist-relative URI against the play URL's base
-// path (dropping its query) so the segment request hits the same mount.
+// path (dropping its query) so the segment request hits the same mount. A URI
+// already carrying its own query (served playlists embed the token) is used
+// verbatim — the cookie-less-client path.
 func pbPlaylistURI(playURL, uri string) string {
 	base := stripToken(playURL)
 	if i := strings.LastIndex(base, "/"); i >= 0 {
 		base = base[:i+1]
+	}
+	if strings.Contains(uri, "?") {
+		return base + uri
 	}
 	return base + uri + "?token=" + tokenOf(playURL)
 }
