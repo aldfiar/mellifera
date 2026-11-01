@@ -1,17 +1,20 @@
 # Handoff — session — tv-mode
 
 ## State
-- **GATE 1 APPROVED** (user pre-approval mid-turn 2026-11-02: "approve for gate 1, so stop on gate 2"). Proposal frozen: pure-SPA TV mode slice — resolver+boot (G1), one key table (G2), D-pad walker+harness (G3), DialogShell history-Back (G4), .tv CSS + photo stage (G5), Режим ТВ override control (G6), dist regen + desktop-unchanged guard (G7). `openspec validate tv-mode --strict` rc 0.
-- Pipeline registered: 7 groups / 12 tasks (11 authored + built-in git-check), home `.tmp/tv-mode/` (worktree), worktree key attached.
-- Worktree /Users/aldfiar/projects/go/mellifera.worktrees/tv-mode on feature/tv-mode @ f03a3f3. Baseline GREEN (go test ./... rc 0; web Vitest 35 files / 450 tests).
-- Pre-existing, NOT ours: `validate --all --strict` fails on transcode-lane + frontier-pinned-eviction (packaged-playback delta drift — owners copy validator-named scenarios). tv-mode artifacts clean.
+- **ALL TASKS GREEN — GATE 2 ENTERED (2026-11-02 00:33 local).** 12/12 green (11 authored + built-in git-check), `wf pipeline status tv-mode` rc 0.
+- All 11 authored tasks receipted green via `wf pipeline verify --by wf-coder`; receipts in `.tmp/tv-mode/receipts.jsonl` (14 receipts pre-gate — 2.1 has a typing-fixup re-run, 7.1 has the red→green pair; the GATE 2 reviewer re-runs brought the ledger to 26).
+- Branch feature/tv-mode PUSHED (origin, f03a3f3 → bd0a70a; 13 commits). Worktree attached in header.
+- GATE 1 approval: user pre-approved mid-turn ("approve for gate 1, so stop on gate 2"). GATE 2 archive approval: STOP AND WAIT FOR USER.
 
-## Next
-Apply waves (≤3 concurrent, file-disjoint): A = 1.1 + 2.1 + 3.1 → B = 1.2 + 3.2 + 4.1 → C = 5.1 + 6.1 (+straggler) → D = 5.2 → E = 7.1 + 7.2. Each task: implement → `wf pipeline verify tv-mode <id> --by wf-coder` → commit on feature/tv-mode (Co-Authored-By: Claude Code).
-After all green: GATE 2 — **STOP for human archive approval** (user asked to stop there). GATE 2 = @wf-reviewer re-runs every verify + `wf pipeline status` rc 0 + review.md approval line.
+## Apply wave record
+- Wave A: 1.1 (7d7e144) + 2.1 (9edb3ca) + 3.1 (658f10f) → Wave B: 3.2 (1130909) + 4.1 (9e9377e) + 2.1 fixup (a1e65ab, tsc mock typing) → 1.2 (9da3a0f) → C: 5.1 (fd1332b) + 6.1 (294c740) → D: 5.2 (2628bbb, carried exitWatch ripple + data-tv-yield both lanes) → E: 7.1 (9e45582, dist regen, swag delta ZERO) + 7.2 (203 desktop tests, no code change) → change folder committed bd0a70a.
+- tsc full tree: rc 0 (after 5.2). Web suite at 4.1 time: 41 files / 573 tests green.
 
-## Notes for next session
-- wf resolved string: `bash /Users/aldfiar/.claude/bin/wf`. Pin 1.14.0. wf NOT on PATH.
-- GATE 2 full suite anchor: `go test ./...` + full web Vitest (memory: scoped duties never hit the full suite).
-- dist regen (7.1) needs `PATH="$PATH:$(go env GOPATH)/bin"` for swag.
-- Session is harness-anchored in the worktree via EnterWorktree; children inherit cwd.
+## For the reviewer (GATE 2)
+- Full-suite anchors MUST run: `go test ./...` + full `cd web && npx vitest run` (memory: scoped duties never hit the full suite; the GATE anchor carries it).
+- Known deviation to judge: 1.1's dpr parenthetical (tasks.md said "3840×2160 corroborates"; the corroboration definition + D2 say innerHeight ≤ 600 → 3840×2160 is TOO TALL; coder implemented the definition). Spec delta may carry the same gloss — if so, it's a spec-text nit, not a code defect.
+- 5.2 notes: stage cap uses `!important` over an inline style (commented, required); metadata hide = adjacent-sibling selector (photo lane only); "one status line" = existing browse bar (no new UI, desktop hint test pinned).
+
+## Next (after reviewer verdict + USER archive approval)
+- review.md (verdict + approval line) → `openspec archive tv-mode --yes` (pin 1.14.0) → police TBD purposes → @wf-docs docs actualization → close-out notes (receipt summary) → `wf pipeline clean tv-mode` → merge-back dry-run + `--apply` (human-gated; push + gh pr create).
+- wf: `bash /Users/aldfiar/.claude/bin/wf`. Session harness-anchored in the worktree via EnterWorktree.
