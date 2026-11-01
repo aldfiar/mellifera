@@ -128,6 +128,29 @@ describe("tv shell block (tv-mode 5.1)", () => {
     expect(block).toContain("clamp(40px, 2.5vw, 64px)");
   });
 
+  it("photo stage caps at calc(100vh - the status line var), replacing the desktop 136px chrome", () => {
+    expect(block).toContain(
+      'html.tv main > section[aria-label="Media stage"] {',
+    );
+    expect(block).toContain("--tv-status-chrome:");
+    // The !important is the inline-style override: the desktop cap
+    // (photoStageMaxH(PHOTO_STAGE_CHROME_PX)) rides the img's style
+    // attribute, and a stylesheet rule loses to inline style without it.
+    expect(block).toContain(
+      "max-height: calc(100vh - var(--tv-status-chrome)) !important",
+    );
+  });
+
+  it("metadata column hides under html.tv on the photo lane only", () => {
+    // The photo lane is the only lane whose stage section is a DIRECT child
+    // of main (the watch lane nests its stage inside the grid), so the
+    // adjacent-sibling selector hits exactly the photo identity block.
+    expect(block).toContain(
+      'html.tv main > section[aria-label="Media stage"] + *',
+    );
+    expect(block).toContain("display: none");
+  });
+
   it("no bare fixed px in any size declaration of the tv block (D3 sweep)", () => {
     const decls = declarationsOf(block);
     const sized = decls.filter(

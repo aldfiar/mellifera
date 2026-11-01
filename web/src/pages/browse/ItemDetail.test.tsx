@@ -967,6 +967,76 @@ describe("ItemDetail — slideshow interplay: manual reset, Esc stop-then-back",
   });
 });
 
+// ---- tv-mode 5.2: the immersive photo stage ---------------------------------
+//
+// The stage accepts Enter (OK on the remote) as a SECOND slideshow toggle
+// beside the desktop S, and marks its photo-browse container with
+// data-tv-yield (design I4) so the tv focus walker yields the stage's own
+// keys. Enter on a focused button/link stays that element's NATIVE
+// activation — the stage listener stands down there instead of
+// double-toggling behind it.
+
+describe("ItemDetail — tv-mode 5.2: Enter toggles the slideshow, the stage yields", () => {
+  const HANDOFF: BrowseHandoff = {
+    items: ["itm_a", "itm_b"],
+    position: 1,
+    backTo: "/collections/2",
+  };
+
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  function stage(): HTMLElement {
+    return screen.getByRole("region", { name: "Media stage" });
+  }
+
+  it("toggles the slideshow with Enter beside the desktop S, but not behind a focused button's native activation", async () => {
+    mockItems(PHOTO_A, PHOTO_B);
+    stubMedia();
+
+    renderBrowse("itm_b", HANDOFF, freshClient());
+    expect(await screen.findByText("Position 2 / 2")).toBeDefined();
+
+    // Enter with the stage as target (the remote's OK lands as a window
+    // keydown from the un-focused stage) starts the slideshow; Enter again
+    // pauses it.
+    fireEvent.keyDown(stage(), { key: "Enter" });
+    expect(
+      screen.getByRole("button", { name: "Pause slideshow" }),
+    ).toBeDefined();
+    fireEvent.keyDown(stage(), { key: "Enter" });
+    expect(
+      screen.getByRole("button", { name: "Start slideshow" }),
+    ).toBeDefined();
+
+    // The desktop S row is untouched: it toggles the same state.
+    fireEvent.keyDown(window, { key: "s" });
+    expect(
+      screen.getByRole("button", { name: "Pause slideshow" }),
+    ).toBeDefined();
+
+    // Enter on a FOCUSED button is that button's native activation — the
+    // stage listener stands down (no double toggle back to Start).
+    fireEvent.keyDown(
+      screen.getByRole("button", { name: "Pause slideshow" }),
+      { key: "Enter" },
+    );
+    expect(
+      screen.getByRole("button", { name: "Pause slideshow" }),
+    ).toBeDefined();
+  });
+
+  it("marks the photo stage with data-tv-yield (design I4)", async () => {
+    mockItems(PHOTO_A, PHOTO_B);
+    stubMedia();
+
+    renderBrowse("itm_b", HANDOFF, freshClient());
+    expect(await screen.findByText("Position 2 / 2")).toBeDefined();
+
+    expect(stage().getAttribute("data-tv-yield")).not.toBeNull();
+  });
+});
+
 // ---- Watch controls (serial-watch-flow group 5) ----------------------------
 //
 // The episode page's subtitle + voiceover selection. getItem/getPlayback are
@@ -1175,8 +1245,72 @@ describe("ItemDetail — structural video-ness (ready serial episode plays)", ()
     // "Play from the start.").
     expect(await screen.findByRole("region", { name: "Player" })).toBeDefined();
     expect(screen.getByRole("region", { name: "Media stage" })).toBeDefined();
+    // tv-mode 5.2 (design I4): the watch container carries the walker yield
+    // marker — the player's transport owns the arrows in tv.
+    expect(
+      screen
+        .getByRole("region", { name: "Media stage" })
+        .getAttribute("data-tv-yield"),
+    ).not.toBeNull();
     expect(screen.getByText("Play from the start.")).toBeDefined();
     expect(theVideo()).not.toBeNull();
+  });
+
+  it("wires MediaStop to exitWatch: pause the mounted video, re-land the plain item page", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue({
+      item: {
+        ...ITEM_RESPONSE.item,
+        id: "itm_ready_ep",
+        status: "ready",
+        document: {},
+      },
+    });
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+    vi.spyOn(apiModule, "getPlayback").mockResolvedValue(HLS_PLAYBACK);
+    vi.spyOn(apiModule, "putProgress").mockResolvedValue({
+      item_id: "itm_ready_ep",
+      position_seconds: 0,
+      updated_at: "",
+    });
+
+    // Rendered WITH a browse handoff, so the re-land is observable: the
+    // browse bar rides the handoff state and must be gone after MediaStop.
+    render(
+      <QueryClientProvider client={freshClient()}>
+        <MemoryRouter
+          initialEntries={[
+            {
+              pathname: "/items/itm_ready_ep",
+              state: {
+                items: ["itm_ready_ep"],
+                position: 0,
+                backTo: "/collections/1",
+              } satisfies BrowseHandoff,
+            },
+          ]}
+        >
+          <Routes>
+            <Route path="/items/:id" element={<ItemDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("region", { name: "Player" })).toBeDefined();
+    expect(screen.getByText("Position 1 / 1")).toBeDefined();
+
+    // Spy installed AFTER the mount, so the count reads only exitWatch's call.
+    const pauseSpy = vi
+      .spyOn(HTMLMediaElement.prototype, "pause")
+      .mockImplementation(() => {});
+
+    fireEvent.keyDown(window, { key: "MediaStop" });
+
+    // Playback left: the mounted video paused, the browse handoff dropped
+    // (the plain item page re-landed), and the player itself stays mounted.
+    expect(pauseSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Position 1 / 1")).toBeNull();
+    expect(screen.getByRole("region", { name: "Player" })).toBeDefined();
   });
 });
 
