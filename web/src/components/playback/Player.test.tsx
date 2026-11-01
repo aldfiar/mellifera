@@ -41,7 +41,7 @@ const hls = vi.hoisted(() => {
   return { FakeHls, instances };
 });
 
-vi.mock("hls.js/light", () => ({ default: hls.FakeHls }));
+vi.mock("hls.js", () => ({ default: hls.FakeHls }));
 
 const HLS_DESCRIPTOR: PlaybackDescriptor = {
   mode: "hls",

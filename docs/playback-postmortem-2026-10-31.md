@@ -334,6 +334,13 @@ fixed in openspec change `fix-tv-unblock-2` (branch
   (`single-variant` | `rendition`), and the SPA's direct floor refuses a
   `rendition` layout with a classified banner + one beacon
   (`rendition-layout-unsupported`), mounting nothing.
+  *(Attribution corrected 2026-11-01 by `fix-hls-light-audio`: the TV's
+  silent rendition mount ran the MSE/hls.js lane, not native HLS —
+  `Player.tsx` imported `hls.js/light`, a dist with no audio-track
+  controller, so `hls.audioTracks` never populated and the
+  `EXT-X-MEDIA` renditions were never fetched on any MSE device, the TV
+  included. The import now targets the full `hls.js` build; the
+  direct-floor refusal above stands for genuinely MSE-less devices.)*
 - **Dual-audio muxed packs fatal in MSE.** The pack-lane layout rule keyed
   on voiceover sidecars only, so a two-embedded-audio source packed as one
   variant muxing both audio streams — Chromium MSE fatals on mount. The

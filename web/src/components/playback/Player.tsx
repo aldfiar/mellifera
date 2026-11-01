@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import Hls from "hls.js/light";
+import Hls from "hls.js";
 
 import type { PlaybackDescriptor } from "@/lib/api";
 import { putProgress, sendPlaybackEvent } from "@/lib/api";
@@ -12,10 +12,13 @@ import AutoNext from "@/components/playback/AutoNext";
 // Player — the packaged-playback surface for ONE item (spec "Playback
 // descriptor and verb split" consumer side). Two lanes, zero client logic:
 //
-//   - mode "hls": the stream playlist via hls.js (the LIGHT build — the
-//     artifacts are already fMP4, so the full build's alt-mux machinery is
-//     dead weight, D-12); on browsers with native HLS the plain src path
-//     below takes over automatically (Hls.isSupported() gate). The playlist
+//   - mode "hls": the stream playlist via hls.js (the FULL build — its
+//     audio-track controller populates hls.audioTracks and fetches the
+//     master's EXT-X-MEDIA renditions, which the voiceover switch at
+//     hls.audioTrack below needs; the light build ships no controller and
+//     plays rendition packs silent, fix-hls-light-audio); on browsers with
+//     native HLS the plain src path below takes over automatically
+//     (Hls.isSupported() gate). The playlist
 //     is attached REGARDLESS of packaging state: a partial build (no
 //     ENDLIST) is attached and live-polled by hls.js natively — that is the
 //     head-first contract, not a special case.
