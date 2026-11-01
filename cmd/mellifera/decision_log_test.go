@@ -125,16 +125,20 @@ func TestPlaybackDecisionLog(t *testing.T) {
 		persisted string // the stored namespace's state ("" = same as state)
 		have      string // state_reason the descriptor itself must answer ("" = absent)
 		want      string // the decision line's reason
+		src       string // the decision line's codecs_src (pack-manifest-audio D7)
 	}{
-		{"pkg-item", stream.ModeHls, stream.StateComplete, "", "", reasonPackaged},
+		// pkg-item predates the codecs record and carries no ffprobe — neither
+		// half answers, so the hls answer still logs codecs_src=none; every
+		// direct answer carries no codecs field at all.
+		{"pkg-item", stream.ModeHls, stream.StateComplete, "", "", reasonPackaged, "none"},
 		// The honesty projection (tv-playback-unblock D1): a none-state
 		// non-native floor answers preparing/unsupported on the descriptor
 		// while the persisted namespace stays at none.
-		{"mkv-item", stream.ModeDirect, stream.StatePreparing, stream.StateNone, stream.ReasonNonNativeContainer, stream.ReasonNonNativeContainer},
-		{"hevc-item", stream.ModeDirect, stream.StateUnsupported, stream.StateNone, stream.ReasonCodecNotOptedIn, stream.ReasonCodecNotOptedIn},
-		{"codec-item", stream.ModeDirect, stream.StateUnsupported, stream.StateNone, stream.ReasonCodecUnsupported, stream.ReasonCodecUnsupported},
-		{"mp4-item", stream.ModeDirect, stream.StateNone, "", "", reasonUnpackaged},
-		{"cool-item", stream.ModeDirect, stream.StateFailed, "", stream.ReasonNonNativeContainer, reasonCooldown},
+		{"mkv-item", stream.ModeDirect, stream.StatePreparing, stream.StateNone, stream.ReasonNonNativeContainer, stream.ReasonNonNativeContainer, "none"},
+		{"hevc-item", stream.ModeDirect, stream.StateUnsupported, stream.StateNone, stream.ReasonCodecNotOptedIn, stream.ReasonCodecNotOptedIn, "none"},
+		{"codec-item", stream.ModeDirect, stream.StateUnsupported, stream.StateNone, stream.ReasonCodecUnsupported, stream.ReasonCodecUnsupported, "none"},
+		{"mp4-item", stream.ModeDirect, stream.StateNone, "", "", reasonUnpackaged, "none"},
+		{"cool-item", stream.ModeDirect, stream.StateFailed, "", stream.ReasonNonNativeContainer, reasonCooldown, "none"},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			buf.Reset()
@@ -149,7 +153,8 @@ func TestPlaybackDecisionLog(t *testing.T) {
 				t.Fatalf("descriptor state_reason = %q, want %q", pb.StateReason, tc.have)
 			}
 
-			// Exactly ONE decision line per GET, carrying item/mode/state/reason.
+			// Exactly ONE decision line per GET, carrying
+			// item/mode/state/reason/codecs_src.
 			var lines []string
 			for _, ln := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
 				if strings.Contains(ln, `msg="playback: descriptor"`) && strings.Contains(ln, "item="+tc.id) {
@@ -160,7 +165,7 @@ func TestPlaybackDecisionLog(t *testing.T) {
 				t.Fatalf("captured %d decision lines for %s, want 1; output:\n%s", len(lines), tc.id, buf.String())
 			}
 			for _, field := range []string{
-				"mode=" + tc.mode, "state=" + tc.state, "reason=" + tc.want,
+				"mode=" + tc.mode, "state=" + tc.state, "reason=" + tc.want, "codecs_src=" + tc.src,
 			} {
 				if !strings.Contains(lines[0], field) {
 					t.Fatalf("decision line %q lacks %q", lines[0], field)

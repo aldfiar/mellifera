@@ -290,3 +290,128 @@ func TestPackItemGateRefusal(t *testing.T) {
 		}
 	})
 }
+
+// TestPlayLazyRepack is the acceptance test for the lazy repack-on-play
+// decision (pack-manifest-audio 3.1, D5): a legacy build — state complete, a
+// build nonce, no master marker — enqueues exactly ONE repack through the
+// ordinary pack-on-play path and answers the 202 shape; a current
+// (marker-carrying) build never re-enqueues and falls through to the ordinary
+// decision; a gate-closed stale item (knob-off HEVC) logs ONE "legacy repack
+// skipped" INFO line naming the item and the token, enqueues nothing, keeps
+// playing its existing build, and writes no ledger row. Both lines hold INV4
+// (item id and refusal token only).
+func TestPlayLazyRepack(t *testing.T) {
+	st, ctx := gateSeedStore(t, map[string]map[string]any{
+		"it_legacy":       gateStreamsDoc(gateFfOpen, "complete", "n1"),
+		"it_current":      gateStreamsDoc(gateFfOpen, "complete", "n1"),
+		"it_stale_closed": gateStreamsDoc(gateFfOptIn, "complete", "n1"),
+	})
+	// The current build carries the marker the success persist writes
+	// (internal/enrich streams lane); the legacy docs stay marker-free.
+	r := mustRow(t, st, ctx, "it_current")
+	doc := decodeItemDoc(r.Document)
+	doc["streams"].(map[string]any)["master"] = true
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	r.Document = b
+	if err := st.PutItem(ctx, r); err != nil {
+		t.Fatalf("PutItem it_current: %v", err)
+	}
+
+	enqueued := []string{}
+	enqueue := func(id string) error { enqueued = append(enqueued, id); return nil }
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	t.Run("stale_build_enqueues_once_202_shape", func(t *testing.T) {
+		buf.Reset()
+		enqueued = nil
+		queued, err := packOnPlay(ctx, st, enqueue, mustRow(t, st, ctx, "it_legacy"), false)
+		if !queued || err != nil {
+			t.Fatalf("packOnPlay = (%v, %v), want (true, nil) — the 202 shape", queued, err)
+		}
+		if len(enqueued) != 1 || enqueued[0] != "it_legacy" {
+			t.Errorf("enqueued = %v, want exactly it_legacy, once", enqueued)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		queuedLines := 0
+		for _, line := range lines {
+			if strings.Contains(line, "legacy repack queued") {
+				queuedLines++
+				if !strings.Contains(line, "it_legacy") {
+					t.Errorf("queued line = %q, want the item", line)
+				}
+			}
+		}
+		if queuedLines != 1 {
+			t.Errorf("queued lines = %d, want exactly 1 (buf = %s)", queuedLines, buf.String())
+		}
+	})
+
+	t.Run("current_build_never_reenqueues", func(t *testing.T) {
+		buf.Reset()
+		enqueued = nil
+		queued, err := packOnPlay(ctx, st, enqueue, mustRow(t, st, ctx, "it_current"), false)
+		if queued || err != nil {
+			t.Fatalf("packOnPlay = (%v, %v), want (false, nil) — a marker-carrying build is not legacy", queued, err)
+		}
+		if len(enqueued) != 0 {
+			t.Errorf("enqueued = %v, want nothing for a current build", enqueued)
+		}
+		if strings.Contains(buf.String(), "legacy repack") {
+			t.Errorf("log = %q, want no legacy-repack line for a current build", buf.String())
+		}
+	})
+
+	t.Run("gate_closed_keeps_playing", func(t *testing.T) {
+		buf.Reset()
+		enqueued = nil
+		queued, err := packOnPlay(ctx, st, enqueue, mustRow(t, st, ctx, "it_stale_closed"), false)
+		if queued || err != nil {
+			t.Fatalf("packOnPlay = (%v, %v), want (false, nil) — the old build keeps serving", queued, err)
+		}
+		if len(enqueued) != 0 {
+			t.Errorf("enqueued = %v, want nothing on a closed gate", enqueued)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		skips := 0
+		for _, line := range lines {
+			if strings.Contains(line, "legacy repack skipped") {
+				skips++
+				if !strings.Contains(line, "it_stale_closed") || !strings.Contains(line, "codec_not_opted_in") {
+					t.Errorf("skip line = %q, want the item and the codec_not_opted_in token", line)
+				}
+			}
+			if strings.Contains(line, "legacy repack queued") {
+				t.Errorf("gate-closed item queued anyway: %q", line)
+			}
+		}
+		if skips != 1 {
+			t.Errorf("skip lines = %d, want exactly 1 (buf = %s)", skips, buf.String())
+		}
+		// Hard negative: the skip is a policy verdict, never a pack failure —
+		// no pack_failed ledger row may exist.
+		failures, err := st.ListFailures(ctx)
+		if err != nil {
+			t.Fatalf("ListFailures: %v", err)
+		}
+		if len(failures) != 0 {
+			t.Errorf("ledger rows = %d, want 0 — the skip must never write one", len(failures))
+		}
+	})
+}
+
+// mustRow fetches one seeded item row or fails the test.
+func mustRow(t *testing.T, st *store.Store, ctx context.Context, id string) store.Item {
+	t.Helper()
+	r, err := st.GetItem(ctx, id)
+	if err != nil {
+		t.Fatalf("GetItem %s: %v", id, err)
+	}
+	return r
+}

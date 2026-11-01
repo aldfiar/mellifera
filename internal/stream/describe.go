@@ -106,12 +106,19 @@ const (
 //     stored source ffprobe facts (a remux carries the source's streams);
 //     a build whose codecs cannot be composed either way answers none
 //     (fail-open). Stored facts only — never a re-probe, never a write.
+//   - codecsSrc: WHICH half answered the codecs field, one of the
+//     codecsSrc* tokens (pack-manifest-audio D7 — "recorded" when the
+//     stored record was used, "legacy" when the read-side composition
+//     answered, "none" when the descriptor carries no codecs, including
+//     every direct answer). A plain string, the stateReason pattern —
+//     never the codec strings themselves (INV4: the source rides the
+//     decision log, the wire is untouched).
 //   - integrity guard (D5): a COMPLETE state additionally runs the read-only
 //     ValidateBuild over the nonce the namespace carries; a broken or evicted
 //     build answers the direct floor instead of a playlist the player would
 //     die on. Partial builds and nonce-less namespaces are exempt — their
 //     wire shape is byte-identical to the pre-guard descriptor.
-func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any, stateReason string, codecs []string) {
+func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any, stateReason string, codecs []string, codecsSrc string) {
 	s.normalize()
 	state = streamState(doc["streams"])
 	voiceovers = projectVoiceovers(doc["parsed"])
@@ -119,7 +126,8 @@ func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, play
 	token, _ := s.Issue(itemID, timeNow())
 	if state == StatePartial || state == StateComplete {
 		if playlist := streamPlaylist(doc["streams"]); playlist != "" && s.buildHealthy(itemID, state, doc["streams"]) {
-			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, chapters, voiceovers, "", describeCodecs(doc["streams"], doc["ffprobe"])
+			codecs, src := describeCodecs(doc["streams"], doc["ffprobe"])
+			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, chapters, voiceovers, "", codecs, src
 		}
 	}
 	reason := s.floorReason(doc["ffprobe"], state)
@@ -134,20 +142,35 @@ func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, play
 			state = StatePreparing
 		}
 	}
-	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, chapters, voiceovers, reason, nil
+	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, chapters, voiceovers, reason, nil, codecsSrcNone
 }
 
+// The codecs source vocabulary (pack-manifest-audio D7): WHICH half of
+// describeCodecs produced the descriptor's codecs answer. A plain string,
+// the stateReason pattern — no new exported identifier; the value rides the
+// playback decision log (cmd's codecs_src field), never the wire.
+const (
+	codecsSrcRecorded = "recorded" // the stored record (persisted at publish) answered
+	codecsSrcLegacy   = "legacy"   // the read-side composition over stored source facts answered
+	codecsSrcNone     = "none"     // neither half answered (fail-open absent), or no codecs field at all
+)
+
 // describeCodecs resolves the descriptor's additive codecs field for one hls
-// answer (playback-capability-gate D2): the recorded value from the stored
-// streams namespace wins whenever it is present; a namespace predating the
-// record composes the same strings read-side from the stored source ffprobe
-// facts. Pure — the document is already in hand; nothing is re-probed, and
-// an uncomposable build answers nil (fail-open, the field is simply absent).
-func describeCodecs(streams, ffprobe any) []string {
+// answer (playback-capability-gate D2) plus WHICH half answered
+// (pack-manifest-audio D7): the recorded value from the stored streams
+// namespace wins whenever it is present (codecsSrcRecorded); a namespace
+// predating the record composes the same strings read-side from the stored
+// source ffprobe facts (codecsSrcLegacy). Pure — the document is already in
+// hand; nothing is re-probed, and an uncomposable build answers nil with
+// codecsSrcNone (fail-open, the field is simply absent).
+func describeCodecs(streams, ffprobe any) ([]string, string) {
 	if cs := recordedCodecs(streams); len(cs) > 0 {
-		return cs
+		return cs, codecsSrcRecorded
 	}
-	return legacyCodecs(ffprobe)
+	if cs := legacyCodecs(ffprobe); len(cs) > 0 {
+		return cs, codecsSrcLegacy
+	}
+	return nil, codecsSrcNone
 }
 
 // recordedCodecs reads the codec record the lane persisted at publish

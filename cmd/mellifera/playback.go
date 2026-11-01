@@ -8,10 +8,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mellifera/mellifera/internal/orchestrator"
@@ -53,7 +55,11 @@ const (
 // surface — MELLIFERA_STREAM_OPT_IN_CODECS, default off): HEVC/AC-3 items
 // are packable only while it is enabled.
 func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error, row store.Item, optInCodecs bool) (bool, error) {
-	ep := episodeFromDoc(row.ID, decodeItemDoc(row.Document), streamCooldowns(ctx, st), optInCodecs)
+	doc := decodeItemDoc(row.Document)
+	if queued, handled := legacyRepackOnPlay(enqueue, doc, row.ID, optInCodecs); handled {
+		return queued, nil // the stale-build decision answered the play
+	}
+	ep := episodeFromDoc(row.ID, doc, streamCooldowns(ctx, st), optInCodecs)
 	if !orchestrator.OnPlay(ep, time.Now()) {
 		return false, nil // direct floor serves it — never pre-warm (D-8)
 	}
@@ -68,6 +74,42 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 	}
 	slog.Info("orchestrator: pack-on-play", "item", row.ID)
 	return true, nil
+}
+
+// legacyRepackOnPlay is the lazy repack-on-play decision (pack-manifest-audio
+// D5): a stored namespace in state complete with a build nonce but WITHOUT the
+// build-generation marker (`master`) predates the lane-composed master — the
+// play that asked for it enqueues exactly ONE repack through the ordinary
+// EnqueuePack path; plays landing while the repack is pending or running are
+// absorbed by the lane's per-item lease (never re-enqueued per tick), and the
+// marker flips at the success persist, closing the window. The decision reads
+// ONLY the stored namespace doc — never the playlist on disk. A gate-closed
+// legacy item (the PackGate pre-check, the retry-path precedent) skips with
+// ONE INFO line naming the gate token — no enqueue, no state change, no
+// ledger row: the old build keeps serving until the knob opens (the
+// sweep-refusal pattern). A queue-full enqueue is transient backpressure, the
+// pack-on-play contract: the old build keeps serving and a later play or the
+// frontier re-attempts. handled reports that the stale-build decision
+// answered the play; queued reports the enqueue (202). A marker-carrying
+// build or any non-complete state is not legacy — handled=false hands the
+// play back to the ordinary pack-on-play decision.
+func legacyRepackOnPlay(enqueue func(string) error, doc map[string]any, itemID string, optInCodecs bool) (queued, handled bool) {
+	streams, _ := doc["streams"].(map[string]any)
+	state, _ := streams["state"].(string)
+	nonce, _ := streams["nonce"].(string)
+	if master, _ := streams["master"].(bool); state != stream.StateComplete || nonce == "" || master {
+		return false, false
+	}
+	if gate := stream.PackGate(itemFacts(doc), optInCodecs); gate != stream.GateOpen {
+		slog.Info("orchestrator: legacy repack skipped", "item", itemID, "reason", string(gate))
+		return false, true
+	}
+	if err := enqueue(itemID); err != nil {
+		slog.Warn("orchestrator: legacy repack enqueue deferred", "item", itemID, "error", err)
+		return false, true
+	}
+	slog.Info("orchestrator: legacy repack queued", "item", itemID)
+	return true, true
 }
 
 // retryFailedPack executes the retry decision for POST /play {retry:true}
@@ -116,6 +158,104 @@ func packGateRefusal(ff map[string]any, optInCodecs bool) error {
 		return refusal.PolicyRefusal{Reason: string(gate)}
 	}
 	return nil
+}
+
+// logPackGate emits the job-start line (pack-manifest-audio D7): ONE
+// "pack: gate" INFO line per pack job, logged immediately before Pack runs —
+// item, class, gate, codecs. The class is the codecs' nature judged with the
+// knob out of the way (Classify(ff, true) — the same primitive verdict
+// PackGate judges), so the pair stays informative under every knob position:
+// a knob-off opt-in item reads class=opt_in gate=codec_not_opted_in instead
+// of folding into the unsupported crowd; the gate field owns the knob's
+// verdict (`open` or the refusal token — on a refusal the token rides here
+// and the flow ends with the closure's PolicyRefusal, enrich stays
+// line-silent, the persisted failed state is the record). INV4: item id,
+// class name, gate token, codec-fact rendering only — never a token value, a
+// play URL, or a path.
+func logPackGate(itemID string, ff map[string]any, gate stream.Gate) {
+	verdict := "open"
+	if gate != stream.GateOpen {
+		verdict = string(gate)
+	}
+	slog.Info("pack: gate", "item", itemID, "class", string(stream.Classify(ff, true)),
+		"gate", verdict, "codecs", packGateCodecs(ff))
+}
+
+// packGateCodecs renders the stored ffprobe facts into one compact codec-fact
+// string (pack-manifest-audio D7): the first video stream's codec/profile,
+// then the audio codecs with multiplicity — the real Matroska shape renders
+// `hevc Main 10, aac LC ×2`; a single h264/aac pair renders `h264, aac`.
+// Pure over the verbatim facts: absent, empty, or unreadable facts render
+// `none`; a panic is impossible by construction — every map/array read is a
+// checked assertion and fully-empty renders are skipped, never joined.
+func packGateCodecs(ff map[string]any) string {
+	streams, _ := ff["streams"].([]any)
+	var video map[string]any
+	var audio []map[string]any
+	for _, s := range streams {
+		m, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch m["codec_type"] {
+		case "video":
+			if video == nil {
+				video = m
+			}
+		case "audio":
+			audio = append(audio, m)
+		}
+	}
+	parts := make([]string, 0, 1+len(audio))
+	if r := streamFactRender(video); r != "" {
+		parts = append(parts, r)
+	}
+	counts := make(map[string]int, len(audio))
+	order := make([]string, 0, len(audio))
+	for _, a := range audio {
+		r := streamFactRender(a)
+		if r == "" {
+			continue
+		}
+		if counts[r] == 0 {
+			order = append(order, r)
+		}
+		counts[r]++
+	}
+	for _, r := range order {
+		if n := counts[r]; n > 1 {
+			parts = append(parts, fmt.Sprintf("%s ×%d", r, n))
+		} else {
+			parts = append(parts, r)
+		}
+	}
+	if len(parts) == 0 {
+		return "none" // facts absent, unreadable, or codec-less — the compact empty marker
+	}
+	return strings.Join(parts, ", ")
+}
+
+// streamFactRender renders one stream's codec facts as `codec profile`
+// (either half omitted when the facts lack it); a stream with neither reads
+// empty and the caller skips it. Facts are verbatim — never trust casing.
+func streamFactRender(s map[string]any) string {
+	if s == nil {
+		return ""
+	}
+	name, _ := s["codec_name"].(string)
+	name = strings.ToLower(strings.TrimSpace(name))
+	profile, _ := s["profile"].(string)
+	profile = strings.TrimSpace(profile)
+	switch {
+	case name == "" && profile == "":
+		return ""
+	case profile == "":
+		return name
+	case name == "":
+		return profile
+	default:
+		return name + " " + profile
+	}
 }
 
 // newSweep returns the periodic sweep closure: one pass = the watch-driven

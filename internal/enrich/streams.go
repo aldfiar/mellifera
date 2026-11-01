@@ -126,6 +126,13 @@ func (q *Queue) workStreams(ctx context.Context, itemID string) {
 		"state":    "complete",
 		"playlist": outcome.Playlist,
 		"nonce":    outcome.Nonce,
+		// The build-generation marker (pack-manifest-audio D5): every build
+		// this lane publishes carries the lane-composed master at the build
+		// root, so the key is honest by construction — written only here, on
+		// the success persist. The failed docs above stay marker-free:
+		// absence is the legacy-layout signal the play verb's lazy repack
+		// reads. No Build/PackOutcome field, no export — one map key.
+		"master": true,
 	}
 	if len(outcome.Codecs) > 0 {
 		// The codec record rides the completion write (playback-capability-gate

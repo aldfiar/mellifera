@@ -44,10 +44,10 @@ func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.S
 	if err := json.Unmarshal(row.Document, &doc); err != nil {
 		return api.Playback{}, err
 	}
-	mode, state, playURL, sections, voiceovers, stateReason, codecs := mediaSvc.Describe(itemID, doc)
+	mode, state, playURL, sections, voiceovers, stateReason, codecs, codecsSrc := mediaSvc.Describe(itemID, doc)
 	token, _ := mediaSvc.Issue(itemID, time.Now()) // cookie-primary delivery
 	logPlaybackDecision(itemID, mode, state,
-		playbackDecisionReason(mode, state, stateReason, streamCooldowns(ctx, st)[itemID], time.Now()))
+		playbackDecisionReason(mode, state, stateReason, streamCooldowns(ctx, st)[itemID], time.Now()), codecsSrc)
 	return api.Playback{
 		Mode:        mode,
 		State:       state,
@@ -82,8 +82,11 @@ func playbackDecisionReason(mode, state, stateReason string, coolUntil, now time
 	}
 }
 
-// logPlaybackDecision emits the ONE decision line (D8's pinned shape):
-// item, mode, state, reason — never a token value, never a play URL (INV4).
-func logPlaybackDecision(itemID, mode, state, reason string) {
-	slog.Info("playback: descriptor", "item", itemID, "mode", mode, "state", state, "reason", reason)
+// logPlaybackDecision emits the ONE decision line (D8's pinned shape,
+// codecs_src added by pack-manifest-audio D7): item, mode, state, reason,
+// codecs_src — the source naming which stream half answered the descriptor's
+// codecs field (recorded | legacy | none). Never a token value, never a play
+// URL, never the codec strings themselves (INV4) — the source name only.
+func logPlaybackDecision(itemID, mode, state, reason, codecsSrc string) {
+	slog.Info("playback: descriptor", "item", itemID, "mode", mode, "state", state, "reason", reason, "codecs_src", codecsSrc)
 }

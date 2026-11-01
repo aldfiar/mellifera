@@ -119,7 +119,7 @@ func gateNewServer(t *testing.T, w *pbWorld, enqueue func(string) error) string 
 			if err := json.Unmarshal(row.Document, &doc); err != nil {
 				return api.Playback{}, err
 			}
-			mode, state, playURL, sections, voiceovers, stateReason, codecs := w.media.Describe(itemID, doc)
+			mode, state, playURL, sections, voiceovers, stateReason, codecs, _ := w.media.Describe(itemID, doc)
 			tok, _ := w.media.Issue(itemID, time.Now())
 			// decision_log.go's playbackDescriptor shape, minus the package-main
 			// log line — Codecs rides (the pre-gate harness mirror predates the
@@ -287,15 +287,18 @@ var gateAvcPrefix = map[string]string{
 }
 
 // gateOracleCodecs derives the published build's expected codec strings from
-// the artifact itself: the init segment the SERVED playlist names is probed
-// for its sample entries (the MP4 muxer's tags — avc1 video, mp4a audio),
-// the published playlist is probed for the profile/level facts a bare init
-// does not carry, and the RFC 6381 strings are composed in the test. Videos
+// the artifact itself: the init segment the SERVED variant playlist names is
+// probed for its sample entries (the MP4 muxer's tags — avc1 video, mp4a
+// audio), the published variant playlist is probed for the profile/level
+// facts a bare init does not carry, and the RFC 6381 strings are composed in
+// the test. Both probes ride the build's rend0/ tree — the build root holds
+// only the composed master (pack-manifest-audio layout); variantRel is the
+// variant's on-disk directory relative to the build root ("rend0"). Videos
 // first, then audio — the rendition order the descriptor promises.
-func gateOracleCodecs(t *testing.T, buildDir, initURI string) []string {
+func gateOracleCodecs(t *testing.T, buildDir, variantRel, initURI string) []string {
 	t.Helper()
 	// The init's sample entries: the artifact truth the record must match.
-	initStreams := gateProbeStreams(t, filepath.Join(buildDir, filepath.FromSlash(initURI)))
+	initStreams := gateProbeStreams(t, filepath.Join(buildDir, filepath.FromSlash(variantRel), filepath.FromSlash(initURI)))
 	var sawVideo, sawAudio bool
 	for _, st := range initStreams {
 		tag, _ := st["codec_tag_string"].(string)
@@ -315,9 +318,10 @@ func gateOracleCodecs(t *testing.T, buildDir, initURI string) []string {
 	if !sawVideo || !sawAudio {
 		t.Fatalf("published init sample entries: video=%t audio=%t, want both", sawVideo, sawAudio)
 	}
-	// The published playlist carries the profile/level facts (a bare init
-	// reports level -99 — the same reason the publish path probes playlists).
-	plStreams := gateProbeStreams(t, filepath.Join(buildDir, "index.m3u8"))
+	// The published variant playlist carries the profile/level facts (a bare
+	// init reports level -99 — the same reason the publish path probes
+	// playlists).
+	plStreams := gateProbeStreams(t, filepath.Join(buildDir, filepath.FromSlash(variantRel), "index.m3u8"))
 	var out []string
 	for _, st := range plStreams {
 		name, _ := st["codec_name"].(string)
@@ -358,6 +362,57 @@ func gateAssertCodecsEqual(t *testing.T, what string, got, want []string) {
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("%s codecs = %v, want the artifact oracle %v", what, got, want)
 	}
+}
+
+// gateVariantInit walks the served playlist chain the descriptor mints: the
+// play URL answers the composed MASTER (the build root holds it alone), whose
+// one variant reference names the variant playlist under rend0/, whose first
+// EXT-X-MAP names the init segment. Returns the variant's on-disk directory
+// relative to the build root ("rend0"), the init URI relative to that
+// directory, and the served variant bytes (both URIs query-stripped — the
+// serve layer's self-authorizing tokens are request noise on disk).
+func gateVariantInit(t *testing.T, w *pbWorld, baseURL, playURL string) (variantRel, initURI string, variantBody []byte) {
+	t.Helper()
+	plStatus, plBody, _ := pbDo(t, w.client, http.MethodGet, baseURL+playURL, "", nil)
+	if plStatus != http.StatusOK {
+		t.Fatalf("master %s: status %d, want 200", playURL, plStatus)
+	}
+	// The composed master's first non-comment line is its one variant
+	// playlist (served tokenized — the self-authorizing playlist).
+	rawVariant := pbFirstSegment(string(plBody))
+	if rawVariant == "" {
+		t.Fatalf("served master names no variant playlist:\n%s", plBody)
+	}
+	variantURL := pbPlaylistURI(playURL, rawVariant)
+	vStatus, vBody, _ := pbDo(t, w.client, http.MethodGet, baseURL+variantURL, "", nil)
+	if vStatus != http.StatusOK {
+		t.Fatalf("variant playlist %s: status %d, want 200", variantURL, vStatus)
+	}
+	variantBody = vBody
+	variantURI := stripToken(rawVariant)
+	if i := strings.LastIndex(variantURI, "/"); i >= 0 {
+		variantRel = variantURI[:i]
+	}
+	for _, l := range strings.Split(string(vBody), "\n") {
+		// The FIRST map is the head's plain init reference; the tail merge
+		// re-states EXT-X-MAP with its own tokenized copy (the
+		// self-authorizing playlist) — the same init bytes on disk.
+		if initURI == "" && strings.HasPrefix(strings.TrimSpace(l), "#EXT-X-MAP") {
+			if i := strings.Index(l, `URI="`); i >= 0 {
+				rest := l[i+len(`URI="`):]
+				if j := strings.Index(rest, `"`); j >= 0 {
+					initURI = rest[:j]
+				}
+			}
+		}
+	}
+	if i := strings.Index(initURI, "?"); i >= 0 { // a self-authorizing map carries the token query
+		initURI = initURI[:i]
+	}
+	if initURI == "" {
+		t.Fatalf("served variant playlist carries no EXT-X-MAP init reference:\n%s", vBody)
+	}
+	return variantRel, initURI, variantBody
 }
 
 // TestPlaybackCapabilityGateJoint is 5.1's acceptance floor: the three
@@ -447,33 +502,11 @@ func TestPlaybackCapabilityGateJoint(t *testing.T) {
 		t.Fatalf("descriptor codecs wire = %s (decode %v), want a non-empty array", d.Codecs, err)
 	}
 
-	// The artifact truth: the SERVED playlist names the init; the oracle
-	// probes that init's sample entries and the published playlist's facts.
-	plStatus, plBody, _ := pbDo(t, w.client, http.MethodGet, baseURL+d.PlayURL, "", nil)
-	if plStatus != http.StatusOK {
-		t.Fatalf("playlist %s: status %d, want 200", d.PlayURL, plStatus)
-	}
-	initURI := ""
-	for _, l := range strings.Split(string(plBody), "\n") {
-		// The FIRST map is the head's plain init reference; the tail merge
-		// re-states EXT-X-MAP with its own tokenized copy (the
-		// self-authorizing playlist) — the same init bytes on disk.
-		if initURI == "" && strings.HasPrefix(strings.TrimSpace(l), "#EXT-X-MAP") {
-			if i := strings.Index(l, `URI="`); i >= 0 {
-				rest := l[i+len(`URI="`):]
-				if j := strings.Index(rest, `"`); j >= 0 {
-					initURI = rest[:j]
-				}
-			}
-		}
-	}
-	if i := strings.Index(initURI, "?"); i >= 0 { // a self-authorizing map carries the token query
-		initURI = initURI[:i]
-	}
-	if initURI == "" {
-		t.Fatalf("served playlist carries no EXT-X-MAP init reference:\n%s", plBody)
-	}
-	oracle := gateOracleCodecs(t, buildDir, initURI)
+	// The artifact truth: the SERVED master names the variant playlist; the
+	// variant names the init; the oracle probes that init's sample entries
+	// and the published variant playlist's facts.
+	variantRel, initURI, _ := gateVariantInit(t, w, baseURL, d.PlayURL)
+	oracle := gateOracleCodecs(t, buildDir, variantRel, initURI)
 	gateAssertCodecsEqual(t, "persisted record", record, oracle)
 	gateAssertCodecsEqual(t, "served descriptor", served, oracle)
 	// The order is the contract: video first, then audio (rendition order).
@@ -520,8 +553,9 @@ func TestPlaybackCapabilityGateJoint(t *testing.T) {
 	if oldStatus, _, _ := pbDo(t, w.client, http.MethodGet, baseURL+oldPlayURL, "", nil); oldStatus == http.StatusOK {
 		t.Fatalf("superseded playlist URL %s still answers 200 after publish replacement", oldPlayURL)
 	}
-	if plStatus, plBody, _ := pbDo(t, w.client, http.MethodGet, baseURL+d2.PlayURL, "", nil); plStatus != http.StatusOK || !strings.Contains(string(plBody), "#EXT-X-ENDLIST") {
-		t.Fatalf("fresh playlist GET: status %d, want 200 with the complete playlist (body %q)", plStatus, plBody)
+	variantRel2, initURI2, freshVariant := gateVariantInit(t, w, baseURL, d2.PlayURL)
+	if !strings.Contains(string(freshVariant), "#EXT-X-ENDLIST") {
+		t.Fatalf("fresh variant playlist: want the complete playlist (ENDLIST), body %q", freshVariant)
 	}
 	// The new build's record ≡ projection ≡ artifact, same oracle.
 	rawRecord, ok = streams["codecs"].([]any)
@@ -537,7 +571,7 @@ func TestPlaybackCapabilityGateJoint(t *testing.T) {
 	if err := json.Unmarshal(d2.Codecs, &served2); err != nil {
 		t.Fatalf("descriptor codecs after repack wire = %s (decode %v)", d2.Codecs, err)
 	}
-	oracle2 := gateOracleCodecs(t, filepath.Join(w.root, e01.ID, newNonce), initURI)
+	oracle2 := gateOracleCodecs(t, filepath.Join(w.root, e01.ID, newNonce), variantRel2, initURI2)
 	gateAssertCodecsEqual(t, "persisted record after repack", record, oracle2)
 	gateAssertCodecsEqual(t, "served descriptor after repack", served2, oracle2)
 

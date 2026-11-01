@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,18 +36,43 @@ import (
 // sidecars in document order — the order the master playlist declares and
 // hls.js exposes as audio tracks); a missing file soft-omits (a vanished dub
 // must not take the episode's playback down) and an empty list packs the
-// legacy single-variant build unchanged.
+// single-variant build — one rend0 variant beneath the composed master, the
+// same shape as a rendition build (D3).
 //
 // ffprobe carries the stored facts for one decision only: when the probed
 // duration is at most HeadChunk the whole file IS the head chunk, so the tail
 // phase is skipped (a seek past EOF would mint a junk fragment). Absent facts
-// simply run both phases. After the build publishes, the returned Build.Codecs
-// records the build's RFC 6381 codec strings, composed from probing the
-// published variant playlists (codecs.go D2) — nil when uncomposable, which
-// never fails the pack. A cancelled context (or any ffmpeg failure) is an
+// simply run both phases. At the head-first publish each variant's head
+// playlist is probed (one ffprobe per variant — pack-manifest-audio D2) and
+// the facts compose BOTH the returned Build.Codecs record (codecs.go) and the
+// build root's composed master playlist (master.go D1), written into tmp over
+// ffmpeg's generated master before the atomic rename — ffmpeg's double-listed
+// master never survives to a published build. Both compose fail-open: a nil
+// record and an attribute-less master never fail the pack. A cancelled
+// context (or any ffmpeg failure) is an
 // error; partial directories are cleaned up and nothing is returned, so the
 // caller persists no pointer.
-func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (Build, error) {
+//
+// The flow reads from logs alone (pack-manifest-audio D7): the success return
+// logs ONE "streams: pack published" INFO line (item, nonce, layout, variants,
+// audio, codecs, probes) and any failure logs ONE "streams: pack failed" WARN
+// naming the failing stage — never per-segment lines, and INV4-clean (item id
+// and nonce are artifact identifiers; no token, no play URL, no paths).
+func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (build Build, err error) {
+	// The D7 error path: exactly ONE WARN per failed Pack, whatever the failing
+	// stage. A staged failure names its stage; anything earlier is "prepare".
+	defer func() {
+		if err == nil {
+			return
+		}
+		stage := "prepare"
+		var staged *packStageError
+		if errors.As(err, &staged) {
+			stage = staged.stage
+		}
+		slog.Warn("streams: pack failed", "item", itemID, "stage", stage, "error", err)
+	}()
+
 	s.normalize()
 	if s.Secret == nil {
 		return Build{}, errors.New("stream: service has no token secret")
@@ -70,17 +96,24 @@ func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[
 	}
 	tmp := filepath.Join(s.Root, itemID, ".tmp-"+nonce)
 	resolved := resolvableVoiceovers(voiceovers)
+	vs := variantLayout(len(resolved))
 
-	if err := s.packInto(ctx, itemID, nonce, absPath, ffprobe, resolved, tmp, final); err != nil {
+	codecs, probes, err := s.packInto(ctx, itemID, nonce, absPath, ffprobe, resolved, vs, tmp, final)
+	if err != nil {
 		os.RemoveAll(tmp) // best-effort cleanup; nothing is referenced yet
 		os.RemoveAll(final)
 		return Build{}, err
 	}
 	os.RemoveAll(tmp)
-	// The codec record rides the published artifact (D2): probe the build's
-	// variant playlists and compose through the table. Fail-open — a nil
-	// record never fails a landed pack.
-	codecs := s.buildCodecs(ctx, final, variantLayout(len(resolved)))
+	slog.Info("streams: pack published",
+		"item", itemID,
+		"nonce", nonce,
+		"layout", layoutName(vs),
+		"variants", len(vs),
+		"audio", len(vs)-1, // the composed master's EXT-X-MEDIA members (composeMaster)
+		"codecs", codecsState(codecs),
+		"probes", probes,
+	)
 	return Build{
 		Playlist: mediaPrefix + "/" + itemID + "/" + nonce + "/index.m3u8",
 		Nonce:    nonce,
@@ -88,15 +121,16 @@ func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[
 	}, nil
 }
 
-// variantPlaylist is one build's playlist slot in the two shapes the lane
-// publishes: a legacy single-variant build has one media playlist at the build
-// root (rel "."), a rendition build has the ffmpeg-written master at the root
-// plus one variant playlist per rendition directory (rel "rendK" — variant 0
-// is the video, 1 the embedded audio, k+1 the voiceovers). prefix is the tail
-// merge prefix that re-points the tail phase's entries into final/t/, stated
-// RELATIVE TO the receiving playlist's own directory (the base hls.js
-// resolves against): the root playlist keeps "t/", a rendK playlist needs
-// "../t/rendK/".
+// variantPlaylist is one build's playlist slot in the one layout the lane
+// publishes (D3 — every fresh build, single-variant or rendition, publishes
+// the rendition shape): one variant playlist per rendition directory (rel
+// "rendK" — variant 0 is the video, 1 the embedded audio, k+1 the voiceovers;
+// a single-variant build is the degenerate rend0-only case) plus the composed
+// master at the build root (composeMaster, D1 — ffmpeg's written master is
+// overwritten before the publish rename). prefix is the tail merge prefix
+// that re-points the tail phase's entries into final/t/, stated RELATIVE TO
+// the receiving playlist's own directory (the base hls.js resolves against):
+// a rendK playlist needs "../t/rendK/".
 type variantPlaylist struct {
 	rel    string
 	prefix string
@@ -105,12 +139,14 @@ type variantPlaylist struct {
 // variantLayout resolves the playlist slots for n resolvable voiceovers. A
 // rendition build has n+2 variants — the video (rend0), the embedded audio
 // (rend1), then one per voiceover (rendK+1) — mirroring renditionMap's
-// var_stream_map. The rendition master needs no slot: ffmpeg writes it to the
-// build root (-master_pl_name) and the tail merge never rewrites it — the
+// var_stream_map; n == 0 (no resolvable voiceovers) is the single-variant
+// degenerate: rend0 alone, the video variant carrying the muxed audio. The
+// master needs no slot: the lane composes it to the build root at the head
+// publish (composeMaster) and the tail merge never rewrites it — the
 // per-variant playlists it references grow in place.
 func variantLayout(n int) []variantPlaylist {
-	if n == 0 {
-		return []variantPlaylist{{rel: ".", prefix: "t/"}}
+	if n == 0 { // the single-variant degenerate: the muxed video variant alone
+		return []variantPlaylist{{rel: "rend0", prefix: "../t/rend0/"}}
 	}
 	vs := make([]variantPlaylist, 0, n+2)
 	for k := 0; k <= n+1; k++ {
@@ -120,6 +156,55 @@ func variantLayout(n int) []variantPlaylist {
 		})
 	}
 	return vs
+}
+
+// layoutName names the build's layout in the D7 flow vocabulary: the
+// single-variant degenerate (rend0 alone) or the rendition build. Pure.
+func layoutName(vs []variantPlaylist) string {
+	if len(vs) == 1 {
+		return "single-variant"
+	}
+	return "rendition"
+}
+
+// codecsState names the codec record's state in the D7 flow vocabulary: the
+// record composed ("recorded") or degraded to absent ("degraded" — the
+// fail-open nil). Pure.
+func codecsState(codecs []string) string {
+	if codecs == nil {
+		return "degraded"
+	}
+	return "recorded"
+}
+
+// packStageError tags a pack failure with the stage that failed (D7's
+// error-path WARN names it); the message stays the wrapped error's own — the
+// stage is log vocabulary, not message text.
+type packStageError struct {
+	stage string
+	err   error
+}
+
+func (e *packStageError) Error() string { return e.err.Error() }
+func (e *packStageError) Unwrap() error { return e.err }
+
+// stageErr tags err with the pack stage that failed (D7). Pure.
+func stageErr(stage string, err error) error {
+	return &packStageError{stage: stage, err: err}
+}
+
+// mkdirVariantDirs pre-creates each variant directory under dir: the hls
+// muxer writes its fMP4 init segment into the variant subdirectory before it
+// opens anything else, and the single-output branch does not mkdir the
+// subdirectory itself (only the multi-variant %v branch does). Cheap and
+// idempotent — the rendition branch's directories exist twice over.
+func mkdirVariantDirs(dir string, vs []variantPlaylist) error {
+	for _, v := range vs {
+		if err := os.MkdirAll(filepath.Join(dir, v.rel), 0o755); err != nil {
+			return fmt.Errorf("stream: create variant dir: %w", err)
+		}
+	}
+	return nil
 }
 
 // resolvableVoiceovers keeps the sidecar files that still exist at build time
@@ -138,20 +223,32 @@ func resolvableVoiceovers(paths []string) []string {
 // packInto runs the head phase into tmp, publishes it to final (the D-4
 // head-first publish point), then — unless the file already fits in the head
 // chunk — runs the tail phase and rewrites every variant playlist to the
-// complete, ENDLIST-terminated merge.
-func (s *Service) packInto(ctx context.Context, itemID, nonce, absPath string, ffprobe map[string]any, voiceovers []string, tmp, final string) error {
+// complete, ENDLIST-terminated merge. At the head-first publish (before
+// either publish path renames tmp into place) each variant's head playlist is
+// probed (one ffprobe per variant) and the facts compose BOTH the codec
+// record (returned; composeCodecs) and the root master, written into tmp over
+// ffmpeg's generated one — the single-variant build never lets ffmpeg write
+// one (composeMaster, D1/D2/D3): the partial build mounts with the master
+// from its first served byte, and the tail merge keeps rewriting only the
+// variant playlists — the master is complete at birth. Both compositions are
+// fail-open and never fail the pack. Returned with the codec record is the
+// ffprobe invocation count (the D7 log line's probes field). Every error is
+// tagged with its failing stage (stageErr) for the D7 WARN.
+func (s *Service) packInto(ctx context.Context, itemID, nonce, absPath string, ffprobe map[string]any, voiceovers []string, vs []variantPlaylist, tmp, final string) ([]string, int, error) {
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
-		return fmt.Errorf("stream: create build dir: %w", err)
+		return nil, 0, stageErr("prepare", fmt.Errorf("stream: create build dir: %w", err))
+	}
+	if err := mkdirVariantDirs(tmp, vs); err != nil {
+		return nil, 0, stageErr("prepare", err)
 	}
 	if err := s.runFFmpeg(ctx, packHeadArgs(absPath, voiceovers, s.HeadChunk, s.SegmentTime, tmp)); err != nil {
-		return err
+		return nil, 0, stageErr("ffmpeg-head", err)
 	}
-	vs := variantLayout(len(voiceovers))
 	heads := make([][]byte, len(vs))
 	for i, v := range vs {
 		b, err := os.ReadFile(filepath.Join(tmp, v.rel, "index.m3u8"))
 		if err != nil {
-			return fmt.Errorf("stream: head playlist: %w", err)
+			return nil, 0, stageErr("head-playlists", fmt.Errorf("stream: head playlist: %w", err))
 		}
 		heads[i] = b
 	}
@@ -159,36 +256,78 @@ func (s *Service) packInto(ctx context.Context, itemID, nonce, absPath string, f
 		s.afterHead(filepath.Join(tmp, vs[0].rel, "index.m3u8"))
 	}
 
+	variantStreams, probes := s.probeVariants(ctx, tmp, vs, heads)
+	codecs := composeCodecs(variantStreams)
+	// The lane's master takes the build root before either publish path
+	// renames tmp into place (D2/D3): every fresh build — single-variant or
+	// rendition — mounts with the composed master from its first byte.
+	if err := writeAtomic(tmp, filepath.Join(tmp, "index.m3u8"), composeMaster(vs, variantStreams, codecs)); err != nil {
+		return nil, probes, stageErr("master-compose", err)
+	}
+
 	dur := probeSeconds(ffprobe)
 	if dur > 0 && dur <= s.HeadChunk.Seconds() {
 		// The whole file is the head chunk: finalize the head playlist(s) and
 		// publish the build. This is the ONLY playlist write that is not a
 		// merge (still atomic, still one rename into final).
-		return publishHeadOnly(tmp, final, vs, heads)
+		return codecs, probes, publishHeadOnly(tmp, final, vs, heads)
 	}
 
 	if err := os.Rename(tmp, final); err != nil { // atomic publish of the partial build
-		return fmt.Errorf("stream: publish head: %w", err)
+		return nil, probes, stageErr("rename", fmt.Errorf("stream: publish head: %w", err))
 	}
-	return s.packTail(ctx, itemID, nonce, absPath, voiceovers, final, vs, heads)
+	return codecs, probes, s.packTail(ctx, itemID, nonce, absPath, voiceovers, final, vs, heads)
+}
+
+// probeVariants ffprobes each variant's head playlist in tmp (one ffprobe per
+// variant — the probe moment moved here from the completed build, D2: the
+// probed facts are the init segments' streams, identical across phases). The
+// probe target is a FINALIZED scratch copy of the in-memory head playlist
+// (finalizeHead appends the closing ENDLIST): ffprobe treats the head's EVENT
+// playlist (no ENDLIST) as a live stream and polls it indefinitely once its
+// media is exhausted — a short head chunk starves the analyzer — while the
+// VOD copy names the same init segment and segments and finishes reading. The
+// copies are removed before anything publishes. A failed probe yields no
+// streams for that variant — the codec record and the master degrade
+// attribute-less (fail-open), never a failed pack. Returned with the streams
+// is the actual ffprobe invocation count (the D7 log line's probes field): a
+// variant whose probe ran and failed still counts — the count is the cost,
+// not the yield; a variant whose scratch copy never wrote is never probed and
+// does not.
+func (s *Service) probeVariants(ctx context.Context, tmp string, vs []variantPlaylist, heads [][]byte) ([][]map[string]any, int) {
+	out := make([][]map[string]any, len(vs))
+	probes := 0
+	for i, v := range vs {
+		scratch := filepath.Join(tmp, v.rel, "probe.m3u8")
+		if err := os.WriteFile(scratch, finalizeHead(heads[i]), 0o644); err != nil {
+			continue // fail-open: this variant composes nothing, and no ffprobe runs
+		}
+		probes++
+		streams, err := s.probeMediaStreams(ctx, scratch)
+		os.Remove(scratch) // scratch: never rides the publish rename
+		if err != nil {
+			continue
+		}
+		out[i] = streams
+	}
+	return out, probes
 }
 
 // publishHeadOnly completes a whole-file-within-head-chunk build: every
 // variant playlist is finalized INSIDE tmp, then the whole directory —
-// playlists and segments together (a rendition build's ffmpeg-written master
-// rides along) — publishes with one atomic rename tmp → final. The rename
-// shape is the same for the legacy single-variant branch and the rendition
-// branch: writing the playlist directly into final while Pack removes tmp
-// would publish a playlist whose segments were just deleted.
+// playlists, segments, and the composed master packInto already wrote at the
+// root — publishes with one atomic rename tmp → final: writing the playlist
+// directly into final while Pack removes tmp would publish a playlist whose
+// segments were just deleted. Errors are stage-tagged (D7).
 func publishHeadOnly(tmp, final string, vs []variantPlaylist, heads [][]byte) error {
 	for i, v := range vs {
 		dir := filepath.Join(tmp, v.rel)
 		if err := writeAtomic(dir, filepath.Join(dir, "index.m3u8"), finalizeHead(heads[i])); err != nil {
-			return err
+			return stageErr("write", err)
 		}
 	}
 	if err := os.Rename(tmp, final); err != nil {
-		return fmt.Errorf("stream: publish head: %w", err)
+		return stageErr("rename", fmt.Errorf("stream: publish head: %w", err))
 	}
 	return nil
 }
@@ -196,34 +335,42 @@ func publishHeadOnly(tmp, final string, vs []variantPlaylist, heads [][]byte) er
 // packTail runs the tail phase into its own tmp directory and folds it into
 // the published partial build: every variant's tail playlist is merged over
 // the head's (entries re-pointed into t/), atomically. From here the build is
-// complete (ENDLIST).
+// complete (ENDLIST). Errors are stage-tagged (D7).
 func (s *Service) packTail(ctx context.Context, itemID, nonce, absPath string, voiceovers []string, final string, vs []variantPlaylist, heads [][]byte) error {
 	tailTmp := filepath.Join(s.Root, itemID, ".tmp-tail-"+nonce)
 	if err := os.MkdirAll(tailTmp, 0o755); err != nil {
-		return fmt.Errorf("stream: create tail dir: %w", err)
+		return stageErr("prepare", fmt.Errorf("stream: create tail dir: %w", err))
+	}
+	if err := mkdirVariantDirs(tailTmp, vs); err != nil {
+		return stageErr("prepare", err)
 	}
 	if err := s.runFFmpeg(ctx, packTailArgs(absPath, voiceovers, s.HeadChunk, s.SegmentTime, tailTmp)); err != nil {
 		os.RemoveAll(tailTmp)
-		return err
+		return stageErr("ffmpeg-tail", err)
 	}
 	tails := make([][]byte, len(vs))
 	for i, v := range vs {
 		b, err := os.ReadFile(filepath.Join(tailTmp, v.rel, "index.m3u8"))
 		if err != nil {
 			os.RemoveAll(tailTmp)
-			return fmt.Errorf("stream: tail playlist: %w", err)
+			return stageErr("tail-playlists", fmt.Errorf("stream: tail playlist: %w", err))
 		}
 		tails[i] = b
 	}
+	// A rendition tail phase writes its own master at the tail tmp root; the
+	// published build's master is complete at birth (D1) and nothing
+	// references this copy — drop it so it never lands unreferenced under t/.
+	// (A single-variant tail phase writes no master; the remove is a no-op.)
+	os.Remove(filepath.Join(tailTmp, "index.m3u8"))
 	// Move tail artifacts under final/t/ and atomically rewrite each variant
 	// playlist to the complete merge. From here the build is complete (ENDLIST).
 	if err := moveTree(tailTmp, filepath.Join(final, "t")); err != nil {
-		return fmt.Errorf("stream: move tail: %w", err)
+		return stageErr("tail-merge", fmt.Errorf("stream: move tail: %w", err))
 	}
 	for i, v := range vs {
 		merged := mergePlaylists(heads[i], tails[i], v.prefix)
 		if err := writeAtomic(filepath.Join(final, v.rel), filepath.Join(final, v.rel, "index.m3u8"), merged); err != nil {
-			return err
+			return stageErr("tail-merge", err)
 		}
 	}
 	return nil
@@ -231,9 +378,11 @@ func (s *Service) packTail(ctx context.Context, itemID, nonce, absPath string, v
 
 // packHeadArgs builds the head-phase ffmpeg argument slice: the first
 // HeadChunk seconds, stream-copy remux to fMP4-HLS (D-3), EVENT playlist with
-// ENDLIST omitted (D-4: its absence marks a partial build). With resolvable
-// voiceovers the same remux shape drives the multi-variant rendition build
-// (renditionArgs). Pure.
+// ENDLIST omitted (D-4: its absence marks a partial build). The single-variant
+// branch writes the media playlist, init segment, and segments under
+// outDir/rend0/ (D3 — the root stays the composed master's alone); with
+// resolvable voiceovers the same remux shape drives the multi-variant
+// rendition build (renditionArgs). Pure.
 func packHeadArgs(src string, voiceovers []string, head, segmentTime time.Duration, outDir string) []string {
 	if len(voiceovers) > 0 {
 		return renditionArgs(src, voiceovers, head, segmentTime, outDir, false)
@@ -252,8 +401,8 @@ func packHeadArgs(src string, voiceovers []string, head, segmentTime time.Durati
 		"-hls_flags", "omit_endlist",
 		"-hls_segment_type", "fmp4",
 		"-hls_fmp4_init_filename", "init.mp4",
-		"-hls_segment_filename", filepath.Join(outDir, "seg-%05d.m4s"),
-		filepath.Join(outDir, "index.m3u8"),
+		"-hls_segment_filename", filepath.Join(outDir, "rend0", "seg-%05d.m4s"),
+		filepath.Join(outDir, "rend0", "index.m3u8"),
 	}
 }
 
@@ -280,8 +429,8 @@ func packTailArgs(src string, voiceovers []string, head, segmentTime time.Durati
 		"-hls_list_size", "0",
 		"-hls_segment_type", "fmp4",
 		"-hls_fmp4_init_filename", "init.mp4",
-		"-hls_segment_filename", filepath.Join(outDir, "seg-%05d.m4s"),
-		filepath.Join(outDir, "index.m3u8"),
+		"-hls_segment_filename", filepath.Join(outDir, "rend0", "seg-%05d.m4s"),
+		filepath.Join(outDir, "rend0", "index.m3u8"),
 	}
 }
 

@@ -217,6 +217,11 @@ func main() {
 		OptInCodecs: cfg.optInCodecs, // descriptor honesty shares the pack lane's knob
 	}
 	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
+		// Job-start gate line (pack-manifest-audio D7): ONE "pack: gate" line
+		// per pack job, before Pack — on a refusal the token rides the line and
+		// the PolicyRefusal below ends the flow (no publish line; the persisted
+		// failed state is enrich's record).
+		logPackGate(itemID, ffprobe, stream.PackGate(ffprobe, mediaSvc.OptInCodecs))
 		if err := packGateRefusal(ffprobe, mediaSvc.OptInCodecs); err != nil {
 			return enrich.PackOutcome{}, err
 		}

@@ -124,8 +124,11 @@ func TestReproTailSegmentsPlayable(t *testing.T) {
 			t.Fatalf("Pack: %v", err)
 		}
 		buildDir := filepath.Join(s.Root, "repro1", build.Nonce)
+		// The single-variant build publishes the same shape as a rendition
+		// build (pack-manifest-audio D3): the media playlist is rend0's.
 		assertReachable(t, filepath.Join(buildDir, "index.m3u8"))
-		assertTailCoverage(t, filepath.Join(buildDir, "index.m3u8"), filepath.Join(buildDir, "t"))
+		assertReachable(t, filepath.Join(buildDir, "rend0", "index.m3u8"))
+		assertTailCoverage(t, filepath.Join(buildDir, "rend0", "index.m3u8"), filepath.Join(buildDir, "t", "rend0"))
 	})
 
 	t.Run("rendition_variants_full_tail_reachable", func(t *testing.T) {

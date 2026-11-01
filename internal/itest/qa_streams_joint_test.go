@@ -23,7 +23,6 @@ package itest
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -276,16 +275,18 @@ func TestStreamsJoint(t *testing.T) {
 	})
 }
 
-// assertPlayable fetches a playlist URL (token carried in its query) and
-// asserts a complete, byte-servable build.
+// assertPlayable fetches a play URL (token carried in its query) — the served
+// composed master — and asserts a complete, byte-servable build: the master
+// answers EXTM3U and the variant playlist it names (rend0/index.m3u8) carries
+// the complete-build marker.
 func assertPlayable(t *testing.T, w *pbWorld, playURL string) {
 	t.Helper()
-	status, body, _ := pbDo(t, w.client, http.MethodGet, w.baseURL+playURL, "", nil)
-	if status != http.StatusOK {
-		t.Fatalf("playlist %s: status %d, want 200", playURL, status)
+	_, master, variant := pbVariantPlaylist(t, w.client, w.baseURL, playURL)
+	if !strings.Contains(string(master), "#EXTM3U") {
+		t.Fatalf("master %s missing EXTM3U:\n%s", playURL, master)
 	}
-	if !strings.Contains(string(body), "#EXTM3U") || !strings.Contains(string(body), "#EXT-X-ENDLIST") {
-		t.Fatalf("playlist %s missing a complete build marker:\n%s", playURL, body)
+	if !strings.Contains(string(variant), "#EXTM3U") || !strings.Contains(string(variant), "#EXT-X-ENDLIST") {
+		t.Fatalf("variant playlist of %s missing a complete build marker:\n%s", playURL, variant)
 	}
 }
 

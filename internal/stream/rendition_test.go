@@ -64,12 +64,12 @@ func TestPackRenditions(t *testing.T) {
 
 	t.Run("packaged_episode_carries_alternate_audio_renditions", func(t *testing.T) {
 		dir := t.TempDir()
-		fixture := makeFixture(t, dir, 12*time.Second) // head 5s + tail 7s: both phases run
+		fixture := makeH264Fixture(t, dir, 12*time.Second) // composable: the master's variant line carries CODECS
 		// Document order: the .mka dubs, distinct frequencies so a wrong order
 		// is audible in the artifacts (and visible in the rendition indexes).
 		v1 := makeVoiceover(t, dir, "rus1.mka", 600, 12*time.Second)
 		v2 := makeVoiceover(t, dir, "rus2.mka", 800, 12*time.Second)
-		s := newTestService(t, filepath.Join(dir, "streams"), 5*time.Second)
+		s := newTestService(t, filepath.Join(dir, "streams"), 5*time.Second) // head 5s + tail 7s: both phases run
 
 		build, err := s.Pack(ctx, "it_rend", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}},
 			[]string{v1, v2})
@@ -81,9 +81,13 @@ func TestPackRenditions(t *testing.T) {
 			t.Fatalf("Build.Playlist = %q, want the build root's index.m3u8", build.Playlist)
 		}
 
-		// The master playlist declares the audio group: embedded audio first,
-		// then the voiceovers in document order (the order hls.js exposes as
-		// audio tracks — document index k → track k+1, 0 = embedded).
+		// The build root's master is the lane's composition (pack-manifest-
+		// audio D1), never ffmpeg's double-listed one: exactly one
+		// EXT-X-STREAM-INF variant — the video rendition, with CODECS — and
+		// the audio renditions ONLY as EXT-X-MEDIA:TYPE=AUDIO members of the
+		// "aud" group, embedded first, then the voiceovers in document order
+		// (the order hls.js exposes as audio tracks — document index k →
+		// track k+1, 0 = embedded).
 		master := readFile(t, filepath.Join(buildDir, "index.m3u8"))
 		want := []string{"rend1/index.m3u8", "rend2/index.m3u8", "rend3/index.m3u8"}
 		if got := mediaURIs(master); len(got) != len(want) {
@@ -96,8 +100,37 @@ func TestPackRenditions(t *testing.T) {
 				}
 			}
 		}
-		if !strings.Contains(master, `TYPE=AUDIO`) || !strings.Contains(master, `AUDIO="group_aud"`) {
+		variants := 0
+		for _, l := range strings.Split(master, "\n") {
+			if strings.HasPrefix(l, "#EXT-X-STREAM-INF:") {
+				variants++
+			}
+		}
+		if variants != 1 {
+			t.Fatalf("master carries %d EXT-X-STREAM-INF variants, want exactly the one video rendition:\n%s", variants, master)
+		}
+		if !strings.Contains(master, `CODECS="avc1.`) || !strings.Contains(master, `BANDWIDTH=`) ||
+			!strings.Contains(master, `RESOLUTION=`) || !strings.Contains(master, `AUDIO="aud"`) {
+			t.Fatalf("master variant line missing CODECS/BANDWIDTH/RESOLUTION/AUDIO:\n%s", master)
+		}
+		if !strings.Contains(master, `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud"`) {
 			t.Fatalf("master does not declare the audio group:\n%s", master)
+		}
+		if n := strings.Count(master, "DEFAULT=YES"); n != 1 {
+			t.Fatalf("master carries %d DEFAULT=YES, want exactly one (the embedded audio):\n%s", n, master)
+		}
+		for _, l := range strings.Split(master, "\n") {
+			if !strings.HasPrefix(l, "#EXT-X-MEDIA:") {
+				continue
+			}
+			uri := attrValue(l, "URI")
+			isEmbedded := uri == "rend1/index.m3u8"
+			if isEmbedded != strings.Contains(l, "DEFAULT=YES") {
+				t.Fatalf("DEFAULT=YES must ride the embedded audio alone (URI %q):\n%s", uri, master)
+			}
+			if !strings.Contains(l, "AUTOSELECT=YES") {
+				t.Fatalf("rendition %q missing AUTOSELECT=YES:\n%s", uri, master)
+			}
 		}
 		// The master is static and never ends the build; ENDLIST belongs to
 		// the variant playlists it references.
@@ -170,23 +203,42 @@ func TestPackRenditions(t *testing.T) {
 		}
 	})
 
-	t.Run("no_resolvable_voiceover_keeps_legacy_single_variant_build", func(t *testing.T) {
+	t.Run("no_resolvable_voiceover_publishes_the_single_variant_master", func(t *testing.T) {
 		dir := t.TempDir()
-		fixture := makeFixture(t, dir, 12*time.Second)
+		fixture := makeH264Fixture(t, dir, 12*time.Second)
 		s := newTestService(t, filepath.Join(dir, "streams"), 600*time.Second)
 
-		build, err := s.Pack(ctx, "it_legacy", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}},
+		build, err := s.Pack(ctx, "it_sv", fixture, map[string]any{"format": map[string]any{"duration": "12.0"}},
 			[]string{filepath.Join(dir, "gone.mka")}) // all soft-omitted
 		if err != nil {
 			t.Fatalf("Pack: %v", err)
 		}
-		buildDir := filepath.Join(s.Root, "it_legacy", build.Nonce)
-		pl := readFile(t, filepath.Join(buildDir, "index.m3u8"))
-		if strings.Contains(pl, "#EXT-X-MEDIA:") {
-			t.Fatalf("all-omitted build declared renditions:\n%s", pl)
+		buildDir := filepath.Join(s.Root, "it_sv", build.Nonce)
+		// The single-variant build is the degenerate master (pack-manifest-
+		// audio D3): one variant line naming video + muxed audio, no
+		// EXT-X-MEDIA group, the media playlist under rend0/.
+		master := readFile(t, filepath.Join(buildDir, "index.m3u8"))
+		if strings.Contains(master, "#EXT-X-MEDIA:") || strings.Contains(master, `AUDIO="`) {
+			t.Fatalf("all-omitted build declared renditions:\n%s", master)
 		}
-		if _, err := os.Stat(filepath.Join(buildDir, "rend0")); err == nil {
-			t.Fatal("all-omitted build published rendition directories")
+		if n := strings.Count(master, "#EXT-X-STREAM-INF:"); n != 1 {
+			t.Fatalf("single-variant master carries %d variants, want one:\n%s", n, master)
+		}
+		if !strings.Contains(master, `CODECS="avc1.`) || !strings.Contains(master, "mp4a.40.2") {
+			t.Fatalf("single-variant master variant line missing the muxed CODECS:\n%s", master)
+		}
+		if !strings.Contains(master, "rend0/index.m3u8") {
+			t.Fatalf("single-variant master does not reference rend0:\n%s", master)
+		}
+		pl := readFile(t, filepath.Join(buildDir, "rend0", "index.m3u8"))
+		if !strings.Contains(pl, "#EXT-X-ENDLIST") {
+			t.Fatalf("rend0 playlist missing ENDLIST:\n%s", pl)
+		}
+		if _, err := os.Stat(filepath.Join(buildDir, "rend0", "init.mp4")); err != nil {
+			t.Fatalf("rend0 init segment missing: %v", err)
+		}
+		if err := s.ValidateBuild("it_sv", build.Nonce); err != nil {
+			t.Fatalf("ValidateBuild(single-variant) = %v, want nil", err)
 		}
 	})
 
@@ -265,7 +317,7 @@ func TestVoiceoverTracks(t *testing.T) {
 				map[string]any{"relative_path": "theme.flac", "kind": "audio"}, // no folder, no language
 			},
 		}}
-		_, _, _, _, voiceovers, _, _ := s.Describe("it", d)
+		_, _, _, _, voiceovers, _, _, _ := s.Describe("it", d)
 		if len(voiceovers) != 3 {
 			t.Fatalf("voiceovers = %v, want 3 audio entries (subtitles never project)", voiceovers)
 		}
@@ -290,7 +342,7 @@ func TestVoiceoverTracks(t *testing.T) {
 			"no_sidecar": {"parsed": map[string]any{"absolute_path": "/lib/f.mkv"}},
 			"empty":      {"parsed": map[string]any{"sidecars": []any{}}},
 		} {
-			_, _, _, _, voiceovers, _, _ := s.Describe("it", d)
+			_, _, _, _, voiceovers, _, _, _ := s.Describe("it", d)
 			if voiceovers == nil || len(voiceovers) != 0 {
 				t.Fatalf("%s: voiceovers = %#v, want an empty list", name, voiceovers)
 			}
@@ -314,8 +366,8 @@ func TestVoiceoverTracks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		mode1, state1, url1, _, vo1, _, _ := s.Describe("it", d)
-		mode2, state2, url2, _, vo2, _, _ := s.Describe("it", d)
+		mode1, state1, url1, _, vo1, _, _, _ := s.Describe("it", d)
+		mode2, state2, url2, _, vo2, _, _, _ := s.Describe("it", d)
 		after, err := json.Marshal(d)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)

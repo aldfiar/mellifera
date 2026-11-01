@@ -140,7 +140,7 @@ func pbNewWorld(t *testing.T) *pbWorld {
 			if err := json.Unmarshal(row.Document, &doc); err != nil {
 				return api.Playback{}, err
 			}
-			mode, state, playURL, sections, voiceovers, stateReason, _ := media.Describe(itemID, doc)
+			mode, state, playURL, sections, voiceovers, stateReason, _, _ := media.Describe(itemID, doc)
 			tok, _ := media.Issue(itemID, time.Now())
 			return api.Playback{Mode: mode, State: state, PlayURL: playURL, StateReason: stateReason, Sections: sections, Voiceovers: voiceovers, Token: tok}, nil
 		},
@@ -355,6 +355,27 @@ func pbDo(t *testing.T, client *http.Client, method, url, bearer string, body an
 		t.Fatalf("read body %s: %v", url, rerr)
 	}
 	return resp.StatusCode, out, resp.Header
+}
+
+// pbVariantPlaylist follows the served playlist chain the descriptor mints:
+// the play URL answers the composed MASTER (the build root holds it alone,
+// pack-manifest-audio layout), whose one variant reference names the variant
+// playlist under rend0/ — where the tail-merge markers and the segments live.
+// Fetches both (token carried in the play URL's query; the serve layer's
+// self-authorizing rewrite propagates it) and returns the variant URL plus
+// both bodies.
+func pbVariantPlaylist(t *testing.T, client *http.Client, baseURL, playURL string) (variantURL string, master, variant []byte) {
+	t.Helper()
+	mStatus, mBody, _ := pbDo(t, client, http.MethodGet, baseURL+playURL, "", nil)
+	if mStatus != http.StatusOK {
+		t.Fatalf("master %s: status %d, want 200", playURL, mStatus)
+	}
+	variantURL = pbPlaylistURI(playURL, pbFirstSegment(string(mBody)))
+	vStatus, vBody, _ := pbDo(t, client, http.MethodGet, baseURL+variantURL, "", nil)
+	if vStatus != http.StatusOK {
+		t.Fatalf("variant playlist %s: status %d, want 200", variantURL, vStatus)
+	}
+	return variantURL, mBody, vBody
 }
 
 // pbPlayback is the descriptor wire shape (GET /items/{id}/playback).

@@ -84,6 +84,77 @@ func TestPackCodecs(t *testing.T) {
 		}
 	})
 
+	// The legacy read-side table (pack-manifest-audio 2.1, finding B): the
+	// HEVC sample-entry tag is COMPOSED over stored source facts — verbatim
+	// hvc1/hev1, anything else (a container artifact) as the hvc1 default —
+	// while every other family composes exactly as the publish table does.
+	t.Run("legacy_composition_table", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			stream string
+			want   string
+		}{
+			{name: "legacy_matroska_tag_composes_hvc1", stream: `{"codec_type":"video","codec_name":"hevc","codec_tag_string":"[0][0][0][0]","profile":"Main 10","level":120}`, want: "hvc1.2.4.L120.B0"},
+			{name: "legacy_hvc1_verbatim", stream: `{"codec_type":"video","codec_name":"hevc","codec_tag_string":"hvc1","profile":"Main","level":120}`, want: "hvc1.1.6.L120.B0"},
+			{name: "legacy_hev1_verbatim", stream: `{"codec_type":"video","codec_name":"hevc","codec_tag_string":"hev1","profile":"Main","level":93}`, want: "hev1.1.6.L93.B0"},
+			{name: "legacy_foreign_tag_composes_hvc1", stream: `{"codec_type":"video","codec_name":"hevc","codec_tag_string":"hvcC","profile":"Main","level":120}`, want: "hvc1.1.6.L120.B0"},
+
+			// Only the tag rule diverges: the rest of the table degrades the
+			// same way it does at publish.
+			{name: "legacy_rext_still_degrades", stream: `{"codec_type":"video","codec_name":"hevc","codec_tag_string":"[0][0][0][0]","profile":"Rext","level":120}`, want: ""},
+			{name: "legacy_missing_level_still_degrades", stream: `{"codec_type":"video","codec_name":"hevc","codec_tag_string":"[0][0][0][0]","profile":"Main"}`, want: ""},
+			{name: "legacy_avc1_unchanged", stream: `{"codec_type":"video","codec_name":"h264","profile":"High","level":51}`, want: "avc1.640033"},
+			{name: "legacy_aac_unchanged", stream: `{"codec_type":"audio","codec_name":"aac","profile":"LC"}`, want: "mp4a.40.2"},
+		}
+		for _, tc := range cases {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				var s map[string]any
+				if err := json.Unmarshal([]byte(tc.stream), &s); err != nil {
+					t.Fatalf("unmarshal stream fixture: %v", err)
+				}
+				if got := legacyCodecString(s); got != tc.want {
+					t.Errorf("legacyCodecString = %q, want %q", got, tc.want)
+				}
+			})
+		}
+	})
+
+	// The publish-time table stays verbatim-or-degrade even where the legacy
+	// path composes: the probed artifact carries the muxer's real entry.
+	t.Run("publish_still_verbatim_where_legacy_composes", func(t *testing.T) {
+		var s map[string]any
+		stream := `{"codec_type":"video","codec_name":"hevc","codec_tag_string":"[0][0][0][0]","profile":"Main 10","level":120}`
+		if err := json.Unmarshal([]byte(stream), &s); err != nil {
+			t.Fatalf("unmarshal stream fixture: %v", err)
+		}
+		if got := codecString(s); got != "" {
+			t.Errorf("codecString = %q, want \"\" (publish degrades a foreign tag, fail-open)", got)
+		}
+	})
+
+	// Scenario: Matroska-sourced HEVC answers the composed sample entry.
+	// The stored source facts carry the REAL prod shape — hevc, profile
+	// "Main 10", level 120 as a JSON number, codec_tag_string
+	// "[0][0][0][0]", two aac LC streams — and the legacy composition pins
+	// hvc1.2.4.L120.B0 plus the deduped mp4a.40.2.
+	t.Run("legacy_matroska_hevc_record", func(t *testing.T) {
+		const doc = `{"streams":[` +
+			`{"codec_type":"video","codec_name":"hevc","codec_tag_string":"[0][0][0][0]","profile":"Main 10","level":120},` +
+			`{"codec_type":"audio","codec_name":"aac","profile":"LC"},` +
+			`{"codec_type":"audio","codec_name":"aac","profile":"LC"}],` +
+			`"format":{"format_name":"matroska"}}`
+		var f map[string]any
+		if err := json.Unmarshal([]byte(doc), &f); err != nil {
+			t.Fatalf("unmarshal ffprobe fixture: %v", err)
+		}
+		got := legacyCodecs(f)
+		want := []string{"hvc1.2.4.L120.B0", "mp4a.40.2"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("legacyCodecs = %v, want %v (sample entry composed, audio deduped)", got, want)
+		}
+	})
+
 	t.Run("recorded_at_publish", func(t *testing.T) {
 		dir := t.TempDir()
 		fixture := makeH264Fixture(t, dir, 12*time.Second)
@@ -103,10 +174,10 @@ func TestPackCodecs(t *testing.T) {
 		if build.Codecs[1] != "mp4a.40.2" {
 			t.Errorf("Build.Codecs[1] = %q, want mp4a.40.2", build.Codecs[1])
 		}
-		// The published init segment carries h264 + AAC (sanity), and the
-		// artifact is the oracle: the record must equal the composition of the
-		// published playlist's own ffprobe facts.
-		kinds := streamKinds(probeStreams(t, filepath.Join(buildDir, "init.mp4")))
+		// The published init segment (rend0/, D3) carries h264 + AAC (sanity),
+		// and the artifact is the oracle: the record must equal the
+		// composition of the published playlist's own ffprobe facts.
+		kinds := streamKinds(probeStreams(t, filepath.Join(buildDir, "rend0", "init.mp4")))
 		if kinds["video"] != 1 || kinds["audio"] != 1 {
 			t.Fatalf("published init streams = %v, want 1 video + 1 audio", kinds)
 		}
@@ -170,8 +241,12 @@ func TestPackCodecs(t *testing.T) {
 
 // makeH264Fixture generates one tiny MKV with an h264 video track and an AAC
 // audio track — a fixture the composition table can fully describe (the
-// makeFixture fixture's mpeg4 video is deliberately uncomposable). Returns the
-// absolute path. No network, in-process.
+// makeFixture fixture's mpeg4 video is deliberately uncomposable). The video
+// carries 2s keyframes (-force_key_frames) so a pack of it segments the way
+// real media does — without one, libx264's default GOP puts the only keyframe
+// at 0 and the whole head becomes a single segment, which ffprobe probes
+// WITHOUT the aac profile fact (the composition then degrades fail-open, per
+// the table's rule). Returns the absolute path. No network, in-process.
 func makeH264Fixture(t *testing.T, dir string, dur time.Duration) string {
 	t.Helper()
 	requireFFmpeg(t)
@@ -182,7 +257,7 @@ func makeH264Fixture(t *testing.T, dir string, dur time.Duration) string {
 		"-f", "lavfi", "-i", "testsrc2=size=128x72:rate=10:duration=" + secs,
 		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=" + secs,
 		"-map", "0:v", "-map", "1:a",
-		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-force_key_frames", "expr:gte(t,n_forced*2)", "-c:a", "aac",
 		out,
 	}
 	if b, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {

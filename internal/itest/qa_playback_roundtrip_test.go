@@ -84,12 +84,14 @@ func TestPlaybackRoundTrip(t *testing.T) {
 	streams := pbAwaitStreams(t, w.st, e01.ID, "complete", 60*time.Second)
 	pbAwaitIdle(t, q, 30*time.Second)
 
-	// The artifact exists on disk under the persisted build-nonce directory.
+	// The artifact exists on disk under the persisted build-nonce directory:
+	// the build root holds the composed master alone; the variant playlist,
+	// init, and segments live under rend0/ (pack-manifest-audio layout).
 	nonce, _ := streams["nonce"].(string)
 	if nonce == "" {
 		t.Fatalf("persisted streams missing nonce: %v", streams)
 	}
-	artDir := filepath.Join(w.root, e01.ID, nonce)
+	artDir := filepath.Join(w.root, e01.ID, nonce, "rend0")
 	entries, err := os.ReadDir(artDir)
 	if err != nil {
 		t.Fatalf("artifact dir %s: %v", artDir, err)
@@ -131,17 +133,18 @@ func TestPlaybackRoundTrip(t *testing.T) {
 		t.Fatalf("Set-Cookie = %v, want the media_token cookie-primary delivery", cookies)
 	}
 
-	// --- token-gated serve: the playlist bytes, then a segment, then rejection ---
-	plStatus, plBody, _ := pbDo(t, w.client, http.MethodGet, w.baseURL+pb.PlayURL, "", nil)
-	if plStatus != http.StatusOK {
-		t.Fatalf("playlist with token: status %d, want 200", plStatus)
+	// --- token-gated serve: the master, then the variant playlist it names,
+	// then a segment, then rejection ---
+	variantURL, master, vBody := pbVariantPlaylist(t, w.client, w.baseURL, pb.PlayURL)
+	if !strings.Contains(string(master), "#EXTM3U") {
+		t.Fatalf("served master missing EXTM3U:\n%s", master)
 	}
-	playlist := string(plBody)
+	playlist := string(vBody)
 	if !strings.Contains(playlist, "#EXTM3U") || !strings.Contains(playlist, "#EXT-X-ENDLIST") {
-		t.Fatalf("playlist missing EXTM3U/ENDLIST (complete build):\n%s", playlist)
+		t.Fatalf("variant playlist missing EXTM3U/ENDLIST (complete build):\n%s", playlist)
 	}
 	if !strings.Contains(playlist, "#EXT-X-DISCONTINUITY") || !strings.Contains(playlist, "t/") {
-		t.Fatalf("playlist missing the two-phase tail merge markers:\n%s", playlist)
+		t.Fatalf("variant playlist missing the two-phase tail merge markers:\n%s", playlist)
 	}
 	segURI := pbFirstSegment(playlist)
 	// Self-authorizing playlist (incident 2026-10-31): the served segment URI
@@ -149,7 +152,7 @@ func TestPlaybackRoundTrip(t *testing.T) {
 	if !strings.Contains(segURI, "token=") {
 		t.Fatalf("segment URI %q carries no token — playlists must be self-authorizing", segURI)
 	}
-	segStatus, segBody, segHeader := pbDo(t, w.client, http.MethodGet, w.baseURL+pbPlaylistURI(pb.PlayURL, segURI), "", nil)
+	segStatus, segBody, segHeader := pbDo(t, w.client, http.MethodGet, w.baseURL+pbPlaylistURI(variantURL, segURI), "", nil)
 	if segStatus != http.StatusOK || len(segBody) == 0 {
 		t.Fatalf("segment %s: status %d len %d, want 200 with bytes", segURI, segStatus, len(segBody))
 	}

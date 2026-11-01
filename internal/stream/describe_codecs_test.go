@@ -51,7 +51,7 @@ func TestDescribeCodecs(t *testing.T) {
 			"playlist": "/media/it/n0/index.m3u8",
 			"codecs":   []any{"avc1.640029", "mp4a.40.2"},
 		})
-		mode, _, playURL, _, _, _, codecs := s.Describe("it", d)
+		mode, _, playURL, _, _, _, codecs, _ := s.Describe("it", d)
 		if mode != ModeHls {
 			t.Fatalf("mode = %q, want hls", mode)
 		}
@@ -70,7 +70,7 @@ func TestDescribeCodecs(t *testing.T) {
 			"codecs":   []any{"hvc1.1.6.L93.B0", "mp4a.40.2"},
 		})
 		d["ffprobe"] = facts(composable) // would compose avc1… — the record must win
-		_, _, _, _, _, _, codecs := s.Describe("it", d)
+		_, _, _, _, _, _, codecs, _ := s.Describe("it", d)
 		if len(codecs) != 2 || codecs[0] != "hvc1.1.6.L93.B0" {
 			t.Fatalf("codecs = %v, want the recorded value to win verbatim", codecs)
 		}
@@ -83,7 +83,7 @@ func TestDescribeCodecs(t *testing.T) {
 			"playlist": "/media/it/n0/index.m3u8",
 		})
 		d["ffprobe"] = facts(composable) // a namespace predating the record
-		mode, _, _, _, _, _, codecs := s.Describe("it", d)
+		mode, _, _, _, _, _, codecs, _ := s.Describe("it", d)
 		if mode != ModeHls {
 			t.Fatalf("mode = %q, want hls", mode)
 		}
@@ -94,13 +94,40 @@ func TestDescribeCodecs(t *testing.T) {
 		}
 	})
 
+	// Scenario: Matroska-sourced HEVC answers the composed sample entry —
+	// the descriptor's legacy composition composes the sample-entry tag over
+	// stored source facts (hevc, "Main 10", level 120, tag "[0][0][0][0]",
+	// two aac LC streams — the real prod shape).
+	t.Run("matroska_hevc_answers_composed_sample_entry", func(t *testing.T) {
+		const matroska = `{"streams":[` +
+			`{"codec_type":"video","codec_name":"hevc","codec_tag_string":"[0][0][0][0]","profile":"Main 10","level":120},` +
+			`{"codec_type":"audio","codec_name":"aac","profile":"LC"},` +
+			`{"codec_type":"audio","codec_name":"aac","profile":"LC"}],` +
+			`"format":{"format_name":"matroska"}}`
+		d := hlsDoc(map[string]any{
+			"state":    StatePartial,
+			"playlist": "/media/it/n0/index.m3u8",
+		})
+		d["ffprobe"] = facts(matroska)
+		mode, _, playURL, _, _, _, codecs, _ := s.Describe("it", d)
+		if mode != ModeHls {
+			t.Fatalf("mode = %q, want hls", mode)
+		}
+		if len(codecs) != 2 || codecs[0] != "hvc1.2.4.L120.B0" || codecs[1] != "mp4a.40.2" {
+			t.Fatalf("codecs = %v, want the composed hvc1.2.4.L120.B0 then the deduped mp4a.40.2", codecs)
+		}
+		if !strings.HasPrefix(playURL, "/media/it/n0/index.m3u8?"+tokenQuery+"=") {
+			t.Fatalf("playURL = %q, want the playable playlist URL kept", playURL)
+		}
+	})
+
 	t.Run("uncomposable_legacy_answers_no_codecs_keeps_play_url", func(t *testing.T) {
 		d := hlsDoc(map[string]any{
 			"state":    StatePartial,
 			"playlist": "/media/it/n0/index.m3u8",
 		})
 		d["ffprobe"] = facts(uncomposable)
-		mode, _, playURL, _, _, _, codecs := s.Describe("it", d)
+		mode, _, playURL, _, _, _, codecs, _ := s.Describe("it", d)
 		if mode != ModeHls || codecs != nil {
 			t.Fatalf("descriptor = %q/%v, want hls with no codecs field (fail-open)", mode, codecs)
 		}
@@ -116,7 +143,7 @@ func TestDescribeCodecs(t *testing.T) {
 			"codecs":   []any{"avc1.640029", 42}, // one unreadable entry
 		})
 		d["ffprobe"] = facts(composable)
-		_, _, _, _, _, _, codecs := s.Describe("it", d)
+		_, _, _, _, _, _, codecs, _ := s.Describe("it", d)
 		if len(codecs) != 2 || codecs[0] != "avc1.640029" || codecs[1] != "mp4a.40.2" {
 			t.Fatalf("codecs = %v, want the legacy composition behind the broken record", codecs)
 		}
@@ -126,7 +153,7 @@ func TestDescribeCodecs(t *testing.T) {
 	// no codecs field — the field describes the pack.
 	t.Run("direct_answers_never_carry_codecs", func(t *testing.T) {
 		d := map[string]any{"ffprobe": facts(composable)}
-		mode, _, _, _, _, reason, codecs := s.Describe("it", d)
+		mode, _, _, _, _, reason, codecs, _ := s.Describe("it", d)
 		if mode != ModeDirect || codecs != nil {
 			t.Fatalf("descriptor = %q/%v, want direct with no codecs", mode, codecs)
 		}

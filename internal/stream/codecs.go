@@ -14,13 +14,17 @@ import (
 )
 
 // This file records the pack's codec truth at publish (playback-capability-gate
-// D2): after the build publishes, each variant playlist is probed with ffprobe
-// — the MP4 muxer, not the source, decides the sample entries — and the probe
-// facts compose RFC 6381 codec parameter strings through the pure table below.
-// The probe targets the published playlist rather than the bare EXT-X-MAP init
-// segment because ffprobe's stream facts (profile, level) only resolve once the
-// init's avcC/hvcC extradata is readable WITH media — a bare init reports
-// level -99 and no profile, which would fail-open every real pack. The
+// D2, probe moment moved by pack-manifest-audio D2): each variant's head
+// playlist is probed with ffprobe at the head-first publish — a finalized
+// scratch copy of it, since the head's EVENT playlist (no ENDLIST) holds a
+// live-input ffprobe open — the MP4 muxer, not the source, decides the sample
+// entries — and the probe facts compose RFC 6381 codec parameter strings
+// through the pure table below (and the master playlist's CODECS attributes,
+// pack-manifest-audio D1). The probe targets the playlist rather than the
+// bare EXT-X-MAP init segment because ffprobe's stream facts (profile, level)
+// only resolve once the init's avcC/hvcC extradata is readable WITH media — a
+// bare init reports level -99 and no profile, which would fail-open every
+// real pack. The
 // composition is strictly fail-open: any probe failure or any stream the table
 // cannot compose degrades the whole record to absent (nil), so an unprobeable
 // build mounts exactly as it did before this record existed — never a failed
@@ -73,19 +77,11 @@ func codecString(s map[string]any) string {
 		}
 		return fmt.Sprintf("avc1.%s%02X", prefix, lv)
 	case "hevc":
-		tag, _ := s["codec_tag_string"].(string)
-		if tag != "hvc1" && tag != "hev1" {
+		tag := hevcSampleEntry(s, false)
+		if tag == "" {
 			return ""
 		}
-		pc, ok := hevcProfiles[streamProfile(s)]
-		if !ok {
-			return ""
-		}
-		lv := streamLevel(s)
-		if lv == 0 {
-			return ""
-		}
-		return fmt.Sprintf("%s.%s.%s.L%d.B0", tag, pc[0], pc[1], lv)
+		return hevcCodecString(s, tag)
 	case "aac":
 		if streamProfile(s) == "LC" {
 			return "mp4a.40.2"
@@ -108,6 +104,58 @@ func codecString(s map[string]any) string {
 	}
 }
 
+// hevcSampleEntry resolves one stream's HEVC sample-entry tag. Two rules
+// share the resolver (pack-manifest-audio 2.1, finding B): the PUBLISH path
+// (composeTag=false) reads the probed artifact's codec_tag_string verbatim —
+// hvc1 or hev1 compose, anything else composes nothing (fail-open), since the
+// MP4 muxer, not the source, decided the entry. The LEGACY read-side path
+// (composeTag=true) reads STORED SOURCE facts, where the tag is a
+// source-container artifact: a tag that already names a sample entry
+// (hvc1/hev1 — an MP4 source whose entry survives the stream-copy remux)
+// composes verbatim, and anything else (a Matroska source's "[0][0][0][0]" —
+// the container's tagging convention, not a sample entry) composes as hvc1,
+// the de-facto widely-accepted entry — an honest approximation, since which
+// entry the muxer actually wrote is unknowable from stored source facts. Pure.
+func hevcSampleEntry(s map[string]any, composeTag bool) string {
+	tag, _ := s["codec_tag_string"].(string)
+	if tag == "hvc1" || tag == "hev1" {
+		return tag
+	}
+	if composeTag {
+		return "hvc1"
+	}
+	return ""
+}
+
+// hevcCodecString composes one hevc stream's RFC 6381 codec parameter string
+// under an already-resolved sample-entry tag: the profile through the
+// hevcProfiles table, the level as L<level_idc>, the universal progressive
+// constraint suffix B0. An untabled profile or an unreadable level composes
+// "". Pure.
+func hevcCodecString(s map[string]any, tag string) string {
+	pc, ok := hevcProfiles[streamProfile(s)]
+	if !ok {
+		return ""
+	}
+	lv := streamLevel(s)
+	if lv == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s.%s.%s.L%d.B0", tag, pc[0], pc[1], lv)
+}
+
+// legacyCodecString composes one stored SOURCE stream through the table under
+// the legacy read-side rule (pack-manifest-audio 2.1, finding B): the HEVC
+// sample-entry tag is composed (verbatim hvc1/hev1, else the hvc1 default —
+// see hevcSampleEntry), while every other family composes exactly as the
+// publish table does. Pure.
+func legacyCodecString(s map[string]any) string {
+	if streamCodec(s) != "hevc" {
+		return codecString(s)
+	}
+	return hevcCodecString(s, hevcSampleEntry(s, true))
+}
+
 // streamProfile reads a stream's profile, trimmed (facts are verbatim — never
 // trust the source's whitespace). Pure.
 func streamProfile(s map[string]any) string {
@@ -126,21 +174,20 @@ func streamLevel(s map[string]any) int {
 	return int(lv)
 }
 
-// buildCodecs composes the published build's codec record: every variant
-// playlist is probed (the only I/O — one ffprobe per variant), the table
-// composes each stream — all video strings first, then the audio strings in
-// the pinned rendition order (embedded audio first, then the voiceovers, the
-// variant order the master playlist declares) — and duplicates collapse,
-// first occurrence winning. Any failure (an unreadable playlist, a failed or
-// empty probe, one uncomposable stream) returns nil: the record degrades to
-// absent and Pack still succeeds. Never mutates the build.
-func (s *Service) buildCodecs(ctx context.Context, buildDir string, vs []variantPlaylist) []string {
+// composeCodecs composes the build's codec record from the variants' probed
+// playlist streams (the lane probes each variant's head playlist once —
+// pack-manifest-audio D2): the table composes each stream — all video strings
+// first, then the audio strings in the pinned rendition order (embedded audio
+// first, then the voiceovers, the variant order the master playlist
+// declares) — and duplicates collapse, first occurrence winning. Any failure
+// (a variant with no streams — a failed or empty probe — or one uncomposable
+// stream) returns nil: the record degrades to absent and Pack still succeeds.
+// Pure.
+func composeCodecs(variants [][]map[string]any) []string {
 	var videos, audios []string
-	for _, v := range vs {
-		playlist := filepath.Join(buildDir, v.rel, "index.m3u8")
-		streams, err := s.probeMediaStreams(ctx, playlist)
-		if err != nil {
-			return nil
+	for _, streams := range variants {
+		if len(streams) == 0 {
+			return nil // a failed or empty probe degrades the record
 		}
 		sawVideo := false
 		for _, st := range streams {
@@ -171,13 +218,15 @@ func (s *Service) buildCodecs(ctx context.Context, buildDir string, vs []variant
 // legacyCodecs composes one pre-record build's codec strings read-side
 // (playback-capability-gate D2 — the LEGACY FALLBACK): the same table as the
 // publish path, over the item's STORED SOURCE ffprobe facts, which a remux
-// carries into the pack. Exactly the pack lane's map is composed — the first
-// video stream (-map 0:v:0) and every audio stream (-map 0:a; subtitle and
-// data streams are dropped, so they are never judged); videos first, then
-// audio in file order, duplicates collapsing. One video/audio stream the
-// table cannot compose (or no decidable picture at all) degrades the whole
-// record to nil — fail-open, the field is simply absent, never a wrong
-// answer. Pure.
+// carries into the pack — with one divergence (pack-manifest-audio 2.1,
+// finding B): the HEVC sample-entry tag is COMPOSED (legacyCodecString),
+// never read as publish-time truth. Exactly the pack lane's map is composed —
+// the first video stream (-map 0:v:0) and every audio stream (-map 0:a;
+// subtitle and data streams are dropped, so they are never judged); videos
+// first, then audio in file order, duplicates collapsing. One video/audio
+// stream the table cannot compose (or no decidable picture at all) degrades
+// the whole record to nil — fail-open, the field is simply absent, never a
+// wrong answer. Pure.
 func legacyCodecs(ffprobe any) []string {
 	f, ok := ffprobe.(map[string]any)
 	if !ok {
@@ -189,7 +238,7 @@ func legacyCodecs(ffprobe any) []string {
 	}
 	out := make([]string, 0, 1+len(audio))
 	for _, st := range append([]map[string]any{video}, audio...) {
-		cs := codecString(st)
+		cs := legacyCodecString(st)
 		if cs == "" {
 			return nil // one uncomposable stream degrades the record (same table spirit)
 		}

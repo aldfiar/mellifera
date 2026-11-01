@@ -531,3 +531,64 @@ func TestStreamsLaneAfterPackPersist(t *testing.T) {
 		}
 	})
 }
+
+// TestStreamsMasterMarker pins the build-generation marker (pack-manifest-audio
+// 3.1, D5): every success persist writes `master: true` into the streams
+// namespace — honest by construction, since every fresh pack (rendition and
+// single-variant) publishes the lane-composed master — while both failure
+// persists (real failure and policy refusal) stay marker-free, so marker
+// absence is the legacy-layout signal the play verb's lazy repack reads. A
+// hand-seeded legacy doc (complete + nonce, pre-marker shape) reads back
+// marker-absent.
+func TestStreamsMasterMarker(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("success_persist_carries_master_true", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_master_ok")
+
+		rec := &packRecord{}
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, PackOutcome{Playlist: "/media/i_master_ok/ab12cd34/index.m3u8", Nonce: "ab12cd34"}, nil)}, QueueConfig{})
+		q.workStreams(ctx, "i_master_ok")
+
+		st := streamsState(t, s, "i_master_ok", "complete", time.Second)
+		if st["master"] != true {
+			t.Fatalf("persisted streams = %v, want master: true on the success doc", st)
+		}
+	})
+
+	t.Run("failure_persists_stay_marker_free", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_master_fail")
+		streamsItem(t, s, libID, "i_master_refuse")
+
+		qFail := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(&packRecord{}, 0, PackOutcome{}, errors.New("ffmpeg exploded"))}, QueueConfig{Backoff: time.Millisecond})
+		qFail.workStreams(ctx, "i_master_fail")
+		qRefuse := NewQueue(Deps{Store: s, Modules: reg, PackItem: func(context.Context, string, string, map[string]any, []string) (PackOutcome, error) {
+			return PackOutcome{}, refusal.PolicyRefusal{Reason: "codec_not_opted_in"}
+		}}, QueueConfig{})
+		qRefuse.workStreams(ctx, "i_master_refuse")
+
+		for _, id := range []string{"i_master_fail", "i_master_refuse"} {
+			st := streamsState(t, s, id, "failed", time.Second)
+			if _, ok := st["master"]; ok {
+				t.Fatalf("failed streams doc for %s carries master %v, want an absent key — absence is the signal", id, st["master"])
+			}
+		}
+	})
+
+	t.Run("hand_seeded_legacy_doc_reads_marker_absent", func(t *testing.T) {
+		s, _ := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		doc := baseDoc("Movies/Legacy Layout.mkv")
+		doc["streams"] = map[string]any{"state": "complete", "nonce": "ab12cd34", "playlist": "/media/x/index.m3u8"}
+		putItem(t, s, "i_master_legacy", libID, statusReady, doc)
+
+		st := streamsState(t, s, "i_master_legacy", "complete", time.Second)
+		if _, ok := st["master"]; ok {
+			t.Fatalf("legacy doc carries master %v, want an absent key (it predates the master lane)", st["master"])
+		}
+	})
+}
