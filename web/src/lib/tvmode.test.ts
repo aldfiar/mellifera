@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   TV_KEY,
+  applyTvMode,
   detectTvEnvironment,
   readTvOverride,
   resolveTvMode,
@@ -281,5 +282,106 @@ describe("readTvOverride — the guarded store (the lib/auth.ts posture)", () =>
     // The invalid value floors to auto, and auto defers to the ladder —
     // the full first-load chain: read -> resolve -> detect's verdict.
     expect(resolveTvMode(readTvOverride(), detected)).toBe(want);
+  });
+});
+
+// tv-mode 1.2 — the boot apply over the real (jsdom) navigator/window. The
+// jsdom user agent carries no TV token, so the synchronous ladder here rules
+// desktop unless the stored override says otherwise — which makes the async
+// model probe's upgrade-only contract directly observable: stub a resolving
+// TV model hint, watch the class get ADDED after the sync ruling; stub a
+// non-TV hint or a rejecting probe, watch the ruling stand.
+
+// stubUserAgentData — plant the Chromium-only navigator.userAgentData slice
+// with a mock getHighEntropyValues; returns the mock for call assertions.
+function stubUserAgentData(values: { model?: string }): ReturnType<typeof vi.fn> {
+  const getHighEntropyValues = vi.fn().mockReturnValue(Promise.resolve(values));
+  Object.defineProperty(navigator, "userAgentData", {
+    configurable: true,
+    value: { getHighEntropyValues },
+  });
+  return getHighEntropyValues;
+}
+
+describe("applyTvMode — the boot apply (the ThemeToggle.tsx idiom)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(navigator, "userAgentData");
+    localStorage.removeItem(TV_KEY);
+    document.documentElement.classList.remove("tv");
+  });
+
+  it("boot_applies_tv_class_from_stored_on", async () => {
+    localStorage.setItem(TV_KEY, "on");
+    const probe = stubUserAgentData({ model: "AFT7" });
+    const applied = applyTvMode();
+    // Synchronous: the class landed before any await, and a manual «Вкл»
+    // ruling needs no probe round-trip at all.
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+    expect(probe).not.toHaveBeenCalled();
+    await applied;
+    expect(probe).not.toHaveBeenCalled();
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+  });
+
+  it("boot_stored_off_keeps_desktop_synchronously", async () => {
+    localStorage.setItem(TV_KEY, "off");
+    const probe = stubUserAgentData({ model: "AFT7" });
+    const applied = applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(false);
+    expect(probe).not.toHaveBeenCalled();
+    await applied;
+    // A resolving TV hint never second-guesses a manual «Выкл» ruling.
+    expect(document.documentElement.classList.contains("tv")).toBe(false);
+  });
+
+  it("boot_upgrade_only_async_model", async () => {
+    // Sync desktop ruling: no class yet, probe armed.
+    const probe = stubUserAgentData({ model: "AFT7" });
+    const applied = applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(false);
+    expect(probe).toHaveBeenCalledWith(["model"]);
+    // The resolving TV model hint ADDS the class — the upgrade.
+    await applied;
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+
+    // Upgrade-ONLY, part 1: a non-TV hint on a desktop boot adds nothing —
+    // the sync ruling re-applies (class off) and the probe leaves it off.
+    stubUserAgentData({ model: "MacBookPro18,1" });
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(false);
+
+    // Upgrade-ONLY, part 2: an already-on class is never removed — an
+    // auto-desktop ruling is the only state the probe is armed in, so a
+    // manual «Вкл» boot with a non-TV hint stays on untouched.
+    localStorage.setItem(TV_KEY, "on");
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+  });
+
+  it("boot_guarded_store_degrades_desktop", async () => {
+    // A throwing storage layer: readTvOverride floors to auto, the apply
+    // stays desktop, and neither the sync path nor the probe tail throws.
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    const applied = applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(false);
+    await expect(applied).resolves.toBeUndefined();
+    expect(document.documentElement.classList.contains("tv")).toBe(false);
+
+    // An available-but-rejecting probe API degrades the same way.
+    Reflect.deleteProperty(navigator, "userAgentData");
+    vi.restoreAllMocks();
+    Object.defineProperty(navigator, "userAgentData", {
+      configurable: true,
+      value: {
+        getHighEntropyValues: vi
+          .fn()
+          .mockReturnValue(Promise.reject(new Error("no entropy"))),
+      },
+    });
+    await expect(applyTvMode()).resolves.toBeUndefined();
+    expect(document.documentElement.classList.contains("tv")).toBe(false);
   });
 });

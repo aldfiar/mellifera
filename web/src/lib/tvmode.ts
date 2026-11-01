@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// tvmode (tv-mode 1.1) — the pure TV-mode resolver: the fixed storage key,
-// the persisted override read, the detection ladder, and the override law.
-// No React, no boot side effect (1.2 owns the boot apply), no DOM writes:
-// detectTvEnvironment takes its measurements as arguments and readTvOverride
-// is the only storage touch, guarded like lib/auth.ts so an unavailable or
-// corrupt store floors to "auto" — the autodetect default — never a crash.
+// tvmode (tv-mode 1.1 resolver + 1.2 boot apply) — the fixed storage key,
+// the persisted override read, the detection ladder, the override law, and
+// the single writer of the `tv` class. No React: detectTvEnvironment takes
+// its measurements as arguments and readTvOverride is the only storage
+// touch, guarded like lib/auth.ts so an unavailable or corrupt store floors
+// to "auto" — the autodetect default — never a crash.
 //
 // The ladder (design D2): STRONG markers (SmartTV, BRAVIA, AFT\d, KFT, Silk,
 // Leanback, or a model hint matching them) detect a TV decisively — no
@@ -115,3 +115,72 @@ export function readTvOverride(): TvOverride {
     return "auto";
   }
 }
+
+// UADataNav — the Chromium-only slice of navigator.userAgentData the async
+// model probe reads. Absent on Safari/Firefox/jsdom (the probe then does
+// nothing); TS's DOM lib does not type it, so it is declared here.
+interface UADataNav {
+  getHighEntropyValues(hints: string[]): Promise<{ model?: string }>;
+}
+
+// readTvEnvironment — the real browser inputs the ladder consumes (design:
+// the pure core never touches the globals; only this apply-side reader does).
+function readTvEnvironment(): TvEnvironment {
+  return {
+    userAgent: navigator.userAgent,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    maxTouchPoints: navigator.maxTouchPoints ?? 0,
+  };
+}
+
+// probeTvModel — the UPGRADE-ONLY async tail of the boot apply (design I1):
+// Chromium's high-entropy model hint may confirm a TV the synchronous ladder
+// could not see, so a resolving TV model ADDS the class — it never removes
+// one. Guarded end to end: an unavailable API, a rejecting probe, or a
+// throwing store degrades to whatever the synchronous ruling was, never a
+// crash. Only the boot apply's auto-desktop path arms it, so a manual
+// «Режим ТВ» ruling is never second-guessed (the override always wins).
+async function probeTvModel(): Promise<void> {
+  try {
+    const uaData = (navigator as Navigator & { userAgentData?: UADataNav })
+      .userAgentData;
+    if (!uaData) {
+      return;
+    }
+    const { model } = await uaData.getHighEntropyValues(["model"]);
+    if (
+      model !== undefined &&
+      detectTvEnvironment({ ...readTvEnvironment(), model })
+    ) {
+      document.documentElement.classList.add("tv");
+    }
+  } catch {
+    // unavailable API / rejecting probe: stay with the synchronous ruling
+  }
+}
+
+// applyTvMode — the single writer of the `tv` class on <html> (design I1;
+// the group-6 «Режим ТВ» toggle reuses this exact function, so the class is
+// never set by two divergent code paths). The synchronous chain — stored
+// override through resolveTvMode over detectTvEnvironment — toggles the
+// class BEFORE any await, so a stored Вкл/Выкл lands with no async
+// round-trip; the returned promise carries only the upgrade-only model
+// probe (a no-op unless the auto ruling said desktop). Idempotent.
+export function applyTvMode(): Promise<void> {
+  const override = readTvOverride();
+  const on = resolveTvMode(override, detectTvEnvironment(readTvEnvironment()));
+  document.documentElement.classList.toggle("tv", on);
+  // Only an auto-desktop ruling may be upgraded: "on" is already on, and
+  // "off" is a manual ruling the probe must respect (the override law).
+  if (on || override !== "auto") {
+    return Promise.resolve();
+  }
+  return probeTvModel();
+}
+
+// Boot apply — module-evaluation side effect, run ONCE (the ThemeToggle.tsx
+// idiom). main.tsx imports this module BEFORE App (design I6), so the mode
+// class lands before any consumer mounts and before first themed paint, on
+// every route. The upgrade-only model probe continues in the background.
+void applyTvMode();
