@@ -22,6 +22,7 @@ function makeActions() {
     nextEpisode: vi.fn(),
     prevEpisode: vi.fn(),
     seekToFraction: vi.fn(),
+    exitWatch: vi.fn(),
   };
 }
 
@@ -34,9 +35,11 @@ function keyEvent(
 
 // callCount — the total number of action invocations across the whole
 // actions object; the table must call EXACTLY one action per keystroke.
-function callCount(actions: ReturnType<typeof makeActions>): number {
+// Non-mock entries (a hand-written no-op implementation) contribute zero.
+function callCount(actions: Record<string, unknown>): number {
   return Object.values(actions).reduce(
-    (sum, fn) => sum + fn.mock.calls.length,
+    (sum, fn) =>
+      sum + (typeof fn === "function" && "mock" in fn ? fn.mock.calls.length : 0),
     0,
   );
 }
@@ -64,6 +67,15 @@ describe("playerShortcuts — the pure key→action table (watch-flow-polish 3.4
       ["3", (a) => expect(a.seekToFraction).toHaveBeenCalledWith(0.3)],
       ["5", (a) => expect(a.seekToFraction).toHaveBeenCalledWith(0.5)],
       ["9", (a) => expect(a.seekToFraction).toHaveBeenCalledWith(0.9)],
+      // Remote media keys (tv-mode 3.4): each asserts its exact action call
+      // (the dropped browser default is the handled=true above — the table
+      // normalizes the device's key onto the SAME transport action).
+      ["MediaPlayPause", (a) => expect(a.togglePlay).toHaveBeenCalledTimes(1)],
+      ["MediaTrackNext", (a) => expect(a.nextEpisode).toHaveBeenCalledTimes(1)],
+      ["MediaPrevTrack", (a) => expect(a.prevEpisode).toHaveBeenCalledTimes(1)],
+      ["MediaFastForward", (a) => expect(a.seekBy).toHaveBeenCalledWith(SEEK_STEP_SECONDS)],
+      ["MediaRewind", (a) => expect(a.seekBy).toHaveBeenCalledWith(-SEEK_STEP_SECONDS)],
+      ["MediaStop", (a) => expect(a.exitWatch).toHaveBeenCalledTimes(1)],
     ];
 
     for (const [key, assertion] of cases) {
@@ -113,5 +125,18 @@ describe("playerShortcuts — the pure key→action table (watch-flow-polish 3.4
     expect(callCount(idle)).toBe(0);
     // A null target (no focused element) is not a text entry either.
     expect(applyShortcut(keyEvent(" ", null), makeActions())).toBe(true);
+  });
+
+  it("media_stop_outside_a_watch_view_resolves_as_a_no-op", () => {
+    // MediaStop's body lives in the watch view; outside one the actions
+    // object supplies a plain no-op — the table still routes MediaStop to it
+    // (one call, handled=true so the browser default is dropped) and stays
+    // otherwise silent.
+    const actions = {
+      ...makeActions(),
+      exitWatch: (): void => {},
+    };
+    expect(applyShortcut(keyEvent("MediaStop"), actions)).toBe(true);
+    expect(callCount(actions)).toBe(0);
   });
 });
