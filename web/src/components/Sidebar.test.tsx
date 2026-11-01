@@ -248,6 +248,29 @@ describe("Sidebar — open/close mechanics + persistence", () => {
     expect(urls.some((u) => u.includes("/api/v1/items/"))).toBe(false);
   });
 
+  it("renders the «Режим ТВ» tri-state control in the foot beside the theme toggle", async () => {
+    // tv-mode D9: the side-foot is the display-preferences home — the
+    // tri-state override group sits beside ThemeToggle inside the pinned
+    // profile block, so a TV operator reaches it through the menu FAB.
+    fetchWith(freshLibraries());
+    renderSidebar();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+
+    const foot = screen.getByRole("group", { name: "Режим ТВ" }).closest(".side-foot");
+    expect(foot).not.toBeNull();
+    // The three mockup states, one aria-pressed each, in the same foot as the
+    // theme toggle (matchMedia is stubbed to light → "Switch to dark theme").
+    for (const label of ["Авто", "Вкл", "Выкл"]) {
+      expect(
+        foot!.querySelector(`button[aria-pressed][title="Режим ТВ: ${label}"]`),
+      ).not.toBeNull();
+    }
+    expect(
+      foot!.querySelector('[aria-label="Switch to dark theme"]'),
+    ).not.toBeNull();
+  });
+
   it("renders collection names immediately while the summary counts are still in flight", async () => {
     // The summary endpoints NEVER resolve: opening must not wait on them.
     fetchWith({

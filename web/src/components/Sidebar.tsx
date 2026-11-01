@@ -9,6 +9,7 @@ import type { AdminStatus, LibraryDTO } from "@/lib/api";
 import { apiRequest, getItem } from "@/lib/api";
 import { useLibraries, useLibrarySummary } from "@/lib/queries";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { TvModeToggle } from "@/components/TvModeToggle";
 import { cn } from "@/lib/utils";
 
 // Sidebar — the SPA shell (web-ui-phase-3 group 3): a 224px left panel that is
@@ -277,7 +278,13 @@ function SideFoot(): ReactElement {
           <small>{roleLabel}</small>
         </span>
       </div>
-      <ThemeToggle />
+      {/* The display-preferences row (tv-mode D9): the «Режим ТВ» tri-state
+          override beside the theme toggle — the foot is the control's home,
+          reachable on a TV through the focusable menu FAB. */}
+      <div className="flex w-full items-center justify-between gap-2">
+        <TvModeToggle />
+        <ThemeToggle />
+      </div>
     </div>
   );
 }
