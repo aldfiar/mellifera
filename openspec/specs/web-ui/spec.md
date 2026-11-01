@@ -913,11 +913,25 @@ best-effort beacon through `POST /api/v1/playback-events` with the closed
 vocabulary (`mode: "hls"`, `phase: "video-error"`, the probe's mime as the
 `detail`); no HLS lane mounts. A descriptor without `codecs`, or a device
 without `MediaSource`, mounts exactly as before; a probe pass mounts with
-zero behavior change. Sections from the descriptor SHALL render as a
-section list; activating a section SHALL seek the playing media to that
-section's start using standard media seeks, so TV remote transport keys
-work unchanged. Playback position SHALL keep reporting through the existing
-progress endpoint.
+zero behavior change. An MSE-less device — one whose HLS support check
+answers false, taking the plain media-source path — SHALL NOT silently
+mount an `hls` descriptor whose `layout` names the rendition layout: its
+native parse renders the master's video variant alone and never fetches
+the EXT-X-MEDIA audio renditions (the silent video-only mount). It SHALL
+refuse honestly instead: the classified banner surface renders (this
+device cannot play this pack's multi-audio layout — the
+`rendition-layout-unsupported` class, distinct from the media-error
+classes and from `device-cannot-decode`) and exactly one best-effort
+beacon (`mode: "hls"`, `phase: "video-error"`,
+`code: "rendition-layout-unsupported"`, a non-empty `detail`) is sent,
+with NO media source mounted. An `hls` descriptor whose `layout` names the
+single-variant layout, or which predates the layout record, mounts the
+plain media source exactly as before — the flat single-audio direct floor
+stays the MSE-less path's working lane. Sections from the descriptor SHALL
+render as a section list; activating a section SHALL seek the playing
+media to that section's start using standard media seeks, so TV remote
+transport keys work unchanged. Playback position SHALL keep reporting
+through the existing progress endpoint.
 
 #### Scenario: Packaged item plays via the stream playlist and sections seek
 
@@ -995,6 +1009,16 @@ cd web && npx vitest run src/lib/api.test.ts src/pages/home/Home.test.tsx src/pa
 
 - **WHEN** a capable device plays the same packaged item (probe passes), and a build whose descriptor answers no `codecs` is opened on any device
 - **THEN** the first mounts the HLS lane exactly as before the probe existed, and the second skips the probe and mounts as before — no behavior change on either path
+
+#### Scenario: An MSE-less device refuses a rendition master with banner and beacon
+
+- **WHEN** a device whose HLS support check answers false (no usable MSE) opens an `hls` descriptor whose `layout` names the rendition layout
+- **THEN** the `rendition-layout-unsupported` banner renders on the classified banner surface, exactly one best-effort beacon (`mode: "hls"`, `phase: "video-error"`, `code: "rendition-layout-unsupported"`, a non-empty `detail`) is sent, and no media source mounts — no silent video-only playback, no spinner
+
+#### Scenario: Flat single-audio builds keep the direct floor on MSE-less devices
+
+- **WHEN** the same device opens an `hls` descriptor whose `layout` names the single-variant layout, and one whose descriptor predates the layout record
+- **THEN** both mount the plain media source on the descriptor's play URL exactly as before the refusal existed — the flat single-audio direct floor keeps playing, and no beacon fires for either
 
 ### Requirement: Element browsing
 

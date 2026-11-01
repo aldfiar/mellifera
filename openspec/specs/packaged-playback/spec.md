@@ -289,6 +289,17 @@ either way SHALL answer no `codecs` field — the client mounts as before
 (fail-open). Direct answers SHALL never carry `codecs`; the field describes
 the pack, and every other field of every answer keeps its current shape.
 
+An hls answer SHALL additionally carry the additive `layout` field —
+`single-variant` or `rendition`, the build's audio layout the pack lane
+decided at publish (the Audio layout rule) and persisted in the packaging
+namespace — so a client without a usable MSE media-source stack can refuse
+a rendition-layout master instead of silently mounting it video-only (its
+native parse renders the video variant alone and never fetches the
+EXT-X-MEDIA audio renditions). The field rides hls answers only — direct
+answers never carry it — and a build predating the layout record SHALL
+answer no `layout` field (fail-open: the client mounts as before; the
+lazy rule-version wave backfills the record on the build's next repack).
+
 #### Scenario: Retry is the only playback mutation and GET never mutates
 
 - **WHEN** a failed packaging run is re-requested via POST with retry, a GET descriptor is fetched for the same item, and a retry POST is sent for an item whose packaging never failed
@@ -328,6 +339,11 @@ the pack, and every other field of every answer keeps its current shape.
 
 - **WHEN** the playback descriptor is fetched for an item whose hls build predates codec recording and whose stored source facts are the real prod shape — hevc with `codec_tag_string` `[0][0][0][0]`, profile `Main 10`, level 120, two aac LC audio streams
 - **THEN** the answer carries `codecs` composed read-side as `hvc1.2.4.L120.B0` followed by the deduped `mp4a.40.2` — the sample entry composed, the SPA's device probe runs, and an incapable device meets the honest banner instead of a skipped probe
+
+#### Scenario: Packaged descriptor names the build's layout
+
+- **WHEN** the playback descriptor is fetched for an item whose published build carries the layout record, and for an item whose build predates it
+- **THEN** the first hls answer carries `layout` naming the build's audio layout (`single-variant` or `rendition`) beside its `codecs`, and the second answers hls with no `layout` field and its playable play_url unchanged — the client mounts as before until the repack backfills the record
 
 ### Requirement: Sections from container chapters
 
@@ -765,24 +781,28 @@ codecs are composable, a BANDWIDTH attribute (probed, else a conservative
 fallback), and RESOLUTION when probed; the audio renditions SHALL appear
 ONLY as `EXT-X-MEDIA:TYPE=AUDIO` members of one group with unique NAME
 attributes (the stream's language fact when present, else a stable
-ordinal), `LANGUAGE` when known, and exactly one `DEFAULT=YES` — the
-embedded audio, the pack's primary track; the voiceover renditions ride
-`AUTOSELECT=YES` with `DEFAULT=NO`. A single-variant pack SHALL publish the
-same master shape — one variant line whose CODECS names the video and the
-muxed audio — with its media playlist, init segment, and segments beneath
-it, so the build root holds only the master; the item's play URL keeps
-naming `index.m3u8`, now the master, on both shapes. The master SHALL be
-composed at the head-first publish from the head playlists (the probe facts
-are the init segments' streams, identical across phases), so a partial
-build mounts with the master from its first served byte, and it SHALL be
-byte-identical for a given published build. When the pack's codecs cannot
-be composed, the master SHALL still publish with the corrected shape minus
-the CODECS attribute (fail-open — never a failed pack). A build published
-before this rule keeps its on-disk layout: the integrity guard and the
-serving surface SHALL accept both the legacy layouts (a root media
-playlist, or ffmpeg's generated rendition master) and the composed master,
-and a legacy build heals only by repack — fresh nonce, one current build
-per item — never by a read-side rewrite of published bytes.
+ordinal), `LANGUAGE` when known, and exactly one `DEFAULT=YES` — riding
+the pack's most compatible audio track, the first AAC audio track in
+rendition order (the embedded audio streams in source order, then the
+voiceover sidecars in document order), falling back to the first rendition
+in rendition order when no track composes AAC; every other audio rendition
+rides `DEFAULT=NO` with `AUTOSELECT=YES`. A single-variant pack SHALL
+publish the same master shape — one variant line whose CODECS names the
+video and the muxed audio — with its media playlist, init segment, and
+segments beneath it, so the build root holds only the master; the item's
+play URL keeps naming `index.m3u8`, now the master, on both shapes. The
+master SHALL be composed at the head-first publish from the head playlists
+(the probe facts are the init segments' streams, identical across phases),
+so a partial build mounts with the master from its first served byte, and
+it SHALL be byte-identical for a given published build. When the pack's
+codecs cannot be composed, the master SHALL still publish with the
+corrected shape minus the CODECS attribute (fail-open — never a failed
+pack). A build published before this rule keeps its on-disk layout: the
+integrity guard and the serving surface SHALL accept both the legacy
+layouts (a root media playlist, or ffmpeg's generated rendition master)
+and the composed master, and a legacy build heals only by repack — fresh
+nonce, one current build per item — never by a read-side rewrite of
+published bytes.
 
 #### Scenario: Rendition pack serves a video-only variant master with an audio group
 
@@ -791,7 +811,7 @@ per item — never by a read-side rewrite of published bytes.
 
 #### Scenario: Single-variant pack serves a master carrying the pack's codecs
 
-- **WHEN** a single-variant pack (no voiceovers) is published and its build root playlist is read
+- **WHEN** a single-variant pack (a single audio track — one embedded audio stream and no resolvable voiceovers) is published and its build root playlist is read
 - **THEN** `index.m3u8` is a master whose single variant line carries `CODECS` naming the video and audio codecs and references the media playlist beneath the build root, the item's play URL still names `index.m3u8`, and an HLS client composing its source buffers from the playlist's CODECS builds both the video and the audio buffer on a capable device
 
 #### Scenario: Partial build mounts with the master from the first byte
@@ -809,6 +829,11 @@ per item — never by a read-side rewrite of published bytes.
 - **WHEN** the descriptor or the media surface serves an item whose published build predates this rule — a root media playlist, or a generated rendition master
 - **THEN** the build validates, serves, and describes exactly as before under its published layout, and it is replaced only when a repack publishes a fresh nonce — at which point exactly one build directory remains under the item's artifact root and it carries the composed master
 
+#### Scenario: The default audio track is the first AAC in rendition order
+
+- **WHEN** a rendition pack whose source carries a FLAC embedded audio stream followed by an AAC embedded audio stream is published
+- **THEN** the master's EXT-X-MEDIA group carries both audio renditions with unique NAMEs and the single `DEFAULT=YES` rides the AAC track's rendition — the FLAC rendition stays selectable with `DEFAULT=NO` — and a pack whose audio tracks compose no AAC at all puts the single `DEFAULT=YES` on the first rendition in rendition order
+
 ### Requirement: Lazy repack of legacy-layout builds
 
 A published build predating the composed master SHALL heal by repack, and
@@ -817,10 +842,15 @@ descriptor is served for an item (`GET /items/{id}/playback` — the verb
 every playback actually hits, since the SPA mounts the player from the
 descriptor's play_url and `POST /play` is only the failed-state retry
 affordance) whose packaging state is `complete` with a build nonce but
-whose namespace lacks the build-generation marker — `master: true`, written
-by the lane's success persist (every build this lane publishes carries the
-composed master, so the marker is honest by construction; the playlist is
-never re-read to decide) — the descriptor closure SHALL enqueue exactly ONE
+whose namespace carries a STALE build-rule version — the `master` value
+the lane's success persist writes as the pack-lane RULE VERSION number (a
+build predating versioning answers no value and reads as version 0; the
+legacy boolean `true` reads as version 1; the value is honest by
+construction — every build this lane publishes carries the composed
+master — and the playlist is never re-read to decide), and a build is
+stale exactly when its recorded version is older than the lane's current
+rule version, so each rule bump re-heals every previously-packed build
+lazily — the descriptor closure SHALL enqueue exactly ONE
 repack through the ordinary enqueue path and its per-item lease, judging
 the same stale-build condition the play verb runs, and SHALL still answer
 the descriptor for the current old build unchanged — the GET never mutates
@@ -829,24 +859,62 @@ repack runs SHALL be lease-absorbed, not re-enqueued per request; the play
 verb SHALL keep its own lazy-repack wiring unchanged. The enqueue SHALL
 ride the pack gate unchanged: an item the gate refuses SHALL NOT enqueue,
 SHALL keep answering its existing build, and SHALL log one INFO refusal
-line — no packaging-state change, no ledger row. A current-layout build
-(marker present) SHALL NOT re-enqueue, and a failed lazy repack SHALL
-inherit the lane's ordinary failure contract — the persisted `failed`
-state and its retry affordance — never a retry loop. No library-wide
-sweep SHALL requeue legacy builds, and no serving path SHALL rewrite
-published bytes.
+line — no packaging-state change, no ledger row. A build whose recorded
+rule version equals the current rule version SHALL NOT re-enqueue, and a
+failed lazy repack SHALL inherit the lane's ordinary failure contract —
+the persisted `failed` state and its retry affordance — never a retry
+loop. No library-wide sweep SHALL requeue legacy builds, and no serving
+path SHALL rewrite published bytes.
 
 #### Scenario: A complete legacy-layout build repacks on play
 
 - **WHEN** the playback descriptor GET is served for an item whose packaging state is complete with a build nonce whose namespace predates the build-generation marker, and the pack gate is open
-- **THEN** the descriptor closure enqueues exactly one repack through the ordinary enqueue path while still answering the descriptor for the current old build, a repeated GET while the repack runs enqueues nothing (the lane's per-item lease absorbs it), and the repacked build publishes a fresh nonce carrying the composed master and the marker
+- **THEN** the descriptor closure enqueues exactly one repack through the ordinary enqueue path while still answering the descriptor for the current old build, a repeated GET while the repack runs enqueues nothing (the lane's per-item lease absorbs it), and the repacked build publishes a fresh nonce carrying the composed master and the current rule version
 
 #### Scenario: A current-layout build does not re-enqueue
 
-- **WHEN** the playback descriptor GET is served for the repacked item — and repeatedly while any repack it triggered is still running
-- **THEN** the descriptor closure enqueues nothing: the marker closes the decision window once the build publishes, and the descriptor answers per the ordinary flow
+- **WHEN** the playback descriptor GET is served for an item whose namespace records the current rule version — and repeatedly while any repack it triggered is still running
+- **THEN** the descriptor closure enqueues nothing: the recorded version closes the decision window once the build publishes, and the descriptor answers per the ordinary flow
 
 #### Scenario: A gate-closed legacy build keeps playing and skips the repack
 
 - **WHEN** the playback descriptor GET is served for a legacy-layout item the pack gate refuses (the opt-in codec knob disabled on an HEVC item)
 - **THEN** the descriptor closure logs one INFO refusal line naming the item and the gate token, enqueues nothing, changes no packaging state, charges no ledger row, and the item keeps answering its existing build
+
+#### Scenario: A version-1 build joins the re-heal wave exactly once
+
+- **WHEN** the playback descriptor GET is served for an item whose complete build's namespace carries the legacy boolean `true` (version 1) under the current rule version 2, and again after the repack it triggered lands
+- **THEN** the first GET enqueues exactly one repack while answering the old build, and the repacked build publishes with the rule-version record set to the current version — every later GET enqueues nothing, so the wave re-heals each previously-packed build once
+
+### Requirement: Audio layout rule
+
+The pack lane SHALL decide the published build's audio layout from the
+TOTAL audio streams the build will carry — the original's embedded audio
+streams plus the resolvable voiceover sidecars: a rendition-layout build
+(one video variant, every audio stream its own audio rendition) whenever
+the total exceeds one, a single-variant build (the audio muxed into the
+sole variant) when the total is at most one. The embedded-audio count
+SHALL be judged at build time from the original file itself — the lane
+probes the source as build work (the remux mapping must match the file
+being remuxed); the stored ffprobe facts stay the play-time/read-side
+source and are never re-probed for this. On a rendition build each
+embedded audio stream SHALL be remuxed as its own audio rendition by
+stream copy, in source order, ahead of the voiceover sidecar renditions
+in document order. A failed source probe SHALL degrade the decision
+fail-open to the legacy discriminator (the resolvable-sidecar count
+alone) — never a failed pack.
+
+#### Scenario: A dual-embedded-audio source publishes the rendition layout
+
+- **WHEN** a source carrying two embedded audio streams and no voiceover sidecars is packaged
+- **THEN** the published build is the rendition composition — one video-only variant and both audio streams as EXT-X-MEDIA audio renditions, one per rendition, copied without decoding or encoding — never the single-variant build whose one variant muxes both streams, the shape a one-track-per-type MSE client fatals on
+
+#### Scenario: A single-audio source stays single-variant
+
+- **WHEN** a source carrying exactly one embedded audio stream with no resolvable sidecars is packaged
+- **THEN** the published build is the single-variant degenerate — the audio muxed into the sole variant, no EXT-X-MEDIA group — exactly as before this rule existed
+
+#### Scenario: A failed source probe degrades the decision fail-open
+
+- **WHEN** the build-time source probe fails for an item carrying resolvable voiceover sidecars
+- **THEN** the layout decision falls back to the resolvable-sidecar count alone — the pack still publishes under the legacy discriminator rather than failing

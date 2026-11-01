@@ -314,3 +314,29 @@ Still deliberately open, unchanged by the gate:
   **shipped 2026-10-31** as serve-time relative-URI tokenization
   (`fix/playlist-token-propagation`) — better than absolute URIs (no host
   knowledge baked into artifacts).
+
+## Addendum (2026-11-01): `fix-tv-unblock-2` shipped
+
+Two further TV defects, diagnosed off this postmortem's beacon evidence and
+fixed in openspec change `fix-tv-unblock-2` (branch
+`feature/tv-playback-unblock`, HEAD `be85b36`, archived 2026-11-01):
+
+- **Silent video-only mounts on MSE-less devices.** The TV's native-HLS
+  webview parsed rendition masters but never fetched the `EXT-X-MEDIA`
+  audio, and the direct floor surfaced no error — a silent mount with no
+  banner. The descriptor now carries an additive `layout` field
+  (`single-variant` | `rendition`), and the SPA's direct floor refuses a
+  `rendition` layout with a classified banner + one beacon
+  (`rendition-layout-unsupported`), mounting nothing.
+- **Dual-audio muxed packs fatal in MSE.** The pack-lane layout rule keyed
+  on voiceover sidecars only, so a two-embedded-audio source packed as one
+  variant muxing both audio streams — Chromium MSE fatals on mount. The
+  rule now keys on TOTAL audio (embedded + sidecars, embedded probed at
+  build time); rendition layout iff total > 1, one `DEFAULT=YES` on the
+  first AAC track.
+
+The packaging marker became a rule version (`master: 2`); the lazy repack
+reads boolean-true as v1, so every previously-packed build re-heals lazily
+on its next play (one repack per build — the known one-play-lag). Still
+open: HEVC-on-TV remains unplayable (the F5 transcode lane — proposal held
+at GATE 1); this change unblocks audio layout, not codec support.

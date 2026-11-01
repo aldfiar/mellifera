@@ -273,15 +273,33 @@ composes, the field is simply absent (fail-open — never a failed pack,
 never a wrong refusal). Direct answers never carry it, and `Describe`
 never re-probes: stored facts only.
 
+Additive `layout` field (`fix-tv-unblock-2`, additive — existing clients
+keep working): on an `hls` answer only, the audio layout the pack lane
+decided at publish — `single-variant` (total audio ≤ 1: one muxed variant)
+or `rendition` (total audio > 1: the video variant + one audio rendition
+per stream, embedded and sidecar alike). Persisted into
+`doc["streams"].layout` at the success write and threaded through
+`Describe`'s 9th return; omitted for builds predating the record
+(fail-open — such builds re-heal via the lazy repack wave, and the
+descriptor GET that precedes mounting is itself the wave's trigger, so the
+field appears on the next fetch). Direct answers never carry it.
+
 Master-playlist note (`pack-manifest-audio` — playlist shape only, no field
-changes): the play URL keeps naming `index.m3u8`, which is now the
-lane-composed RFC 8216 master playlist on every pack — one `EXT-X-STREAM-INF`
-variant (the video, published under `rend0/`, with CODECS when composed) and
-audio renditions only as `EXT-X-MEDIA` group members (the embedded audio is
-the sole `DEFAULT=YES`; voiceovers stay selectable).
-Builds published before this shape keep their legacy flat-root layout and
-serve untouched; they heal by repack (the play verb enqueues one lazy
-repack for a complete legacy-layout build — the fresh nonce replaces it).
+changes; DEFAULT rule amended by `fix-tv-unblock-2`): the play URL keeps
+naming `index.m3u8`, which is now the lane-composed RFC 8216 master playlist
+on every pack — one `EXT-X-STREAM-INF` variant (the video, published under
+`rend0/`, with CODECS when composed) and audio renditions only as
+`EXT-X-MEDIA` group members. Exactly one `DEFAULT=YES` rides the most
+compatible track — the first AAC audio rendition in rendition order (embedded
+audio in source order, then voiceover sidecars in document order; ties →
+source order; no AAC anywhere → the first rendition). Every other audio
+rendition is `DEFAULT=NO,AUTOSELECT=YES` — voiceovers stay selectable.
+Builds published before the master shape keep their legacy flat-root layout
+and serve untouched; they heal by repack — the lazy repack gate
+(`cmd/mellifera/playback.go`) reads the stored packaging marker as a RULE
+VERSION (boolean `true` = version 1, a JSON number = its version, absent =
+0) and re-packs once when it predates `enrich.MasterRuleVersion` (2), so
+every previously-packed build re-heals on its next play or descriptor GET.
 
 Honest-descriptor addition (`tv-playback-unblock`, additive — existing
 clients keep working): a direct floor whose source container is not
@@ -323,7 +341,12 @@ Additive sender (`playback-capability-gate`): the SPA's pre-mount
 `MediaSource.isTypeSupported` probe — refusing to mount an HLS stream the
 device cannot decode, in favor of an honest unsupported banner — rides the
 same shape once as `{mode:"hls", phase:"video-error",
-code:"device-cannot-decode", detail:<probed mime>}`.
+code:"device-cannot-decode", detail:<probed mime>}`. Additive sender
+(`fix-tv-unblock-2`): an MSE-less device (native HLS only) facing a
+descriptor with `layout:"rendition"` refuses pre-mount with a classified
+banner and one beacon — `{mode:"hls", phase:"video-error",
+code:"rendition-layout-unsupported", detail:"rendition"}` — mounting
+nothing; `single-variant`/absent layouts mount the direct floor as before.
 
 ### `GET /api/v1/progress?limit=` — recent playback positions
 
