@@ -37,9 +37,12 @@ function keyEvent(
 // actions object; the table must call EXACTLY one action per keystroke.
 // Non-mock entries (a hand-written no-op implementation) contribute zero.
 function callCount(actions: Record<string, unknown>): number {
-  return Object.values(actions).reduce(
+  return Object.values(actions).reduce<number>(
     (sum, fn) =>
-      sum + (typeof fn === "function" && "mock" in fn ? fn.mock.calls.length : 0),
+      sum +
+      (typeof fn === "function" && "mock" in fn
+        ? (fn as { mock: { calls: unknown[] } }).mock.calls.length
+        : 0),
     0,
   );
 }
