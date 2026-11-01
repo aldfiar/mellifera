@@ -42,6 +42,16 @@ const (
 	// the sweep cost negligible (a handful of indexed reads per tick).
 	sweepInterval = 60 * time.Second
 
+	// retentionGrace is the retention pass's dual-anchor grace window
+	// (fix-reheal-eviction D2): a superseded build stays live until it is
+	// this old on BOTH anchors — its directory mtime and its item row's
+	// updated_at. The observed kill window is one buffer (~30 s) until the
+	// session's next descriptor fetch; 10 min is ~20x margin and covers a
+	// pause-and-resume inside the window. Locked like sweepInterval: a rule
+	// bump re-heals every packed item at once, so a longer window would sit
+	// the whole library at 2x disk against the budget cap for hours.
+	retentionGrace = 10 * time.Minute
+
 	// watchScanLimit is the playback-progress scan depth per sweep: the LRU
 	// clock and the watched set over at most this many most-recent rows —
 	// far beyond any realistic continue-watching surface.
@@ -282,16 +292,18 @@ func streamFactRender(s map[string]any) string {
 }
 
 // newSweep returns the periodic sweep closure: one pass = the watch-driven
-// frontier (enqueue decisions → the streams lane) + budget accounting with
-// LRU eviction (evict decisions → .trash sibling then delete) + the integrity
-// sweep (broken published builds → repack jobs → the streams lane). Errors
-// are logged, never fatal — a sweep is best-effort background work and the
-// next tick retries. validate is the wired stream.Service.ValidateBuild,
-// injected as a func (the enqueue seam's pattern) so the sweep stays
-// testable without package main.
+// frontier (enqueue decisions → the streams lane) + the retention pass
+// (superseded builds past the dual grace anchor → .trash sibling then delete)
+// + budget accounting with LRU eviction (evict decisions → .trash sibling
+// then delete) + the integrity sweep (broken published builds → repack jobs →
+// the streams lane). Errors are logged, never fatal — a sweep is best-effort
+// background work and the next tick retries. validate is the wired
+// stream.Service.ValidateBuild, injected as a func (the enqueue seam's
+// pattern) so the sweep stays testable without package main.
 func newSweep(st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, budgetBytes int64, optInCodecs bool) func(context.Context) {
 	return func(ctx context.Context) {
 		fronted := sweepFrontier(ctx, st, enqueue, optInCodecs)
+		sweepRetention(ctx, st, root, retentionGrace)
 		sweepBudget(ctx, st, root, budgetBytes, fronted)
 		sweepIntegrity(ctx, st, root, validate, enqueue, optInCodecs)
 	}
@@ -348,12 +360,18 @@ func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) er
 
 // sweepBudget walks the artifact root into the disk-truth snapshot (build
 // dirs under <itemID>/<nonce>, orphans included — a directory whose item row
-// is gone or deleted) and executes the returned evictions. fronted is the
-// frontier's working set (sweepFrontier's return) — pinned against eviction;
-// if the budget cannot be met without evicting pinned builds, that is the
-// operator signal that the budget sits below the working set, logged loudly.
-// An unreadable store read marks the item live (never evict blind); a
-// missing root means nothing was ever packaged.
+// is gone or deleted) and executes the returned evictions. Each directory's
+// Stale flag (fix-reheal-eviction D4) comes off the row the walk already
+// reads: a directory is stale when it is not the one doc.streams names, and
+// every directory of an orphan or deleted-status row is stale (pure waste —
+// the orphan-first principle at directory granularity). Stale .tmp- staging
+// stays budget-untouchable: the in-flight skip inside Evictions stands —
+// retention owns staging. fronted is the frontier's working set
+// (sweepFrontier's return) — pinned against eviction; if the budget cannot
+// be met without evicting pinned builds, that is the operator signal that
+// the budget sits below the working set, logged loudly. An unreadable store
+// read marks the item live (never evict blind); a missing root means nothing
+// was ever packaged.
 func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes int64, fronted map[string]bool) {
 	if budgetBytes <= 0 {
 		return // the cap is off — do not even walk the disk
@@ -369,19 +387,27 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 			continue
 		}
 		live := true
+		allStale := false // orphan and deleted rows: every directory is waste
+		current := ""     // the build the document names ("" when none does)
 		if row, err := st.GetItem(ctx, idDir.Name()); err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
 				slog.Warn("orchestrator: artifact item lookup failed", "item", idDir.Name(), "error", err)
 				continue // unreadable store: skip, never evict blind
 			}
 			live = false // orphaned by a moved/deleted library file (D-9)
+			allStale = true
 		} else if row.Status == "deleted" {
 			live = false
+			allStale = true
+		} else {
+			streams, _ := decodeItemDoc(row.Document)["streams"].(map[string]any)
+			current, _ = streams["nonce"].(string)
 		}
 		for _, nonce := range nonces(filepath.Join(root, idDir.Name())) {
 			p := filepath.Join(root, idDir.Name(), nonce)
 			dirs = append(dirs, orchestrator.ArtifactDir{
 				Path: p, ItemID: idDir.Name(), Bytes: dirSize(p), Live: live,
+				Stale: allStale || nonce != current,
 			})
 		}
 	}
@@ -399,6 +425,65 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 		}
 		if evictDir(path) {
 			resetStreamsState(ctx, st, owner[path], filepath.Base(path))
+		}
+	}
+}
+
+// sweepRetention is the retention pass (fix-reheal-eviction Interface 2,
+// D5): it reclaims superseded build directories once they are past the grace
+// on BOTH anchors — the directory's own mtime (protects in-flight packs:
+// staging and the renamed head-first build grow, so they read fresh) and the
+// item row's updated_at (the success persist stamps it at the supersede
+// moment, so it protects just-superseded builds a live session may still hold
+// URLs for; any later doc write only extends the window — the safe
+// direction). It runs regardless of the budget cap (D5): the cap's off
+// position must not immortalize stale builds. A stale directory is any
+// directory the item document does not name: doc.streams.nonce when complete;
+// a none/failed or nameless doc leaves every directory stale (any packaging
+// state); an orphan item (row gone) leaves every directory stale too, judged
+// on mtime alone. There is no prefix carve-out: fresh .tmp- staging is
+// protected by its own mtime anchor, and stale staging plus stale .trash
+// (crash hygiene) are reclaimed like any other stale directory. Reclamation
+// rides evictDir only — retention never touches the document-named build, so
+// there is nothing to unpublish (no resetStreamsState) — and adds no log
+// lines of its own. An unreadable store read skips the item (never evict
+// blind — the sweepBudget precedent).
+func sweepRetention(ctx context.Context, st *store.Store, root string, grace time.Duration) {
+	idDirs, err := os.ReadDir(root)
+	if err != nil {
+		return // no artifact root yet
+	}
+	now := time.Now()
+	for _, idDir := range idDirs {
+		if !idDir.IsDir() {
+			continue
+		}
+		var nonce string
+		var updated time.Time // zero = no row (orphan): mtime is the only anchor
+		if row, err := st.GetItem(ctx, idDir.Name()); err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				slog.Warn("orchestrator: retention item lookup failed", "item", idDir.Name(), "error", err)
+				continue // unreadable store: skip, never evict blind
+			}
+		} else {
+			doc := decodeItemDoc(row.Document)
+			streams, _ := doc["streams"].(map[string]any)
+			nonce, _ = streams["nonce"].(string)
+			updated = row.UpdatedAt
+		}
+		itemDir := filepath.Join(root, idDir.Name())
+		for _, name := range nonces(itemDir) {
+			if name == nonce {
+				continue // the document-named build — never retention's victim
+			}
+			p := filepath.Join(itemDir, name)
+			info, err := os.Stat(p)
+			if err != nil {
+				continue // vanished mid-pass: the next tick sees the truth
+			}
+			if now.Sub(info.ModTime()) >= grace && (updated.IsZero() || now.Sub(updated) >= grace) {
+				evictDir(p)
+			}
 		}
 	}
 }

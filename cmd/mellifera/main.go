@@ -229,11 +229,6 @@ func main() {
 		build, err := mediaSvc.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
 		return pack.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
 	}
-	// Publish replacement (playback-capability-gate D5): after the lane
-	// persists the new build the document names it, so evicting the item's
-	// superseded build directories is safe. Best-effort — EvictSuperseded
-	// never fails the landed pack; budget LRU still owns cross-item pressure.
-	scanDeps.Enrich.AfterPackPersist = mediaSvc.EvictSuperseded
 	// Client-relayed-fetch (D2/D4/D5): the enrich Relay — the deferred-handoff
 	// transport over the relay_jobs store. Built BEFORE NewQueue, which copies
 	// the Deps struct (a later assignment would miss the queue's copy): the

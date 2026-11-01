@@ -998,7 +998,7 @@ const watchHls = vi.hoisted(() => {
   return { FakeHls: WatchFakeHls, instances };
 });
 
-vi.mock("hls.js/light", () => ({ default: watchHls.FakeHls }));
+vi.mock("hls.js", () => ({ default: watchHls.FakeHls }));
 
 // An episode with the sidecar facts (serial-scanner posture): one top-level
 // .ass, one AUDIO sidecar interleaved at document index 1 (the n= space the

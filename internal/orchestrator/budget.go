@@ -14,14 +14,19 @@ import (
 // <itemID>/<nonce> layout) with its disk-truth size — the narrow input the
 // budget policy judges. Live reports whether the item row still exists
 // (false = orphaned by a moved/deleted library file — D-9's accepted caveat:
-// orphans are waste by definition and eviction reaps them). Originals are
-// never an input: they live in library directories, which this package
-// never touches.
+// orphans are waste by definition and eviction reaps them). Stale reports
+// whether the directory is a superseded build — not the one the item document
+// names (fix-reheal-eviction D4): reclaiming it unpublishes nothing, so it
+// reclaims before any current build, ahead of watch recency. The Stale bool
+// zero value (false = current build) keeps every caller that does not track
+// staleness on the pre-stale ordering. Originals are never an input: they
+// live in library directories, which this package never touches.
 type ArtifactDir struct {
 	Path   string
 	ItemID string
 	Bytes  int64
 	Live   bool
+	Stale  bool
 }
 
 // inFlightPrefix marks an artifact directory a pack worker is writing RIGHT
@@ -46,12 +51,17 @@ const inFlightPrefix = ".tmp-"
 // reaping exactly what the frontier keeps (re)packing — the evict→repack
 // churn loop; pinning the working set breaks it. Fronted items do fall to
 // eviction when the budget cannot be met from the rest alone (the caller
-// warns — the budget is below the working set). budgetBytes <= 0 disables
+// warns — the budget is below the working set). And before recency sits the
+// stale-first precedence (fix-reheal-eviction D4): a directory the item
+// document no longer names reclaims before ANY current build, whatever its
+// recency — reclaiming a superseded build unpublishes nothing, while
+// reclaiming a current build forces a re-pack (the evict-repack loop the
+// frontier pin exists to break). budgetBytes <= 0 disables
 // the cap (the locked `0` = off knob); within budget, nothing is evicted.
 // The result is the ordered list of directory paths to move aside and
-// delete — deterministic (non-fronted, then recency, then orphan-first,
-// then path), non-nil, and NEVER an original: only artifact directories
-// are judged here.
+// delete — deterministic (non-fronted, then stale-first, then recency, then
+// orphan-first, then path), non-nil, and NEVER an original: only artifact
+// directories are judged here.
 func Evictions(dirs []ArtifactDir, watched map[string]time.Time, fronted map[string]bool, budgetBytes int64) []string {
 	if budgetBytes <= 0 {
 		return nil // the cap is off — accounting never evicts
@@ -69,6 +79,9 @@ func Evictions(dirs []ArtifactDir, watched map[string]time.Time, fronted map[str
 		a, b := ordered[i], ordered[j]
 		if fa, fb := fronted[a.ItemID], fronted[b.ItemID]; fa != fb {
 			return !fa // the frontier's working set is evicted last (churn break)
+		}
+		if a.Stale != b.Stale {
+			return a.Stale // superseded before current, whatever the recency (D4)
 		}
 		ta, tb := recency(a, watched), recency(b, watched)
 		if !ta.Equal(tb) {

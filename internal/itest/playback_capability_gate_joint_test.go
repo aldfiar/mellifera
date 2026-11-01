@@ -7,10 +7,10 @@
 // the real enrich streams lane with the gate-closure composition root's
 // wiring, real ffmpeg pack, real stream.Service, real api router over real
 // HTTP; no mocks). cmd/mellifera is package main and cannot be imported, so
-// its PackItem/AfterPackPersist/Play closures are mirrored here in miniature
+// its PackItem/Play closures are mirrored here in miniature
 // (the pbNewWorld house pattern) — the decisions they JOIN are the production
 // functions: stream.PackGate, refusal.PolicyRefusal handling, refusal.PlayRefusal
-// mapping, stream.EvictSuperseded.
+// mapping.
 //
 //   - (a) end-to-end codecs (2.1's record ≡ 2.2's projection ≡ the artifact
 //     truth): a real pack through the real lane publishes, and the descriptor
@@ -21,11 +21,12 @@
 //     probed verbatim) with profile/level read from the published playlist
 //     and composed through the RFC 6381 constants restated in the test. A
 //     direct answer in the same session carries no `codecs` key at all.
-//   - (b) publish replacement (4.1's seam over the real lane): repacking the
-//     same item through the real EnqueuePack seam publishes a fresh nonce,
-//     and the ON-DISK state (directory listing, never a log line) keeps
-//     exactly ONE build directory — the nonce the descriptor then answers;
-//     the superseded playlist URL stops answering.
+//   - (b) retention over the real lane: repacking the same item through the
+//     real EnqueuePack seam publishes a fresh nonce, and the ON-DISK state
+//     (directory listing, never a log line) keeps the retention pair — the
+//     fresh nonce the descriptor now answers AND the superseded build — and
+//     the superseded playlist URL keeps answering 200 with the session's
+//     token.
 //   - (c) gate refusal (1.2's refusal.PlayRefusal): a knob-off opt-in item
 //     answers the descriptor's own `codec_not_opted_in` token while its
 //     state is none (the honesty projection), and once its packaging state
@@ -37,7 +38,8 @@
 // Coverage referenced, not re-proven: the composition table's cases
 // (stream/codecs_test.go, 2.1), the projection units
 // (stream/describe_codecs_test.go, 2.2), the eviction edge cases
-// (stream/evict_test.go, 4.1), the refusal handler mapping incl. the
+// (cmd/mellifera/retention_test.go TestSweepRetention, 2.1), the refusal
+// handler mapping incl. the
 // unsupported token and the nothing_failed twin
 // (api/playback_test.go TestPlayGateRefusal, 1.2), the SPA probe (3.1's
 // vitest), budget-pressure eviction (the orchestrator suite).
@@ -77,11 +79,10 @@ type gateDescriptor struct {
 	Codecs      json.RawMessage `json:"codecs"`
 }
 
-// gateNewQueue is pbNewQueue's composition root with the change's two wiring
-// lines added (cmd/mellifera main.go in miniature): the PackItem closure
+// gateNewQueue is pbNewQueue's composition root with the change's wiring
+// line added (cmd/mellifera main.go in miniature): the PackItem closure
 // judges the build-time gate first (a closed verdict returns
-// refusal.PolicyRefusal — the lane's policy branch, never the failure ledger),
-// and AfterPackPersist is the real EvictSuperseded (publish replacement).
+// refusal.PolicyRefusal — the lane's policy branch, never the failure ledger).
 func gateNewQueue(t *testing.T, w *pbWorld) *enrich.Queue {
 	t.Helper()
 	deps := enrich.Deps{Store: w.st, Modules: w.reg, Plugins: w.mgr}
@@ -92,7 +93,6 @@ func gateNewQueue(t *testing.T, w *pbWorld) *enrich.Queue {
 		build, err := w.media.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
 		return pack.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
 	}
-	deps.AfterPackPersist = w.media.EvictSuperseded
 	q := enrich.NewQueue(deps, enrich.QueueConfig{Workers: 2, Backoff: time.Millisecond})
 	if err := q.Start(context.Background()); err != nil {
 		t.Fatalf("queue Start: %v", err)
@@ -515,8 +515,8 @@ func TestPlaybackCapabilityGateJoint(t *testing.T) {
 		t.Fatalf("served codecs %v, want [avc1.*, mp4a.40.2] (video first, then audio)", served)
 	}
 
-	// --- (b) publish replacement: the repack drives the real lane; exactly
-	// ONE build directory survives and the descriptor answers it -----------
+	// --- (b) retention: the repack drives the real lane; the fresh build
+	// publishes and the superseded build stays on disk and serves -----------
 	oldPlayURL := d.PlayURL
 	if err := enqueue(e01.ID); err != nil {
 		t.Fatalf("enqueue repack %s: %v", e01.ID, err)
@@ -530,8 +530,9 @@ func TestPlaybackCapabilityGateJoint(t *testing.T) {
 	if newNonce == "" || newNonce == nonce {
 		t.Fatalf("repack did not publish a fresh build nonce: old %q, streams %v", nonce, streams)
 	}
-	// The ON-DISK state: exactly one build directory under the item's
-	// artifact root, and it is the new nonce (directory listing, not logs).
+	// The ON-DISK state: the retention pair under the item's artifact root —
+	// the new nonce AND the superseded build, both present (directory
+	// listing, not logs).
 	entries, err := os.ReadDir(filepath.Join(w.root, e01.ID))
 	if err != nil {
 		t.Fatalf("read artifact root %s: %v", filepath.Join(w.root, e01.ID), err)
@@ -542,17 +543,26 @@ func TestPlaybackCapabilityGateJoint(t *testing.T) {
 			dirs = append(dirs, e.Name())
 		}
 	}
-	if len(dirs) != 1 || dirs[0] != newNonce {
-		t.Fatalf("build directories under %s = %v, want exactly [%s] (publish replacement)", filepath.Join(w.root, e01.ID), dirs, newNonce)
+	var haveNew, haveOld bool
+	for _, d := range dirs {
+		switch d {
+		case newNonce:
+			haveNew = true
+		case nonce:
+			haveOld = true
+		}
 	}
-	// The descriptor answers the NEW build; the superseded playlist URL stops
-	// answering; the fresh playlist serves complete.
+	if !haveNew || !haveOld {
+		t.Fatalf("build directories under %s = %v, want the retention pair [%s (fresh) %s (superseded)] both PRESENT — publish retains superseded builds", filepath.Join(w.root, e01.ID), dirs, newNonce, nonce)
+	}
+	// The descriptor answers the NEW build; the superseded playlist URL keeps
+	// answering (retention); the fresh playlist serves complete.
 	_, d2 := gateGet(t, w, baseURL, e01.ID)
 	if !strings.Contains(d2.PlayURL, "/"+newNonce+"/index.m3u8?token=") {
 		t.Fatalf("play URL after repack = %q, want the fresh nonce's playlist", d2.PlayURL)
 	}
-	if oldStatus, _, _ := pbDo(t, w.client, http.MethodGet, baseURL+oldPlayURL, "", nil); oldStatus == http.StatusOK {
-		t.Fatalf("superseded playlist URL %s still answers 200 after publish replacement", oldPlayURL)
+	if oldStatus, _, _ := pbDo(t, w.client, http.MethodGet, baseURL+oldPlayURL, "", nil); oldStatus != http.StatusOK {
+		t.Fatalf("superseded playlist URL %s = status %d, want 200 — the retention contract keeps it on disk and serving with the session's token", oldPlayURL, oldStatus)
 	}
 	variantRel2, initURI2, freshVariant := gateVariantInit(t, w, baseURL, d2.PlayURL)
 	if !strings.Contains(string(freshVariant), "#EXT-X-ENDLIST") {

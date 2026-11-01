@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-11-01
+goal: Swap the Player's hls import to the full build so EXT-X-MEDIA audio
+  renditions load; voiceover switching revives; disclose bundle delta
+skip_specs: true

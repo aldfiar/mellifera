@@ -12,8 +12,7 @@
 // (decision_log.go's playbackDescriptor incl. the "playback: descriptor" line
 // with codecs_src), and the play verb (packOnPlay incl. legacyRepackOnPlay).
 // The decisions those closures JOIN are the production functions: stream.Pack,
-// stream.PackGate, stream.Classify, stream.Describe, stream.EvictSuperseded,
-// orchestrator.OnPlay.
+// stream.PackGate, stream.Classify, stream.Describe, orchestrator.OnPlay.
 //
 //   - (a) the rendition master's SERVED shape: exactly ONE EXT-X-STREAM-INF
 //     video variant with CODECS; the audio renditions ONLY as EXT-X-MEDIA
@@ -367,8 +366,8 @@ func pmaRetryFailed(ctx context.Context, st *store.Store, enqueue func(string) e
 // pmaQueue starts one enrich queue over the world with the production
 // PackItem wiring (main.go's closure in miniature: the D7 gate line, the
 // PackGate pre-check as refusal.PolicyRefusal, the real pack, the Codecs
-// outcome) plus the real EvictSuperseded publish replacement. extra runs
-// inside the closure before Pack (the tail-gate legs' call counter).
+// outcome). extra runs inside the closure before Pack (the tail-gate legs'
+// call counter).
 func pmaQueue(t *testing.T, w *pbWorld, media *stream.Service, extra func()) *enrich.Queue {
 	t.Helper()
 	deps := enrich.Deps{Store: w.st, Modules: w.reg, Plugins: w.mgr}
@@ -383,7 +382,6 @@ func pmaQueue(t *testing.T, w *pbWorld, media *stream.Service, extra func()) *en
 		build, err := media.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
 		return pack.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
 	}
-	deps.AfterPackPersist = media.EvictSuperseded
 	q := enrich.NewQueue(deps, enrich.QueueConfig{Workers: 2, Backoff: time.Millisecond})
 	if err := q.Start(context.Background()); err != nil {
 		t.Fatalf("queue Start: %v", err)
@@ -1219,7 +1217,7 @@ func TestPackManifestAudioJoint(t *testing.T) {
 		}
 
 		// Release: the repack lands — fresh nonce, master marker, and the
-		// composed master replacing the legacy layout (publish replacement).
+		// composed master replacing the legacy layout.
 		gate.release()
 		streams := pmaAwaitFreshNonce(t, w.st, "pma_e", "legacy0", 60*time.Second)
 		pbAwaitIdle(t, qE, 30*time.Second)
@@ -1231,8 +1229,17 @@ func TestPackManifestAudioJoint(t *testing.T) {
 			t.Fatalf("repacked namespace carries master %v, want the current rule version %d", streams["master"], pack.MasterRuleVersion)
 		}
 		dirs := pmaNonceDirs(t, w.media.Root, "pma_e")
-		if len(dirs) != 1 || dirs[0] != freshNonce {
-			t.Fatalf("build dirs after the repack = %v, want exactly [%s] (publish replacement)", dirs, freshNonce)
+		var haveFresh, haveLegacy bool
+		for _, d := range dirs {
+			switch d {
+			case freshNonce:
+				haveFresh = true
+			case "legacy0":
+				haveLegacy = true
+			}
+		}
+		if !haveFresh || !haveLegacy {
+			t.Fatalf("build dirs after the repack = %v, want the retention pair [%s (fresh) legacy0 (superseded)] both PRESENT — publish retains superseded builds", dirs, freshNonce)
 		}
 		newDesc := pmaDescriptor(t, playBase, w, "pma_e")
 		if !strings.HasPrefix(newDesc.PlayURL, pmaMediaPrefix+"pma_e/"+freshNonce+"/index.m3u8?token=") {
@@ -1248,8 +1255,8 @@ func TestPackManifestAudioJoint(t *testing.T) {
 			t.Fatalf("repacked master CODECS = %q, want the composed video+audio value", got)
 		}
 		if oldStatus, _, _ := pbDo(t, w.client, http.MethodGet,
-			playBase+pmaMediaPrefix+"pma_e/legacy0/index.m3u8?token="+oldToken, "", nil); oldStatus == http.StatusOK {
-			t.Fatal("the superseded legacy build still answers 200 after the repack replaced it")
+			playBase+pmaMediaPrefix+"pma_e/legacy0/index.m3u8?token="+oldToken, "", nil); oldStatus != http.StatusOK {
+			t.Fatalf("the superseded legacy build with the session's old token = status %d, want 200 — the retention contract keeps it on disk and serving", oldStatus)
 		}
 		// The flow's own line rode the job: exactly one gate + one publish.
 		window := log.since(mark)
@@ -1329,8 +1336,17 @@ func TestPackManifestAudioJoint(t *testing.T) {
 			t.Fatalf("repacked v1-seed namespace carries master %v, want the current rule version %d", freshF["master"], pack.MasterRuleVersion)
 		}
 		fDirs := pmaNonceDirs(t, w.media.Root, "pma_f")
-		if len(fDirs) != 1 || fDirs[0] != fNonce {
-			t.Fatalf("pma_f build dirs after the repack = %v, want exactly [%s] (publish replacement)", fDirs, fNonce)
+		var haveFFresh, haveFLegacy bool
+		for _, d := range fDirs {
+			switch d {
+			case fNonce:
+				haveFFresh = true
+			case "v1legacy":
+				haveFLegacy = true
+			}
+		}
+		if !haveFFresh || !haveFLegacy {
+			t.Fatalf("pma_f build dirs after the repack = %v, want the retention pair [%s (fresh) v1legacy (superseded)] both PRESENT — publish retains superseded builds", fDirs, fNonce)
 		}
 		if got := atomic.LoadInt64(&packCalls); got != 2 {
 			t.Fatalf("pack ran %d times after the v1-seed repack, want exactly 2 (pma_e's + pma_f's ONE repack)", got)

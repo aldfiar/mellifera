@@ -151,6 +151,50 @@ func TestBudgetEviction(t *testing.T) {
 			budgetBytes: 32 * gb,
 			want:        []string{"/r/old/n1", "/r/f1/n1"}, // non-fronted first, then fronted by path
 		},
+		{
+			// Spec scenario "Budget pressure reclaims retained builds before
+			// current ones" (fix-reheal-eviction D4): a retained superseded
+			// build of the MOST recently watched item reclaims before an
+			// unwatched item's current build — reclaiming it unpublishes
+			// nothing, while a current build forces a re-pack.
+			name: "retained_stale_reclaims_before_unwatched_current",
+			dirs: library(
+				ArtifactDir{Path: "/r/watched/old1", ItemID: "watched", Bytes: 20 * gb, Live: true, Stale: true},
+				ArtifactDir{Path: "/r/watched/cur1", ItemID: "watched", Bytes: 20 * gb, Live: true},
+				ArtifactDir{Path: "/r/fresh/n1", ItemID: "fresh", Bytes: 20 * gb, Live: true},
+			),
+			watched:     map[string]time.Time{"watched": recent}, // fresh never watched
+			budgetBytes: 42 * gb,
+			want:        []string{"/r/watched/old1"}, // stale first despite the freshest recency
+		},
+		{
+			// The current build falls only when the budget still cannot be
+			// met: after the stale build, the UNWATCHED current goes next —
+			// the watched item's current build survives.
+			name: "current_build_falls_only_when_budget_still_unmet",
+			dirs: library(
+				ArtifactDir{Path: "/r/watched/old1", ItemID: "watched", Bytes: 20 * gb, Live: true, Stale: true},
+				ArtifactDir{Path: "/r/watched/cur1", ItemID: "watched", Bytes: 20 * gb, Live: true},
+				ArtifactDir{Path: "/r/fresh/n1", ItemID: "fresh", Bytes: 20 * gb, Live: true},
+			),
+			watched:     map[string]time.Time{"watched": recent},
+			budgetBytes: 22 * gb,
+			want:        []string{"/r/watched/old1", "/r/fresh/n1"},
+		},
+		{
+			// The stale clause sits AFTER the fronted pin: a fronted item's
+			// stale directory does not leapfrog the pin — a non-fronted
+			// current build still reclaims first.
+			name: "fronted_pin_outranks_stale",
+			dirs: library(
+				ArtifactDir{Path: "/r/front/old1", ItemID: "front", Bytes: 20 * gb, Live: true, Stale: true},
+				ArtifactDir{Path: "/r/keep/n1", ItemID: "keep", Bytes: 4 * gb, Live: true},
+			),
+			watched:     map[string]time.Time{},
+			fronted:     map[string]bool{"front": true},
+			budgetBytes: 20 * gb, // over budget (24) — reaping the current build lands within it
+			want:        []string{"/r/keep/n1"},
+		},
 	}
 	for _, tc := range cases {
 		tc := tc

@@ -139,14 +139,6 @@ func (q *Queue) workStreams(ctx context.Context, itemID string) {
 		success["layout"] = outcome.Layout
 	}
 	q.persistStreams(ctx, itemID, success)
-	// Publish replacement (playback-capability-gate D5): only AFTER the
-	// success persist — the document names the new build, so evicting the
-	// superseded directories can never strand the descriptor's integrity
-	// guard on a deleted current build. The failure paths above return
-	// before this line; a landed pack is never re-failed by eviction.
-	if q.deps.AfterPackPersist != nil {
-		q.deps.AfterPackPersist(itemID, outcome.Nonce)
-	}
 }
 
 // renewLease extends itemID's lease at half-TTL intervals until done closes —

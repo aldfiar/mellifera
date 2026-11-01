@@ -8,11 +8,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"time"
 )
 
@@ -151,36 +149,4 @@ func (s *Service) buildDir(itemID, nonce string) (string, error) {
 // ensureRoot creates the artifact root (server data space) on demand.
 func (s *Service) ensureRoot() error {
 	return os.MkdirAll(s.Root, 0o755)
-}
-
-// EvictSuperseded enforces the publish-replacement rule (playback-capability-
-// gate D5): one current build per item. Every directory under the item's
-// artifact root (Root/itemID) except the keepNonce build directory is removed.
-// Hard edges, by construction: `.tmp-*` staging names are never touched (an
-// in-flight build of the same item survives), other items are never touched
-// (only the item's own directory is read), keepNonce is always kept, and a
-// stray non-directory entry is never touched. Best-effort for the landed pack:
-// a failed removal logs WARN and the sweep continues — eviction never fails
-// the pack that just persisted. Unsafe path components refuse with a WARN
-// before any directory is read.
-func (s *Service) EvictSuperseded(itemID, keepNonce string) {
-	if _, err := s.buildDir(itemID, keepNonce); err != nil {
-		slog.Warn("streams: superseded eviction refused unsafe path", "item", itemID, "nonce", keepNonce, "error", err)
-		return
-	}
-	entries, err := os.ReadDir(filepath.Join(s.Root, itemID))
-	if err != nil {
-		return // no item directory: nothing was ever published; nothing to evict
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == keepNonce || strings.HasPrefix(entry.Name(), ".tmp-") {
-			continue
-		}
-		path := filepath.Join(s.Root, itemID, entry.Name())
-		if err := os.RemoveAll(path); err != nil {
-			slog.Warn("streams: superseded eviction failed", "path", path, "error", err)
-			continue
-		}
-		slog.Info("streams: evicted artifact directory", "path", path)
-	}
 }
