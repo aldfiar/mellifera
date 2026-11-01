@@ -252,6 +252,10 @@ Also observed: the packer currently does NOT honor the `OptInCodecs` knob
 Also ruled the same day (human ruling on artifact replacement): one current
 build per item — a repack replaces the item's previous build directories at
 publish instead of leaving them in place until budget eviction.
+(Superseded 2026-11-01: `fix-reheal-eviction` retired evict-on-publish —
+publish no longer deletes the superseded build; the periodic sweep's
+retention pass reclaims it after a 10-minute dual-anchor grace — dir mtime
++ row updated_at.)
 
 Route (updated 2026-10-31 evening): all three findings close in openspec
 change `playback-capability-gate` (`openspec/changes/playback-capability-gate`)
@@ -275,6 +279,8 @@ merge and deploy:
   that names the new build (`.tmp-*` staging stays untouchable — the F2
   lesson, now a rule; budget recency accounting untouched); a client
   holding a superseded playlist URL recovers by refetching the descriptor.
+  **(Reversed 2026-11-01 by `fix-reheal-eviction` — evict-on-publish
+  retired; see the superseded note above.)**
 
 Still deliberately open, unchanged by the gate:
 
