@@ -2,7 +2,7 @@
 
 > Scope: the current HTTP edge of the single Go binary. Grounded in
 > `internal/api/{router,handlers,playback,playback_events,parsers,middleware}.go`,
-> `internal/web/{web,swagger}.go`, `internal/stream/{doc,describe,codecs}.go`,
+> `internal/web/{web,swagger}.go`, `internal/stream/{doc,describe,codecs,pack,master}.go`,
 > `internal/refusal`, `internal/enrich/state.go`, and `cmd/mellifera/main.go`. Authoritative design:
 > `docs/architecture.md` (§2 protos, §3.1 document model, §7.3 restart, §9.1
 > schema, §11.5 Principal, §11.6 errors); behavioral requirements:
@@ -18,7 +18,10 @@
 > web-ui-phase-3 → media-preview; re-actualized 2026-10-10 for packaged-playback
 > + element-pages; re-actualized 2026-10-31 for playback-capability-gate
 > (the descriptor's `codecs`, the play retry's 400 refusal family, the
-> `device-cannot-decode` beacon); the per-feature records live in git history
+> `device-cannot-decode` beacon); re-actualized 2026-11-01 for
+> pack-manifest-audio (the play URL now serves a lane-composed RFC 8216
+> master playlist — video variants under `rend0/` — and the legacy
+> read-side codecs composition); the per-feature records live in git history
 > and `openspec/changes/archive/`.
 
 ## 1. Surfaces and authentication
@@ -258,13 +261,27 @@ Additive `codecs` field (`playback-capability-gate`, additive — existing
 clients keep working): on an `hls` answer only, the RFC 6381 codec strings
 of the published pack — video first, then audio in rendition order.
 Recorded at publish into `doc["streams"].codecs` by ffprobe-probing each
-variant playlist of the published build (the MP4 muxer's sample entries,
+variant playlist — at the head-first publish, over the finalized scratch
+copies (one ffprobe per variant per pack; the MP4 muxer's sample entries,
 not the source's — `internal/stream/codecs.go`); a streams namespace
 predating the record composes the same strings read-side from the stored
-source ffprobe facts (a remux carries the source's streams). When neither
+source ffprobe facts (a remux carries the source's streams; a hevc source
+tag already naming a sample entry — `hvc1`/`hev1` — composes verbatim,
+anything else — e.g. a Matroska container artifact — composes as `hvc1` —
+`pack-manifest-audio`). When neither
 composes, the field is simply absent (fail-open — never a failed pack,
 never a wrong refusal). Direct answers never carry it, and `Describe`
 never re-probes: stored facts only.
+
+Master-playlist note (`pack-manifest-audio` — playlist shape only, no field
+changes): the play URL keeps naming `index.m3u8`, which is now the
+lane-composed RFC 8216 master playlist on every pack — one `EXT-X-STREAM-INF`
+variant (the video, published under `rend0/`, with CODECS when composed) and
+audio renditions only as `EXT-X-MEDIA` group members (the embedded audio is
+the sole `DEFAULT=YES`; voiceovers stay selectable).
+Builds published before this shape keep their legacy flat-root layout and
+serve untouched; they heal by repack (the play verb enqueues one lazy
+repack for a complete legacy-layout build — the fresh nonce replaces it).
 
 Honest-descriptor addition (`tv-playback-unblock`, additive — existing
 clients keep working): a direct floor whose source container is not

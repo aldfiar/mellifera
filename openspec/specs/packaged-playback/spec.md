@@ -274,7 +274,17 @@ description box and need media present) and persisted in the packaging
 namespace; a build predating the
 record SHALL compose the same strings read-side from the item's stored
 source ffprobe facts (a remux carries the source's streams), the recorded
-value winning whenever present. A build whose codecs cannot be composed
+value winning whenever present. The read-side composition SHALL judge the
+HEVC sample-entry tag as a source-container artifact: a source stream whose
+`codec_tag_string` already names a sample entry (`hvc1` or `hev1` — an MP4
+source whose entry the stream-copy remux preserves) SHALL compose verbatim,
+and any other value (a Matroska source's `[0][0][0][0]` — the container's
+tagging convention, not a sample entry) SHALL compose as `hvc1`, the
+de-facto widely-accepted entry — an honest approximation, since which
+sample entry the muxer writes is unknowable from stored source facts. The
+publish-time composition SHALL keep reading the tag from the probed
+artifact verbatim, degrading on a foreign tag there (fail-open). A build
+whose codecs cannot be composed
 either way SHALL answer no `codecs` field — the client mounts as before
 (fail-open). Direct answers SHALL never carry `codecs`; the field describes
 the pack, and every other field of every answer keeps its current shape.
@@ -313,6 +323,11 @@ the pack, and every other field of every answer keeps its current shape.
 
 - **WHEN** the playback descriptor is fetched for an item whose hls build was published before codec recording existed and whose document carries the source's ffprobe facts
 - **THEN** the answer carries `codecs` composed from those stored facts through the same table the publish path uses — no re-probe, no repack — while a build whose facts compose nothing answers no `codecs` field and keeps its playable play_url
+
+#### Scenario: Matroska-sourced HEVC answers the composed sample entry
+
+- **WHEN** the playback descriptor is fetched for an item whose hls build predates codec recording and whose stored source facts are the real prod shape — hevc with `codec_tag_string` `[0][0][0][0]`, profile `Main 10`, level 120, two aac LC audio streams
+- **THEN** the answer carries `codecs` composed read-side as `hvc1.2.4.L120.B0` followed by the deduped `mp4a.40.2` — the sample entry composed, the SPA's device probe runs, and an incapable device meets the honest banner instead of a skipped probe
 
 ### Requirement: Sections from container chapters
 
@@ -612,9 +627,15 @@ gating reason: `unpackaged`, `cooldown` (a live packaging-failure ledger row
 gates the item), `non_native_container`, `codec_not_opted_in`,
 `codec_unsupported`, or `failed`; an `hls` answer logs reason `packaged` —
 correlating with the request-log middleware's line for the same request.
-Token values and play URLs SHALL NEVER appear in the line (INV4: the reason
-is data, never credentials), and the logging SHALL remain side-effect free —
-the descriptor read stays read-only, never mutating packaging state.
+The line SHALL additionally name WHICH codecs source served the answer:
+`recorded` (the namespace the lane persisted at publish), `legacy` (the
+read-side composition from stored source facts), or `none` (no codecs
+answer) — so a missing codecs answer is distinguishable from a defect
+without querying the store; the field names the source, never the codec
+strings themselves. Token values and play URLs SHALL NEVER appear in the
+line (INV4: the reason is data, never credentials), and the logging SHALL
+remain side-effect free — the descriptor read stays read-only, never
+mutating packaging state.
 
 #### Scenario: Descriptor GET logs one decision line
 
@@ -625,6 +646,11 @@ the descriptor read stays read-only, never mutating packaging state.
 
 - **WHEN** descriptor reads and /media rejections are logged with logging captured
 - **THEN** no captured line carries a media token value, a play URL, or any credential material
+
+#### Scenario: Descriptor GET names the codecs source
+
+- **WHEN** playback descriptors are fetched in one session for an item whose namespace carries the codec record persisted at publish, an item whose build predates the record but whose stored source facts compose the strings, and an item whose codecs compose nothing
+- **THEN** the three decision lines name the codecs source `recorded`, `legacy`, and `none` respectively — one added field on the same single line, never the codec strings, never a token value
 
 ### Requirement: Playback event beacon
 
@@ -689,3 +715,133 @@ frontier with no manual step.
 
 - **WHEN** an opt-in item is judged while the knob is off — by the descriptor's honesty projection, by the play verb's retry, and by the repack sweep
 - **THEN** all three carry the same refusal token `codec_not_opted_in`, judged from one shared predicate over the item's stored ffprobe facts
+
+### Requirement: Pack flow observability
+
+The pack flow SHALL be traceable from the server log alone, riding the
+decision-log pattern — compact INFO lines with stable prefixes at the
+moments that matter, never per segment, never a new log-level system (the
+binary serves the default slog INFO level): a packaging job SHALL log ONE
+job-start line at the build executor carrying the item id, the playback
+classification outcome (`direct` | `pack` | `opt_in` | `direct_only`), the
+gate verdict (`open` or the refusal token), and one compact rendering of
+the stored codec facts (the video codec and profile, the audio codecs with
+multiplicity); the pack lane SHALL log ONE publish line per successful
+pack carrying the item id, the build nonce, the layout decision
+(`single-variant` | `rendition`), the variant count, the audio
+(EXT-X-MEDIA member) count, whether the codec record was `recorded` or
+`degraded`, and the ffprobe probe count (the per-variant cost); a failed
+pack SHALL log ONE warning line naming the failing stage; a gate-refused
+job SHALL log the refusal token on its job-start line and no publish line.
+The eviction lines keep their existing vocabulary and shape. No new line
+SHALL carry a media token value or a play URL (INV4 — item ids and build
+nonces are artifact identifiers, not credentials), and the flow SHALL cost
+a bounded number of lines: one per job plus one on failure, regardless of
+segment count or build size.
+
+#### Scenario: A pack job logs the flow line sequence
+
+- **WHEN** a packaging job runs from enqueue through publish and the item's superseded build is evicted on a repack, with the server log captured
+- **THEN** the captured log carries the job-start line (classification outcome, gate `open`, the codec-facts rendering), then the publish line (layout `single-variant` or `rendition` with variant and audio member counts, the nonce, `codecs` `recorded` or `degraded`, the probe count), and the eviction line naming the superseded path — one line per moment, and no per-segment lines anywhere in the flow
+
+#### Scenario: A gate-refused pack names the token and stops
+
+- **WHEN** a packaging job reaches the build executor after the opt-in codec knob was disabled and the gate refuses the item
+- **THEN** the job-start line carries the refusal token as the gate verdict and the flow ends there — no publish line exists for the job, and no packaging-failure ledger row is charged
+
+#### Scenario: A failed pack logs its stage
+
+- **WHEN** a packaging job's remux fails partway (the build never publishes)
+- **THEN** exactly one warning line names the failing stage, the flow shows the job-start line followed by the warning, and the persisted state records the failure as before
+
+### Requirement: Master playlist on every pack
+
+Every pack the lane publishes SHALL carry a master playlist at the build
+root named `index.m3u8`, composed by the lane per RFC 8216 — never ffmpeg's
+generated master: the `EXT-X-STREAM-INF` variants SHALL be the VIDEO
+renditions only (the lane publishes exactly one), each carrying a CODECS
+attribute composed through the publish-time codec table when the pack's
+codecs are composable, a BANDWIDTH attribute (probed, else a conservative
+fallback), and RESOLUTION when probed; the audio renditions SHALL appear
+ONLY as `EXT-X-MEDIA:TYPE=AUDIO` members of one group with unique NAME
+attributes (the stream's language fact when present, else a stable
+ordinal), `LANGUAGE` when known, and exactly one `DEFAULT=YES` — the
+embedded audio, the pack's primary track; the voiceover renditions ride
+`AUTOSELECT=YES` with `DEFAULT=NO`. A single-variant pack SHALL publish the
+same master shape — one variant line whose CODECS names the video and the
+muxed audio — with its media playlist, init segment, and segments beneath
+it, so the build root holds only the master; the item's play URL keeps
+naming `index.m3u8`, now the master, on both shapes. The master SHALL be
+composed at the head-first publish from the head playlists (the probe facts
+are the init segments' streams, identical across phases), so a partial
+build mounts with the master from its first served byte, and it SHALL be
+byte-identical for a given published build. When the pack's codecs cannot
+be composed, the master SHALL still publish with the corrected shape minus
+the CODECS attribute (fail-open — never a failed pack). A build published
+before this rule keeps its on-disk layout: the integrity guard and the
+serving surface SHALL accept both the legacy layouts (a root media
+playlist, or ffmpeg's generated rendition master) and the composed master,
+and a legacy build heals only by repack — fresh nonce, one current build
+per item — never by a read-side rewrite of published bytes.
+
+#### Scenario: Rendition pack serves a video-only variant master with an audio group
+
+- **WHEN** a pack with embedded audio plus voiceover sidecars is published and its build root playlist is read
+- **THEN** the playlist carries exactly one `EXT-X-STREAM-INF` variant — the video rendition, with a CODECS attribute naming the video codec — and the audio renditions appear only as `EXT-X-MEDIA:TYPE=AUDIO` group members with unique NAMEs and exactly one `DEFAULT=YES`, with no audio rendition listed as a variant
+
+#### Scenario: Single-variant pack serves a master carrying the pack's codecs
+
+- **WHEN** a single-variant pack (no voiceovers) is published and its build root playlist is read
+- **THEN** `index.m3u8` is a master whose single variant line carries `CODECS` naming the video and audio codecs and references the media playlist beneath the build root, the item's play URL still names `index.m3u8`, and an HLS client composing its source buffers from the playlist's CODECS builds both the video and the audio buffer on a capable device
+
+#### Scenario: Partial build mounts with the master from the first byte
+
+- **WHEN** a pack's head chunk has published and a client fetches the play URL before the tail completes
+- **THEN** the fetched playlist is already the composed master and the variant media playlist it references grows as segments land, so the partial build mounts with the pack's codecs exactly as the completed one does
+
+#### Scenario: Uncomposable codecs keep the corrected master shape
+
+- **WHEN** a pack publishes whose codec record composes to nothing (a probe failure or a stream outside the composition table)
+- **THEN** the pack still lands and the build root still serves the composed master — video-only variant, `EXT-X-MEDIA` audio group, one `DEFAULT=YES` — minus the CODECS attribute, and the build mounts exactly as an attribute-less build always has
+
+#### Scenario: Legacy-layout builds keep validating and serving until repack
+
+- **WHEN** the descriptor or the media surface serves an item whose published build predates this rule — a root media playlist, or a generated rendition master
+- **THEN** the build validates, serves, and describes exactly as before under its published layout, and it is replaced only when a repack publishes a fresh nonce — at which point exactly one build directory remains under the item's artifact root and it carries the composed master
+
+### Requirement: Lazy repack of legacy-layout builds
+
+A published build predating the composed master SHALL heal by repack, and
+the play verb SHALL be its trigger: when `POST /play` without `retry`
+answers an item whose packaging state is `complete` with a build nonce but
+whose namespace lacks the build-generation marker — `master: true`, written
+by the lane's success persist (every build this lane publishes carries the
+composed master, so the marker is honest by construction; the playlist is
+never re-read to decide) — the play verb SHALL enqueue exactly ONE repack
+through the ordinary enqueue path and its per-item lease, then answer per
+the existing pack-on-play flow; concurrent plays while the repack runs
+SHALL be lease-absorbed, not re-enqueued per tick. The old build SHALL
+keep serving until the repack publishes a fresh nonce. The enqueue SHALL
+ride the pack gate unchanged: an item the gate refuses SHALL NOT enqueue,
+SHALL keep answering its existing build, and SHALL log one INFO refusal
+line — no packaging-state change, no ledger row. A current-layout build
+(marker present) SHALL NOT re-enqueue, and a failed lazy repack SHALL
+inherit the lane's ordinary failure contract — the persisted `failed`
+state and its retry affordance — never a retry loop. No library-wide
+sweep SHALL requeue legacy builds, and no serving path SHALL rewrite
+published bytes.
+
+#### Scenario: A complete legacy-layout build repacks on play
+
+- **WHEN** POST /play without retry is answered for an item whose packaging state is complete with a build nonce whose namespace predates the build-generation marker, and the pack gate is open
+- **THEN** the play verb enqueues exactly one repack through the ordinary enqueue path and answers per the pack-on-play flow, the old build keeps serving while the repack runs, and the repacked build publishes a fresh nonce carrying the composed master and the marker
+
+#### Scenario: A current-layout build does not re-enqueue
+
+- **WHEN** POST /play is answered again for the repacked item — and repeatedly while any repack it triggered is still running
+- **THEN** the play verb enqueues nothing: the marker closes the decision window once the build publishes, and the lane's per-item lease absorbs the plays that arrive during the run
+
+#### Scenario: A gate-closed legacy build keeps playing and skips the repack
+
+- **WHEN** POST /play is answered for a legacy-layout item the pack gate refuses (the opt-in codec knob disabled on an HEVC item)
+- **THEN** the play verb logs one INFO refusal line, enqueues nothing, changes no packaging state, charges no ledger row, and the item keeps answering its existing build
