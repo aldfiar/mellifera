@@ -5,16 +5,23 @@ package enrich
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/mellifera/mellifera/internal/module"
+	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
@@ -228,6 +235,255 @@ func TestFetchSource(t *testing.T) {
 		}
 		if n := rec.count(); n != 0 {
 			t.Fatalf("upstream saw %d requests, want 0 (spec validation precedes network)", n)
+		}
+	})
+}
+
+// TestFetchClass is client-relayed-fetch 3.1: every fetchSource failure
+// carries a machine class from the closed network|upstream|protocol|spec set,
+// the classifier is pure over (error) -> class, the _stages fetch entry
+// records the class beside the free-text error, and a fetch-failure ledger
+// reason carries the class token with the keyed URL redacted. The dead loopback
+// port is the shared network-class upstream: a listener opened and closed, so
+// the dial dies with connection refused (no HTTP response ever arrives).
+func TestFetchClass(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	deadPort := lis.Addr().(*net.TCPAddr).Port
+	_ = lis.Close()
+	deadURL := fmt.Sprintf("https://127.0.0.1:%d", deadPort)
+
+	t.Run("classifier: table over the known error shapes and their wrapped forms", func(t *testing.T) {
+		refused := &url.Error{
+			Op: "Get", URL: "https://upstream.example/api?api_key=sekret",
+			Err: errors.New("dial tcp 10.0.0.1:443: connect: connection refused"),
+		}
+		for _, tt := range []struct {
+			name string
+			err  error
+			want string
+		}{
+			// network — the raw shapes the http client returns, and their wrapped forms.
+			{"network: dial refused url.Error", refused, fetchClassNetwork},
+			{"network: dns inside url.Error", &url.Error{Op: "Get", URL: "https://h/x", Err: &net.DNSError{Err: "no such host", Name: "h", IsNotFound: true}}, fetchClassNetwork},
+			{"network: deadline inside url.Error", &url.Error{Op: "Get", URL: "https://h/x", Err: context.DeadlineExceeded}, fetchClassNetwork},
+			{"network: tls verify inside url.Error", &url.Error{Op: "Get", URL: "https://h/x", Err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}}, fetchClassNetwork},
+			{"network: fmt-wrapped url.Error", fmt.Errorf("enrich: search fetch: %w", refused), fetchClassNetwork},
+			{"network: raw dns", &net.DNSError{Err: "no such host", Name: "h"}, fetchClassNetwork},
+			{"network: fmt-wrapped raw dns", fmt.Errorf("outer: %w", &net.DNSError{Err: "i/o timeout", Name: "h"}), fetchClassNetwork},
+			{"network: raw tls verification", &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, fetchClassNetwork},
+			{"network: x509 unknown authority", x509.UnknownAuthorityError{}, fetchClassNetwork},
+			{"network: x509 hostname", x509.HostnameError{Host: "h.example"}, fetchClassNetwork},
+			{"network: raw context deadline (the paced send miss)", context.DeadlineExceeded, fetchClassNetwork},
+			{"network: raw context cancel", context.Canceled, fetchClassNetwork},
+			{"network: annotated do error", withFetchClass(fetchClassNetwork, refused), fetchClassNetwork},
+			{"network: unrecognized error defaults to the transport class", errors.New("something odd"), fetchClassNetwork},
+
+			// upstream — a response arrived (any status, the redirect-stop shape).
+			{"upstream: annotated do-with-response", withFetchClass(fetchClassUpstream, &url.Error{Op: "Get", URL: "https://h/x", Err: errors.New("stopped after 10 redirects")}), fetchClassUpstream},
+			{"upstream: fmt-wrapped annotated", fmt.Errorf("outer: %w", withFetchClass(fetchClassUpstream, errors.New("stopped after 10 redirects"))), fetchClassUpstream},
+
+			// protocol — body read/decode failures.
+			{"protocol: body read", withFetchClass(fetchClassProtocol, fmt.Errorf("read response: %w", io.ErrUnexpectedEOF)), fetchClassProtocol},
+			{"protocol: fmt-wrapped body read", fmt.Errorf("outer: %w", withFetchClass(fetchClassProtocol, errors.New("read response: unexpected EOF"))), fetchClassProtocol},
+
+			// spec — the validation paths (method, substitution, redacted_ref, unbuildable url).
+			{"spec: annotated redacted_ref wrap", withFetchClass(fetchClassSpec, fmt.Errorf("variable %q: %w", "api_key", errRedactedRef)), fetchClassSpec},
+			{"spec: bare redacted_ref sentinel", errRedactedRef, fetchClassSpec},
+			{"spec: parse url.Error (the resolved url will not build)", &url.Error{Op: "parse", URL: "://bad", Err: errors.New("missing protocol scheme")}, fetchClassSpec},
+			{"spec: fmt-wrapped parse url.Error", fmt.Errorf("build request: %w", &url.Error{Op: "parse", URL: "://bad", Err: errors.New("missing protocol scheme")}), fetchClassSpec},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				if got := classifyFetchError(tt.err); got != tt.want {
+					t.Fatalf("classifyFetchError(%v) = %q, want %q", tt.err, got, tt.want)
+				}
+			})
+		}
+		if got := classifyFetchError(nil); got != "" {
+			t.Fatalf("classifyFetchError(nil) = %q, want empty", got)
+		}
+	})
+
+	t.Run("fetchSource: every failure path carries its class", func(t *testing.T) {
+		ctx := context.Background()
+
+		// network: the dial dies against the closed loopback port — no
+		// HTTP response ever arrives — and the annotation keeps the
+		// *url.Error errors.As-shape intact for callers above.
+		_, _, _, nerr := fetchSource(ctx, nil, "p", &metadatav1.RequestSpec{
+			Method: "GET", UrlTemplate: deadURL + "/api?api_key=sekret",
+		})
+		if nerr == nil {
+			t.Fatal("refused dial must fail")
+		}
+		if got := classifyFetchError(nerr); got != fetchClassNetwork {
+			t.Fatalf("refused dial class = %q, want %q", got, fetchClassNetwork)
+		}
+		var uerr *url.Error
+		if !errors.As(nerr, &uerr) {
+			t.Fatalf("err = %v, want a *url.Error through the annotation", nerr)
+		}
+
+		// spec: the four validation paths.
+		for name, spec := range map[string]*metadatav1.RequestSpec{
+			"unsupported method":       {Method: "PUT", UrlTemplate: deadURL},
+			"unresolvable placeholder": {Method: "GET", UrlTemplate: deadURL + "?q={missing}"},
+			"redacted_ref": {
+				Method: "GET", UrlTemplate: deadURL + "?token={api_key}",
+				Variables: map[string]*metadatav1.VariableValue{
+					"api_key": {Kind: &metadatav1.VariableValue_RedactedRef{RedactedRef: "client:api_key"}},
+				},
+			},
+			"unsubstitutable url": {Method: "GET", UrlTemplate: deadURL + "/{leftover}"},
+		} {
+			_, _, _, err := fetchSource(ctx, nil, "p", spec)
+			if err == nil {
+				t.Fatalf("%s: must fail", name)
+			}
+			if got := classifyFetchError(err); got != fetchClassSpec {
+				t.Fatalf("%s: class = %q, want %q (err=%v)", name, got, fetchClassSpec, err)
+			}
+		}
+		// ...and the redacted_ref sentinel survives the annotation.
+		_, _, _, rerr := fetchSource(ctx, nil, "p", &metadatav1.RequestSpec{
+			Method: "GET", UrlTemplate: deadURL + "?token={api_key}",
+			Variables: map[string]*metadatav1.VariableValue{
+				"api_key": {Kind: &metadatav1.VariableValue_RedactedRef{RedactedRef: "client:api_key"}},
+			},
+		})
+		if !errors.Is(rerr, errRedactedRef) {
+			t.Fatalf("err = %v, want the errRedactedRef chain intact through the annotation", rerr)
+		}
+
+		// upstream: the redirect chain stops — the last response ARRIVED,
+		// so the transport error carries a read response.
+		redirectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/next", http.StatusFound)
+		}))
+		defer redirectSrv.Close()
+		_, _, _, uerr2 := fetchSource(ctx, nil, "p", &metadatav1.RequestSpec{Method: "GET", UrlTemplate: redirectSrv.URL})
+		if uerr2 == nil {
+			t.Fatal("the redirect stop must fail")
+		}
+		if got := classifyFetchError(uerr2); got != fetchClassUpstream {
+			t.Fatalf("redirect-stop class = %q, want %q (err=%v)", got, fetchClassUpstream, uerr2)
+		}
+
+		// protocol: the body breaks mid-stream (declared Content-Length
+		// never arrives).
+		truncSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Length", "100")
+			_, _ = w.Write([]byte("short"))
+		}))
+		defer truncSrv.Close()
+		_, _, _, berr := fetchSource(ctx, nil, "p", &metadatav1.RequestSpec{Method: "GET", UrlTemplate: truncSrv.URL})
+		if berr == nil {
+			t.Fatal("the truncated body must fail")
+		}
+		if got := classifyFetchError(berr); got != fetchClassProtocol {
+			t.Fatalf("truncated body class = %q, want %q (err=%v)", got, fetchClassProtocol, berr)
+		}
+	})
+
+	t.Run("stages: the fetch entry carries the class beside the redacted error", func(t *testing.T) {
+		ctx := context.Background()
+		src := &captureSource{spec: &metadatav1.RequestSpec{
+			Method: "GET", UrlTemplate: deadURL + "/api/animes?api_key=sekret",
+		}}
+		resolve := func(string, string) (sdk.MetadataSource, error) { return src, nil }
+		mod := module.Module{ID: "serial", MediaType: "serial", MetadataSources: []module.MetadataSourceBinding{binding("shikimori", 1, true)}}
+		doc, _, _, err := enrichDoc(ctx, resolve, mod, map[string]any{}, &scannerv1.IdentifyResult{}, nil)
+		if err != nil {
+			t.Fatalf("enrichDoc: %v", err)
+		}
+		st, _ := doc["_stages"].([]map[string]any)
+		if len(st) != 1 {
+			t.Fatalf("_stages = %+v, want 1 entry", st)
+		}
+		if st[0]["status"] != "failed" {
+			t.Fatalf("stage status = %v, want failed", st[0]["status"])
+		}
+		if got := st[0]["class"]; got != fetchClassNetwork {
+			t.Fatalf("stage class = %v, want %q beside the error", got, fetchClassNetwork)
+		}
+		errText, _ := st[0]["error"].(string)
+		if !strings.Contains(errText, "fetch: ") {
+			t.Fatalf("stage error = %q, want the human fetch text alongside the class", errText)
+		}
+		if strings.Contains(errText, "sekret") {
+			t.Fatalf("stage error %q carries the keyed URL verbatim (redactURLs skipped)", errText)
+		}
+	})
+
+	t.Run("ledger: the fetch-failure reason carries the class token, redacted", func(t *testing.T) {
+		ctx := context.Background()
+		withFixedClock(t, time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC))
+		s, reg := queueTestStore(t)
+		libID, err := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		putItem(t, s, "i_fetchclass", libID, statusPending, baseDoc("Show/S01E01.mkv"))
+
+		// tv-parser's fetch dies against the dead port (exhausts); tmdb
+		// succeeds so the item still settles ready.
+		q := NewQueue(Deps{Store: s, Modules: reg}, QueueConfig{MaxAttempts: 2, Backoff: time.Millisecond})
+		q.resolve = mapResolver{
+			"tv-parser": &captureSource{spec: &metadatav1.RequestSpec{Method: "GET", UrlTemplate: deadURL + "/api?api_key=sekret"}},
+			"tmdb":      &succeedSrc{id: "tmdb"},
+		}.resolver()
+		if err := q.Start(ctx); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer q.Stop()
+		q.Notify(ctx, libID)
+		it := waitForStatus(t, s, "i_fetchclass", statusReady, 2*time.Second)
+
+		rows, err := s.ListFailures(ctx)
+		if err != nil {
+			t.Fatalf("ListFailures: %v", err)
+		}
+		var row store.FailureRow
+		for _, r := range rows {
+			if r.ItemID == "i_fetchclass" && r.PluginID == "tv-parser" {
+				row = r
+			}
+		}
+		if row.ItemID == "" {
+			t.Fatalf("no ledger row for (i_fetchclass, tv-parser); rows=%v", rows)
+		}
+		if row.Status != ledgerExhausted {
+			t.Fatalf("ledger status = %q, want %q", row.Status, ledgerExhausted)
+		}
+		if !strings.HasPrefix(row.Reason, fetchClassNetwork+": ") {
+			t.Fatalf("reason = %q, want the %q class token prefix", row.Reason, fetchClassNetwork)
+		}
+		if !strings.Contains(row.Reason, "fetch: ") {
+			t.Fatalf("reason = %q, want the human fetch text alongside the token", row.Reason)
+		}
+		if strings.Contains(row.Reason, "sekret") {
+			t.Fatalf("reason %q carries the keyed URL verbatim (redactURLs skipped)", row.Reason)
+		}
+		if !strings.Contains(row.Reason, "?[redacted]") {
+			t.Fatalf("reason = %q, want the keyed query replaced by ?[redacted]", row.Reason)
+		}
+
+		// the class survives the document round-trip too.
+		doc := decodeDoc(it.Document)
+		st, _ := doc["_stages"].([]map[string]any)
+		var stage map[string]any
+		for _, e := range st {
+			if pid, _ := e["plugin_id"].(string); pid == "tv-parser" {
+				stage = e
+			}
+		}
+		if stage == nil {
+			t.Fatalf("no _stages entry for tv-parser: %+v", st)
+		}
+		if got := stage["class"]; got != fetchClassNetwork {
+			t.Fatalf("round-tripped stage class = %v, want %q", got, fetchClassNetwork)
 		}
 	})
 }

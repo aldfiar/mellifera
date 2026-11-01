@@ -6,9 +6,12 @@ package enrich
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -28,6 +31,103 @@ var placeholderRe = regexp.MustCompile(`\{([A-Za-z0-9_]+)\}`)
 // contract-present, unbuilt — enrichment D-5). Callers abort before any
 // network attempt.
 var errRedactedRef = errors.New("redacted_ref variables are unsupported server-side (Mode B, not built)")
+
+// The closed fetch failure class set (spec "Fetch failure classification",
+// client-relayed-fetch D1). The mapping follows what the Go http client
+// actually returns: network — no HTTP response arrived (DNS/host-not-found,
+// dial refused or unreachable, TLS handshake, context deadline); upstream —
+// a response arrived (any status, including 4xx/5xx: the host is
+// demonstrably reachable); protocol — body read/decode failures; spec —
+// request validation failures (method, substitution, unresolvable
+// variables). Only network is relay-eligible (the deferred handoff is task
+// 3.2's — this file only annotates); the string token is the contract — the
+// _stages fetch entries and the ledger reasons are its consumers.
+const (
+	fetchClassNetwork  = "network"
+	fetchClassUpstream = "upstream"
+	fetchClassProtocol = "protocol"
+	fetchClassSpec     = "spec"
+)
+
+// fetchClassError carries the machine class a fetch failure path already
+// knows beside the error itself: Error() and Unwrap() pass through verbatim,
+// so the error's text and errors.Is chain are byte-identical to the
+// un-annotated form — no behavior change beyond the annotation. Unexported:
+// the class travels only inside the package.
+type fetchClassError struct {
+	class string
+	err   error
+}
+
+func (e *fetchClassError) Error() string { return e.err.Error() }
+
+func (e *fetchClassError) Unwrap() error { return e.err }
+
+// withFetchClass annotates err with class (nil-safe). Annotating an
+// already-annotated error keeps the OUTER class — the failure point that saw
+// the error last is the authoritative one.
+func withFetchClass(class string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &fetchClassError{class: class, err: err}
+}
+
+// classifyFetchError is the pure unexported classifier over a fetch failure:
+// (error) -> one of the closed class tokens above. A failure annotated at its
+// failure point (every fetchSource path stamps its class via withFetchClass)
+// answers the carried class through errors.As; the structural branches map
+// the raw shapes the Go http client returns for un-annotated errors — a
+// *url.Error wrapping dial/DNS/TLS/deadline failures is network, except an
+// Op "parse" one (the spec's url template failing to compile: spec); direct
+// net.DNSError, TLS/x509 certificate shapes, and context
+// deadline/cancellation are network. The closed set's default for anything
+// unrecognized is network: an unknown failure is conservatively a transport
+// condition (and the extension point — a new failure shape gets an explicit
+// withFetchClass at its path), never silently re-labeled spec.
+func classifyFetchError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var annotated *fetchClassError
+	if errors.As(err, &annotated) {
+		return annotated.class
+	}
+	if errors.Is(err, errRedactedRef) {
+		return fetchClassSpec
+	}
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		if uerr.Op == "parse" {
+			return fetchClassSpec
+		}
+		return fetchClassNetwork
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return fetchClassNetwork
+	}
+	var tlsVerifyErr *tls.CertificateVerificationError
+	if errors.As(err, &tlsVerifyErr) {
+		return fetchClassNetwork
+	}
+	var x509AuthErr x509.UnknownAuthorityError
+	if errors.As(err, &x509AuthErr) {
+		return fetchClassNetwork
+	}
+	var x509HostErr x509.HostnameError
+	if errors.As(err, &x509HostErr) {
+		return fetchClassNetwork
+	}
+	var x509InvalidErr x509.CertificateInvalidError
+	if errors.As(err, &x509InvalidErr) {
+		return fetchClassNetwork
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return fetchClassNetwork
+	}
+	return fetchClassNetwork
+}
 
 // FetchGate spaces a plugin's outbound fetches at least its min_interval_ms
 // apart (request_spec.proto assigns the core that role server-side —
@@ -80,23 +180,26 @@ func (g *FetchGate) reserve(pluginID string, minInterval time.Duration) time.Dur
 // percent-encoded values into the url template, honor timeout_seconds, and
 // return the body/status/headers Convert consumes. gate paces the send per
 // the spec's min_interval_ms (nil = unpaced). A transport error, a deadline
-// miss, or any validation failure is a chain failure (soft-fail upstream).
+// miss, or any validation failure is a chain failure (soft-fail upstream);
+// every failure path annotates its machine class via withFetchClass (the
+// annotation is text- and wrap-chain-invisible — classifyFetchError reads it
+// back) without otherwise changing the error.
 func fetchSource(ctx context.Context, gate *FetchGate, pluginID string, spec *metadatav1.RequestSpec) ([]byte, int32, map[string]string, error) {
 	method := strings.ToUpper(spec.GetMethod())
 	if method != http.MethodGet && method != http.MethodPost {
-		return nil, 0, nil, fmt.Errorf("unsupported method %q (GET/POST only)", spec.GetMethod())
+		return nil, 0, nil, withFetchClass(fetchClassSpec, fmt.Errorf("unsupported method %q (GET/POST only)", spec.GetMethod()))
 	}
 	values, err := resolveVariables(spec.GetVariables())
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, withFetchClass(fetchClassSpec, err)
 	}
 	rawURL, err := substitute(spec.GetUrlTemplate(), values)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, withFetchClass(fetchClassSpec, err)
 	}
 	if wait := gate.reserve(pluginID, time.Duration(spec.GetMinIntervalMs())*time.Millisecond); wait > 0 {
 		if err := sleepContext(ctx, wait); err != nil {
-			return nil, 0, nil, err
+			return nil, 0, nil, withFetchClass(fetchClassNetwork, err)
 		}
 	}
 	if secs := spec.GetTimeoutSeconds(); secs > 0 {
@@ -106,19 +209,30 @@ func fetchSource(ctx context.Context, gate *FetchGate, pluginID string, spec *me
 	}
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, bytes.NewReader(spec.GetBody()))
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("build request: %w", err)
+		// A request the spec's own resolved url cannot build (an
+		// unparseable template output, a bad header) — spec content.
+		return nil, 0, nil, withFetchClass(fetchClassSpec, fmt.Errorf("build request: %w", err))
 	}
 	for k, v := range spec.GetHeaders() {
 		req.Header.Set(k, v)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, 0, nil, err
+		if resp != nil {
+			// A response arrived despite the transport error (the
+			// redirect-following stop): the host is demonstrably
+			// reachable — upstream, never relay-eligible (the proxy-
+			// answers-for-a-blocked-host tradeoff).
+			return nil, 0, nil, withFetchClass(fetchClassUpstream, err)
+		}
+		// No HTTP response arrived: dial/DNS/TLS/deadline — the
+		// url.Error shapes the client wraps transport failures in.
+		return nil, 0, nil, withFetchClass(fetchClassNetwork, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("read response: %w", err)
+		return nil, 0, nil, withFetchClass(fetchClassProtocol, fmt.Errorf("read response: %w", err))
 	}
 	headers := make(map[string]string, len(resp.Header))
 	for k, vs := range resp.Header {
@@ -133,24 +247,31 @@ func fetchSource(ctx context.Context, gate *FetchGate, pluginID string, spec *me
 // convention D4): each extra goes through the same fetchSource validation and
 // the plugin's FetchGate slot, so pacing spans the whole plan. A failed extra
 // soft-fails its own entry ({fetched:false, error}) and the run continues —
-// Convert decides what the namespace gains from what arrived. The primary
-// spec's failure path lives at the call site and is untouched.
-func fetchExtras(ctx context.Context, gate *FetchGate, pluginID string, extras []*metadatav1.RequestSpec) []*metadatav1.FetchedResponse {
+// Convert decides what the namespace gains from what arrived. The returned
+// classes ride positionally beside the entries ("" for a fetched one): the
+// entries carry only free text, and the call site's deferred conversion
+// (client-relayed-fetch D4) needs the machine class to recognize a
+// NETWORK-class extra failure. The primary spec's failure path lives at the
+// call site and is untouched.
+func fetchExtras(ctx context.Context, gate *FetchGate, pluginID string, extras []*metadatav1.RequestSpec) ([]*metadatav1.FetchedResponse, []string) {
 	if len(extras) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make([]*metadatav1.FetchedResponse, 0, len(extras))
+	classes := make([]string, 0, len(extras))
 	for _, spec := range extras {
 		body, status, headers, err := fetchSource(ctx, gate, pluginID, spec)
 		if err != nil {
 			out = append(out, &metadatav1.FetchedResponse{Error: err.Error()})
+			classes = append(classes, classifyFetchError(err))
 			continue
 		}
 		out = append(out, &metadatav1.FetchedResponse{
 			Body: body, HttpStatus: status, Headers: headers, Fetched: true,
 		})
+		classes = append(classes, "")
 	}
-	return out
+	return out, classes
 }
 
 // resolveVariables renders each spec variable to its string form. A

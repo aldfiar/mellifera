@@ -35,6 +35,7 @@ import (
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/orchestrator"
+	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
@@ -156,14 +157,14 @@ func pbNewWorld(t *testing.T) *pbWorld {
 // pbNewQueue constructs and starts the production enrich queue over the world
 // with the given PackItem closure (nil = the plain real pack, mirroring
 // main.go's wiring). leaseTTL <= 0 keeps the production default.
-func (w *pbWorld) pbNewQueue(t *testing.T, pack func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error), leaseTTL time.Duration) *enrich.Queue {
+func (w *pbWorld) pbNewQueue(t *testing.T, packFn func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (pack.PackOutcome, error), leaseTTL time.Duration) *enrich.Queue {
 	t.Helper()
 	deps := enrich.Deps{Store: w.st, Modules: w.reg, Plugins: w.mgr}
-	deps.PackItem = pack
-	if pack == nil {
-		deps.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
+	deps.PackItem = packFn
+	if packFn == nil {
+		deps.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (pack.PackOutcome, error) {
 			build, err := w.media.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
-			return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce}, err
+			return pack.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce}, err
 		}
 	}
 	cfg := enrich.QueueConfig{Workers: 2, Backoff: time.Millisecond}

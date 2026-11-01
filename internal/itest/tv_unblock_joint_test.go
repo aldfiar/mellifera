@@ -61,7 +61,7 @@ import (
 	"time"
 
 	"github.com/mellifera/mellifera/internal/api"
-	"github.com/mellifera/mellifera/internal/enrich"
+	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/stream"
 	"github.com/mellifera/mellifera/internal/web"
 )
@@ -190,9 +190,9 @@ func TestTvUnblockJoint(t *testing.T) {
 	// The persist wrote BOTH records itself — never seeded (that IS the
 	// contract: publish → persist → descriptor): the current rule version and
 	// the lane's layoutName over two embedded audio streams.
-	if v, ok := streams["master"].(float64); !ok || v != float64(enrich.MasterRuleVersion) {
+	if v, ok := streams["master"].(float64); !ok || v != float64(pack.MasterRuleVersion) {
 		t.Fatalf("persisted namespace carries master %v, want the current rule version %d (the success persist's write)",
-			streams["master"], enrich.MasterRuleVersion)
+			streams["master"], pack.MasterRuleVersion)
 	}
 	if l, _ := streams["layout"].(string); l != "rendition" {
 		t.Fatalf("persisted namespace carries layout %q, want \"rendition\" (the total-audio layout rule: 2 embedded, 0 sidecars)", l)

@@ -43,6 +43,7 @@ import (
 	"github.com/mellifera/mellifera/internal/art"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
+	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/scan"
@@ -216,29 +217,49 @@ func main() {
 		Original:    originalResolver(st),
 		OptInCodecs: cfg.optInCodecs, // descriptor honesty shares the pack lane's knob
 	}
-	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
+	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (pack.PackOutcome, error) {
 		// Job-start gate line (pack-manifest-audio D7): ONE "pack: gate" line
 		// per pack job, before Pack — on a refusal the token rides the line and
 		// the PolicyRefusal below ends the flow (no publish line; the persisted
 		// failed state is enrich's record).
 		logPackGate(itemID, ffprobe, stream.PackGate(ffprobe, mediaSvc.OptInCodecs))
 		if err := packGateRefusal(ffprobe, mediaSvc.OptInCodecs); err != nil {
-			return enrich.PackOutcome{}, err
+			return pack.PackOutcome{}, err
 		}
 		build, err := mediaSvc.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
-		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
+		return pack.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
 	}
 	// Publish replacement (playback-capability-gate D5): after the lane
 	// persists the new build the document names it, so evicting the item's
 	// superseded build directories is safe. Best-effort — EvictSuperseded
 	// never fails the landed pack; budget LRU still owns cross-item pressure.
 	scanDeps.Enrich.AfterPackPersist = mediaSvc.EvictSuperseded
+	// Client-relayed-fetch (D2/D4/D5): the enrich Relay — the deferred-handoff
+	// transport over the relay_jobs store. Built BEFORE NewQueue, which copies
+	// the Deps struct (a later assignment would miss the queue's copy): the
+	// lease rides MELLIFERA_RELAY_LEASE (relayLease — default 2m claim
+	// handout), the cooldown field stays zero so the Relay's flat 10m
+	// 'relayed' default applies at use (no env knob by design), and the
+	// completion wake is the SAME library-notify target the queue's notify
+	// closures ride, with the PROCESS ctx substituted for the request-scoped
+	// ctx the ingest arrives on (the scanDeps.Notify detachment — the
+	// derivation must outlive the HTTP request). The wake only fires after
+	// Start, when enrichQueue is assigned.
+	var enrichQueue *enrich.Queue
+	enrichRelay := &enrich.Relay{
+		Store:    st,
+		LeaseTTL: relayLease(),
+		Notify: func(_ context.Context, libraryID int64) {
+			enrichQueue.Notify(ctx, libraryID)
+		},
+	}
+	scanDeps.Enrich.Relay = enrichRelay
 	// Async enrich queue (arch §4.4): a bounded worker pool that derives pending
 	// (item, plugin) work from items + the ledger and drains it for the process
 	// lifetime. Constructed + started BEFORE the server serves so the first
 	// scan's Notify lands in a running pool (INV-start-before-serve). Flat
 	// constructor call — no DI, no reflect (INV-flat-wiring).
-	enrichQueue := enrich.NewQueue(scanDeps.Enrich, cfg.enrich)
+	enrichQueue = enrich.NewQueue(scanDeps.Enrich, cfg.enrich)
 	fatalOn(enrichQueue.Start(ctx), "start enrich queue")
 	// scan hands the library to the queue after persisting items pending. The
 	// closure substitutes the PROCESS ctx (not the per-request scan ctx) so the
@@ -535,6 +556,15 @@ func main() {
 		OnSourceGateChanged: func(_ context.Context, libraryID int64) {
 			enrichQueue.Notify(ctx, libraryID)
 		},
+		// Client-relayed-fetch (D7): the two relay verbs over the enrich
+		// Relay — direct method values (Relay.Claim / Relay.Ingest align the
+		// api seam byte-for-byte, no adapters), built HERE in cmd/mellifera so
+		// api imports no enrich (INV2). RelayMaxBody is the result request-body
+		// cap in bytes — a plain configured value (the WatchDefaults
+		// precedent): the composition root owns the env read.
+		RelayClaim:   enrichRelay.Claim,
+		RelayResult:  enrichRelay.Ingest,
+		RelayMaxBody: relayMaxBody(),
 	})
 
 	// Packaged-playback orchestrator (D-8/D-9/D4): the watch-driven frontier +
@@ -741,6 +771,29 @@ func envDuration(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// relayLease resolves the client-relayed-fetch claim-handout knob:
+// MELLIFERA_RELAY_LEASE in time.ParseDuration syntax ("90s", "2m", "1h30m" —
+// a bare seconds integer is NOT accepted, the unit is part of the value)
+// verbatim when set, the default 2m when unset/empty, and the default + a
+// logged warning naming the knob when malformed (envDuration's
+// INV-env-defaults contract). Feeds Relay.LeaseTTL: how long one client
+// principal owns a claimed relay job before the claim predicate considers it
+// abandoned.
+func relayLease() time.Duration {
+	return envDuration("MELLIFERA_RELAY_LEASE", 2*time.Minute)
+}
+
+// relayMaxBody resolves the client-relayed-fetch result-body cap knob:
+// MELLIFERA_RELAY_MAX_BODY in raw bytes ("2097152") verbatim when set, the
+// default 2 MiB when unset/empty, and the default + a logged warning naming
+// the knob when malformed (envInt's INV-env-defaults contract; the parser
+// does not clamp — a non-positive cap passes through and makes the result
+// route refuse every body with 413). Feeds api.Deps.RelayMaxBody, the
+// handler's http.MaxBytesReader limit.
+func relayMaxBody() int64 {
+	return int64(envInt("MELLIFERA_RELAY_MAX_BODY", 2*1024*1024))
 }
 
 // envOr returns the named env var or def when it is unset/empty.

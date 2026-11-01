@@ -58,7 +58,7 @@ const (
 	qaDisplayDir     = "QA Naming Vault S01"
 	qaDisplayEp1Rel  = qaDisplayDir + "/QA Naming Vault S01E01.mkv"
 	qaDisplayEp2Rel  = qaDisplayDir + "/QA Naming Vault S01E02.mkv"
-	qaDisplayTitle   = "QA Naming Vault"    // the season-marker cut the parser writes
+	qaDisplayTitle   = "QA Naming Vault"     // the season-marker cut the parser writes
 	qaDisplayRawName = "QA Naming Vault S01" // parsed.dir_name_raw, verbatim
 )
 

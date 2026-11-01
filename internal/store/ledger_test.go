@@ -5,6 +5,9 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 )
@@ -112,6 +115,162 @@ func TestStore_Ledger(t *testing.T) {
 		ceiling := now.Add(8 * 24 * time.Hour)
 		if !r.NextEligibleAt.Before(ceiling) {
 			t.Fatalf("NextEligibleAt %v not Before 8d ceiling %v", r.NextEligibleAt, ceiling)
+		}
+	})
+}
+
+// TestFailureLedgerReads covers the failure-ledger read surface added by
+// client-relayed-fetch D10: FailureCountsByPlugin (one grouped COUNT over the
+// rows CURRENTLY STORED — a cleared row leaves the count, a gone entity stays
+// counted) and ListFailuresPage (plugin-scoped newest-first window, limit
+// default 50 capped at 200, offset skip). ListFailures itself is untouched —
+// its behavior is pinned by TestStore_Ledger above.
+func TestFailureLedgerReads(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("counts_group_per_plugin_current_rows_only", func(t *testing.T) {
+		s := openStore(t)
+		next := time.Now().UTC().Add(24 * time.Hour)
+		for _, sd := range []struct{ item, plugin string }{
+			{"itm_a", "tv-parser"},
+			{"itm_b", "tv-parser"},
+			{"itm_c", "shikimori"},
+			{"itm_gone", "shikimori"}, // entity in NO table — still CURRENT in the ledger
+		} {
+			if err := s.RecordFailure(ctx, sd.item, sd.plugin, "exhausted", "boom", 1, next); err != nil {
+				t.Fatalf("RecordFailure %s/%s: %v", sd.item, sd.plugin, err)
+			}
+		}
+		// A cleared row LEAVES the count: no history, current rows only.
+		if err := s.ClearFailure(ctx, "itm_b", "tv-parser"); err != nil {
+			t.Fatalf("ClearFailure: %v", err)
+		}
+		counts, err := s.FailureCountsByPlugin(ctx)
+		if err != nil {
+			t.Fatalf("FailureCountsByPlugin: %v", err)
+		}
+		want := map[string]int{"tv-parser": 1, "shikimori": 2} // itm_gone stays counted
+		if !maps.Equal(counts, want) {
+			t.Fatalf("counts = %v, want %v", counts, want)
+		}
+	})
+
+	t.Run("empty_ledger_zero_counts_empty_window", func(t *testing.T) {
+		s := openStore(t)
+		counts, err := s.FailureCountsByPlugin(ctx)
+		if err != nil {
+			t.Fatalf("FailureCountsByPlugin: %v", err)
+		}
+		if len(counts) != 0 {
+			t.Fatalf("counts = %v, want empty", counts)
+		}
+		rows, err := s.ListFailuresPage(ctx, "", 0, 0)
+		if err != nil {
+			t.Fatalf("ListFailuresPage: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("window = %d rows, want 0", len(rows))
+		}
+	})
+
+	t.Run("window_newest_first_under_filter", func(t *testing.T) {
+		s := openStore(t)
+		// Seed via direct SQL with DISTINCT-SECOND failed_at stamps:
+		// RecordFailure stamps failed_at itself (time.Now), and same-second
+		// RFC3339Nano TEXT ordering is not a faithful proxy for newest-first.
+		// Explicit stamps make the DESC assertion deterministic.
+		for _, sd := range []struct{ item, plugin, failedAt string }{
+			{"itm_t1", "tv-parser", "2026-01-01T00:00:01Z"},
+			{"itm_t2", "tv-parser", "2026-01-01T00:00:02Z"},
+			{"itm_t3", "tv-parser", "2026-01-01T00:00:03Z"},
+			{"itm_s2", "shikimori", "2026-01-01T00:00:04Z"},
+			{"itm_s3", "shikimori", "2026-01-01T00:00:05Z"},
+		} {
+			_, err := s.DB().ExecContext(ctx, `
+INSERT INTO enrichment_failures (item_id, plugin_id, status, reason, attempts, failed_at, next_eligible_at)
+VALUES (?, ?, 'exhausted', 'boom', 1, ?, '2026-02-01T00:00:00Z')`,
+				sd.item, sd.plugin, sd.failedAt)
+			if err != nil {
+				t.Fatalf("seed %s: %v", sd.item, err)
+			}
+		}
+		ids := func(rows []FailureRow) []string {
+			out := make([]string, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, r.ItemID)
+			}
+			return out
+		}
+
+		// Plugin-scoped, limit<=0 → the default 50: all 3 tv rows, newest first.
+		rows, err := s.ListFailuresPage(ctx, "tv-parser", 0, 0)
+		if err != nil {
+			t.Fatalf("ListFailuresPage scoped: %v", err)
+		}
+		if got := ids(rows); !slices.Equal(got, []string{"itm_t3", "itm_t2", "itm_t1"}) {
+			t.Fatalf("scoped window = %v, want newest-first [itm_t3 itm_t2 itm_t1]", got)
+		}
+		// The filter excludes other plugins' rows entirely.
+		for _, r := range rows {
+			if r.PluginID != "tv-parser" {
+				t.Fatalf("filtered window leaked plugin %q row %s", r.PluginID, r.ItemID)
+			}
+		}
+		// Limited window: the 2 newest only.
+		rows, err = s.ListFailuresPage(ctx, "tv-parser", 2, 0)
+		if err != nil {
+			t.Fatalf("ListFailuresPage limited: %v", err)
+		}
+		if got := ids(rows); !slices.Equal(got, []string{"itm_t3", "itm_t2"}) {
+			t.Fatalf("limited window = %v, want [itm_t3 itm_t2]", got)
+		}
+		// Offset skips the newest.
+		rows, err = s.ListFailuresPage(ctx, "tv-parser", 2, 1)
+		if err != nil {
+			t.Fatalf("ListFailuresPage offset: %v", err)
+		}
+		if got := ids(rows); !slices.Equal(got, []string{"itm_t2", "itm_t1"}) {
+			t.Fatalf("offset window = %v, want [itm_t2 itm_t1]", got)
+		}
+		// Unscoped window interleaves ALL plugins newest first.
+		rows, err = s.ListFailuresPage(ctx, "", 0, 0)
+		if err != nil {
+			t.Fatalf("ListFailuresPage unscoped: %v", err)
+		}
+		if got := ids(rows); !slices.Equal(got, []string{"itm_s3", "itm_s2", "itm_t3", "itm_t2", "itm_t1"}) {
+			t.Fatalf("unscoped window = %v, want newest-first across plugins", got)
+		}
+		// Fields round-trip through the window.
+		if rows[0].PluginID != "shikimori" || rows[0].Status != "exhausted" || rows[0].Reason != "boom" || rows[0].Attempts != 1 {
+			t.Fatalf("window row fields = %+v", rows[0])
+		}
+		wantAt, _ := time.Parse(time.RFC3339Nano, "2026-01-01T00:00:05Z")
+		if !rows[0].FailedAt.Equal(wantAt) {
+			t.Fatalf("window FailedAt = %v, want %v", rows[0].FailedAt, wantAt)
+		}
+	})
+
+	t.Run("cap_enforced", func(t *testing.T) {
+		s := openStore(t)
+		next := time.Now().UTC().Add(24 * time.Hour)
+		for i := 0; i < 210; i++ { // > the 200 ceiling
+			if err := s.RecordFailure(ctx, fmt.Sprintf("itm_%03d", i), "tv-parser", "no_data", "boom", 1, next); err != nil {
+				t.Fatalf("RecordFailure itm_%03d: %v", i, err)
+			}
+		}
+		rows, err := s.ListFailuresPage(ctx, "tv-parser", 500, 0)
+		if err != nil {
+			t.Fatalf("ListFailuresPage over-ceiling: %v", err)
+		}
+		if len(rows) != 200 {
+			t.Fatalf("limit=500 → %d rows, want exactly 200 (cap enforced)", len(rows))
+		}
+		rows, err = s.ListFailuresPage(ctx, "tv-parser", 0, 0)
+		if err != nil {
+			t.Fatalf("ListFailuresPage default: %v", err)
+		}
+		if len(rows) != 50 {
+			t.Fatalf("limit absent → %d rows, want exactly 50 (default)", len(rows))
 		}
 	})
 }

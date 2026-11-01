@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/orchestrator"
+	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
@@ -80,7 +80,7 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 // legacyRepackOnPlay is the lazy re-heal decision (pack-manifest-audio D5,
 // re-versioned by fix-tv-unblock-2 Interfaces 2): a stored namespace in state
 // complete with a build nonce whose pack-lane RULE VERSION is older than
-// enrich.MasterRuleVersion predates the current pack rule — boolean `true`
+// pack.MasterRuleVersion predates the current pack rule — boolean `true`
 // reads as v1 (the legacy unversioned write), a JSON number as its integer
 // version, absence (or anything else) as 0 — and the play that asked for it
 // enqueues exactly ONE repack through the ordinary EnqueuePack path; plays
@@ -102,7 +102,7 @@ func legacyRepackOnPlay(enqueue func(string) error, doc map[string]any, itemID s
 	streams, _ := doc["streams"].(map[string]any)
 	state, _ := streams["state"].(string)
 	nonce, _ := streams["nonce"].(string)
-	if state != stream.StateComplete || nonce == "" || masterRuleVersion(streams) >= enrich.MasterRuleVersion {
+	if state != stream.StateComplete || nonce == "" || masterRuleVersion(streams) >= pack.MasterRuleVersion {
 		return false, false
 	}
 	if gate := stream.PackGate(itemFacts(doc), optInCodecs); gate != stream.GateOpen {

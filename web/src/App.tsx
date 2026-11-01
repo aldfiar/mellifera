@@ -5,6 +5,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { RequireAuth } from "@/components/RequireAuth";
 import Sidebar from "@/components/Sidebar";
 import { getDeviceToken, getToken } from "@/lib/auth";
+import { useRelayWorker } from "@/lib/relayWorker";
 import Login from "@/pages/Login";
 import PairingEntry from "@/pages/pair/PairingEntry";
 import Home from "@/pages/home/Home";
@@ -12,6 +13,7 @@ import Collection from "@/pages/collections/Collection";
 import Collections from "@/pages/admin/Collections";
 import Sources from "@/pages/admin/Sources";
 import Plugins from "@/pages/admin/Plugins";
+import PluginFailures from "@/pages/admin/PluginFailures";
 import Pairing from "@/pages/admin/Pairing";
 import ItemDetail from "@/pages/browse/ItemDetail";
 
@@ -33,6 +35,11 @@ import ItemDetail from "@/pages/browse/ItemDetail";
 // renders the floating menu button + slide-in panel; .app-content is the
 // area index.css shifts right of the 224px panel while it is open.
 function Shell({ children }: { children: ReactNode }): ReactElement {
+  // The relay loop's ONE mount (client-relayed-fetch 6.2): every component
+  // inside the authenticated shell — admin token or paired device alike —
+  // serves the relay queue, while /login and the unauthenticated RootGate
+  // branch (the pairing entry) never render Shell and never start it.
+  useRelayWorker();
   return (
     <>
       <Sidebar />
@@ -105,6 +112,16 @@ export default function App(): ReactElement {
           <RequireAuth>
             <Shell>
               <Plugins />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/admin/plugins/:pluginId/failures"
+        element={
+          <RequireAuth>
+            <Shell>
+              <PluginFailures />
             </Shell>
           </RequireAuth>
         }

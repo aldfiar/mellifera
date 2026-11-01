@@ -378,3 +378,141 @@ func TestEnrichFailures(t *testing.T) {
 		}
 	}
 }
+
+// TestEnrichFailuresPage pins the failure drill-down (client-relayed-fetch
+// D10): the OPTIONAL plugin_id/limit/offset query params on GET
+// /enrich/failures. No params → today's full unfiltered answer (the exact
+// ListFailures read, every row served); plugin_id + limit/offset → the
+// plugin-scoped newest-first window in the SAME row shape; invalid limit/
+// offset numerics → 400 bad_request. Rows are seeded via direct SQL with
+// distinct-second failed_at stamps so the newest-first window is
+// deterministic (RecordFailure stamps failed_at itself).
+func TestEnrichFailuresPage(t *testing.T) {
+	st := openAPIStore(t)
+	ctx := context.Background()
+	for _, sd := range []struct{ item, plugin, failedAt string }{
+		{"itm_f1", "tv-parser", "2026-01-01T00:00:01Z"},
+		{"itm_f2", "tv-parser", "2026-01-01T00:00:02Z"},
+		{"itm_f3", "shikimori", "2026-01-01T00:00:03Z"},
+		{"itm_f4", "shikimori", "2026-01-01T00:00:04Z"},
+		{"itm_f5", "shikimori", "2026-01-01T00:00:05Z"},
+	} {
+		_, err := st.DB().ExecContext(ctx, `
+INSERT INTO enrichment_failures (item_id, plugin_id, status, reason, attempts, failed_at, next_eligible_at)
+VALUES (?, ?, 'exhausted', 'boom', 1, ?, '2026-02-01T00:00:00Z')`,
+			sd.item, sd.plugin, sd.failedAt)
+		if err != nil {
+			t.Fatalf("seed %s: %v", sd.item, err)
+		}
+	}
+
+	h := New(Deps{AdminToken: adminToken, Store: st})
+	rowIDs := func(body enrichFailuresResponse) []string {
+		out := make([]string, 0, len(body.Failures))
+		for _, f := range body.Failures {
+			out = append(out, f.RowID)
+		}
+		return out
+	}
+
+	t.Run("no_params_answers_the_full_list_unchanged", func(t *testing.T) {
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/enrich/failures", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var body enrichFailuresResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if len(body.Failures) != 5 {
+			t.Fatalf("failures = %d rows, want the full unfiltered 5: %+v", len(body.Failures), body.Failures)
+		}
+		// Same row sequence the untouched ListFailures read serves — the
+		// no-params path IS today's code path (byte-identical answer).
+		want, err := st.ListFailures(ctx)
+		if err != nil {
+			t.Fatalf("ListFailures: %v", err)
+		}
+		wantIDs := make([]string, 0, len(want))
+		for _, r := range want {
+			wantIDs = append(wantIDs, r.ItemID)
+		}
+		if got := rowIDs(body); !reflect.DeepEqual(got, wantIDs) {
+			t.Fatalf("row sequence = %v, want the ListFailures sequence %v", got, wantIDs)
+		}
+		// Same row shape: every row renders (gone entities are NEVER filtered)
+		// with the ledger fields intact and RFC3339 stamps.
+		for _, f := range body.Failures {
+			if f.RowKind != "gone" || f.Status != "exhausted" || f.Reason != "boom" || f.Attempts != 1 {
+				t.Fatalf("row %s = %+v, want an unfiltered gone row with ledger fields intact", f.RowID, f)
+			}
+			if _, err := time.Parse(time.RFC3339, f.FailedAt); err != nil {
+				t.Fatalf("row %s failed_at %q is not RFC3339: %v", f.RowID, f.FailedAt, err)
+			}
+		}
+	})
+
+	t.Run("plugin_scoped_limited_window", func(t *testing.T) {
+		// Scoped, default limit: all 3 shikimori rows, newest first.
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/enrich/failures?plugin_id=shikimori", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var body enrichFailuresResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if got := rowIDs(body); !reflect.DeepEqual(got, []string{"itm_f5", "itm_f4", "itm_f3"}) {
+			t.Fatalf("scoped window = %v, want newest-first [itm_f5 itm_f4 itm_f3]", got)
+		}
+		for _, f := range body.Failures {
+			if f.PluginID != "shikimori" {
+				t.Fatalf("scoped window leaked plugin %q (row %s)", f.PluginID, f.RowID)
+			}
+		}
+	})
+	t.Run("limited_window_and_offset", func(t *testing.T) {
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/enrich/failures?plugin_id=shikimori&limit=2", "", adminToken)
+		defer resp.Body.Close()
+		var body enrichFailuresResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if got := rowIDs(body); !reflect.DeepEqual(got, []string{"itm_f5", "itm_f4"}) {
+			t.Fatalf("limited window = %v, want the 2 newest [itm_f5 itm_f4]", got)
+		}
+		resp2 := doRequest(t, h, http.MethodGet, "/api/v1/enrich/failures?plugin_id=shikimori&limit=2&offset=2", "", adminToken)
+		defer resp2.Body.Close()
+		if resp2.StatusCode != http.StatusOK {
+			t.Fatalf("offset status = %d, want %d", resp2.StatusCode, http.StatusOK)
+		}
+		var body2 enrichFailuresResponse
+		if err := json.NewDecoder(resp2.Body).Decode(&body2); err != nil {
+			t.Fatalf("decode offset body: %v", err)
+		}
+		if got := rowIDs(body2); !reflect.DeepEqual(got, []string{"itm_f3"}) {
+			t.Fatalf("offset window = %v, want [itm_f3]", got)
+		}
+	})
+	t.Run("invalid_numerics_are_400", func(t *testing.T) {
+		for _, qs := range []string{"?plugin_id=shikimori&limit=abc", "?plugin_id=shikimori&limit=", "?offset=1.5"} {
+			resp := doRequest(t, h, http.MethodGet, "/api/v1/enrich/failures"+qs, "", adminToken)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s: status = %d, want %d", qs, resp.StatusCode, http.StatusBadRequest)
+			}
+			var body errorBody
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("%s: decode body: %v", qs, err)
+			}
+			if body.Error.Code != "bad_request" {
+				t.Fatalf("%s: error code = %q, want bad_request", qs, body.Error.Code)
+			}
+		}
+	})
+}

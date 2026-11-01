@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mellifera/mellifera/internal/module"
+	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
@@ -49,7 +50,7 @@ type Deps struct {
 	// EXCEPT a refusal.PolicyRefusal (playback-capability-gate D4: a policy
 	// verdict, never a pack failure — the failed state persists with the gate
 	// token, no ledger row). Metadata completion is never touched either way.
-	PackItem func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (PackOutcome, error)
+	PackItem func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (pack.PackOutcome, error)
 	// AfterPackPersist, when non-nil, runs exactly once AFTER the streams
 	// lane's success persistStreams with the just-persisted build's item id
 	// and nonce (playback-capability-gate D5): the document already names the
@@ -64,6 +65,14 @@ type Deps struct {
 	// PackItem (enrich.NewFetchGate); nil (sync runs, in-package tests) means
 	// unpaced.
 	FetchGate *FetchGate
+	// Relay is the client-relayed-fetch transport (D4): the chain consults it
+	// before fetching and hands a network-class failure's whole request plan
+	// to it, ending the run deferred. Nil-safe — nil means relay disabled:
+	// every deferred-handoff branch guards and a network failure keeps
+	// today's exact failure behavior (retries, ledger, lifecycle — also the
+	// operator kill switch). Wired flat in cmd/mellifera beside FetchGate
+	// (an &enrich.Relay literal).
+	Relay *Relay
 }
 
 // Result is the outcome of enriching one item: how many sources were attempted,
@@ -120,7 +129,7 @@ func enrichDoc(ctx context.Context, resolve metadataResolver, mod module.Module,
 		if err := ctx.Err(); err != nil {
 			return doc, statusFailed, res, hardError(doc, err)
 		}
-		sr := runSource(ctx, resolve, src, mod, base, doc, nil) // sync path: no gate (unpaced)
+		sr := runSource(ctx, resolve, src, mod, base, doc, nil, nil) // sync path: no gate, no relay scope (unpaced, relay disabled)
 		res.Stages++
 		res.Warnings = append(res.Warnings, sr.warnings...)
 		switch sr.kind {
@@ -240,6 +249,12 @@ func appendStage(doc map[string]any, sr sourceResult, advancedTo string) {
 	if sr.errMsg != "" {
 		stage["error"] = sr.errMsg
 	}
+	if sr.fetchClass != "" { // the fetch stage's machine class beside the human error (spec "Fetch failure classification")
+		stage["class"] = sr.fetchClass
+	}
+	if sr.executor != "" { // the fetch ran on a client relay (D4 consult hit) — audit shows where (spec "Result endpoint")
+		stage["executor"] = sr.executor
+	}
 	existing, _ := doc["_stages"].([]map[string]any)
 	doc["_stages"] = append(existing, stage)
 }
@@ -294,6 +309,8 @@ func stageStatus(k outcomeKind) string {
 		return "failed"
 	case outcomeUnavailable:
 		return "unavailable"
+	case outcomeDeferred:
+		return "deferred" // the relay handoff: neither failed nor succeeded (client-relayed-fetch D4)
 	default:
 		return "skipped"
 	}

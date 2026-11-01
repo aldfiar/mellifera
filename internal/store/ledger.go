@@ -103,3 +103,118 @@ FROM enrichment_failures`)
 	}
 	return out, nil
 }
+
+// FailureCountsByPlugin returns ONE grouped COUNT over the ledger rows
+// CURRENTLY STORED, keyed by plugin_id (client-relayed-fetch D10). No
+// history: the ledger keeps none (RecordFailure upserts, ClearFailure
+// deletes on success), so presence ≈ unresolved/cooling — a cleared row
+// leaves the count, a cooldown-expired row lingers until its pair
+// re-derives, and gone entities stay counted (the loop-safety visibility
+// rule). A single static SQL statement, parameterization-safe by having
+// nothing to interpolate. An empty ledger yields an empty (non-nil) map.
+func (s *Store) FailureCountsByPlugin(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT plugin_id, COUNT(*) FROM enrichment_failures GROUP BY plugin_id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: failure counts by plugin: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]int)
+	for rows.Next() {
+		var (
+			pluginID string
+			n        int
+		)
+		if err := rows.Scan(&pluginID, &n); err != nil {
+			return nil, fmt.Errorf("store: failure counts scan: %w", err)
+		}
+		out[pluginID] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: failure counts by plugin: %w", err)
+	}
+	return out, nil
+}
+
+// ListFailuresPage is the paged ledger read (client-relayed-fetch D10): the
+// rows CURRENTLY STORED, newest-first by failed_at, optionally scoped to one
+// plugin and windowed by limit/offset. limit<=0 → the default 50; above 200 →
+// capped at 200 (no unbounded parameterized read); offset<0 clamps to 0 (the
+// QueryItems precedent). pluginID "" = all plugins. ListFailures itself stays
+// UNTOUCHED (the derivation's failureIndex rides it) — the handler routes
+// no-parameter requests there so today's full-list answer is preserved.
+//
+// Ordering is RFC3339Nano TEXT order (the stored stamp format): stable newest-first
+// across seconds; within one second a zero-fraction stamp sorts AFTER fractional
+// ones (the nano trailing-zero trim) — accepted skew at operator-listing
+// granularity.
+func (s *Store) ListFailuresPage(ctx context.Context, pluginID string, limit, offset int) ([]FailureRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if pluginID != "" {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT item_id, plugin_id, status, reason, attempts, failed_at, next_eligible_at
+FROM enrichment_failures WHERE plugin_id = ?
+ORDER BY failed_at DESC LIMIT ? OFFSET ?`, pluginID, limit, offset)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT item_id, plugin_id, status, reason, attempts, failed_at, next_eligible_at
+FROM enrichment_failures
+ORDER BY failed_at DESC LIMIT ? OFFSET ?`, limit, offset)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: list failures page: %w", err)
+	}
+	defer rows.Close()
+	out, err := scanFailureRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("store: list failures page: %w", err)
+	}
+	return out, nil
+}
+
+// scanFailureRows drains a ledger SELECT into FailureRows — the row scanner
+// of ListFailuresPage. ListFailures keeps its inlined loop VERBATIM (D10 pins
+// the unpaginated read untouched), so the scan lives here exactly once for
+// the new read rather than refactoring the pinned one.
+func scanFailureRows(rows *sql.Rows) ([]FailureRow, error) {
+	var out []FailureRow
+	for rows.Next() {
+		var (
+			r            FailureRow
+			reason       sql.NullString // reason is the only nullable column (DDL: reason TEXT)
+			failedAt     string
+			nextEligible string
+		)
+		if err := rows.Scan(&r.ItemID, &r.PluginID, &r.Status, &reason, &r.Attempts, &failedAt, &nextEligible); err != nil {
+			return nil, fmt.Errorf("store: scan failure row: %w", err)
+		}
+		ft, err := parseTime(failedAt)
+		if err != nil {
+			return nil, fmt.Errorf("store: failure row failed_at: %w", err)
+		}
+		nt, err := parseTime(nextEligible)
+		if err != nil {
+			return nil, fmt.Errorf("store: failure row next_eligible_at: %w", err)
+		}
+		r.Reason = reason.String
+		r.FailedAt = ft
+		r.NextEligibleAt = nt
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: scan failure rows: %w", err)
+	}
+	return out, nil
+}

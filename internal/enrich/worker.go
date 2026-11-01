@@ -290,11 +290,13 @@ type driveResult struct {
 // status and writes the ledger (RecordFailure on terminal, ClearFailure on
 // success after a prior row). Soft-fail: a source's terminal failure /
 // unavailable / skipped outcome never aborts the chain — only ctx.Done() does
-// (INV-soft-fail).
+// (INV-soft-fail). sc is the deferred-handoff scope (nil = relay disabled,
+// client-relayed-fetch D4); a deferred outcome writes nothing here — the
+// relayed ledger row Enqueue wrote IS the loop-safety write.
 func (q *Queue) driveSources(
 	ctx context.Context, mod module.Module, extras []module.MetadataSourceBinding,
 	doc map[string]any, base *scannerv1.IdentifyResult,
-	rowID string, idx failureIndex, status *string,
+	rowID string, idx failureIndex, status *string, sc *relayScope,
 ) driveResult {
 	res := driveResult{}
 	nowt := now()
@@ -310,7 +312,7 @@ func (q *Queue) driveSources(
 		if inCooldown(idx, rowID, src.PluginID, nowt) {
 			continue
 		}
-		sr, ledgerStatus, attempts := runSourceRetryable(ctx, q.resolve, src, mod, base, doc, q.deps.FetchGate, q.cfg.MaxAttempts, q.cfg.Backoff)
+		sr, ledgerStatus, attempts := runSourceRetryable(ctx, q.resolve, src, mod, base, doc, q.deps.FetchGate, sc, q.cfg.MaxAttempts, q.cfg.Backoff)
 		*status = advanceForSource(*status, sr.kind, &res.begun)
 		appendStage(doc, sr, *status)
 		q.applyOutcome(ctx, rowID, src.PluginID, idx, sr, ledgerStatus, attempts)
@@ -330,7 +332,11 @@ func (q *Queue) driveSources(
 // gap re-enters pending; a success then parses. A failure engages (begins) but
 // does not advance further (furthest-valid preserved). Terminal-failures share the
 // outcomeFailed kind for state purposes — they do not block settlement (a
-// terminal pair in cooldown counts as "no pending work").
+// terminal pair in cooldown counts as "no pending work"). A DEFERRED source
+// performs no transition at all: the deferred run is the item's in-flight
+// state (client-relayed-fetch contract — no lifecycle change; the relayed
+// ledger row is the pair's quiet-down, and the completion wake re-derives the
+// pair for the consult).
 func advanceForSource(status string, kind outcomeKind, begun *bool) string {
 	switch kind {
 	case outcomeSucceeded:
@@ -346,6 +352,8 @@ func advanceForSource(status string, kind outcomeKind, begun *bool) string {
 			status = advance(status, evBegin)
 			*begun = true
 		}
+	case outcomeDeferred:
+		// no lifecycle transition
 	}
 	return status
 }
@@ -372,6 +380,14 @@ func (q *Queue) applyOutcome(
 	reason := sr.errMsg
 	if reason == "" {
 		reason = ledgerStatus
+	}
+	if sr.fetchClass != "" {
+		// A fetch failure's reason carries the machine class token in the
+		// relay enqueue's shape ("<class>: <text>" — the same format
+		// Enqueue writes), human text alongside; redactURLs re-applied is
+		// idempotent and keeps the no-keyed-URL invariant at the write
+		// regardless of what the free text carries.
+		reason = fmt.Sprintf("%s: %s", sr.fetchClass, redactURLs(reason))
 	}
 	next := now().Add(cool)
 	q.storeWrite(func() error {

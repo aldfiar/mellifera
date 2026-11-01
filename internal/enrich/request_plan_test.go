@@ -235,7 +235,7 @@ func TestRequestPlan(t *testing.T) {
 		mod := module.Module{ID: "serial", MediaType: "serial"}
 		res := runSource(context.Background(), func(string, string) (sdk.MetadataSource, error) {
 			return &planSource{primary: spec("primary"), extras: []*metadatav1.RequestSpec{spec("extra1"), spec("extra2")}}, nil
-		}, binding("plan", 1, true), mod, &scannerv1.IdentifyResult{}, map[string]any{}, gate)
+		}, binding("plan", 1, true), mod, &scannerv1.IdentifyResult{}, map[string]any{}, gate, nil)
 		if res.kind != outcomeSucceeded {
 			t.Fatalf("runSource kind = %v (err %q), want succeeded", res.kind, res.errMsg)
 		}

@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/mellifera/mellifera/internal/api"
-	"github.com/mellifera/mellifera/internal/enrich"
+	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
@@ -297,7 +297,7 @@ func TestPackItemGateRefusal(t *testing.T) {
 // TestPlayLazyRepack is the acceptance test for the lazy re-heal decision
 // (pack-manifest-audio 3.1, D5; re-versioned by fix-tv-unblock-2 Interfaces
 // 2): a stale build — state complete, a build nonce, a rule version older
-// than enrich.MasterRuleVersion (absent = v0, boolean true = the legacy v1
+// than pack.MasterRuleVersion (absent = v0, boolean true = the legacy v1
 // write) — enqueues exactly ONE repack through the ordinary pack-on-play
 // path and answers the 202 shape; a current (version-carrying) build — and a
 // FUTURE one, so an older constant never re-heals a newer build — never
@@ -332,9 +332,9 @@ func TestPlayLazyRepack(t *testing.T) {
 			t.Fatalf("PutItem %s: %v", id, err)
 		}
 	}
-	setMaster("it_current", enrich.MasterRuleVersion)
+	setMaster("it_current", pack.MasterRuleVersion)
 	setMaster("it_v1_bool", true)
-	setMaster("it_future", enrich.MasterRuleVersion+1)
+	setMaster("it_future", pack.MasterRuleVersion+1)
 
 	enqueued := []string{}
 	enqueue := func(id string) error { enqueued = append(enqueued, id); return nil }
@@ -454,7 +454,7 @@ func TestPlayLazyRepack(t *testing.T) {
 // descriptor GET — the verb every playback actually hits (the SPA mounts the
 // player from the descriptor's play_url) — runs the SAME stale-build
 // decision as the play verb. A stale build (state complete + a build nonce,
-// a rule version older than enrich.MasterRuleVersion) enqueues exactly ONE
+// a rule version older than pack.MasterRuleVersion) enqueues exactly ONE
 // repack through the ordinary EnqueuePack seam while the GET still ANSWERS
 // the current old build; a repeated GET while the repack runs is
 // lease-absorbed, never re-enqueued per request; a current (version-carrying)
@@ -473,7 +473,7 @@ func TestDescriptorLazyRepack(t *testing.T) {
 	// (internal/enrich streams lane); the legacy docs stay version-free.
 	r := mustRow(t, st, ctx, "it_current")
 	doc := decodeItemDoc(r.Document)
-	doc["streams"].(map[string]any)["master"] = enrich.MasterRuleVersion
+	doc["streams"].(map[string]any)["master"] = pack.MasterRuleVersion
 	b, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

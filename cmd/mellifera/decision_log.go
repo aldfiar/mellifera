@@ -56,7 +56,7 @@ func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.S
 	// Lazy repack trigger (repack-descriptor-trigger), BEFORE the answer is
 	// composed: the same stale-build decision as the play verb, byte-for-byte
 	// legacyRepackOnPlay semantics — complete state + a build nonce + a rule
-	// version older than enrich.MasterRuleVersion, PackGate pre-check, ONE
+	// version older than pack.MasterRuleVersion, PackGate pre-check, ONE
 	// orchestrator line, enqueue into the dedup seam. The return values are
 	// deliberately dropped: the GET never blocks on the decision and never
 	// changes its answer — the descriptor below still serves the current old

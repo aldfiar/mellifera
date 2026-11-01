@@ -26,7 +26,7 @@
 // Leases are in-memory and expire lazily; pending work survives a restart in
 // items + the ledger and is re-derived on the next Start.
 //
-// # Public API (8 symbols)
+// # Public API (7 symbols)
 //
 //   - Deps: the collaborators (store, plugin manager, module registry) plus
 //     the streams lane's PackItem packaging seam (nil = lane disabled).
@@ -38,8 +38,13 @@
 //   - QueueConfig: the §4.4 knobs (zero-value = defaults).
 //   - Stats: a best-effort liveness snapshot (pending/in-flight/done/failed).
 //   - NewQueue: construct a Queue over Deps + QueueConfig (not yet running).
-//   - PackOutcome: one published packaging build returned over the PackItem
-//     seam (artifact pointer + build nonce).
+//
+// The pack vocabulary is NOT on this surface: PackOutcome (one published
+// packaging build returned over the PackItem seam) and MasterRuleVersion
+// (the streams lane's map key) moved to internal/pack in the GATE-ruled
+// vocabulary split (the internal/relay precedent — check.sh's per-package
+// exported-symbol budget); enrich references them as pack.PackOutcome and
+// pack.MasterRuleVersion.
 //
 // # The streams lane (packaged-playback D-10)
 //

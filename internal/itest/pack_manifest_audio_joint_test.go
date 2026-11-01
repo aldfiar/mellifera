@@ -72,6 +72,7 @@ import (
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/orchestrator"
+	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
@@ -290,14 +291,14 @@ func pmaMasterVersion(streams map[string]any) int {
 // pmaLegacyRepack mirrors cmd/mellifera's legacyRepackOnPlay (pack-manifest-
 // audio D5, re-versioned by fix-tv-unblock-2 Interfaces 2): a complete
 // namespace with a nonce whose pack-lane RULE VERSION is older than
-// enrich.MasterRuleVersion is a stale build — the play enqueues exactly ONE
+// pack.MasterRuleVersion is a stale build — the play enqueues exactly ONE
 // repack; gate-closed skips with ONE INFO line; the decision reads ONLY the
 // stored namespace doc.
 func pmaLegacyRepack(enqueue func(string) error, doc map[string]any, itemID string, optInCodecs bool) (queued, handled bool) {
 	streams, _ := doc["streams"].(map[string]any)
 	state, _ := streams["state"].(string)
 	nonce, _ := streams["nonce"].(string)
-	if state != stream.StateComplete || nonce == "" || pmaMasterVersion(streams) >= enrich.MasterRuleVersion {
+	if state != stream.StateComplete || nonce == "" || pmaMasterVersion(streams) >= pack.MasterRuleVersion {
 		return false, false
 	}
 	ff, _ := doc["ffprobe"].(map[string]any)
@@ -371,16 +372,16 @@ func pmaRetryFailed(ctx context.Context, st *store.Store, enqueue func(string) e
 func pmaQueue(t *testing.T, w *pbWorld, media *stream.Service, extra func()) *enrich.Queue {
 	t.Helper()
 	deps := enrich.Deps{Store: w.st, Modules: w.reg, Plugins: w.mgr}
-	deps.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (enrich.PackOutcome, error) {
+	deps.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (pack.PackOutcome, error) {
 		pmaGateLine(itemID, ffprobe, stream.PackGate(ffprobe, media.OptInCodecs))
 		if gate := stream.PackGate(ffprobe, media.OptInCodecs); gate != stream.GateOpen {
-			return enrich.PackOutcome{}, refusal.PolicyRefusal{Reason: string(gate)}
+			return pack.PackOutcome{}, refusal.PolicyRefusal{Reason: string(gate)}
 		}
 		if extra != nil {
 			extra()
 		}
 		build, err := media.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
-		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
+		return pack.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
 	}
 	deps.AfterPackPersist = media.EvictSuperseded
 	q := enrich.NewQueue(deps, enrich.QueueConfig{Workers: 2, Backoff: time.Millisecond})
@@ -1226,8 +1227,8 @@ func TestPackManifestAudioJoint(t *testing.T) {
 		if freshNonce == "" || freshNonce == "legacy0" {
 			t.Fatalf("repack did not publish a fresh nonce: %v", streams)
 		}
-		if v, ok := streams["master"].(float64); !ok || v != float64(enrich.MasterRuleVersion) {
-			t.Fatalf("repacked namespace carries master %v, want the current rule version %d", streams["master"], enrich.MasterRuleVersion)
+		if v, ok := streams["master"].(float64); !ok || v != float64(pack.MasterRuleVersion) {
+			t.Fatalf("repacked namespace carries master %v, want the current rule version %d", streams["master"], pack.MasterRuleVersion)
 		}
 		dirs := pmaNonceDirs(t, w.media.Root, "pma_e")
 		if len(dirs) != 1 || dirs[0] != freshNonce {
@@ -1324,8 +1325,8 @@ func TestPackManifestAudioJoint(t *testing.T) {
 		if fNonce == "" || fNonce == "v1legacy" {
 			t.Fatalf("v1-seed repack did not publish a fresh nonce: %v", freshF)
 		}
-		if v, ok := freshF["master"].(float64); !ok || v != float64(enrich.MasterRuleVersion) {
-			t.Fatalf("repacked v1-seed namespace carries master %v, want the current rule version %d", freshF["master"], enrich.MasterRuleVersion)
+		if v, ok := freshF["master"].(float64); !ok || v != float64(pack.MasterRuleVersion) {
+			t.Fatalf("repacked v1-seed namespace carries master %v, want the current rule version %d", freshF["master"], pack.MasterRuleVersion)
 		}
 		fDirs := pmaNonceDirs(t, w.media.Root, "pma_f")
 		if len(fDirs) != 1 || fDirs[0] != fNonce {
@@ -1356,7 +1357,7 @@ func TestPackManifestAudioJoint(t *testing.T) {
 				"state":    stream.StateComplete,
 				"playlist": pmaMediaPrefix + "pma_g/current0/index.m3u8",
 				"nonce":    "current0",
-				"master":   enrich.MasterRuleVersion,
+				"master":   pack.MasterRuleVersion,
 			})
 		markG := log.mark()
 		status, body, _ = pbDo(t, w.client, http.MethodPost, playBase+"/api/v1/items/pma_g/play", w.token, map[string]any{})

@@ -132,6 +132,36 @@ var schemaSQL = []string{
   next_eligible_at TEXT NOT NULL,
   PRIMARY KEY (item_id, plugin_id)
 )`,
+	// relay_jobs is the client-relayed-fetch durable relay queue: ONE row per
+	// deferred fetch plan (purpose 'enrich' for an (item, plugin) pair, 'search'
+	// for a plugin-wide identify), executed by a client through the relay API.
+	// The single-claimant guarantee is structural (design D3): the claim is ONE
+	// conditional UPDATE whose WHERE id = (SELECT ...) subselect picks the oldest
+	// pending — or lease-expired claimed — row; SQLite's serialized writes make
+	// concurrent claimants race-free and a loser's 0-row update reads as
+	// not-found. Lease expiry is LAZY — decided inside the claim predicate by the
+	// caller's clock (the pairing lazy-expiry precedent), never swept here. plan
+	// and result persist as JSON blob columns; state is a value-agnostic column
+	// (the enrichment_failures precedent — the closed pending|claimed|done|failed
+	// set is owned by the caller); consumed is the 0/1 consult flag (the
+	// metadata_source_prefs enabled convention).
+	`CREATE TABLE IF NOT EXISTS relay_jobs (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  purpose              TEXT NOT NULL,
+  row_id               TEXT NOT NULL DEFAULT '',
+  library_id           INTEGER NOT NULL DEFAULT 0,
+  plugin_id            TEXT NOT NULL,
+  plan                 TEXT NOT NULL,
+  state                TEXT NOT NULL DEFAULT 'pending',
+  claim_principal_hash TEXT NOT NULL DEFAULT '',
+  claimed_at           TEXT,
+  lease_until          TEXT,
+  result               TEXT,
+  result_bytes         INTEGER NOT NULL DEFAULT 0,
+  created_at           TEXT NOT NULL,
+  completed_at         TEXT,
+  consumed             INTEGER NOT NULL DEFAULT 0
+)`,
 	// playback_progress is the web-ui-phase-3 position store: ONE row per item
 	// (item_id PK — the upsert overwrites), plain integer seconds with a >= 0
 	// CHECK, and the stamp every write refreshes. Reads join to items, so rows
