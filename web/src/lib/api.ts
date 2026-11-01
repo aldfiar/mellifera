@@ -314,6 +314,16 @@ export interface PlaybackDescriptor {
   // gates only the hls mount). Optional in TS like every additive field:
   // absence or an empty list means "no probe possible", never a type hole.
   codecs?: string[];
+  // layout — the additive pack-layout record (fix-tv-unblock-2, omitempty):
+  // how the packaged build composes its audio — "single-variant" (the flat
+  // one-audio master, every device's floor) or "rendition" (one variant per
+  // audio stream, only an MSE player can honor the audio groups). Present on
+  // hls answers from builds recorded under the current rule; absent on
+  // legacy builds (fail-open — they re-heal on the lazy repack wave) and on
+  // direct answers (the codecs precedent). Optional in TS like every
+  // additive field: absence means "mount the floor as before", never a type
+  // hole.
+  layout?: "single-variant" | "rendition";
 }
 
 // playback.go Playback.Voiceovers — one voiceover entry (serial-watch-flow

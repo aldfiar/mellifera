@@ -31,11 +31,13 @@
 //   - (d) the pack flow line sequence over a real job: "pack: gate" then
 //     "streams: pack published", one line per moment, no per-segment lines,
 //     INV4 (no token, no play URL).
-//   - (e) the lazy repack-on-play: a legacy-layout item (hand-laid valid flat
-//     build, marker-free namespace) answers POST /play with exactly ONE
-//     repack enqueued — the old build serving while it runs, the repacked
-//     build replacing it with a fresh nonce carrying the composed master and
-//     the marker — and a second POST /play enqueues nothing.
+//   - (e) the lazy repack-on-play (rule-versioned): a stale item (hand-laid
+//     valid flat build, version-free namespace = v0) answers POST /play with
+//     exactly ONE repack enqueued — the old build serving while it runs, the
+//     repacked build replacing it with a fresh nonce carrying the composed
+//     master and the current rule version — and a second POST /play enqueues
+//     nothing; a v1 boolean-true seed re-heals exactly once; a
+//     current-version seed never enqueues.
 //
 // The tail-phase gate: afterHead is an unexported stream field, so the joint
 // widens the head-first window hermetically instead — the pack service's
@@ -46,7 +48,7 @@
 // polls in the test and nothing races. Coverage referenced, not re-proven:
 // the master composer units (stream/master_test.go), the flow vocabulary
 // units (stream/pack_flow_log_test.go), the legacy-repack decision units
-// (cmd/mellifera/playback_gate_test.go), the marker persist
+// (cmd/mellifera/playback_gate_test.go), the version persist
 // (enrich/streams_test.go).
 package itest
 
@@ -259,7 +261,7 @@ func pmaPlaybackGET(ctx context.Context, st *store.Store, media *stream.Service,
 	if err := json.Unmarshal(row.Document, &doc); err != nil {
 		return api.Playback{}, err
 	}
-	mode, state, playURL, sections, voiceovers, stateReason, codecs, codecsSrc := media.Describe(itemID, doc)
+	mode, state, playURL, sections, voiceovers, stateReason, codecs, codecsSrc, _ := media.Describe(itemID, doc)
 	token, _ := media.Issue(itemID, time.Now())
 	pmaLogDecision(itemID, mode, state,
 		pmaDecisionReason(mode, state, stateReason, pmaCooldowns(ctx, st)[itemID], time.Now()), codecsSrc)
@@ -269,15 +271,33 @@ func pmaPlaybackGET(ctx context.Context, st *store.Store, media *stream.Service,
 	}, nil
 }
 
-// pmaLegacyRepack mirrors cmd/mellifera's legacyRepackOnPlay (D5): a complete
-// namespace with a nonce but WITHOUT the master marker is a legacy build — the
-// play enqueues exactly ONE repack; gate-closed skips with ONE INFO line; the
-// decision reads ONLY the stored namespace doc.
+// pmaMasterVersion mirrors cmd/mellifera's masterRuleVersion (fix-tv-unblock-2
+// Interfaces 2): boolean `true` is the legacy v1 write, a JSON number its
+// integer version (JSON decoding shapes namespace numbers as float64 — a raw
+// int type-assert would read every version as 0), anything else or absent 0.
+func pmaMasterVersion(streams map[string]any) int {
+	switch v := streams["master"].(type) {
+	case bool:
+		if v {
+			return 1
+		}
+	case float64:
+		return int(v)
+	}
+	return 0
+}
+
+// pmaLegacyRepack mirrors cmd/mellifera's legacyRepackOnPlay (pack-manifest-
+// audio D5, re-versioned by fix-tv-unblock-2 Interfaces 2): a complete
+// namespace with a nonce whose pack-lane RULE VERSION is older than
+// enrich.MasterRuleVersion is a stale build — the play enqueues exactly ONE
+// repack; gate-closed skips with ONE INFO line; the decision reads ONLY the
+// stored namespace doc.
 func pmaLegacyRepack(enqueue func(string) error, doc map[string]any, itemID string, optInCodecs bool) (queued, handled bool) {
 	streams, _ := doc["streams"].(map[string]any)
 	state, _ := streams["state"].(string)
 	nonce, _ := streams["nonce"].(string)
-	if master, _ := streams["master"].(bool); state != stream.StateComplete || nonce == "" || master {
+	if state != stream.StateComplete || nonce == "" || pmaMasterVersion(streams) >= enrich.MasterRuleVersion {
 		return false, false
 	}
 	ff, _ := doc["ffprobe"].(map[string]any)
@@ -360,7 +380,7 @@ func pmaQueue(t *testing.T, w *pbWorld, media *stream.Service, extra func()) *en
 			extra()
 		}
 		build, err := media.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
-		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs}, err
+		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
 	}
 	deps.AfterPackPersist = media.EvictSuperseded
 	q := enrich.NewQueue(deps, enrich.QueueConfig{Workers: 2, Backoff: time.Millisecond})
@@ -1126,7 +1146,7 @@ func TestPackManifestAudioJoint(t *testing.T) {
 		pmaSeedItem(t, w, libID, "pma_e", "Movie E.mkv", mkvE, pmaH264Facts(), "",
 			map[string]any{"state": stream.StateNone})
 		// The hand-laid legacy build beside a namespace doc lacking the
-		// marker: complete + nonce, no master key — the stale-build signal.
+		// version: complete + nonce, no master key (v0) — the stale signal.
 		pmaHandLegacyBuild(t, w.media.Root, "pma_e", "legacy0")
 		row, err := w.st.GetItem(context.Background(), "pma_e")
 		if err != nil {
@@ -1206,8 +1226,8 @@ func TestPackManifestAudioJoint(t *testing.T) {
 		if freshNonce == "" || freshNonce == "legacy0" {
 			t.Fatalf("repack did not publish a fresh nonce: %v", streams)
 		}
-		if master, _ := streams["master"].(bool); !master {
-			t.Fatalf("repacked namespace carries no master marker: %v", streams)
+		if v, ok := streams["master"].(float64); !ok || v != float64(enrich.MasterRuleVersion) {
+			t.Fatalf("repacked namespace carries master %v, want the current rule version %d", streams["master"], enrich.MasterRuleVersion)
 		}
 		dirs := pmaNonceDirs(t, w.media.Root, "pma_e")
 		if len(dirs) != 1 || dirs[0] != freshNonce {
@@ -1245,9 +1265,9 @@ func TestPackManifestAudioJoint(t *testing.T) {
 			}
 		}
 
-		// The second POST /play: the marker closed the window — NOTHING is
-		// enqueued (the negative, asserted against the queue/pack observable,
-		// never a sleep).
+		// The second POST /play: the current version closed the window —
+		// NOTHING is enqueued (the negative, asserted against the queue/pack
+		// observable, never a sleep).
 		mark2 := log.mark()
 		status, body, _ = pbDo(t, w.client, http.MethodPost, playBase+"/api/v1/items/pma_e/play", w.token, map[string]any{})
 		if status != http.StatusOK {
@@ -1257,7 +1277,7 @@ func TestPackManifestAudioJoint(t *testing.T) {
 			t.Fatalf("second play body = %s (decode %v), want queued:false", body, err)
 		}
 		if lines := log.since(mark2); len(lines) != 0 {
-			t.Fatalf("the second play logged anything at all — the marker did not close the decision:\n%s",
+			t.Fatalf("the second play logged anything at all — the current version did not close the decision:\n%s",
 				strings.Join(lines, "\n"))
 		}
 		if got := atomic.LoadInt64(&packCalls); got != 1 {
@@ -1268,6 +1288,92 @@ func TestPackManifestAudioJoint(t *testing.T) {
 		}
 		if after := gateStreams(t, w, "pma_e"); after["nonce"] != freshNonce {
 			t.Fatalf("second play moved the build nonce %v -> %v", freshNonce, after["nonce"])
+		}
+
+		// The version-shape seeds (fix-tv-unblock-2 Interfaces 2, re-based on
+		// the same predicate): a v1 boolean-true seed re-heals exactly ONCE
+		// (its repacked namespace carries the current rule version); a
+		// current-version seed never enqueues. pma_f rides qE — the tail gate
+		// is already released, so its repack runs to completion.
+		mkvF := filepath.Join(fixtures, "Movie F.mkv")
+		pbMakeMKV(t, mkvF, 5*time.Second, false)
+		pmaHandLegacyBuild(t, w.media.Root, "pma_f", "v1legacy")
+		pmaSeedItem(t, w, libID, "pma_f", "Movie F.mkv", mkvF, pmaH264Facts(), "",
+			map[string]any{
+				"state":    stream.StateComplete,
+				"playlist": pmaMediaPrefix + "pma_f/v1legacy/index.m3u8",
+				"nonce":    "v1legacy",
+				"master":   true, // the LEGACY v1 write — stale under v2
+			})
+		markF := log.mark()
+		status, body, _ = pbDo(t, w.client, http.MethodPost, playBase+"/api/v1/items/pma_f/play", w.token, map[string]any{})
+		if status != http.StatusAccepted {
+			t.Fatalf("v1-seed play: status %d, want 202 (body=%s)", status, body)
+		}
+		if err := json.Unmarshal(body, &pr); err != nil || !pr.Queued {
+			t.Fatalf("v1-seed play body = %s (decode %v), want queued:true", body, err)
+		}
+		queuedF := pmaFlowLines(log.since(markF), "orchestrator: legacy repack queued")
+		if len(queuedF) != 1 || !strings.Contains(queuedF[0], "item=pma_f") {
+			t.Fatalf("captured %d legacy-repack-queued lines for pma_f, want exactly ONE:\n%s",
+				len(queuedF), strings.Join(log.since(markF), "\n"))
+		}
+		freshF := pmaAwaitFreshNonce(t, w.st, "pma_f", "v1legacy", 60*time.Second)
+		pbAwaitIdle(t, qE, 30*time.Second)
+		fNonce, _ := freshF["nonce"].(string)
+		if fNonce == "" || fNonce == "v1legacy" {
+			t.Fatalf("v1-seed repack did not publish a fresh nonce: %v", freshF)
+		}
+		if v, ok := freshF["master"].(float64); !ok || v != float64(enrich.MasterRuleVersion) {
+			t.Fatalf("repacked v1-seed namespace carries master %v, want the current rule version %d", freshF["master"], enrich.MasterRuleVersion)
+		}
+		fDirs := pmaNonceDirs(t, w.media.Root, "pma_f")
+		if len(fDirs) != 1 || fDirs[0] != fNonce {
+			t.Fatalf("pma_f build dirs after the repack = %v, want exactly [%s] (publish replacement)", fDirs, fNonce)
+		}
+		if got := atomic.LoadInt64(&packCalls); got != 2 {
+			t.Fatalf("pack ran %d times after the v1-seed repack, want exactly 2 (pma_e's + pma_f's ONE repack)", got)
+		}
+		// The repacked v1 build is now current: a repeat play enqueues nothing.
+		markF2 := log.mark()
+		status, body, _ = pbDo(t, w.client, http.MethodPost, playBase+"/api/v1/items/pma_f/play", w.token, map[string]any{})
+		if status != http.StatusOK {
+			t.Fatalf("v1-seed second play: status %d, want 200 (body=%s)", status, body)
+		}
+		if err := json.Unmarshal(body, &pr); err != nil || pr.Queued {
+			t.Fatalf("v1-seed second play body = %s (decode %v), want queued:false", body, err)
+		}
+		if lines := log.since(markF2); len(lines) != 0 {
+			t.Fatalf("the repacked v1 build re-enqueued on its second play — the version did not close the window:\n%s",
+				strings.Join(lines, "\n"))
+		}
+
+		// A current-version seed (master: 2, exactly what the success persist
+		// writes) stays put: no enqueue, no line, no state change.
+		pmaHandLegacyBuild(t, w.media.Root, "pma_g", "current0")
+		pmaSeedItem(t, w, libID, "pma_g", "Movie G.mkv", mkvE, pmaH264Facts(), "",
+			map[string]any{
+				"state":    stream.StateComplete,
+				"playlist": pmaMediaPrefix + "pma_g/current0/index.m3u8",
+				"nonce":    "current0",
+				"master":   enrich.MasterRuleVersion,
+			})
+		markG := log.mark()
+		status, body, _ = pbDo(t, w.client, http.MethodPost, playBase+"/api/v1/items/pma_g/play", w.token, map[string]any{})
+		if status != http.StatusOK {
+			t.Fatalf("current-seed play: status %d, want 200 (body=%s)", status, body)
+		}
+		if err := json.Unmarshal(body, &pr); err != nil || pr.Queued {
+			t.Fatalf("current-seed play body = %s (decode %v), want queued:false", body, err)
+		}
+		if lines := log.since(markG); len(lines) != 0 {
+			t.Fatalf("the current-version seed triggered anything at all:\n%s", strings.Join(lines, "\n"))
+		}
+		if got := atomic.LoadInt64(&packCalls); got != 2 {
+			t.Fatalf("pack ran %d times after the current-seed play, want unchanged at 2", got)
+		}
+		if after := gateStreams(t, w, "pma_g"); after["nonce"] != "current0" {
+			t.Fatalf("current-seed play moved the build nonce: %v", after["nonce"])
 		}
 	})
 }

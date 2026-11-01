@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,92 @@ func TestMasterPlaylist(t *testing.T) {
 		if !strings.Contains(rend0, "t/") || !strings.Contains(rend0, "#EXT-X-DISCONTINUITY") ||
 			!strings.Contains(rend0, "#EXT-X-ENDLIST") {
 			t.Fatalf("rend0 playlist missing the completed merge markers:\n%s", rend0)
+		}
+	})
+
+	// The DEFAULT-audio rule (fix-tv-unblock-2 Interface 4, D3): exactly one
+	// DEFAULT=YES riding the first audio rendition whose probed audio stream
+	// is aac in rendition order (embedded source order, then sidecar document
+	// order); no AAC anywhere falls back to the first rendition; unprobed
+	// variants compose no codec facts and are skipped in preference. The
+	// composition is called directly — it is pure.
+	t.Run("default_audio_rides_the_first_aac_rendition", func(t *testing.T) {
+		video := map[string]any{"codec_type": "video", "codec_name": "h264", "bit_rate": "500000", "width": 128.0, "height": 72.0}
+		audio := func(name string) []map[string]any {
+			st := map[string]any{"codec_type": "audio"}
+			if name != "" { // "" = an unprobed variant — no composed codec fact
+				st["codec_name"] = name
+			}
+			return []map[string]any{st}
+		}
+		codecs := []string{"avc1.64001f", "flac", "mp4a.40.2", "mp4a.40.2"} // non-nil: CODECS attributes ride
+		cases := []struct {
+			name       string
+			variants   [][]map[string]any
+			wantDefURI string // the URI of the one rendition carrying DEFAULT=YES
+		}{
+			{
+				// AAC preference: flac first, aac second → the aac rendition
+				// defaults even though it is not the first rendition.
+				name:       "aac_preferred_over_leading_flac",
+				variants:   [][]map[string]any{{video}, audio("flac"), audio("aac"), audio("flac")},
+				wantDefURI: "rend2/index.m3u8",
+			},
+			{
+				// Ties → source order: two aac renditions → the first one.
+				name:       "two_aac_defaults_on_the_first",
+				variants:   [][]map[string]any{{video}, audio("aac"), audio("aac")},
+				wantDefURI: "rend1/index.m3u8",
+			},
+			{
+				// No AAC anywhere → the first rendition defaults.
+				name:       "no_aac_falls_back_to_the_first_rendition",
+				variants:   [][]map[string]any{{video}, audio("flac"), audio("opus")},
+				wantDefURI: "rend1/index.m3u8",
+			},
+			{
+				// All variants unprobed → the first rendition defaults (the
+				// compose never fails).
+				name:       "all_unprobed_falls_back_to_the_first_rendition",
+				variants:   [][]map[string]any{{video}, audio(""), audio("")},
+				wantDefURI: "rend1/index.m3u8",
+			},
+			{
+				// Unprobed variants are skipped in preference, not chosen:
+				// a later probed aac still wins over an earlier gap.
+				name:       "unprobed_variant_skipped_in_preference",
+				variants:   [][]map[string]any{{video}, audio(""), audio("aac")},
+				wantDefURI: "rend2/index.m3u8",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				vs := make([]variantPlaylist, len(tc.variants))
+				for k := range vs {
+					vs[k] = variantPlaylist{rel: "rend" + strconv.Itoa(k)}
+				}
+				master := string(composeMaster(vs, tc.variants, codecs))
+				media := mediaLines(master)
+				if len(media) != len(tc.variants)-1 {
+					t.Fatalf("master carries %d EXT-X-MEDIA lines, want %d:\n%s", len(media), len(tc.variants)-1, master)
+				}
+				defaults := 0
+				for _, l := range media {
+					if !strings.Contains(l, "DEFAULT=YES") {
+						if strings.Contains(l, "DEFAULT=NO,AUTOSELECT=YES") {
+							continue
+						}
+						t.Fatalf("EXT-X-MEDIA line carries neither DEFAULT — the attribute pair must always ride:\n%s", l)
+					}
+					defaults++
+					if got := attrValue(l, "URI"); got != tc.wantDefURI {
+						t.Fatalf("DEFAULT=YES rode %q, want %q:\n%s", got, tc.wantDefURI, master)
+					}
+				}
+				if defaults != 1 {
+					t.Fatalf("master carries %d DEFAULT=YES, want exactly one:\n%s", defaults, master)
+				}
+			})
 		}
 	})
 

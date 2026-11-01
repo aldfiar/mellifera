@@ -35,11 +35,15 @@ import (
 // rendition of the build via stream copy (embedded audio first, then the
 // sidecars in document order — the order the master playlist declares and
 // hls.js exposes as audio tracks); a missing file soft-omits (a vanished dub
-// must not take the episode's playback down) and an empty list packs the
-// single-variant build — one rend0 variant beneath the composed master, the
-// same shape as a rendition build (D3).
+// must not take the episode's playback down). The layout keys on TOTAL audio
+// (fix-tv-unblock-2): the original's embedded audio streams, probed once at
+// build time (embeddedAudioCount — the file is ground truth; a failed probe
+// fails open to 0), plus the resolvable sidecars. More than one audio stream
+// publishes the rendition build, one variant per audio stream; a single
+// audio stream packs the single-variant degenerate — one rend0 variant
+// beneath the composed master, the same shape as a rendition build (D3).
 //
-// ffprobe carries the stored facts for one decision only: when the probed
+// ffprobe carries the stored facts for one pack decision: when the probed
 // duration is at most HeadChunk the whole file IS the head chunk, so the tail
 // phase is skipped (a seek past EOF would mint a junk fragment). Absent facts
 // simply run both phases. At the head-first publish each variant's head
@@ -96,9 +100,17 @@ func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[
 	}
 	tmp := filepath.Join(s.Root, itemID, ".tmp-"+nonce)
 	resolved := resolvableVoiceovers(voiceovers)
-	vs := variantLayout(len(resolved))
+	// The layout keys on TOTAL audio (fix-tv-unblock-2 D1/D2): the original's
+	// embedded audio streams — ONE build-time source probe, fail-open to 0 —
+	// plus the resolvable sidecars. A rendition build needs the mapping to
+	// match the file's real stream count, so the file is ground truth at
+	// build time; the stored facts stay the read-side source, never re-probed
+	// here. The probe is layout-decision work, not compose cost: it does not
+	// ride the publish line's probes field (D7).
+	embedded := s.embeddedAudioCount(ctx, absPath)
+	vs := variantLayout(embedded, len(resolved))
 
-	codecs, probes, err := s.packInto(ctx, itemID, nonce, absPath, ffprobe, resolved, vs, tmp, final)
+	codecs, probes, err := s.packInto(ctx, itemID, nonce, absPath, ffprobe, embedded, resolved, vs, tmp, final)
 	if err != nil {
 		os.RemoveAll(tmp) // best-effort cleanup; nothing is referenced yet
 		os.RemoveAll(final)
@@ -118,14 +130,16 @@ func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[
 		Playlist: mediaPrefix + "/" + itemID + "/" + nonce + "/index.m3u8",
 		Nonce:    nonce,
 		Codecs:   codecs,
+		Layout:   layoutName(vs),
 	}, nil
 }
 
 // variantPlaylist is one build's playlist slot in the one layout the lane
 // publishes (D3 — every fresh build, single-variant or rendition, publishes
 // the rendition shape): one variant playlist per rendition directory (rel
-// "rendK" — variant 0 is the video, 1 the embedded audio, k+1 the voiceovers;
-// a single-variant build is the degenerate rend0-only case) plus the composed
+// "rendK" — variant 0 is the video, 1..embedded the embedded audio in source
+// order, then one per voiceover sidecar; a single-variant build is the
+// degenerate rend0-only case) plus the composed
 // master at the build root (composeMaster, D1 — ffmpeg's written master is
 // overwritten before the publish rename). prefix is the tail merge prefix
 // that re-points the tail phase's entries into final/t/, stated RELATIVE TO
@@ -136,26 +150,52 @@ type variantPlaylist struct {
 	prefix string
 }
 
-// variantLayout resolves the playlist slots for n resolvable voiceovers. A
-// rendition build has n+2 variants — the video (rend0), the embedded audio
-// (rend1), then one per voiceover (rendK+1) — mirroring renditionMap's
-// var_stream_map; n == 0 (no resolvable voiceovers) is the single-variant
-// degenerate: rend0 alone, the video variant carrying the muxed audio. The
-// master needs no slot: the lane composes it to the build root at the head
-// publish (composeMaster) and the tail merge never rewrites it — the
-// per-variant playlists it references grow in place.
-func variantLayout(n int) []variantPlaylist {
-	if n == 0 { // the single-variant degenerate: the muxed video variant alone
+// variantLayout resolves the playlist slots for TOTAL audio (fix-tv-unblock-2
+// D2): embedded is the original's audio stream count (the build-time source
+// probe), sidecars the resolvable voiceover count. A rendition build has
+// total+1 variants — the video (rend0), then ONE variant per audio stream:
+// rend1..rendEmbedded the embedded audio in source order, then one per
+// voiceover (rendK+1) — mirroring renditionMap's var_stream_map; total <= 1
+// is the single-variant degenerate: rend0 alone, the video variant carrying
+// the muxed audio, exactly as before the rule generalized. The master needs
+// no slot: the lane composes it to the build root at the head publish
+// (composeMaster) and the tail merge never rewrites it — the per-variant
+// playlists it references grow in place. Pure.
+func variantLayout(embedded, sidecars int) []variantPlaylist {
+	if total := embedded + sidecars; total <= 1 { // the single-variant degenerate: the muxed video variant alone
 		return []variantPlaylist{{rel: "rend0", prefix: "../t/rend0/"}}
 	}
-	vs := make([]variantPlaylist, 0, n+2)
-	for k := 0; k <= n+1; k++ {
+	vs := make([]variantPlaylist, 0, embedded+sidecars+1)
+	for k := 0; k <= embedded+sidecars; k++ {
 		vs = append(vs, variantPlaylist{
 			rel:    "rend" + strconv.Itoa(k),
 			prefix: "../t/rend" + strconv.Itoa(k) + "/",
 		})
 	}
 	return vs
+}
+
+// embeddedAudioCount probes the ORIGINAL file once at build time and counts
+// its audio streams (fix-tv-unblock-2 D1 — the mapping must match the file's
+// real stream count or the remux fails, so the file is ground truth at build
+// time; the stored facts stay the read-side source, never re-probed here,
+// and describe.go's read-side paths stay untouched). A failed probe — or an
+// absent ffprobe — fails open to 0: the layout decision degrades to the
+// legacy sidecar discriminator and the pack never fails on the probe. The
+// probe is layout-decision work, not per-variant compose cost: it does not
+// ride the publish line's probes field (D7).
+func (s *Service) embeddedAudioCount(ctx context.Context, absPath string) int {
+	streams, err := s.probeMediaStreams(ctx, absPath)
+	if err != nil {
+		return 0 // fail-open: the decision rides the sidecar count alone
+	}
+	n := 0
+	for _, st := range streams {
+		if st["codec_type"] == "audio" {
+			n++
+		}
+	}
+	return n
 }
 
 // layoutName names the build's layout in the D7 flow vocabulary: the
@@ -234,14 +274,14 @@ func resolvableVoiceovers(paths []string) []string {
 // fail-open and never fail the pack. Returned with the codec record is the
 // ffprobe invocation count (the D7 log line's probes field). Every error is
 // tagged with its failing stage (stageErr) for the D7 WARN.
-func (s *Service) packInto(ctx context.Context, itemID, nonce, absPath string, ffprobe map[string]any, voiceovers []string, vs []variantPlaylist, tmp, final string) ([]string, int, error) {
+func (s *Service) packInto(ctx context.Context, itemID, nonce, absPath string, ffprobe map[string]any, embedded int, voiceovers []string, vs []variantPlaylist, tmp, final string) ([]string, int, error) {
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
 		return nil, 0, stageErr("prepare", fmt.Errorf("stream: create build dir: %w", err))
 	}
 	if err := mkdirVariantDirs(tmp, vs); err != nil {
 		return nil, 0, stageErr("prepare", err)
 	}
-	if err := s.runFFmpeg(ctx, packHeadArgs(absPath, voiceovers, s.HeadChunk, s.SegmentTime, tmp)); err != nil {
+	if err := s.runFFmpeg(ctx, packHeadArgs(absPath, embedded, voiceovers, s.HeadChunk, s.SegmentTime, tmp)); err != nil {
 		return nil, 0, stageErr("ffmpeg-head", err)
 	}
 	heads := make([][]byte, len(vs))
@@ -276,7 +316,7 @@ func (s *Service) packInto(ctx context.Context, itemID, nonce, absPath string, f
 	if err := os.Rename(tmp, final); err != nil { // atomic publish of the partial build
 		return nil, probes, stageErr("rename", fmt.Errorf("stream: publish head: %w", err))
 	}
-	return codecs, probes, s.packTail(ctx, itemID, nonce, absPath, voiceovers, final, vs, heads)
+	return codecs, probes, s.packTail(ctx, itemID, nonce, absPath, embedded, voiceovers, final, vs, heads)
 }
 
 // probeVariants ffprobes each variant's head playlist in tmp (one ffprobe per
@@ -336,7 +376,7 @@ func publishHeadOnly(tmp, final string, vs []variantPlaylist, heads [][]byte) er
 // the published partial build: every variant's tail playlist is merged over
 // the head's (entries re-pointed into t/), atomically. From here the build is
 // complete (ENDLIST). Errors are stage-tagged (D7).
-func (s *Service) packTail(ctx context.Context, itemID, nonce, absPath string, voiceovers []string, final string, vs []variantPlaylist, heads [][]byte) error {
+func (s *Service) packTail(ctx context.Context, itemID, nonce, absPath string, embedded int, voiceovers []string, final string, vs []variantPlaylist, heads [][]byte) error {
 	tailTmp := filepath.Join(s.Root, itemID, ".tmp-tail-"+nonce)
 	if err := os.MkdirAll(tailTmp, 0o755); err != nil {
 		return stageErr("prepare", fmt.Errorf("stream: create tail dir: %w", err))
@@ -344,7 +384,7 @@ func (s *Service) packTail(ctx context.Context, itemID, nonce, absPath string, v
 	if err := mkdirVariantDirs(tailTmp, vs); err != nil {
 		return stageErr("prepare", err)
 	}
-	if err := s.runFFmpeg(ctx, packTailArgs(absPath, voiceovers, s.HeadChunk, s.SegmentTime, tailTmp)); err != nil {
+	if err := s.runFFmpeg(ctx, packTailArgs(absPath, embedded, voiceovers, s.HeadChunk, s.SegmentTime, tailTmp)); err != nil {
 		os.RemoveAll(tailTmp)
 		return stageErr("ffmpeg-tail", err)
 	}
@@ -380,12 +420,14 @@ func (s *Service) packTail(ctx context.Context, itemID, nonce, absPath string, v
 // HeadChunk seconds, stream-copy remux to fMP4-HLS (D-3), EVENT playlist with
 // ENDLIST omitted (D-4: its absence marks a partial build). The single-variant
 // branch writes the media playlist, init segment, and segments under
-// outDir/rend0/ (D3 — the root stays the composed master's alone); with
-// resolvable voiceovers the same remux shape drives the multi-variant
-// rendition build (renditionArgs). Pure.
-func packHeadArgs(src string, voiceovers []string, head, segmentTime time.Duration, outDir string) []string {
-	if len(voiceovers) > 0 {
-		return renditionArgs(src, voiceovers, head, segmentTime, outDir, false)
+// outDir/rend0/ (D3 — the root stays the composed master's alone); with more
+// than one audio stream (embedded plus resolvable voiceovers, fix-tv-unblock-2)
+// the same remux shape drives the multi-variant rendition build
+// (renditionArgs). The single-variant -map 0:a stays untouched: on the new
+// rule's reachable path it maps exactly the one stream. Pure.
+func packHeadArgs(src string, embedded int, voiceovers []string, head, segmentTime time.Duration, outDir string) []string {
+	if embedded+len(voiceovers) > 1 {
+		return renditionArgs(src, voiceovers, embedded, head, segmentTime, outDir, false)
 	}
 	return []string{
 		"-nostdin",
@@ -408,13 +450,14 @@ func packHeadArgs(src string, voiceovers []string, head, segmentTime time.Durati
 
 // packTailArgs builds the tail-phase ffmpeg argument slice: the remainder from
 // HeadChunk onward, identical remux flags so the artifact shape matches. With
-// resolvable voiceovers it is the rendition build's tail phase. -hls_list_size
+// more than one audio stream (embedded plus resolvable voiceovers) it is the
+// rendition build's tail phase. -hls_list_size
 // 0 makes the tail playlist unbounded — the ffmpeg default window of 5 would
 // publish only the last five entries as the complete ENDLIST build, stranding
 // every pre-window tail segment and faking the duration. Pure.
-func packTailArgs(src string, voiceovers []string, head, segmentTime time.Duration, outDir string) []string {
-	if len(voiceovers) > 0 {
-		return renditionArgs(src, voiceovers, head, segmentTime, outDir, true)
+func packTailArgs(src string, embedded int, voiceovers []string, head, segmentTime time.Duration, outDir string) []string {
+	if embedded+len(voiceovers) > 1 {
+		return renditionArgs(src, voiceovers, embedded, head, segmentTime, outDir, true)
 	}
 	return []string{
 		"-nostdin",
@@ -435,15 +478,16 @@ func packTailArgs(src string, voiceovers []string, head, segmentTime time.Durati
 }
 
 // renditionArgs builds the multi-variant argument slice (serial-watch-flow
-// D-2): input 0 is the original, inputs 1..k the resolvable voiceover sidecar
-// files. The video variant maps the original's video alone; every audio
-// rendition (embedded audio first, then the voiceovers in document order) is
-// a separate audio-only variant joined into one EXT-X-MEDIA group
-// (renditionMap) — the master playlist's audio tracks in hls.js. Stream copy
-// everywhere; no decode and no encode. seek switches to the tail phase (-ss
-// before the inputs, no EVENT flags, -hls_list_size 0 — see packTailArgs).
-// Pure.
-func renditionArgs(src string, voiceovers []string, head, segmentTime time.Duration, outDir string, seek bool) []string {
+// D-2, generalized for embedded audio in fix-tv-unblock-2): input 0 is the
+// original, inputs 1..k the resolvable voiceover sidecar files. The video
+// variant maps the original's video alone; every audio rendition (embedded
+// audio first, one -map 0:a:i per stream in source order, then the voiceovers
+// in document order) is a separate audio-only variant joined into one
+// EXT-X-MEDIA group (renditionMap) — the master playlist's audio tracks in
+// hls.js. Stream copy everywhere; no decode and no encode. seek switches to
+// the tail phase (-ss before the inputs, no EVENT flags, -hls_list_size 0 —
+// see packTailArgs). Pure.
+func renditionArgs(src string, voiceovers []string, embedded int, head, segmentTime time.Duration, outDir string, seek bool) []string {
 	t := strconv.FormatFloat(head.Seconds(), 'f', 3, 64)
 	args := []string{"-nostdin"}
 	// The tail seek is an INPUT option and so applies per input: every source
@@ -462,14 +506,17 @@ func renditionArgs(src string, voiceovers []string, head, segmentTime time.Durat
 	if !seek {
 		args = append(args, "-t", t) // output cap: every variant stops at HeadChunk
 	}
-	args = append(args, "-map", "0:v:0", "-map", "0:a:0")
+	args = append(args, "-map", "0:v:0")
+	for i := 0; i < embedded; i++ {
+		args = append(args, "-map", fmt.Sprintf("0:a:%d", i))
+	}
 	for i := range voiceovers {
 		args = append(args, "-map", strconv.Itoa(i+1)+":a:0")
 	}
 	args = append(args,
 		"-sn", "-dn",
 		"-c", "copy",
-		"-var_stream_map", renditionMap(len(voiceovers)),
+		"-var_stream_map", renditionMap(embedded, len(voiceovers)),
 		"-f", "hls",
 		"-hls_time", strconv.FormatFloat(segmentTime.Seconds(), 'f', 3, 64),
 		"-hls_segment_type", "fmp4",
@@ -489,14 +536,17 @@ func renditionArgs(src string, voiceovers []string, head, segmentTime time.Durat
 }
 
 // renditionMap is the var_stream_map string: the video variant references one
-// audio group whose renditions are the embedded audio (a:0) first, then one
-// per voiceover input — the master playlist's EXT-X-MEDIA order, which is the
-// hls.js audio-track order (document index k → track k+1; 0 is embedded). Pure.
-func renditionMap(n int) string {
-	entries := make([]string, 0, n+2)
-	entries = append(entries, "v:0,agroup:aud", "a:0,agroup:aud")
-	for i := 1; i <= n; i++ {
-		entries = append(entries, fmt.Sprintf("a:%d,agroup:aud", i))
+// audio group whose renditions are the embedded audio (a:0..a:embedded-1, one
+// per source stream in source order) first, then one entry per voiceover
+// input — the master playlist's EXT-X-MEDIA order, which is the hls.js
+// audio-track order (embedded stream i → track i; sidecar k → track
+// embedded+k). The indices are OUTPUT audio order, which follows the -map
+// order renditionArgs emits (embedded first, then sidecars). Pure.
+func renditionMap(embedded, sidecars int) string {
+	entries := make([]string, 0, embedded+sidecars+1)
+	entries = append(entries, "v:0,agroup:aud")
+	for j := 0; j < embedded+sidecars; j++ {
+		entries = append(entries, fmt.Sprintf("a:%d,agroup:aud", j))
 	}
 	return strings.Join(entries, " ")
 }

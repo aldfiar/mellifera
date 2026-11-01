@@ -98,6 +98,11 @@ func TestPlaybackDecisionLog(t *testing.T) {
 
 	seedItem(t, "pkg-item", map[string]any{"streams": map[string]any{
 		"state": stream.StateComplete, "playlist": "/media/pkg-item/n1/index.m3u8"}})
+	// A namespace carrying the layout record (fix-tv-unblock-2 Interfaces 1):
+	// the closure must thread the value verbatim onto api.Playback.Layout —
+	// the wire field the SPA's rendition refusal reads.
+	seedItem(t, "layout-item", map[string]any{"streams": map[string]any{
+		"state": stream.StateComplete, "playlist": "/media/layout-item/n1/index.m3u8", "layout": "rendition"}})
 	seedItem(t, "mkv-item", map[string]any{"ffprobe": ffDoc("matroska,webm", "h264", "")})
 	seedItem(t, "hevc-item", map[string]any{"ffprobe": ffDoc("matroska,webm", "hevc", "")})
 	seedItem(t, "codec-item", map[string]any{"ffprobe": ffDoc("matroska,webm", "h264", "yuv420p10le")})
@@ -119,26 +124,28 @@ func TestPlaybackDecisionLog(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	for _, tc := range []struct {
-		id        string
-		mode      string
-		state     string // the descriptor's state (honesty projections included)
-		persisted string // the stored namespace's state ("" = same as state)
-		have      string // state_reason the descriptor itself must answer ("" = absent)
-		want      string // the decision line's reason
-		src       string // the decision line's codecs_src (pack-manifest-audio D7)
+		id         string
+		mode       string
+		state      string // the descriptor's state (honesty projections included)
+		persisted  string // the stored namespace's state ("" = same as state)
+		have       string // state_reason the descriptor itself must answer ("" = absent)
+		want       string // the decision line's reason
+		src        string // the decision line's codecs_src (pack-manifest-audio D7)
+		wantLayout string // the descriptor's layout answer ("" = fail-open absent)
 	}{
 		// pkg-item predates the codecs record and carries no ffprobe — neither
 		// half answers, so the hls answer still logs codecs_src=none; every
 		// direct answer carries no codecs field at all.
-		{"pkg-item", stream.ModeHls, stream.StateComplete, "", "", reasonPackaged, "none"},
+		{"pkg-item", stream.ModeHls, stream.StateComplete, "", "", reasonPackaged, "none", ""},
+		{"layout-item", stream.ModeHls, stream.StateComplete, "", "", reasonPackaged, "none", "rendition"},
 		// The honesty projection (tv-playback-unblock D1): a none-state
 		// non-native floor answers preparing/unsupported on the descriptor
 		// while the persisted namespace stays at none.
-		{"mkv-item", stream.ModeDirect, stream.StatePreparing, stream.StateNone, stream.ReasonNonNativeContainer, stream.ReasonNonNativeContainer, "none"},
-		{"hevc-item", stream.ModeDirect, stream.StateUnsupported, stream.StateNone, stream.ReasonCodecNotOptedIn, stream.ReasonCodecNotOptedIn, "none"},
-		{"codec-item", stream.ModeDirect, stream.StateUnsupported, stream.StateNone, stream.ReasonCodecUnsupported, stream.ReasonCodecUnsupported, "none"},
-		{"mp4-item", stream.ModeDirect, stream.StateNone, "", "", reasonUnpackaged, "none"},
-		{"cool-item", stream.ModeDirect, stream.StateFailed, "", stream.ReasonNonNativeContainer, reasonCooldown, "none"},
+		{"mkv-item", stream.ModeDirect, stream.StatePreparing, stream.StateNone, stream.ReasonNonNativeContainer, stream.ReasonNonNativeContainer, "none", ""},
+		{"hevc-item", stream.ModeDirect, stream.StateUnsupported, stream.StateNone, stream.ReasonCodecNotOptedIn, stream.ReasonCodecNotOptedIn, "none", ""},
+		{"codec-item", stream.ModeDirect, stream.StateUnsupported, stream.StateNone, stream.ReasonCodecUnsupported, stream.ReasonCodecUnsupported, "none", ""},
+		{"mp4-item", stream.ModeDirect, stream.StateNone, "", "", reasonUnpackaged, "none", ""},
+		{"cool-item", stream.ModeDirect, stream.StateFailed, "", stream.ReasonNonNativeContainer, reasonCooldown, "none", ""},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			buf.Reset()
@@ -160,6 +167,12 @@ func TestPlaybackDecisionLog(t *testing.T) {
 			}
 			if pb.StateReason != tc.have {
 				t.Fatalf("descriptor state_reason = %q, want %q", pb.StateReason, tc.have)
+			}
+			// The layout record threads through verbatim (fix-tv-unblock-2
+			// Interfaces 1); a pre-record namespace answers "" — the fail-open
+			// the SPA mounts through.
+			if pb.Layout != tc.wantLayout {
+				t.Fatalf("descriptor layout = %q, want %q", pb.Layout, tc.wantLayout)
 			}
 
 			// Exactly ONE decision line per GET, carrying

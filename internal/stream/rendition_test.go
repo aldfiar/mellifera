@@ -249,18 +249,71 @@ func TestPackRenditions(t *testing.T) {
 			args    []string
 			seekTo  bool
 			limitTo bool
+			// maps pins the generalized mapping contract (fix-tv-unblock-2
+			// Interface 5): the -map flags plus the var_stream_map, whose
+			// indices are OUTPUT audio order (embedded first, then sidecars).
+			maps []string
+			// wantMaps is the exact -map flag count — the byte-identity half
+			// of the pin (no extra maps beyond the contract).
+			wantMaps int
 		}{
-			{"head", renditionArgs("/in/f.mkv", voiceovers, 600*time.Second, 4*time.Second, "/out", false), false, true},
-			{"tail", renditionArgs("/in/f.mkv", voiceovers, 600*time.Second, 4*time.Second, "/out", true), true, false},
+			{
+				// fix-tv-unblock-2 1.2: the 1-embedded + 2-sidecar flags are
+				// byte-identical under the generalized builder — this case
+				// pins them unchanged.
+				name: "head", limitTo: true, wantMaps: 4,
+				args: renditionArgs("/in/f.mkv", voiceovers, 1, 600*time.Second, 4*time.Second, "/out", false),
+				maps: []string{
+					"-map\x000:v:0", "-map\x000:a:0",
+					"-map\x001:a:0", "-map\x002:a:0",
+					"-var_stream_map\x00v:0,agroup:aud a:0,agroup:aud a:1,agroup:aud a:2,agroup:aud",
+				},
+			},
+			{
+				name: "tail", seekTo: true, wantMaps: 4,
+				args: renditionArgs("/in/f.mkv", voiceovers, 1, 600*time.Second, 4*time.Second, "/out", true),
+				maps: []string{
+					"-map\x000:v:0", "-map\x000:a:0",
+					"-map\x001:a:0", "-map\x002:a:0",
+					"-var_stream_map\x00v:0,agroup:aud a:0,agroup:aud a:1,agroup:aud a:2,agroup:aud",
+				},
+			},
+			{
+				// The generalized mapping: two embedded streams map -map
+				// 0:a:0 + -map 0:a:1 in source order ahead of the sidecars,
+				// and the var_stream_map lists all four audio renditions in
+				// output order (a:0..a:3).
+				name: "embedded2_head", limitTo: true, wantMaps: 5,
+				args: renditionArgs("/in/f.mkv", voiceovers, 2, 600*time.Second, 4*time.Second, "/out", false),
+				maps: []string{
+					"-map\x000:v:0", "-map\x000:a:0", "-map\x000:a:1",
+					"-map\x001:a:0", "-map\x002:a:0",
+					"-var_stream_map\x00v:0,agroup:aud a:0,agroup:aud a:1,agroup:aud a:2,agroup:aud a:3,agroup:aud",
+				},
+			},
+			{
+				name: "embedded2_tail", seekTo: true, wantMaps: 5,
+				args: renditionArgs("/in/f.mkv", voiceovers, 2, 600*time.Second, 4*time.Second, "/out", true),
+				maps: []string{
+					"-map\x000:v:0", "-map\x000:a:0", "-map\x000:a:1",
+					"-map\x001:a:0", "-map\x002:a:0",
+					"-var_stream_map\x00v:0,agroup:aud a:0,agroup:aud a:1,agroup:aud a:2,agroup:aud a:3,agroup:aud",
+				},
+			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				joined := strings.Join(tc.args, "\x00")
+				for _, want := range tc.maps {
+					if !strings.Contains(joined, want) {
+						t.Fatalf("args missing %q: %q", want, joined)
+					}
+				}
+				if got := strings.Count(joined, "-map\x00"); got != tc.wantMaps {
+					t.Fatalf("args carry %d -map flags, want exactly %d (the byte-identical mapping): %q", got, tc.wantMaps, joined)
+				}
 				for _, want := range []string{
 					"-nostdin",
-					"-map\x000:v:0", "-map\x000:a:0",
-					"-map\x001:a:0", "-map\x002:a:0",
-					"-var_stream_map\x00v:0,agroup:aud a:0,agroup:aud a:1,agroup:aud a:2,agroup:aud",
 					"-sn\x00-dn", "-c\x00copy", "-f\x00hls",
 					"-hls_segment_type\x00fmp4",
 					"-master_pl_name\x00index.m3u8",
@@ -317,7 +370,7 @@ func TestVoiceoverTracks(t *testing.T) {
 				map[string]any{"relative_path": "theme.flac", "kind": "audio"}, // no folder, no language
 			},
 		}}
-		_, _, _, _, voiceovers, _, _, _ := s.Describe("it", d)
+		_, _, _, _, voiceovers, _, _, _, _ := s.Describe("it", d)
 		if len(voiceovers) != 3 {
 			t.Fatalf("voiceovers = %v, want 3 audio entries (subtitles never project)", voiceovers)
 		}
@@ -342,7 +395,7 @@ func TestVoiceoverTracks(t *testing.T) {
 			"no_sidecar": {"parsed": map[string]any{"absolute_path": "/lib/f.mkv"}},
 			"empty":      {"parsed": map[string]any{"sidecars": []any{}}},
 		} {
-			_, _, _, _, voiceovers, _, _, _ := s.Describe("it", d)
+			_, _, _, _, voiceovers, _, _, _, _ := s.Describe("it", d)
 			if voiceovers == nil || len(voiceovers) != 0 {
 				t.Fatalf("%s: voiceovers = %#v, want an empty list", name, voiceovers)
 			}
@@ -366,8 +419,8 @@ func TestVoiceoverTracks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		mode1, state1, url1, _, vo1, _, _, _ := s.Describe("it", d)
-		mode2, state2, url2, _, vo2, _, _, _ := s.Describe("it", d)
+		mode1, state1, url1, _, vo1, _, _, _, _ := s.Describe("it", d)
+		mode2, state2, url2, _, vo2, _, _, _, _ := s.Describe("it", d)
 		after, err := json.Marshal(d)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)

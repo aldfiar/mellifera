@@ -55,14 +55,14 @@ func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.S
 	}
 	// Lazy repack trigger (repack-descriptor-trigger), BEFORE the answer is
 	// composed: the same stale-build decision as the play verb, byte-for-byte
-	// legacyRepackOnPlay semantics — complete state + a build nonce + no
-	// master marker, PackGate pre-check, ONE orchestrator line, enqueue into
-	// the dedup seam. The return values are deliberately dropped: the GET
-	// never blocks on the decision and never changes its answer — the
-	// descriptor below still serves the current old build while the repack
-	// runs.
+	// legacyRepackOnPlay semantics — complete state + a build nonce + a rule
+	// version older than enrich.MasterRuleVersion, PackGate pre-check, ONE
+	// orchestrator line, enqueue into the dedup seam. The return values are
+	// deliberately dropped: the GET never blocks on the decision and never
+	// changes its answer — the descriptor below still serves the current old
+	// build while the repack runs.
 	legacyRepackOnPlay(enqueue, doc, itemID, optInCodecs)
-	mode, state, playURL, sections, voiceovers, stateReason, codecs, codecsSrc := mediaSvc.Describe(itemID, doc)
+	mode, state, playURL, sections, voiceovers, stateReason, codecs, codecsSrc, layout := mediaSvc.Describe(itemID, doc)
 	token, _ := mediaSvc.Issue(itemID, time.Now()) // cookie-primary delivery
 	logPlaybackDecision(itemID, mode, state,
 		playbackDecisionReason(mode, state, stateReason, streamCooldowns(ctx, st)[itemID], time.Now()), codecsSrc)
@@ -72,6 +72,7 @@ func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.S
 		PlayURL:     playURL,
 		StateReason: stateReason,
 		Codecs:      codecs,
+		Layout:      layout,
 		Sections:    sections,
 		Voiceovers:  voiceovers,
 		Token:       token,

@@ -113,12 +113,19 @@ const (
 //     every direct answer). A plain string, the stateReason pattern —
 //     never the codec strings themselves (INV4: the source rides the
 //     decision log, the wire is untouched).
+//   - layout: the build's audio layout (fix-tv-unblock-2 Interfaces 1 —
+//     "single-variant" | "rendition", the lane's layoutName decision at
+//     publish, persisted in doc["streams"].layout) — answered on hls
+//     answers only, empty on every direct answer; a namespace predating
+//     the record answers empty too (fail-open: the client mounts as
+//     before). The stored record answers verbatim — there is no read-side
+//     layout composition (D5).
 //   - integrity guard (D5): a COMPLETE state additionally runs the read-only
 //     ValidateBuild over the nonce the namespace carries; a broken or evicted
 //     build answers the direct floor instead of a playlist the player would
 //     die on. Partial builds and nonce-less namespaces are exempt — their
 //     wire shape is byte-identical to the pre-guard descriptor.
-func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any, stateReason string, codecs []string, codecsSrc string) {
+func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any, stateReason string, codecs []string, codecsSrc, layout string) {
 	s.normalize()
 	state = streamState(doc["streams"])
 	voiceovers = projectVoiceovers(doc["parsed"])
@@ -127,7 +134,7 @@ func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, play
 	if state == StatePartial || state == StateComplete {
 		if playlist := streamPlaylist(doc["streams"]); playlist != "" && s.buildHealthy(itemID, state, doc["streams"]) {
 			codecs, src := describeCodecs(doc["streams"], doc["ffprobe"])
-			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, chapters, voiceovers, "", codecs, src
+			return ModeHls, state, playlist + "?" + tokenQuery + "=" + token, chapters, voiceovers, "", codecs, src, streamLayout(doc["streams"])
 		}
 	}
 	reason := s.floorReason(doc["ffprobe"], state)
@@ -142,7 +149,21 @@ func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, play
 			state = StatePreparing
 		}
 	}
-	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, chapters, voiceovers, reason, nil, codecsSrcNone
+	return ModeDirect, state, mediaPrefix + "/" + itemID + "/original?" + tokenQuery + "=" + token, chapters, voiceovers, reason, nil, codecsSrcNone, ""
+}
+
+// streamLayout reads the layout record the lane persisted at publish
+// (doc["streams"].layout — fix-tv-unblock-2 Interfaces 1, the read side; the
+// value is the lane's layoutName vocabulary verbatim). Empty when the
+// namespace predates the record or the value is unreadable — the fail-open
+// shape the SPA mounts through.
+func streamLayout(v any) string {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return ""
+	}
+	s, _ := m["layout"].(string)
+	return s
 }
 
 // The codecs source vocabulary (pack-manifest-audio D7): WHICH half of

@@ -51,7 +51,7 @@ func TestDescribeCodecs(t *testing.T) {
 			"playlist": "/media/it/n0/index.m3u8",
 			"codecs":   []any{"avc1.640029", "mp4a.40.2"},
 		})
-		mode, _, playURL, _, _, _, codecs, _ := s.Describe("it", d)
+		mode, _, playURL, _, _, _, codecs, _, _ := s.Describe("it", d)
 		if mode != ModeHls {
 			t.Fatalf("mode = %q, want hls", mode)
 		}
@@ -70,7 +70,7 @@ func TestDescribeCodecs(t *testing.T) {
 			"codecs":   []any{"hvc1.1.6.L93.B0", "mp4a.40.2"},
 		})
 		d["ffprobe"] = facts(composable) // would compose avc1… — the record must win
-		_, _, _, _, _, _, codecs, _ := s.Describe("it", d)
+		_, _, _, _, _, _, codecs, _, _ := s.Describe("it", d)
 		if len(codecs) != 2 || codecs[0] != "hvc1.1.6.L93.B0" {
 			t.Fatalf("codecs = %v, want the recorded value to win verbatim", codecs)
 		}
@@ -83,7 +83,7 @@ func TestDescribeCodecs(t *testing.T) {
 			"playlist": "/media/it/n0/index.m3u8",
 		})
 		d["ffprobe"] = facts(composable) // a namespace predating the record
-		mode, _, _, _, _, _, codecs, _ := s.Describe("it", d)
+		mode, _, _, _, _, _, codecs, _, _ := s.Describe("it", d)
 		if mode != ModeHls {
 			t.Fatalf("mode = %q, want hls", mode)
 		}
@@ -109,7 +109,7 @@ func TestDescribeCodecs(t *testing.T) {
 			"playlist": "/media/it/n0/index.m3u8",
 		})
 		d["ffprobe"] = facts(matroska)
-		mode, _, playURL, _, _, _, codecs, _ := s.Describe("it", d)
+		mode, _, playURL, _, _, _, codecs, _, _ := s.Describe("it", d)
 		if mode != ModeHls {
 			t.Fatalf("mode = %q, want hls", mode)
 		}
@@ -127,7 +127,7 @@ func TestDescribeCodecs(t *testing.T) {
 			"playlist": "/media/it/n0/index.m3u8",
 		})
 		d["ffprobe"] = facts(uncomposable)
-		mode, _, playURL, _, _, _, codecs, _ := s.Describe("it", d)
+		mode, _, playURL, _, _, _, codecs, _, _ := s.Describe("it", d)
 		if mode != ModeHls || codecs != nil {
 			t.Fatalf("descriptor = %q/%v, want hls with no codecs field (fail-open)", mode, codecs)
 		}
@@ -143,7 +143,7 @@ func TestDescribeCodecs(t *testing.T) {
 			"codecs":   []any{"avc1.640029", 42}, // one unreadable entry
 		})
 		d["ffprobe"] = facts(composable)
-		_, _, _, _, _, _, codecs, _ := s.Describe("it", d)
+		_, _, _, _, _, _, codecs, _, _ := s.Describe("it", d)
 		if len(codecs) != 2 || codecs[0] != "avc1.640029" || codecs[1] != "mp4a.40.2" {
 			t.Fatalf("codecs = %v, want the legacy composition behind the broken record", codecs)
 		}
@@ -153,7 +153,7 @@ func TestDescribeCodecs(t *testing.T) {
 	// no codecs field — the field describes the pack.
 	t.Run("direct_answers_never_carry_codecs", func(t *testing.T) {
 		d := map[string]any{"ffprobe": facts(composable)}
-		mode, _, _, _, _, reason, codecs, _ := s.Describe("it", d)
+		mode, _, _, _, _, reason, codecs, _, _ := s.Describe("it", d)
 		if mode != ModeDirect || codecs != nil {
 			t.Fatalf("descriptor = %q/%v, want direct with no codecs", mode, codecs)
 		}

@@ -89,7 +89,7 @@ func gateNewQueue(t *testing.T, w *pbWorld) *enrich.Queue {
 			return enrich.PackOutcome{}, refusal.PolicyRefusal{Reason: string(gate)}
 		}
 		build, err := w.media.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
-		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs}, err
+		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
 	}
 	deps.AfterPackPersist = w.media.EvictSuperseded
 	q := enrich.NewQueue(deps, enrich.QueueConfig{Workers: 2, Backoff: time.Millisecond})
@@ -119,7 +119,7 @@ func gateNewServer(t *testing.T, w *pbWorld, enqueue func(string) error) string 
 			if err := json.Unmarshal(row.Document, &doc); err != nil {
 				return api.Playback{}, err
 			}
-			mode, state, playURL, sections, voiceovers, stateReason, codecs, _ := w.media.Describe(itemID, doc)
+			mode, state, playURL, sections, voiceovers, stateReason, codecs, _, _ := w.media.Describe(itemID, doc)
 			tok, _ := w.media.Issue(itemID, time.Now())
 			// decision_log.go's playbackDescriptor shape, minus the package-main
 			// log line — Codecs rides (the pre-gate harness mirror predates the

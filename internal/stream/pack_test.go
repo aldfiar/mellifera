@@ -148,8 +148,8 @@ func TestPackLane(t *testing.T) {
 			seekTo  bool // tail: -ss before -i
 			limitTo bool // head: -t duration cap
 		}{
-			{"head", packHeadArgs("/in/f.mkv", nil, 600*time.Second, 4*time.Second, dir), false, true},
-			{"tail", packTailArgs("/in/f.mkv", nil, 600*time.Second, 4*time.Second, dir), true, false},
+			{"head", packHeadArgs("/in/f.mkv", 0, nil, 600*time.Second, 4*time.Second, dir), false, true},
+			{"tail", packTailArgs("/in/f.mkv", 0, nil, 600*time.Second, 4*time.Second, dir), true, false},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {

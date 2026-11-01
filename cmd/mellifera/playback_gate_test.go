@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/mellifera/mellifera/internal/api"
+	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
@@ -293,34 +294,47 @@ func TestPackItemGateRefusal(t *testing.T) {
 	})
 }
 
-// TestPlayLazyRepack is the acceptance test for the lazy repack-on-play
-// decision (pack-manifest-audio 3.1, D5): a legacy build — state complete, a
-// build nonce, no master marker — enqueues exactly ONE repack through the
-// ordinary pack-on-play path and answers the 202 shape; a current
-// (marker-carrying) build never re-enqueues and falls through to the ordinary
-// decision; a gate-closed stale item (knob-off HEVC) logs ONE "legacy repack
-// skipped" INFO line naming the item and the token, enqueues nothing, keeps
-// playing its existing build, and writes no ledger row. Both lines hold INV4
-// (item id and refusal token only).
+// TestPlayLazyRepack is the acceptance test for the lazy re-heal decision
+// (pack-manifest-audio 3.1, D5; re-versioned by fix-tv-unblock-2 Interfaces
+// 2): a stale build — state complete, a build nonce, a rule version older
+// than enrich.MasterRuleVersion (absent = v0, boolean true = the legacy v1
+// write) — enqueues exactly ONE repack through the ordinary pack-on-play
+// path and answers the 202 shape; a current (version-carrying) build — and a
+// FUTURE one, so an older constant never re-heals a newer build — never
+// re-enqueues and falls through to the ordinary decision; a gate-closed
+// stale item (knob-off HEVC) logs ONE "legacy repack skipped" INFO line
+// naming the item and the token, enqueues nothing, keeps playing its
+// existing build, and writes no ledger row. Both lines hold INV4 (item id
+// and refusal token only).
 func TestPlayLazyRepack(t *testing.T) {
 	st, ctx := gateSeedStore(t, map[string]map[string]any{
 		"it_legacy":       gateStreamsDoc(gateFfOpen, "complete", "n1"),
 		"it_current":      gateStreamsDoc(gateFfOpen, "complete", "n1"),
 		"it_stale_closed": gateStreamsDoc(gateFfOptIn, "complete", "n1"),
+		"it_v1_bool":      gateStreamsDoc(gateFfOpen, "complete", "n1"),
+		"it_future":       gateStreamsDoc(gateFfOpen, "complete", "n1"),
 	})
-	// The current build carries the marker the success persist writes
-	// (internal/enrich streams lane); the legacy docs stay marker-free.
-	r := mustRow(t, st, ctx, "it_current")
-	doc := decodeItemDoc(r.Document)
-	doc["streams"].(map[string]any)["master"] = true
-	b, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
+	// it_current carries the version the success persist writes (the enrich
+	// streams lane); it_v1_bool carries the LEGACY boolean-true write (v1 —
+	// stale under the current constant); it_future carries a version newer
+	// than this binary's constant; the legacy docs stay version-free (v0).
+	setMaster := func(id string, master any) {
+		t.Helper()
+		r := mustRow(t, st, ctx, id)
+		doc := decodeItemDoc(r.Document)
+		doc["streams"].(map[string]any)["master"] = master
+		b, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", id, err)
+		}
+		r.Document = b
+		if err := st.PutItem(ctx, r); err != nil {
+			t.Fatalf("PutItem %s: %v", id, err)
+		}
 	}
-	r.Document = b
-	if err := st.PutItem(ctx, r); err != nil {
-		t.Fatalf("PutItem it_current: %v", err)
-	}
+	setMaster("it_current", enrich.MasterRuleVersion)
+	setMaster("it_v1_bool", true)
+	setMaster("it_future", enrich.MasterRuleVersion+1)
 
 	enqueued := []string{}
 	enqueue := func(id string) error { enqueued = append(enqueued, id); return nil }
@@ -360,13 +374,40 @@ func TestPlayLazyRepack(t *testing.T) {
 		enqueued = nil
 		queued, err := packOnPlay(ctx, st, enqueue, mustRow(t, st, ctx, "it_current"), false)
 		if queued || err != nil {
-			t.Fatalf("packOnPlay = (%v, %v), want (false, nil) — a marker-carrying build is not legacy", queued, err)
+			t.Fatalf("packOnPlay = (%v, %v), want (false, nil) — a build at the current version is not stale", queued, err)
 		}
 		if len(enqueued) != 0 {
 			t.Errorf("enqueued = %v, want nothing for a current build", enqueued)
 		}
 		if strings.Contains(buf.String(), "legacy repack") {
 			t.Errorf("log = %q, want no legacy-repack line for a current build", buf.String())
+		}
+	})
+
+	t.Run("v1_boolean_seed_is_stale", func(t *testing.T) {
+		buf.Reset()
+		enqueued = nil
+		queued, err := packOnPlay(ctx, st, enqueue, mustRow(t, st, ctx, "it_v1_bool"), false)
+		if !queued || err != nil {
+			t.Fatalf("packOnPlay = (%v, %v), want (true, nil) — boolean true reads v1, stale under the current constant", queued, err)
+		}
+		if len(enqueued) != 1 || enqueued[0] != "it_v1_bool" {
+			t.Errorf("enqueued = %v, want exactly it_v1_bool, once", enqueued)
+		}
+	})
+
+	t.Run("future_version_seed_stays_put", func(t *testing.T) {
+		buf.Reset()
+		enqueued = nil
+		queued, err := packOnPlay(ctx, st, enqueue, mustRow(t, st, ctx, "it_future"), false)
+		if queued || err != nil {
+			t.Fatalf("packOnPlay = (%v, %v), want (false, nil) — version ≥ current never enqueues (a future rule must not re-heal)", queued, err)
+		}
+		if len(enqueued) != 0 {
+			t.Errorf("enqueued = %v, want nothing for a future-version build", enqueued)
+		}
+		if strings.Contains(buf.String(), "legacy repack") {
+			t.Errorf("log = %q, want no legacy-repack line for a future build", buf.String())
 		}
 	})
 
@@ -412,26 +453,27 @@ func TestPlayLazyRepack(t *testing.T) {
 // lazy repack trigger (repack-descriptor-trigger 1.1): the playback
 // descriptor GET — the verb every playback actually hits (the SPA mounts the
 // player from the descriptor's play_url) — runs the SAME stale-build
-// decision as the play verb. A legacy build (state complete + a build nonce,
-// no master marker) enqueues exactly ONE repack through the ordinary
-// EnqueuePack seam while the GET still ANSWERS the current old build; a
-// repeated GET while the repack runs is lease-absorbed, never re-enqueued
-// per request; a current (marker-carrying) build never enqueues; a
-// gate-closed stale item logs ONE "legacy repack skipped" INFO line naming
-// the item and the token and answers without enqueueing. The play verb's own
-// path is unchanged (TestPlayLazyRepack). Both lines hold INV4: no media
-// token and no play URL ever ride a captured line.
+// decision as the play verb. A stale build (state complete + a build nonce,
+// a rule version older than enrich.MasterRuleVersion) enqueues exactly ONE
+// repack through the ordinary EnqueuePack seam while the GET still ANSWERS
+// the current old build; a repeated GET while the repack runs is
+// lease-absorbed, never re-enqueued per request; a current (version-carrying)
+// build never enqueues; a gate-closed stale item logs ONE "legacy repack
+// skipped" INFO line naming the item and the token and answers without
+// enqueueing. The play verb's own path is unchanged (TestPlayLazyRepack).
+// Both lines hold INV4: no media token and no play URL ever ride a captured
+// line.
 func TestDescriptorLazyRepack(t *testing.T) {
 	st, ctx := gateSeedStore(t, map[string]map[string]any{
 		"it_legacy":       gateStreamsDoc(gateFfOpen, "complete", "n1"),
 		"it_current":      gateStreamsDoc(gateFfOpen, "complete", "n1"),
 		"it_stale_closed": gateStreamsDoc(gateFfOptIn, "complete", "n1"),
 	})
-	// The current build carries the marker the success persist writes
-	// (internal/enrich streams lane); the legacy docs stay marker-free.
+	// The current build carries the version the success persist writes
+	// (internal/enrich streams lane); the legacy docs stay version-free.
 	r := mustRow(t, st, ctx, "it_current")
 	doc := decodeItemDoc(r.Document)
-	doc["streams"].(map[string]any)["master"] = true
+	doc["streams"].(map[string]any)["master"] = enrich.MasterRuleVersion
 	b, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -522,7 +564,7 @@ func TestDescriptorLazyRepack(t *testing.T) {
 		enqueued = nil
 		pb := describe(t, "it_current", false)
 		if len(enqueued) != 0 {
-			t.Errorf("enqueued = %v, want nothing for a marker-carrying build", enqueued)
+			t.Errorf("enqueued = %v, want nothing for a current-version build", enqueued)
 		}
 		if strings.Contains(buf.String(), "legacy repack") {
 			t.Errorf("log = %q, want no legacy-repack line for a current build", buf.String())

@@ -44,6 +44,7 @@ func TestPlaybackVerbs(t *testing.T) {
 		State:      "complete",
 		PlayURL:    "/media/it1/nonce01/index.m3u8?token=tok",
 		Codecs:     []string{"avc1.640029", "mp4a.40.2"},
+		Layout:     "rendition",
 		Sections:   []map[string]any{{"kind": "chapter", "start": 0.0, "end": 5.5, "title": "intro"}},
 		Voiceovers: []map[string]any{{"index": 0, "label": "Japanese"}},
 		Token:      "fresh-media-token",
@@ -116,6 +117,12 @@ func TestPlaybackVerbs(t *testing.T) {
 		if len(d.Codecs) != 2 || d.Codecs[0] != "avc1.640029" || d.Codecs[1] != "mp4a.40.2" {
 			t.Fatalf("descriptor codecs = %+v, want the pack's record carried on the wire", d.Codecs)
 		}
+		// The additive layout record rides the wire too (fix-tv-unblock-2
+		// Interfaces 1) — the layoutName vocabulary verbatim, the string the
+		// SPA compares.
+		if d.Layout != "rendition" {
+			t.Fatalf("descriptor layout = %+v, want the build's layout carried on the wire", d.Layout)
+		}
 	})
 
 	t.Run("descriptor_without_voiceovers_has_empty_wire_field", func(t *testing.T) {
@@ -137,6 +144,11 @@ func TestPlaybackVerbs(t *testing.T) {
 		// (D6) — and an uncomposable hls record omits it too (fail-open).
 		if raw := readAll(t, resp); strings.Contains(raw, "codecs") {
 			t.Fatalf("body = %s, want no codecs field on a direct answer", raw)
+		}
+		// A layout-less answer omits layout the same way (fix-tv-unblock-2
+		// Interfaces 1) — fail-open absence, never an empty string.
+		if raw := readAll(t, resp); strings.Contains(raw, "layout") {
+			t.Fatalf("body = %s, want no layout field when none recorded", raw)
 		}
 	})
 

@@ -88,13 +88,17 @@ type Service struct {
 // Nil means the record could not be composed (a probe failed or a stream
 // fell outside the composition table) — fail-open: the pack still lands and
 // the build mounts exactly as an unrecorded build always has.
+// Layout names the build's audio layout (fix-tv-unblock-2): "single-variant"
+// (the muxed degenerate) or "rendition" (one variant per audio stream) —
+// layoutName at publish, threaded out for the success persist.
 // A returned build is COMPLETE (its playlist ends with ENDLIST); a head-first
 // partial was published transiently mid-Pack and is observable only while the
 // run is in flight (INV-head-first).
 type Build struct {
-	Playlist string   `json:"playlist"` // e.g. /media/<itemID>/<nonce>/index.m3u8
-	Nonce    string   `json:"nonce"`
+	Playlist string   `json:"playlist"`         // e.g. /media/<itemID>/<nonce>/index.m3u8
+	Nonce    string   `json:"nonce"`            // the build-nonce directory name
 	Codecs   []string `json:"codecs,omitempty"` // RFC 6381 strings; nil = uncomposable (fail-open)
+	Layout   string   `json:"layout,omitempty"` // "single-variant" | "rendition"; the success persist's layout key
 }
 
 // idCharset guards every path segment resolved from an HTTP request or used to

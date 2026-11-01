@@ -17,9 +17,11 @@ import (
 // master declares ONE video variant and the audio renditions ONLY as
 // EXT-X-MEDIA:TYPE=AUDIO members of one group, with unique NAMEs (the stream's
 // language fact else a stable "Audio K" ordinal), LANGUAGE when known, and
-// exactly one DEFAULT=YES — the embedded audio, the pack's primary track and
-// the sole default (settled at GATE 1; language-based defaulting declined) —
-// the voiceovers riding AUTOSELECT=YES,DEFAULT=NO. The composition is pure
+// exactly one DEFAULT=YES on the most compatible track — the first audio
+// rendition whose probed audio stream is aac in rendition order, the first
+// rendition when none is (defaultAudioRendition, fix-tv-unblock-2 D3;
+// language-based defaulting declined) — every other rendition riding
+// AUTOSELECT=YES,DEFAULT=NO. The composition is pure
 // and strictly fail-open: absent probe facts drop the attribute (BANDWIDTH
 // falls back to a conservative constant), an uncomposable codec record drops
 // every CODECS attribute — the corrected SHAPE always publishes, never a
@@ -50,6 +52,7 @@ const audioGroup = "aud"
 // degenerate (D3) muxes its audio into the variant — the CODECS value names
 // video and audio together and no group exists. Pure.
 func composeMaster(vs []variantPlaylist, variants [][]map[string]any, codecs []string) []byte {
+	defaultRend := defaultAudioRendition(variants)
 	attrs := fmt.Sprintf("BANDWIDTH=%d", variantBandwidth(variants))
 	if w, h := variantResolution(variants); w > 0 && h > 0 {
 		attrs += fmt.Sprintf(",RESOLUTION=%dx%d", w, h)
@@ -79,9 +82,9 @@ func composeMaster(vs []variantPlaylist, variants [][]map[string]any, codecs []s
 		if lang != "" {
 			attrs += fmt.Sprintf(",LANGUAGE=%q", lang)
 		}
-		if k == 1 { // rend1: the embedded audio — the primary track, the sole default
+		if k == defaultRend { // the AAC-preferred pick (defaultAudioRendition) — the sole default
 			attrs += ",DEFAULT=YES,AUTOSELECT=YES"
-		} else { // rendK+1: the voiceovers — selectable, never default
+		} else { // every other audio rendition — selectable, never default
 			attrs += ",DEFAULT=NO,AUTOSELECT=YES"
 		}
 		if codecs != nil {
@@ -93,6 +96,39 @@ func composeMaster(vs []variantPlaylist, variants [][]map[string]any, codecs []s
 		lines = append(lines, "#EXT-X-MEDIA:"+attrs)
 	}
 	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
+// defaultAudioRendition picks the audio rendition that rides DEFAULT=YES
+// (fix-tv-unblock-2 D3): the first audio rendition whose probed audio stream
+// composes codec_name "aac", in rendition order — the embedded streams in
+// source order, then the voiceovers in document order, the EXT-X-MEDIA
+// order — so the default mount lands on the most device-compatible track
+// (ties → source order keeps the master byte-identical for identical facts).
+// No AAC anywhere — an unprobed variant composes no codec facts and cannot
+// be judged — falls back to the first audio rendition: exactly one default,
+// never a failed compose. Returns the rendition index k (>= 1) into the
+// composer's slots; only meaningful on a rendition build (len > 1). Pure.
+func defaultAudioRendition(variants [][]map[string]any) int {
+	for k := 1; k < len(variants); k++ {
+		if audioCodecName(variants[k]) == "aac" {
+			return k
+		}
+	}
+	return 1
+}
+
+// audioCodecName reads the first audio stream's codec_name off probed
+// variant facts ("" when the variant carries no audio stream or no composed
+// codec fact — an unprobed variant composes none). Pure.
+func audioCodecName(streams []map[string]any) string {
+	for _, st := range streams {
+		if st["codec_type"] != "audio" {
+			continue
+		}
+		name, _ := st["codec_name"].(string)
+		return name
+	}
+	return ""
 }
 
 // variantBandwidth reads the first video stream's bit_rate off the probed

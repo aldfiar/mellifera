@@ -205,11 +205,102 @@ describe("Player — direct native path", () => {
   });
 
   it("falls back to the native src when MSE is unavailable (native-HLS browsers)", () => {
+    // Re-based on the EXPLICIT single-variant fixture (fix-tv-unblock-2
+    // 2.2): the flat floor is the MSE-less path's working lane, and this
+    // pin keeps pinning exactly that — a rendition layout refuses instead.
+    hls.FakeHls.isSupported.mockReturnValue(false);
+    renderPlayer(hlsDescriptor({ layout: "single-variant" }));
+
+    expect(hls.instances).toHaveLength(0);
+    expect(theVideo().getAttribute("src")).toBe(HLS_DESCRIPTOR.play_url);
+    expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
+  });
+
+  it("mounts the native src for a layout-absent (legacy) descriptor when MSE is unavailable", () => {
+    // Fail-open (the codecs precedent): a build predating the layout
+    // record mounts the floor exactly as before the refusal existed.
     hls.FakeHls.isSupported.mockReturnValue(false);
     renderPlayer(HLS_DESCRIPTOR);
 
     expect(hls.instances).toHaveLength(0);
     expect(theVideo().getAttribute("src")).toBe(HLS_DESCRIPTOR.play_url);
+    expect(apiModule.sendPlaybackEvent).not.toHaveBeenCalled();
+  });
+});
+
+// Lane selection vs native-HLS claiming browsers (fix-tv-unblock-2 root
+// cause A): a browser whose canPlayType('application/vnd.apple.mpegurl') is
+// truthy (Safari, TV WebViews) must still take the hls.js lane whenever MSE
+// is present — hls.js is the only lane that honors the master's EXT-X-MEDIA
+// audio group; the native parse renders the video variant alone, silent.
+describe("Player — lane selection (native-HLS claiming browsers)", () => {
+  it("takes the hls loader when MSE is supported even though the browser claims native HLS", () => {
+    vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("probably");
+    renderPlayer(HLS_DESCRIPTOR);
+
+    expect(hls.instances).toHaveLength(1);
+    expect(hls.instances[0].loadSource).toHaveBeenCalledWith(HLS_DESCRIPTOR.play_url);
+    expect(theVideo().getAttribute("src")).toBeNull();
+  });
+
+  it("refuses a rendition-layout descriptor on an MSE-less native-HLS device", () => {
+    // The TV's shape (root cause A): native-HLS claims, NO MSE. The design
+    // pins the fix shape (D6 — the capability probe's dead-end surface):
+    // the classified banner (its own rendition-layout-unsupported class)
+    // plus exactly ONE beacon, and NO mount — the native parse would render
+    // the video variant alone, silent.
+    vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("probably");
+    hls.FakeHls.isSupported.mockReturnValue(false);
+    renderPlayer(hlsDescriptor({ layout: "rendition" }));
+
+    // The classified banner on the refusal surface — not a media-error
+    // class, not device-cannot-decode.
+    const banner = screen.getByRole("alert");
+    expect(banner.getAttribute("data-media-error-class")).toBe("rendition-layout-unsupported");
+    expect(banner.textContent).toContain("rendition-layout-unsupported");
+    expect(banner.textContent).toContain("звуковыми дорожками");
+    // Exactly ONE beacon, the pinned five-string shape — the detail is the
+    // layout string, INV4-clean (no URL, no token).
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledTimes(1);
+    expect(apiModule.sendPlaybackEvent).toHaveBeenCalledWith(
+      "itm_1_9",
+      "hls",
+      "video-error",
+      "rendition-layout-unsupported",
+      "rendition",
+    );
+    // NO mount: zero hls instances, the <video> carries no src.
+    expect(hls.instances).toHaveLength(0);
+    expect(theVideo().getAttribute("src")).toBeNull();
+  });
+
+  it("clears the refusal banner on re-attach (inherited setError(null))", () => {
+    hls.FakeHls.isSupported.mockReturnValue(false);
+    const { rerender } = render(
+      wrap(<Player itemId="itm_1_9" descriptor={hlsDescriptor({ layout: "rendition" })} />),
+    );
+    expect(screen.queryByRole("alert")).not.toBeNull();
+
+    // A repack swaps the play_url PATH — the attach effect re-runs, the
+    // surface starts clean, and the (re-healed, single-variant) descriptor
+    // mounts the floor. (A token re-mint deliberately does NOT re-run — D6
+    // — so the PATH is what must move here, exactly as in the repack
+    // vectors above.)
+    rerender(
+      wrap(
+        <Player
+          itemId="itm_1_9"
+          descriptor={hlsDescriptor({
+            play_url: "/media/itm_1_9/repacked/index.m3u8?token=t2",
+            layout: "single-variant",
+          })}
+        />,
+      ),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(theVideo().getAttribute("src")).toBe(
+      "/media/itm_1_9/repacked/index.m3u8?token=t2",
+    );
   });
 });
 

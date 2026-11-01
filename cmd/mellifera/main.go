@@ -226,7 +226,7 @@ func main() {
 			return enrich.PackOutcome{}, err
 		}
 		build, err := mediaSvc.Pack(ctx, itemID, absPath, ffprobe, voiceovers)
-		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs}, err
+		return enrich.PackOutcome{Playlist: build.Playlist, Nonce: build.Nonce, Codecs: build.Codecs, Layout: build.Layout}, err
 	}
 	// Publish replacement (playback-capability-gate D5): after the lane
 	// persists the new build the document names it, so evicting the item's

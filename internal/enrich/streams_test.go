@@ -100,6 +100,11 @@ func TestStreamsLane(t *testing.T) {
 		if _, ok := st["codecs"]; ok {
 			t.Fatalf("persisted streams carries codecs %v, want an absent key on a codec-less outcome", st["codecs"])
 		}
+		// A layout-less outcome (fix-tv-unblock-2 Interfaces 1) persists as an
+		// absent key too — absence is the fail-open signal the SPA reads.
+		if _, ok := st["layout"]; ok {
+			t.Fatalf("persisted streams carries layout %v, want an absent key on a layout-less outcome", st["layout"])
+		}
 		// The seam received the item id, the stamped absolute path, and the
 		// stored ffprobe facts (Interface 2 wiring). The fixture carries no
 		// audio sidecars, so the voiceover facts are empty.
@@ -140,6 +145,29 @@ func TestStreamsLane(t *testing.T) {
 		got, ok := st["codecs"].([]any)
 		if !ok || len(got) != 2 || got[0] != "avc1.640029" || got[1] != "mp4a.40.2" {
 			t.Fatalf("persisted codecs = %v, want the PackOutcome record in rendition order", st["codecs"])
+		}
+	})
+
+	// The layout record rides the completion write (fix-tv-unblock-2
+	// Interfaces 1): doc["streams"].layout, the lane's layoutName vocabulary
+	// verbatim ("single-variant" | "rendition") — the string the SPA
+	// compares.
+	t.Run("success_persists_layout_when_recorded", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		streamsItem(t, s, libID, "i_pack_layout")
+
+		rec := &packRecord{}
+		q := NewQueue(Deps{Store: s, Modules: reg, PackItem: packSeam(rec, 0, PackOutcome{
+			Playlist: "/media/i_pack_layout/ab12cd34/index.m3u8",
+			Nonce:    "ab12cd34",
+			Layout:   "rendition",
+		}, nil)}, QueueConfig{})
+		q.workStreams(ctx, "i_pack_layout")
+
+		st := streamsState(t, s, "i_pack_layout", "complete", time.Second)
+		if st["layout"] != "rendition" {
+			t.Fatalf("persisted layout = %v, want the PackOutcome's layoutName value verbatim", st["layout"])
 		}
 	})
 
@@ -532,18 +560,18 @@ func TestStreamsLaneAfterPackPersist(t *testing.T) {
 	})
 }
 
-// TestStreamsMasterMarker pins the build-generation marker (pack-manifest-audio
-// 3.1, D5): every success persist writes `master: true` into the streams
+// TestStreamsMasterMarker pins the pack-lane rule version (pack-manifest-audio
+// 3.1, D5; re-versioned by fix-tv-unblock-2 Interfaces 2): every success
+// persist writes `master` as the NUMBER MasterRuleVersion into the streams
 // namespace — honest by construction, since every fresh pack (rendition and
-// single-variant) publishes the lane-composed master — while both failure
-// persists (real failure and policy refusal) stay marker-free, so marker
-// absence is the legacy-layout signal the play verb's lazy repack reads. A
-// hand-seeded legacy doc (complete + nonce, pre-marker shape) reads back
-// marker-absent.
+// single-variant) is composed at the current rule — while both failure
+// persists (real failure and policy refusal) stay version-free, so absence
+// (version 0) is the legacy signal the lazy re-heal gate reads. A hand-seeded
+// legacy doc (complete + nonce, pre-version shape) reads back marker-absent.
 func TestStreamsMasterMarker(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("success_persist_carries_master_true", func(t *testing.T) {
+	t.Run("success_persist_carries_the_rule_version_number", func(t *testing.T) {
 		s, reg := queueTestStore(t)
 		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
 		streamsItem(t, s, libID, "i_master_ok")
@@ -553,8 +581,11 @@ func TestStreamsMasterMarker(t *testing.T) {
 		q.workStreams(ctx, "i_master_ok")
 
 		st := streamsState(t, s, "i_master_ok", "complete", time.Second)
-		if st["master"] != true {
-			t.Fatalf("persisted streams = %v, want master: true on the success doc", st)
+		// The stored doc round-trips through JSON: the written constant reads
+		// back as a float64 — a raw `!=` against int can never hold.
+		v, ok := st["master"].(float64)
+		if !ok || v != float64(MasterRuleVersion) {
+			t.Fatalf("persisted streams = %v, want master: %d (the rule version number) on the success doc", st, MasterRuleVersion)
 		}
 	})
 

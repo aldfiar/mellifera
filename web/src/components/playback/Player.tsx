@@ -220,6 +220,28 @@ export default function Player(props: PlayerProps): ReactElement {
     // The media element's error event is the lane's only failure signal —
     // previously it failed silently (the eternal-spinner postmortem edge);
     // the class banner plus the beacon is the fix (tv-playback-unblock 4.3).
+    //
+    // The refusal (fix-tv-unblock-2 2.2): on this path an MSE-less browser
+    // (native HLS parse only) cannot honor a rendition layout's audio
+    // groups — a plain src mount renders the video variant ALONE, silent
+    // (root cause A). A rendition descriptor refuses honestly instead:
+    // exactly the capability probe's dead-end surface (banner + one beacon,
+    // no mount — D6), with the beacon riding the closed phase vocabulary
+    // (video-error) and its detail just the layout string (INV4-clean — no
+    // URL, no token). single-variant or an absent layout (legacy builds,
+    // fail-open) mounts the floor exactly as below — the flat floor stays
+    // the MSE-less path's working lane. Clear-on-re-attach is inherited:
+    // the setError(null) above re-runs with every attach.
+    if (isHls && descriptor.layout === "rendition") {
+      setError({
+        lane: "hls",
+        code: "rendition-layout-unsupported",
+        status: null,
+        detail: "rendition",
+      });
+      beacon("hls", "video-error", "rendition-layout-unsupported", "rendition");
+      return;
+    }
     video.src = descriptor.play_url;
     const onVideoError = (): void => {
       const mediaError = video.error;
@@ -457,6 +479,13 @@ function errorText(error: PlayerError): string {
   // in the detail carries the codec names.
   if (error.lane === "hls" && error.code === "device-cannot-decode") {
     return `Ошибка видео: устройство не поддерживает декодирование кодеков этого потока (device-cannot-decode: ${error.detail}).`;
+  }
+  // The MSE-less refusal (fix-tv-unblock-2 2.2): the device can parse HLS
+  // natively but has no MSE, so a multi-audio rendition build would play
+  // video-only — the wording names the layout honestly, without the
+  // repack invitation (a repack cannot help this device).
+  if (error.lane === "hls" && error.code === "rendition-layout-unsupported") {
+    return "Ошибка видео: устройство не поддерживает воспроизведение потока с несколькими звуковыми дорожками (rendition-layout-unsupported).";
   }
   if (error.lane === "hls") {
     const status = error.status === null ? "" : ` (HTTP ${error.status})`;

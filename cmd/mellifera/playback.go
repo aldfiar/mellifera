@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/orchestrator"
 	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
@@ -76,28 +77,32 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 	return true, nil
 }
 
-// legacyRepackOnPlay is the lazy repack-on-play decision (pack-manifest-audio
-// D5): a stored namespace in state complete with a build nonce but WITHOUT the
-// build-generation marker (`master`) predates the lane-composed master — the
-// play that asked for it enqueues exactly ONE repack through the ordinary
-// EnqueuePack path; plays landing while the repack is pending or running are
-// absorbed by the lane's per-item lease (never re-enqueued per tick), and the
-// marker flips at the success persist, closing the window. The decision reads
-// ONLY the stored namespace doc — never the playlist on disk. A gate-closed
-// legacy item (the PackGate pre-check, the retry-path precedent) skips with
-// ONE INFO line naming the gate token — no enqueue, no state change, no
-// ledger row: the old build keeps serving until the knob opens (the
-// sweep-refusal pattern). A queue-full enqueue is transient backpressure, the
-// pack-on-play contract: the old build keeps serving and a later play or the
-// frontier re-attempts. handled reports that the stale-build decision
-// answered the play; queued reports the enqueue (202). A marker-carrying
-// build or any non-complete state is not legacy — handled=false hands the
-// play back to the ordinary pack-on-play decision.
+// legacyRepackOnPlay is the lazy re-heal decision (pack-manifest-audio D5,
+// re-versioned by fix-tv-unblock-2 Interfaces 2): a stored namespace in state
+// complete with a build nonce whose pack-lane RULE VERSION is older than
+// enrich.MasterRuleVersion predates the current pack rule — boolean `true`
+// reads as v1 (the legacy unversioned write), a JSON number as its integer
+// version, absence (or anything else) as 0 — and the play that asked for it
+// enqueues exactly ONE repack through the ordinary EnqueuePack path; plays
+// landing while the repack is pending or running are absorbed by the lane's
+// per-item lease (never re-enqueued per tick), and the success persist
+// rewrites the version, closing the window. The decision reads ONLY the
+// stored namespace doc — never the playlist on disk. A gate-closed stale
+// item (the PackGate pre-check, the retry-path precedent) skips with ONE
+// INFO line naming the gate token — no enqueue, no state change, no ledger
+// row: the old build keeps serving until the knob opens (the sweep-refusal
+// pattern). A queue-full enqueue is transient backpressure, the pack-on-play
+// contract: the old build keeps serving and a later play or the frontier
+// re-attempts. handled reports that the stale-build decision answered the
+// play; queued reports the enqueue (202). A build at the current version —
+// or a FUTURE one, so an older constant never re-heals a newer build — or
+// any non-complete state is not stale: handled=false hands the play back to
+// the ordinary pack-on-play decision.
 func legacyRepackOnPlay(enqueue func(string) error, doc map[string]any, itemID string, optInCodecs bool) (queued, handled bool) {
 	streams, _ := doc["streams"].(map[string]any)
 	state, _ := streams["state"].(string)
 	nonce, _ := streams["nonce"].(string)
-	if master, _ := streams["master"].(bool); state != stream.StateComplete || nonce == "" || master {
+	if state != stream.StateComplete || nonce == "" || masterRuleVersion(streams) >= enrich.MasterRuleVersion {
 		return false, false
 	}
 	if gate := stream.PackGate(itemFacts(doc), optInCodecs); gate != stream.GateOpen {
@@ -110,6 +115,24 @@ func legacyRepackOnPlay(enqueue func(string) error, doc map[string]any, itemID s
 	}
 	slog.Info("orchestrator: legacy repack queued", "item", itemID)
 	return true, true
+}
+
+// masterRuleVersion reads the pack-lane rule version off a stored streams
+// namespace (fix-tv-unblock-2 Interfaces 2): boolean `true` is the legacy v1
+// write, a JSON number its integer version, anything else or absent 0.
+// JSON decoding shapes namespace numbers as float64 — the version is read
+// through a `case float64`, never a raw int type-assert, or every recorded
+// version would read 0 and the re-heal wave would loop forever.
+func masterRuleVersion(streams map[string]any) int {
+	switch v := streams["master"].(type) {
+	case bool:
+		if v {
+			return 1
+		}
+	case float64:
+		return int(v)
+	}
+	return 0
 }
 
 // retryFailedPack executes the retry decision for POST /play {retry:true}

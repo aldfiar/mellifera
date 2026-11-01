@@ -28,16 +28,32 @@ const streamsLaneID = "__streams__"
 // for one item serialize exactly like two metadata sources.
 const streamsOwner = "streams"
 
+// MasterRuleVersion is the pack-lane rule version the success persist writes
+// as the `streams.master` value (fix-tv-unblock-2 Interfaces 2): boolean
+// `true` was the legacy v1 write (pack-manifest-audio — the lane-composed
+// master, same rule version but unversioned), the number here is v2 (the
+// total-audio layout rule). The lazy re-heal gate (cmd/mellifera's
+// legacyRepackOnPlay) reads a stored namespace stale iff its version is
+// older than this constant, so every previously-packed build re-heals once
+// through the ordinary enqueue path. The constant lives here — the writer's
+// package: enrich must not import internal/stream (the PackItem seam
+// boundary), and the only reader (cmd/mellifera) already imports enrich.
+const MasterRuleVersion = 2
+
 // PackOutcome is one published packaging build, returned over the Deps.PackItem
 // seam (Interface 2). Playlist is the /media-relative artifact pointer under
 // the run's build-nonce directory; Nonce is that directory's name. Codecs is
 // the build's recorded RFC 6381 codec strings (playback-capability-gate D2 —
 // video first, then audio in rendition order; nil when uncomposable, which
-// rides the completion write as an absent key).
+// rides the completion write as an absent key). Layout is the build's audio
+// layout name (fix-tv-unblock-2 Interfaces 1 — "single-variant" | "rendition",
+// decided at publish); empty means the build predates the layout record and
+// rides the completion write as an absent key (fail-open).
 type PackOutcome struct {
 	Playlist string
 	Nonce    string
 	Codecs   []string
+	Layout   string
 }
 
 // EnqueuePack enqueues one packaging job for itemID into the running queue's
@@ -126,18 +142,28 @@ func (q *Queue) workStreams(ctx context.Context, itemID string) {
 		"state":    "complete",
 		"playlist": outcome.Playlist,
 		"nonce":    outcome.Nonce,
-		// The build-generation marker (pack-manifest-audio D5): every build
-		// this lane publishes carries the lane-composed master at the build
-		// root, so the key is honest by construction — written only here, on
-		// the success persist. The failed docs above stay marker-free:
-		// absence is the legacy-layout signal the play verb's lazy repack
-		// reads. No Build/PackOutcome field, no export — one map key.
-		"master": true,
+		// The pack-lane rule version (fix-tv-unblock-2 Interfaces 2): every
+		// build this lane publishes is composed at the current rule — the
+		// lane-composed master at the build root since v1, the total-audio
+		// layout rule since v2 — so the key is honest by construction and
+		// written only here, on the success persist. The failed docs above
+		// stay version-free: absence reads as version 0, the legacy signal
+		// the lazy re-heal gate reads. No Build/PackOutcome field, no second
+		// constant — the map key carries MasterRuleVersion itself.
+		"master": MasterRuleVersion,
 	}
 	if len(outcome.Codecs) > 0 {
 		// The codec record rides the completion write (playback-capability-gate
 		// D2); an uncomposable record (nil) stays an absent key.
 		success["codecs"] = outcome.Codecs
+	}
+	if outcome.Layout != "" {
+		// The layout record rides the completion write too (fix-tv-unblock-2
+		// Interfaces 1): the lane's own layoutName decision at publish, the one
+		// field the SPA's rendition refusal reads. An empty value (a build the
+		// seam predates) stays an absent key — absence is the fail-open signal
+		// the descriptor answers verbatim, the codecs precedent.
+		success["layout"] = outcome.Layout
 	}
 	q.persistStreams(ctx, itemID, success)
 	// Publish replacement (playback-capability-gate D5): only AFTER the

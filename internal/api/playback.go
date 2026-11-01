@@ -35,13 +35,18 @@ import (
 // Codecs is the additive codec record (playback-capability-gate D6): the
 // pack's RFC 6381 strings, answered on hls descriptors only and omitted when
 // the build's codecs could not be composed (fail-open) — direct descriptors
-// never carry it.
+// never carry it. Layout is the additive build layout record
+// (fix-tv-unblock-2 Interfaces 1): "single-variant" | "rendition", the audio
+// layout the pack lane decided at publish, answered on hls descriptors only
+// and omitted when the build predates the layout record (fail-open) — direct
+// descriptors never carry it.
 type Playback struct {
 	Mode        string           `json:"mode"`
 	State       string           `json:"state"`
 	PlayURL     string           `json:"play_url"`
 	StateReason string           `json:"state_reason,omitempty"`
 	Codecs      []string         `json:"codecs,omitempty"`
+	Layout      string           `json:"layout,omitempty"`
 	Sections    []map[string]any `json:"sections"`
 	Voiceovers  []map[string]any `json:"voiceovers"`
 	Token       string           `json:"-"`
@@ -64,6 +69,7 @@ type playbackResponse struct {
 	PlayURL     string           `json:"play_url"`
 	StateReason string           `json:"state_reason,omitempty"`
 	Codecs      []string         `json:"codecs,omitempty"`
+	Layout      string           `json:"layout,omitempty"`
 	Sections    []map[string]any `json:"sections"`
 	Voiceovers  []map[string]any `json:"voiceovers"`
 }
@@ -126,6 +132,7 @@ func (a *app) itemPlayback(w http.ResponseWriter, r *http.Request) {
 		PlayURL:     pb.PlayURL,
 		StateReason: pb.StateReason,
 		Codecs:      wireArray(pb.Codecs),
+		Layout:      pb.Layout,
 		Sections:    wireArray(pb.Sections),
 		Voiceovers:  wireArray(pb.Voiceovers),
 	})

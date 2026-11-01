@@ -610,6 +610,35 @@ describe("playback descriptor + beacon client (tv-playback-unblock)", () => {
     expect(legacy.codecs).toBeUndefined();
   });
 
+  it("getPlayback parses the layout record verbatim on hls answers; absent stays absent (fix-tv-unblock-2)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        mode: "hls",
+        state: "complete",
+        play_url: "/media/itm_7_abc/index.m3u8?token=media-tok",
+        sections: [],
+        // the pack-layout record — "single-variant" | "rendition"
+        layout: "rendition",
+      }),
+    );
+
+    const out: PlaybackDescriptor = await getPlayback("itm_7_abc");
+    expect(out.layout).toBe("rendition");
+
+    // a legacy answer (omitempty) carries no layout — absence is "mount
+    // the floor as before", never a type hole
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        mode: "hls",
+        state: "complete",
+        play_url: "/media/itm_7_abc/index.m3u8?token=media-tok",
+        sections: [],
+      }),
+    );
+    const legacy = await getPlayback("itm_7_abc");
+    expect(legacy.layout).toBeUndefined();
+  });
+
   it("sendPlaybackEvent POSTs the exact five-field payload through the authenticated wrapper to a 204", async () => {
     setDeviceToken("dev-token-1"); // browse role: the device token rides
     const fetchSpy = vi

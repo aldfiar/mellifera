@@ -257,7 +257,7 @@ func TestSections(t *testing.T) {
 		// The PRIMARY shape is real ffprobe output: titles nested under
 		// tags.title (`ffprobe -show_chapters` never emits a top-level
 		// chapter title — the tags carry it).
-		_, _, _, sections, _, _, _, _ := s.Describe("it", doc(map[string]any{
+		_, _, _, sections, _, _, _, _, _ := s.Describe("it", doc(map[string]any{
 			"chapters": []any{
 				map[string]any{"start_time": "5.5", "end_time": "9.25", "tags": map[string]any{"title": "middle"}},
 				map[string]any{"start_time": "0", "end_time": "5.5", "tags": map[string]any{"title": "intro"}},
@@ -283,7 +283,7 @@ func TestSections(t *testing.T) {
 	t.Run("top_level_title_fallback", func(t *testing.T) {
 		// Secondary shape: a top-level chapter title (no tags) still carries
 		// through — the projection accepts both.
-		_, _, _, sections, _, _, _, _ := s.Describe("it", doc(map[string]any{
+		_, _, _, sections, _, _, _, _, _ := s.Describe("it", doc(map[string]any{
 			"chapters": []any{
 				map[string]any{"start_time": "1", "end_time": "2", "title": "top-level"},
 				map[string]any{"start_time": "2", "end_time": "3", "tags": map[string]any{"not_a_title": "x"}},
@@ -301,7 +301,7 @@ func TestSections(t *testing.T) {
 	})
 
 	t.Run("raw_time_base_fallback", func(t *testing.T) {
-		_, _, _, sections, _, _, _, _ := s.Describe("it", doc(map[string]any{
+		_, _, _, sections, _, _, _, _, _ := s.Describe("it", doc(map[string]any{
 			"chapters": []any{map[string]any{"start": 1500.0, "time_base": "1/1000", "title": "raw"}},
 		}))
 		if len(sections) != 1 || sections[0]["start"] != 1.5 {
@@ -310,12 +310,12 @@ func TestSections(t *testing.T) {
 	})
 
 	t.Run("unusable_chapter_dropped_and_absent_probe_nil", func(t *testing.T) {
-		if _, _, _, got, _, _, _, _ := s.Describe("it", doc(map[string]any{
+		if _, _, _, got, _, _, _, _, _ := s.Describe("it", doc(map[string]any{
 			"chapters": []any{map[string]any{"title": "no boundaries"}},
 		})); len(got) != 0 {
 			t.Fatalf("sections = %v, want the boundary-less chapter dropped", got)
 		}
-		if _, _, _, got, _, _, _, _ := s.Describe("it", map[string]any{}); got != nil {
+		if _, _, _, got, _, _, _, _, _ := s.Describe("it", map[string]any{}); got != nil {
 			t.Fatalf("sections = %v, want nil without ffprobe", got)
 		}
 	})
@@ -351,7 +351,7 @@ func TestSections(t *testing.T) {
 					}
 					d["streams"] = ns
 				}
-				mode, state, playURL, _, _, _, _, _ := s.Describe("it", d)
+				mode, state, playURL, _, _, _, _, _, _ := s.Describe("it", d)
 				if mode != tc.wantMode {
 					t.Fatalf("mode = %q, want %q", mode, tc.wantMode)
 				}
@@ -649,7 +649,7 @@ func TestDescribeBrokenBuild(t *testing.T) {
 
 	t.Run("referenced_segment_missing_answers_direct", func(t *testing.T) {
 		handBuild(t, s.Root, "it", "n1", healthyPlaylist, "init.mp4", "seg-00000.m4s") // seg-00001 referenced but never written
-		mode, state, playURL, _, _, _, _, _ := s.Describe("it", completeDoc("it", "n1"))
+		mode, state, playURL, _, _, _, _, _, _ := s.Describe("it", completeDoc("it", "n1"))
 		if mode != ModeDirect || state != StateComplete {
 			t.Fatalf("mode/state = %q/%q, want %q/%q (broken build takes the floor)", mode, state, ModeDirect, StateComplete)
 		}
@@ -662,7 +662,7 @@ func TestDescribeBrokenBuild(t *testing.T) {
 		handBuild(t, s.Root, "it", "n2",
 			"#EXTM3U\n#EXTINF:4.0,\nseg-00000.m4s\n#EXT-X-ENDLIST\n",
 			"seg-00000.m4s", "t/seg-00001.m4s") // published under t/, never listed
-		mode, state, playURL, _, _, _, _, _ := s.Describe("it", completeDoc("it", "n2"))
+		mode, state, playURL, _, _, _, _, _, _ := s.Describe("it", completeDoc("it", "n2"))
 		if mode != ModeDirect || state != StateComplete {
 			t.Fatalf("mode/state = %q/%q, want %q/%q (stranded segment takes the floor)", mode, state, ModeDirect, StateComplete)
 		}
@@ -673,7 +673,7 @@ func TestDescribeBrokenBuild(t *testing.T) {
 
 	t.Run("healthy_build_answers_hls", func(t *testing.T) {
 		handBuild(t, s.Root, "it", "n3", healthyPlaylist, "init.mp4", "seg-00000.m4s", "seg-00001.m4s")
-		mode, state, playURL, _, _, _, _, _ := s.Describe("it", completeDoc("it", "n3"))
+		mode, state, playURL, _, _, _, _, _, _ := s.Describe("it", completeDoc("it", "n3"))
 		if mode != ModeHls || state != StateComplete {
 			t.Fatalf("mode/state = %q/%q, want %q/%q", mode, state, ModeHls, StateComplete)
 		}
