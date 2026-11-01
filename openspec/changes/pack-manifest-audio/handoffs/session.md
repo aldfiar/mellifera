@@ -34,58 +34,39 @@
     publish verbatim-or-degrade, legacy composes hvc1 for non-sample
     tags; REAL Matroska fact pinned → hvc1.2.4.L120.B0 + deduped
     mp4a.40.2, descriptor-level case through Describe.
-- Apply progress (8/9 authored green):
-  - 1.1 green (2 runs — real defect found+fixed: ffprobe hangs on EVENT
-    playlists; probeVariants now probes finalized scratch copies).
-  - 1.2 green first run (single-variant unified onto rend0/; legacy
-    flat-root coexistence pinned; mkdirVariantDirs).
-  - 1.3 green (2 runs): 4 expected-red itests re-pointed to the rend0/
-    tree incl. two same-ripple extras (TestStreamsJoint,
-    TestBrokenBuildRepackSweep) via shared pbVariantPlaylist helper;
-    full internal/itest package green.
-  - 2.1 green first run: hevcSampleEntry(composeTag) rule split —
-    publish verbatim-or-degrade, legacy composes hvc1 for non-sample
-    tags; REAL Matroska fact pinned → hvc1.2.4.L120.B0 + deduped
-    mp4a.40.2, descriptor-level case through Describe.
-  - 3.1 green first run: master: true marker at the enrich success
-    persist (failed doc stays marker-free); legacyRepackOnPlay in
-    cmd/mellifera/playback.go before the OnPlay decision — PackGate
-    pre-check, one queued/skipped INFO line, lease absorbs concurrent
-    plays. FLAG for GATE 2: one extra line beyond the task prose —
-    "orchestrator: legacy repack enqueue deferred" WARN on enqueue
-    backpressure, mirroring packOnPlay's identical seam.
-  - 4.1 green first run: "streams: pack published" INFO (item, nonce,
-    layout, variants, audio, codecs recorded|degraded, probes count) +
-    deferred-hook "streams: pack failed" WARN with kebab-stage
-    vocabulary (prepare | ffmpeg-head | ffmpeg-tail | head-playlists |
-    tail-playlists | master-compose | write | rename | tail-merge).
-    FLAG for GATE 2: kebab-case stages (prose said "ffmpeg head") —
-    keeps key=value parsing; WARN carries an "error" attr per the
-    eviction-WARN precedent.
-  - 4.2 green first run: Describe 8th return codecsSrc (recorded |
-    legacy | none; direct answers hard-code none); "playback:
-    descriptor" line gained codecs_src — one line per GET, INV4 clean;
-    25 call sites adapted mechanically (7 in describe_codecs_test.go,
-    not the 6 the contract named); go build/vet ./... clean after.
-    COVERAGE NOTE routed to 5.1: no direct recorded/legacy src
-    assertion existed — leg (c) pins legacy; fresh-pack descriptor
-    line pinning recorded is a freebie there.
-  - 4.3 green first run: "pack: gate" INFO at the top of PackItem
-    (item, class, gate open|refusal-token, codecs rendering via pure
-    packGateCodecs — "hevc Main 10, aac LC ×2", absent facts → none).
-    JUDGMENT CALL documented: class = stream.Classify(ff, true) — knob
-    out of the way so the class stays informative under every knob
-    position; the gate field owns the knob's verdict.
-- Wave 5 DISPATCHED: 5.1 (wf-qa, the @qa joint — five legs a–e over
-  real packs, TestPackManifestAudioJoint; self-checks go build/vet +
-  FULL internal/itest package before replying).
-- Remaining: built-in git-check → commit + push everything → GATE 2
-  (@wf-reviewer re-runs all duties + FULL go test ./...; watch the
-  exported-symbol budget — Describe's 8th return is a value, not an
-  export, so the packages should hold) → STOP for human archive
-  approval.
+- Apply progress (10/10 green — ALL tasks incl. git-check):
+  - 5.1 green first wf-run: TestPackManifestAudioJoint, five legs over
+    real packs (a rendition master shape + codecs_src=recorded,
+    b single-variant partial+byte-identical master, c Matroska legacy
+    read side hvc1.2.4.L120.B0 + codecs_src=legacy, d flow line
+    sequence, e lazy repack once-only with publish replacement); full
+    internal/itest package self-check green (243s); OptInCodecs=true
+    world documented; legs a+d share one real job (richest flow shape).
+- Close sequence: committed 54350fa (the change, 41 files) + e36faac
+  (transcode-lane F5 proposal folder, HELD at its GATE 1), pushed to
+  origin. git-check verified green at 01:13:57Z. Pipeline 10/10.
+- GATE 2 DISPATCHED (@wf-reviewer): re-runs all 10 duties --by
+  wf-reviewer + FULL go test ./... -count=1 (the exported-symbol budget
+  gate lives only there) + vitest + budget greps + diff-vs-delta
+  traceability + the five documented flags + standards axis + handoff
+  threads. Writes review.md (verdict; human-approval section stays
+  pending).
+- GATE 2 VERDICT: PASS-WITH-FLAGS (reviewer's own shell): 9/10 duty
+  re-runs green (git-check red = uncommitted gate artifacts — by
+  design); FULL go test ./... -count=1 rc 0 243.8s WITH the ac7
+  exported-budget gate green inside; vitest 416 tests rc 0; validate
+  --strict zero failures; budget api 12/12, enrich 11/11, stream 7/7,
+  ZERO new exports; all five flags ruled OVERRIDE (evidence in
+  review.md §5); standards P3-only; INV4 verified; threads clean.
+  Record: review.md in this folder.
+- HUMAN ARCHIVE APPROVAL: "Approve — archive & close (Recommended)"
+  2026-11-01 — recorded in review.md's approval section.
+- Close IN PROGRESS: artifact commit → git-check green → pinned
+  archive (delta merge) → TBD police → @wf-docs → close-out notes →
+  pipeline clean → deploy to alatoic (user asked mid-close: "update
+  server with new version") → TV/desktop retest.
 - In parallel (separate change, held at ITS GATE 1 until this closes):
-  the F5 transcode-lane proposal (HEVC-on-TV playback) is authored and
-  strict-valid; re-base its two shared-requirement deltas at its GATE 1.
+  the F5 transcode-lane proposal is authored, strict-valid, committed
+  at e36faac; re-base its two shared-requirement deltas at its GATE 1.
 - Dispatch rule: real wf-* agent types on every launch; launch prompts
   carry the LITERAL wf string and zero transcribed code facts.
