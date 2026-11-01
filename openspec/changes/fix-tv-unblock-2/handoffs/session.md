@@ -63,5 +63,14 @@ is valid"). Register: 3 groups, 8 tasks (7 + git-check), all red, home
   NOTE for future regen tasks: author the porcelain leg as
   build-determinism (hash before/re-build/hash after), not
   working-tree-vs-HEAD.
-- W5: 3.1 dispatched to wf-qa (TestTvUnblockJoint, tvu* namespace).
-- Remaining after 3.1: git-check (commit + push) → GATE 2.
+- W5: 3.1 GREEN first-run (exit 0, 8.1s; TestTvUnblockJoint — real
+  dual-audio MKV through the real pack lane, real persist master==2 +
+  layout=="rendition", served master ONE EXT-X-STREAM-INF + TWO
+  unique-NAME EXT-X-MEDIA + exactly ONE DEFAULT=YES on rend1).
+- git-check GREEN (exit 0, 67ms): everything committed at 7a5b492
+  (46 files — sources, tests, web src+dist, openapi, change folder
+  incl. handoffs) and pushed. `wf pipeline status` = green 8/8,
+  rc 0 (13:09Z).
+- NEXT: GATE 2 (@wf-reviewer re-runs + full suite) → human archive
+  approval → close → deploy to alatoic + agent verification (standing
+  directive).
