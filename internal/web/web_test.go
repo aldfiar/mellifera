@@ -255,3 +255,58 @@ func TestHandler_MediaMount(t *testing.T) {
 		}
 	})
 }
+
+// TestHandler_ClientUAMetaInjection exercises the serve-time UA injection: a
+// non-empty request User-Agent is HTML-escaped into a mellifera-client-ua meta
+// right after the first <head> (the tv-mode ladder's decisive source), on both
+// the / mount and the SPA fallback. A request without the header serves the
+// embedded bytes verbatim — no meta, ever.
+func TestHandler_ClientUAMetaInjection(t *testing.T) {
+	h := Handler(nil, Options{})
+
+	t.Run("ua_with_attribute_specials_is_html_escaped", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("User-Agent", `SmartTV/1.0 "Foo" <Bar>`)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		want := `<meta name="mellifera-client-ua" content="SmartTV/1.0 &#34;Foo&#34; &lt;Bar&gt;">`
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("body missing escaped UA meta %q; body=%q", want, rec.Body.String())
+		}
+	})
+
+	t.Run("no_ua_serves_verbatim", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		if req.Header.Get("User-Agent") != "" {
+			t.Fatal("httptest.NewRequest unexpectedly set a User-Agent — this row's premise broke")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "mellifera-client-ua") {
+			t.Errorf("no-UA request must serve index.html verbatim; body=%q", rec.Body.String())
+		}
+	})
+
+	t.Run("deep_link_fallback_injects_meta", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/library/item/42", nil)
+		req.Header.Set("User-Agent", "Smart-TV/2.0")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		want := `<meta name="mellifera-client-ua" content="Smart-TV/2.0">`
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("fallback body missing UA meta %q; body=%q", want, rec.Body.String())
+		}
+	})
+}

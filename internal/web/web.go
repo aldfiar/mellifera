@@ -5,6 +5,7 @@ package web
 
 import (
 	"embed"
+	"html"
 	"net/http"
 	"path"
 	"strings"
@@ -62,7 +63,7 @@ func Handler(apiHandler http.Handler, opts Options) http.Handler {
 		r.Handle("/media/*", opts.Media)
 	}
 	registerSwagger(r) // /openapi.{yaml,json} + /docs — ahead of the SPA fallback.
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) { serveIndex(w, opts) })
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) { serveIndex(w, r, opts) })
 	r.Get("/assets/*", func(w http.ResponseWriter, r *http.Request) { serveAsset(w, r, opts) })
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		// Broken hashed asset URLs fail fast (no fallback) so a stale hash is
@@ -72,18 +73,28 @@ func Handler(apiHandler http.Handler, opts Options) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		serveIndex(w, opts)
+		serveIndex(w, r, opts)
 	})
 	return r
 }
 
 // serveIndex writes the embedded index.html with the no-cache header (the SPA
 // shell must revalidate so a new deploy is picked up on the next navigation).
-func serveIndex(w http.ResponseWriter, opts Options) {
+// When the request carries a User-Agent, it is injected as a meta tag right
+// after the first <head> on the per-request copy — the embedded bytes are never
+// mutated — so the SPA can read the server-observed UA (the tv-mode ladder's
+// decisive source). A missing/empty UA or a shell without <head> serves the
+// bytes verbatim.
+func serveIndex(w http.ResponseWriter, r *http.Request, opts Options) {
+	body := indexHTML
+	if ua := r.Header.Get("User-Agent"); ua != "" {
+		meta := `<meta name="mellifera-client-ua" content="` + html.EscapeString(ua) + `">`
+		body = []byte(strings.Replace(string(body), "<head>", "<head>"+meta, 1))
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", cacheControl(false, opts))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(indexHTML)
+	_, _ = w.Write(body)
 }
 
 // serveAsset writes a hashed asset under /assets/* with the immutable cache
