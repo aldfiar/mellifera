@@ -589,6 +589,11 @@ func main() {
 	jan := newJanitor(
 		janitorTask{name: "streams", interval: sweepInterval, fn: sweep},
 		janitorTask{name: "art", interval: cfg.artInterval, fn: artSettle},
+		// recs is the tag-affinity learning task (recommendation-sorting D5):
+		// boot-run + 60 s tick + the completion wake — the sweep consumes the
+		// derived unapplied-watched queue through the enrich tag resolver. The
+		// wake's write side is notifyRecs, called by the watch detector.
+		janitorTask{name: "recs", interval: recsInterval, wake: recsWake, fn: newRecsSweep(st, reg)},
 	)
 	jan.runBoot(ctx)
 	go jan.run(ctx)

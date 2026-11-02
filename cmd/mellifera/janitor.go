@@ -18,6 +18,14 @@ type janitorTask struct {
 	name     string
 	interval time.Duration
 	fn       func(context.Context)
+	// wake is the task's optional completion channel (recommendation-sorting
+	// D5): a send runs ONE pass immediately, beside the interval ticker — the
+	// next select iteration fires it as soon as fn returns, so a burst
+	// coalesces into back-to-back passes over an already-drained queue. nil
+	// (the default) leaves the task ticker-only — a nil channel is never
+	// selected. Never closed: the loop exits on ctx.Done, and a send racing
+	// shutdown must not panic.
+	wake <-chan struct{}
 }
 
 // janitor is the named multi-task sweep registry (artwork D8), the
@@ -64,8 +72,9 @@ func (j *janitor) run(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					task.fn(ctx)
+				case <-task.wake: // nil wake is never selected — ticker-only tasks unchanged
 				}
+				task.fn(ctx)
 			}
 		}(t)
 	}
