@@ -14,7 +14,9 @@
 // geometry needed. The generic "TV" token is WEAK: it detects a TV only when
 // corroboration also holds (≥16:9 aspect AND innerHeight ≤ 600 CSS px AND
 // maxTouchPoints === 0). Corroboration alone NEVER enables tv mode — an
-// unmarked 16:9 zero-touch desktop stays desktop. resolveTvMode applies the
+// unmarked 16:9 zero-touch desktop stays desktop. The server-observed UA
+// (fix-tv-server-ua, the mellifera-client-ua meta) joins the strong scan
+// only — decisive, never a corroboration input. resolveTvMode applies the
 // override law on top: a stored Вкл/Выкл beats detection on every load,
 // "auto"/absent defers to it (spec: Autodetect sets the first-load default
 // only / The manual «Режим ТВ» override always wins).
@@ -34,6 +36,13 @@ export type TvOverride = "auto" | "on" | "off";
 export interface TvEnvironment {
   /** The Chromium high-entropy model hint, when the probe resolved it. */
   model?: string;
+  /**
+   * The server-observed User-Agent (fix-tv-server-ua), injected by the Go
+   * shell as the mellifera-client-ua meta. A DECISIVE-only source: a strong
+   * marker here rules TV outright; it is never a weak-token or corroboration
+   * input — the server UA cannot corroborate a TV shape.
+   */
+  serverUserAgent?: string;
   userAgent: string;
   innerWidth: number;
   innerHeight: number;
@@ -76,13 +85,17 @@ function matchesStrongMarker(value: string): boolean {
 }
 
 // detectTvEnvironment — the settled ladder (design D2): a strong marker in
-// the user agent or the model hint → TV; else the weak "TV" token → TV only
-// with a corroborating shape; no marker at all → desktop even when the shape
-// corroborates.
+// the user agent, the model hint, or the server-observed UA → TV; else the
+// weak "TV" token → TV only with a corroborating shape; no marker at all →
+// desktop even when the shape corroborates. The server UA enters the strong
+// scan ONLY (fix-tv-server-ua): it is never fed to the weak token or to
+// corroboratesTvShape, so a truthful server UA alone can never corroborate.
 export function detectTvEnvironment(env: TvEnvironment): boolean {
   const strong =
     matchesStrongMarker(env.userAgent) ||
-    (env.model !== undefined && matchesStrongMarker(env.model));
+    (env.model !== undefined && matchesStrongMarker(env.model)) ||
+    (env.serverUserAgent !== undefined &&
+      matchesStrongMarker(env.serverUserAgent));
   if (strong) {
     return true;
   }
@@ -125,11 +138,29 @@ interface UADataNav {
   getHighEntropyValues(hints: string[]): Promise<{ model?: string }>;
 }
 
+// readServerUserAgent — the shell-injected UA from the mellifera-client-ua
+// meta (fix-tv-server-ua), read defensively: an absent meta, an empty or
+// whitespace-only content, or an unusable document all floor to undefined —
+// the ladder then runs on the JS UA alone. No fetch, no boot delay.
+function readServerUserAgent(): string | undefined {
+  try {
+    const content = document
+      .querySelector('meta[name="mellifera-client-ua"]')
+      ?.getAttribute("content");
+    return typeof content === "string" && content.trim().length > 0
+      ? content.trim()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // readTvEnvironment — the real browser inputs the ladder consumes (design:
 // the pure core never touches the globals; only this apply-side reader does).
 function readTvEnvironment(): TvEnvironment {
   return {
     userAgent: navigator.userAgent,
+    serverUserAgent: readServerUserAgent(),
     innerWidth: window.innerWidth,
     innerHeight: window.innerHeight,
     maxTouchPoints: navigator.maxTouchPoints ?? 0,

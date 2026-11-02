@@ -38,7 +38,9 @@ const WEAK_TV_UA =
 
 // env — the ladder input builder. The defaults are a HOSTILE desktop shape
 // (wide, tall, touchy): any detection a vector reads off these defaults is
-// the markers' doing, never the geometry's.
+// the markers' doing, never the geometry's. The optional `serverUserAgent`
+// field is part of TvEnvironment since fix-tv-server-ua, so the overrides
+// pass it like any other field — no intersection, no cast, no row reshapes.
 function env(overrides: Partial<TvEnvironment> = {}): TvEnvironment {
   return {
     userAgent: DESKTOP_UA,
@@ -287,6 +289,145 @@ describe("detectTvEnvironment — the REAL device (Smart TV Pro / YaBrowser TV l
         }),
       ),
     ).toBe(want);
+  });
+});
+
+// fix-tv-server-ua repro rows — the server-observed UA as a second, DECISIVE-only
+// UA source. Live evidence (server access log, 2 Nov): the Smart TV Pro box sends
+// a truthful "Smart TV" UA in its HTTP headers, but its YaBrowser TV lite WebView
+// presents JavaScript a faked desktop-looking UA — and readTvEnvironment feeds
+// the ladder navigator.userAgent ONLY, so the device boots desktop however wide
+// the markers match. The ruled fix: the Go shell handler injects the caller's
+// User-Agent header into the served index.html and the ladder reads it as an
+// OPTIONAL `serverUserAgent` on TvEnvironment — a strong marker there rules TV
+// outright, but the server UA is NEVER a corroboration input for the weak "TV"
+// token ("corroboration never sufficient alone" stays tied to the JS UA).
+// These rows are the fix's first verify anchor, authored RED where the source
+// is missing today: the current implementation ignores serverUserAgent.
+const FAKE_DESKTOP_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36";
+
+describe("detectTvEnvironment — the server-observed UA (fix-tv-server-ua)", () => {
+  it("server_ua_decisive_over_faked_js_ua: faked desktop JS UA + server-observed REAL device UA at hostile 1080p zero touch → TV", () => {
+    expect(
+      detectTvEnvironment(
+        env({
+          userAgent: FAKE_DESKTOP_UA,
+          serverUserAgent: REAL_TV_UA,
+          innerWidth: 1920,
+          innerHeight: 1080,
+          maxTouchPoints: 0,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("server_ua_desktop_stays_desktop: both UA sources plain desktop at hostile zero-touch shape → desktop (guard row)", () => {
+    expect(
+      detectTvEnvironment(
+        env({
+          userAgent: FAKE_DESKTOP_UA,
+          serverUserAgent: DESKTOP_UA,
+          innerWidth: 1920,
+          innerHeight: 1080,
+          maxTouchPoints: 0,
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("server_ua_spaced_family_decisive: faked JS UA + spaced \"Smart TV\" server UA at hostile geometry → TV via the DECISIVE path", () => {
+    // Hostile geometry (1920×1080 is too tall for the short leg) makes the
+    // DECISIVE path provable by construction: no weak/corroboration route
+    // can reach a true here — only a strong marker in the server UA can.
+    expect(
+      detectTvEnvironment(
+        env({
+          userAgent: FAKE_DESKTOP_UA,
+          serverUserAgent:
+            "Mozilla/5.0 (Linux; Smart TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.0.0 Safari/537.36",
+          innerWidth: 1920,
+          innerHeight: 1080,
+          maxTouchPoints: 0,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("server_ua_weak_token_never_corroborates: weak bare \"TV\" ONLY in the server UA at a corroborating shape → desktop (the server UA is never a corroboration input)", () => {
+    // The clause guard, at the geometry that makes it bite: the shape here
+    // corroborates, and the server UA carries \bTV\b — a naive ladder that
+    // runs the weak token over the server UA turns this true and breaks the
+    // "corroboration never sufficient alone" law. GREEN today only because
+    // the source does not exist yet; LOAD-BEARING once the fix lands.
+    expect(
+      detectTvEnvironment(
+        env({
+          userAgent: FAKE_DESKTOP_UA,
+          serverUserAgent: WEAK_TV_UA,
+          innerWidth: 960,
+          innerHeight: 540,
+          maxTouchPoints: 0,
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+// fix-tv-server-ua — the injected server UA through the REAL boot chain
+// (applyTvMode over the jsdom globals). The Go shell (task 1.2) injects the
+// caller's User-Agent header as <meta name="mellifera-client-ua"> into the
+// served index.html; readTvEnvironment reads it defensively: an absent meta,
+// an empty / whitespace-only / garbled content all floor to undefined and
+// the JS-UA ruling stands alone. jsdom's default geometry (1024×768, zero
+// touch) is already hostile to the weak path — the 16:10 shape fails the
+// ≥16:9 aspect leg — so every row here proves its ruling by the UA sources
+// alone, with no geometry stubbing.
+describe("applyTvMode — the injected server UA (fix-tv-server-ua)", () => {
+  const META_SELECTOR = 'meta[name="mellifera-client-ua"]';
+
+  function stubNavigatorUserAgent(ua: string): void {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value: ua,
+    });
+  }
+
+  function setServerUaMeta(content: string): void {
+    const meta = document.createElement("meta");
+    meta.setAttribute("name", "mellifera-client-ua");
+    meta.setAttribute("content", content);
+    document.head.appendChild(meta);
+  }
+
+  afterEach(() => {
+    // Drop the own-property UA stub; the prototype getter resurfaces.
+    Reflect.deleteProperty(navigator, "userAgent");
+    document.querySelector(META_SELECTOR)?.remove();
+    document.documentElement.classList.remove("tv");
+  });
+
+  it("boot_server_ua_meta_decisive: strong-marker meta at hostile geometry → the tv class is set", async () => {
+    stubNavigatorUserAgent(FAKE_DESKTOP_UA);
+    setServerUaMeta(REAL_TV_UA);
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+  });
+
+  it.each([
+    { name: "absent meta", content: undefined },
+    { name: "empty meta", content: "" },
+    { name: "whitespace-only meta", content: "   \n\t " },
+    { name: "garbled meta", content: "not-a-user-agent<<<>>>" },
+  ])("boot_server_ua_meta_floors: $name → floors to the JS-UA ruling (no tv class)", async ({
+    content,
+  }) => {
+    stubNavigatorUserAgent(FAKE_DESKTOP_UA);
+    if (content !== undefined) {
+      setServerUaMeta(content);
+    }
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(false);
   });
 });
 
