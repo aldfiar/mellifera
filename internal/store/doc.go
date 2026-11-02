@@ -85,7 +85,8 @@
 //     symbol budget; primitive string signatures only (no new exported
 //     types), the store never parses an art value.
 //
-//   - InsertWatched/ListUnappliedWatched/ApplyTagWeights/ListTagWeights:
+//   - InsertWatched/ListWatched/ListUnappliedWatched/ApplyTagWeights/
+//     ListTagWeights:
 //     the recommendation-sorting control set (methods — outside the symbol
 //     budget; primitive signatures, no new exported types, the art.go
 //     precedent). watched_items is the completion ledger whose applied_at

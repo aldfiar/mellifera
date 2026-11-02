@@ -62,6 +62,12 @@ type namer struct {
 	// metadata block is composed: the DTOs stay byte-identical to the
 	// pre-projection wire.
 	chain []titleSourceBinding
+	// moduleID is the library row's bound module id, read beside the naming
+	// options by the SAME GetLibrary namerFor already runs (recommendation-
+	// sorting: the photo carve-out branches on it — one comparison, no new
+	// store read). "" (the empty namer's missing-library floor, or a plain
+	// unit-test literal) is scored like any non-photo library.
+	moduleID string
 }
 
 // namerFor builds the namer for one library: GetLibrary carries the two
@@ -100,6 +106,7 @@ func (a *app) namerFor(ctx context.Context, libraryID int64) (namer, error) {
 		titleSources: pres.TitleSources,
 		langPrefs:    pres.LanguagePreference,
 		chain:        pres.SourceChain,
+		moduleID:     lib.ModuleID,
 	}, nil
 }
 

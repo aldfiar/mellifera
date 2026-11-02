@@ -43,6 +43,35 @@ ON CONFLICT(item_id) DO NOTHING`,
 	return nil
 }
 
+// ListWatched returns every completed watch's item id — the completion
+// ledger in FULL, regardless of applied_at (the scorer's completedness fact
+// must survive the janitor's stamp, unlike the learning queue's
+// applied-only view). Rows come back ordered by completed_at then item_id
+// for deterministic input; a ledger with no rows yields an empty non-nil
+// slice (the ListLibraries convention). The served score is derived at
+// read time (D2), so this is a plain read: no caller mutates the ledger
+// through it.
+func (s *Store) ListWatched(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT item_id FROM watched_items ORDER BY completed_at, item_id")
+	if err != nil {
+		return nil, fmt.Errorf("store: list watched: %w", err)
+	}
+	defer rows.Close()
+	itemIDs := make([]string, 0)
+	for rows.Next() {
+		var itemID string
+		if err := rows.Scan(&itemID); err != nil {
+			return nil, fmt.Errorf("store: list watched scan: %w", err)
+		}
+		itemIDs = append(itemIDs, itemID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list watched: %w", err)
+	}
+	return itemIDs, nil
+}
+
 // ListUnappliedWatched returns the learning queue: every completed watch
 // whose applied_at is still NULL — the derived-work posture (no jobs table;
 // the enrichment-queue precedent). Rows come back as ALIGNED parallel slices

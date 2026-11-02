@@ -1047,6 +1047,17 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
+	// The photo carve-out (recommendation-sorting, "Photo libraries keep
+	// path order regardless of score"): a photo-scanner-module library
+	// serves the store's order under the scored DEFAULT too — no computed
+	// score, tie-break, or default sort ever reorders its grid. One
+	// ModuleID comparison off the library row the namer already carries;
+	// the scoredServe block below never runs, so the wire carries no
+	// rec_score either. An explicit sort value still parses first, so an
+	// unknown sort stays a 400 on a photo library like anywhere else.
+	if n.moduleID == photoModuleID {
+		byPath = true
+	}
 	var items []store.Item
 	if byPath {
 		// The opt-out keeps today's exact contract: the store's own

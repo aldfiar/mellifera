@@ -3,8 +3,9 @@
 
 // The served-order composition (recommendation-sorting 3.1, design D6/D7):
 // the api composes one recs EntityState per browsable entity from BATCHED
-// store reads — one tag-weights read, one progress read, the listing's own
-// rows — feeds internal/recs, and serves score-desc with the alphabetical
+// store reads — one tag-weights read, one progress read, one watched-ledger
+// read, plus the listing's own rows — feeds internal/recs, and serves
+// score-desc with the alphabetical
 // floor. Scoring is read-time and never persisted; the score reaches the wire
 // solely as the additive rec_score field, so the ordering is observable. The
 // item listing runs D7's score-then-window: the FULL filtered set is read,
@@ -33,6 +34,16 @@ const (
 	// inside, none outside.
 	newEpisodeWindow = 30 * 24 * time.Hour
 
+	// photoModuleID is the photo-scanner module's registry id (the module
+	// seed's "image" row — internal/module/registry.go, media_type "image",
+	// display_name Photos): the ONE comparison behind the photo carve-out.
+	// A library whose row carries it never serves a computed order — the
+	// grid keeps the store's path order under the scored default, and no
+	// surface's score carries a context bonus for its items. The comparison
+	// is cheap by construction: the library row rides the namer the
+	// scored surfaces already read — no new store read.
+	photoModuleID = "image"
+
 	// itemsPage is the paging-loop page behind the full-set item read (D7):
 	// QueryItems has no unwindowed sentinel (limit <= 0 returns nil), so the
 	// handler walks its id-ordered pages. The RAM is one library's filtered
@@ -46,11 +57,13 @@ const (
 )
 
 // recsFacts is the batched-read scoring context one listing composes (D6):
-// the learned tag affinity and the positive-progress set. Two reads per
-// REQUEST, never per row — the anti-N+1 posture the composition is built on.
+// the learned tag affinity, the positive-progress set, and the completed
+// set off the watched ledger. Three reads per REQUEST, never per row — the
+// anti-N+1 posture the composition is built on.
 type recsFacts struct {
 	weights  recs.Weights
 	progress map[string]struct{}
+	watched  map[string]struct{}
 	// rows is the full positive-progress set the progress map was built
 	// from — the continue surface's scored rows (D7's score-then-window
 	// input there). The collection listings never read it; listProgress
@@ -58,11 +71,22 @@ type recsFacts struct {
 	rows []store.PlaybackProgress
 }
 
-// hasProgress reports the item's InProgress fact: a positive progress row
-// exists (ListProgress serves only position_seconds > 0 rows, joined to
-// non-deleted items — the store's own resume-point floor).
+// hasProgress reports the item's positive-progress fact (ListProgress
+// serves only position_seconds > 0 rows, joined to non-deleted items —
+// the store's own resume-point floor). Alone it is NOT the InProgress
+// tier: completed reports whether the watch finished.
 func (f recsFacts) hasProgress(itemID string) bool {
 	_, has := f.progress[itemID]
+	return has
+}
+
+// completed reports the item's watched-ledger fact: a watched_items row
+// exists — the watch reached its completion threshold. A completed item
+// keeps its positive progress row (the detector writes the ledger row
+// beside it, never deleting the position), so the resume bonus needs the
+// NOT-completed leg: inProgress = hasProgress && !completed.
+func (f recsFacts) completed(itemID string) bool {
+	_, has := f.watched[itemID]
 	return has
 }
 
@@ -89,7 +113,15 @@ func (a *app) recsFactsFor(ctx context.Context) (recsFacts, error) {
 	for _, p := range rows {
 		progress[p.ItemID] = struct{}{}
 	}
-	return recsFacts{weights: w, progress: progress, rows: rows}, nil
+	doneIDs, err := a.deps.Store.ListWatched(ctx)
+	if err != nil {
+		return recsFacts{}, err
+	}
+	watched := make(map[string]struct{}, len(doneIDs))
+	for _, id := range doneIDs {
+		watched[id] = struct{}{}
+	}
+	return recsFacts{weights: w, progress: progress, watched: watched, rows: rows}, nil
 }
 
 // parseSort reads a scored listing's sort opt-out (D7): absent/empty is the
@@ -129,26 +161,42 @@ func (a *app) allFilteredItems(ctx context.Context, libraryID int64, status, pat
 // scoreItems derives one recommendation score per item row, aligned with
 // items (D2/D3): the tags come through the namer chain over the winning
 // document (D1 — the series document for episodes, the item's own for
-// films/tv items), InProgress is the batched progress fact, and NewEpisode
-// marks an unwatched episode discovered in the window whose series is started
-// by the batched facts — the episode item IS the new episode, so the fresh
-// entry bubbles in the grid it serves.
+// films/tv items), InProgress is the positive-progress fact MINUS the
+// watched-ledger carve-out (a completed item keeps its progress row, so
+// the resume bonus needs hasProgress && !completed), and NewEpisode marks
+// an episode with neither a progress nor a watched row discovered in the
+// window whose series is started by the batched facts — started now means
+// progress OR watched (the spec's started-series definition). The episode
+// item IS the new episode, so the fresh entry bubbles in the grid it
+// serves.
+//
+// The photo carve-out branches here first: a photo-scanner-module library
+// (photoModuleID off the namer's already-read library row) scores ALL
+// ZEROS — one ModuleID comparison, no store read — so no surface scoring
+// through this composition (the grid, the single-item route, the continue
+// rail via scoreProgress) can carry a context bonus for a photo item. The
+// photo GRID's path order itself is enforced in listItems (the scoredServe
+// skip); zeroing here keeps every OTHER surface honest, since equal-zero
+// scores degrade to that surface's own recency/id floor.
 func scoreItems(n namer, items []store.Item, f recsFacts) []float64 {
+	scores := make([]float64, len(items))
+	if n.moduleID == photoModuleID {
+		return scores
+	}
 	started := make(map[string]bool)
 	for _, it := range items {
-		if f.hasProgress(it.ID) {
+		if f.hasProgress(it.ID) || f.completed(it.ID) {
 			if path := seriesPathOf(it); path != "" {
 				started[path] = true
 			}
 		}
 	}
-	scores := make([]float64, len(items))
 	for i, it := range items {
 		path := seriesPathOf(it)
-		watched := f.hasProgress(it.ID)
+		hasProgress, done := f.hasProgress(it.ID), f.completed(it.ID)
 		scores[i] = recs.Score(recs.EntityState{
-			InProgress: watched,
-			NewEpisode: path != "" && !watched && started[path] && time.Since(it.CreatedAt) <= newEpisodeWindow,
+			InProgress: hasProgress && !done,
+			NewEpisode: path != "" && !hasProgress && !done && started[path] && time.Since(it.CreatedAt) <= newEpisodeWindow,
 			Tags:       n.itemTags(it, path),
 		}, f.weights)
 	}
@@ -156,26 +204,35 @@ func scoreItems(n namer, items []store.Item, f recsFacts) []float64 {
 }
 
 // scoreSeries derives one recommendation score per series row, aligned with
-// srs, from the series' grouped episodes (D2/D3): a series is started when
-// any episode carries a progress row (the watched-row leg of the completed
-// carve-out lands with task 3.3's ledger read — under the progress facts a
-// started series is exactly an in-progress one), and the new-episode bonus
-// needs a started series carrying an unwatched episode discovered in the
-// window. An unstarted series never carries the bonus (D3). The tags are the
-// series document's own genres (D1).
+// srs, from the series' grouped episodes (D2/D3). Started means ANY episode
+// carries a progress OR watched row (the spec's started-series definition —
+// the watched ledger is the startedness leg the progress facts alone could
+// not see); the InProgress bonus needs an episode with a positive progress
+// row that has NOT completed (a fully-watched series keeps its progress rows
+// but carries no resume bonus — watched-to-the-end does not float); the
+// new-episode bonus needs the started series carrying an episode with
+// neither a progress nor a watched row discovered in the window. An
+// unstarted series never carries the bonus (D3). The tags are the series
+// document's own genres (D1). Photo libraries have no series rows (series
+// are serial-only), so no photo case exists here.
 func scoreSeries(n namer, srs []store.Series, eps map[string][]store.Item, f recsFacts) []float64 {
 	scores := make([]float64, len(srs))
 	for i, sr := range srs {
-		started, fresh := false, false
+		started, inProgress, fresh := false, false, false
 		for _, ep := range eps[sr.RelativePath] {
-			if f.hasProgress(ep.ID) {
+			hasProgress, done := f.hasProgress(ep.ID), f.completed(ep.ID)
+			if hasProgress || done {
 				started = true
-			} else if time.Since(ep.CreatedAt) <= newEpisodeWindow {
+			}
+			if hasProgress && !done {
+				inProgress = true
+			}
+			if !hasProgress && !done && time.Since(ep.CreatedAt) <= newEpisodeWindow {
 				fresh = true
 			}
 		}
 		scores[i] = recs.Score(recs.EntityState{
-			InProgress: started,
+			InProgress: inProgress,
 			NewEpisode: started && fresh,
 			Tags:       n.genresFor(sr.Document),
 		}, f.weights)
