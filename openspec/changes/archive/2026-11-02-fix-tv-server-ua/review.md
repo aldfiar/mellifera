@@ -33,3 +33,7 @@ Reviewer: wf-reviewer · 2026-11-02 · Range `git diff 918a03f..3d0ed10` (6 file
 - **git-check red by design** — 3 fix commits (209cb6b, 6f61490, 3d0ed10) unpushed + the untracked change folder `openspec/changes/fix-tv-server-ua/`. Session commits + pushes at close (fix-autodetect gate precedent). Not a task failure; the built-in git-check duty stays open until the close-time commit/push.
 
 Gate: **Approved** — Pending Fixes: git-check (close-time commit + push).
+
+## Archive approval
+
+Operator approved, 2026-11-02 (archive requested after live-deploy verification; the change claims were verified on the wire — injected meta echoed verbatim for the device UA, bundle swap confirmed).
