@@ -170,9 +170,10 @@ function readTvEnvironment(): TvEnvironment {
 // writeTvMode — the single writer of the `tv` class AND the --tv-dpr
 // physical-density var on <html> (tv-dpr-scaling 1.1): the class toggles
 // exactly as before, and a TV ruling also publishes window.devicePixelRatio
-// floored (the module's guarded posture — a non-number, non-finite, or
-// non-positive reading floors to 1) so the CSS ladder can scale physical
-// density; a desktop ruling removes the var entirely, leaving no residue
+// exactly as read (design D1: String(dpr), no rounding — a fractional dpr is
+// the truthful physical reading; the module's guarded posture — a
+// non-number, non-finite, or non-positive reading floors to 1) so the CSS
+// ladder can scale physical density; a desktop ruling removes the var entirely, leaving no residue
 // from a previous TV state. Module-private: applyTvMode and probeTvModel
 // are the only callers.
 function writeTvMode(on: boolean): void {
@@ -181,9 +182,7 @@ function writeTvMode(on: boolean): void {
   if (on) {
     const raw = window.devicePixelRatio;
     const dpr =
-      typeof raw === "number" && Number.isFinite(raw) && raw > 0
-        ? Math.floor(raw)
-        : 1;
+      typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : 1;
     root.style.setProperty("--tv-dpr", String(dpr));
   } else {
     root.style.removeProperty("--tv-dpr");

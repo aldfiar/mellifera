@@ -146,10 +146,11 @@ describe("tv shell block (tv-mode 5.1)", () => {
 
   it("pure viewport fractions stay raw — never wrapped in --tv-dpr (D3')", () => {
     // The unscaled set: padding, the poster-grid rule (its governing leg
-    // calc((100vh - chrome)) / 3) is dpr-invariant; wrapping the 120px floor
-    // leg to 240 CSS px at dpr 2 would invert the max() precedence and clip
-    // the second row), the outline offset, the status-chrome reserve and the
-    // img cap are pure fractions and stay byte-raw.
+    // calc((100vh - var(--tv-poster-chrome)) / 3) is dpr-invariant; wrapping
+    // the 120px floor leg to 240 CSS px at dpr 2 would invert the max()
+    // precedence and clip the second row), the outline offset, the
+    // status-chrome reserve and the img cap are pure fractions and stay
+    // byte-raw.
     expect(block).toContain("padding: 2.5vh 2.5vw");
     expect(block).toContain("--tv-poster-chrome: 12vh");
     expect(block).toContain("clamp(120px, 4vw, 240px)");

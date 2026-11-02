@@ -650,6 +650,14 @@ describe("applyTvMode — the --tv-dpr physical-density var", () => {
     expect(tvDprVar()).toBe("2");
   });
 
+  it("boot_dpr_var_exact_fractional: tv ruling at dpr 2.5 → var '2.5' (exact, no rounding)", async () => {
+    localStorage.setItem(TV_KEY, "on");
+    stubDevicePixelRatio(2.5);
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+    expect(tvDprVar()).toBe("2.5");
+  });
+
   it("boot_dpr_var_floors_without_stub: tv ruling with no dpr stub → var '1'", async () => {
     localStorage.setItem(TV_KEY, "on");
     await applyTvMode();
