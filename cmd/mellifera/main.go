@@ -361,14 +361,16 @@ func main() {
 			}
 			return retryFailedPack(ctx, st, enrichQueue.EnqueuePack, row, cfg.optInCodecs)
 		},
-		// Stop-frame re-grab (continue-nextup-media D-1..D-4): the watch-event
-		// seam — a per-item debounced, request-detached re-grab of the
-		// frame-grabber thumbnail at the viewer's stop position. The JPEG
-		// overwrites the same deterministic path, so there is NO document
-		// write and NO enrich round-trip (grabbed_at stays stale by design);
-		// every executor failure is log-and-skip — progress is never
-		// load-bearing and the PUT response never carries it.
-		OnProgress: newThumbRegrab(st, mgr),
+		// Watch-event seam, fanned out (continue-nextup-media D-1..D-4 +
+		// recommendation-sorting D4): leg 1 is the per-item debounced,
+		// request-detached stop-frame re-grab of the frame-grabber thumbnail —
+		// the JPEG overwrites the same deterministic path, so there is NO
+		// document write and NO enrich round-trip (grabbed_at stays stale by
+		// design). Leg 2 is the watch detector — a synchronous, idempotent
+		// watched_items insert at ≥ 90% of the stored ffprobe duration, then a
+		// recs-janitor wake poke. Both legs are log-and-skip: progress is
+		// never load-bearing and the PUT response never carries either.
+		OnProgress: fanOut(newThumbRegrab(st, mgr), newWatchDetect(st)),
 		// Watch defaults (watch-flow-polish): the auto-next countdown seconds
 		// GET /api/v1/watch-defaults serves verbatim. The env knob follows the
 		// envInt pattern — default 10, floored at 1 so a non-positive value can
