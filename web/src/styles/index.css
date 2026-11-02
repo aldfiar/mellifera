@@ -667,10 +667,12 @@ body.side-open .app-content {
    above stays byte-identical. D3 is absolute — every size here is a vw/vh
    clamp, never a bare fixed px: the same panel reports 960x540 at dpr 2 and
    3840x2160 at dpr 1, so a fixed-px tv theme is physically quarter-size on
-   the latter. The dpr law (tv-dpr-scaling D3'): px-bearing size clamps scale
-   by --tv-dpr — tvmode.ts sets the floored devicePixelRatio on the root, and
-   px legs resolve against physical pixels, so unwrapped they quarter-size on
-   a dpr-2 panel. Pure viewport fractions (vh/vw-only values) are already
+   the latter. The dpr law (tv-dpr-scaling D2, field-verdict amendment): the
+   px legs of size clamps are READABILITY FLOORS in CSS px — at a higher dpr
+   the same physical minimum is fewer CSS px, so the floor legs DIVIDE by
+   --tv-dpr (tvmode.ts sets the floored devicePixelRatio on the root) while
+   the vw/vh fraction legs stay raw. Pure viewport fractions (vh/vw-only
+   values) are already
    dpr-invariant and NEVER wrap — in particular the poster-grid rule, whose
    governing leg calc((100vh - var(--tv-poster-chrome)) / 3) would have its
    max() precedence inverted by a wrapped floor. web/src/lib/tvCssContract.test.ts pins this block's text (the
@@ -686,9 +688,10 @@ body.side-open .app-content {
 
 html.tv {
   /* Root type: scales with the REPORTED CSS viewport (never a device-
-     resolution claim), floored/capped for legibility. The px clamp legs
-     scale by --tv-dpr; the vw leg is a pure fraction and does not. */
-  font-size: calc(clamp(16px, 1.05vw, 30px) * var(--tv-dpr, 1));
+     resolution claim), floored/capped for legibility. The px clamp legs are
+     readability floors — ÷ --tv-dpr (the same physical minimum is fewer CSS
+     px at a higher dpr); the vw leg stays the raw designed fraction. */
+  font-size: clamp(calc(16px / var(--tv-dpr, 1)), 1.05vw, calc(30px / var(--tv-dpr, 1)));
 }
 
 /* Overscan-safe shell: 2.5vw / 2.5vh (the settled D3 value) keeps every
@@ -702,9 +705,12 @@ html.tv .app-content {
 
 /* Content cap lifted: pages carry max-w-5xl / max-w-6xl utilities (1024 /
    1152px) on their mains; a tv viewport spans the sofa, so the cap widens
-   to min(92vw, 1800px). Higher specificity than the single-class utilities. */
+   to min(92vw, 1800px). Higher specificity than the single-class utilities.
+   NOT dpr-wrapped (field-verdict amendment): the px term is a layout cap,
+   not a readability floor — dividing it would strangle wide viewports, and
+   multiplying it was inert there. */
 html.tv main {
-  max-width: calc(min(92vw, 1800px) * var(--tv-dpr, 1));
+  max-width: min(92vw, 1800px);
 }
 
 /* Collection header collapses to ONE line in tv — the chrome the poster
@@ -736,18 +742,19 @@ html.tv .series-poster-grid {
    the locked accent idiom's focus color — because at 3 m there is no hover
    and a focus that shows only on :hover is a focus that never shows. */
 html.tv :focus-visible {
-  outline: calc(clamp(2px, 0.2vw, 5px) * var(--tv-dpr, 1)) solid hsl(var(--ring));
+  outline: clamp(calc(2px / var(--tv-dpr, 1)), 0.2vw, calc(5px / var(--tv-dpr, 1))) solid hsl(var(--ring));
   outline-offset: clamp(2px, 0.2vw, 4px);
 }
 
 /* Persistent reveal rides BOTH the (pointer: coarse) block above AND html.tv:
    TV Chrome reports pointer: fine, so the coarse block never fires there and
    the ⋯ / gear triggers would stay hover-gated without this twin. Same >=40px
-   hit target — floored at 40px, viewport-scaled above it. */
+   physical hit target — the ÷dpr floor keeps the 40px minimum physical, and
+   the raw vw fraction scales above it. */
 html.tv .cardact-trigger {
   opacity: 1;
-  width: calc(clamp(40px, 2.5vw, 64px) * var(--tv-dpr, 1));
-  height: calc(clamp(40px, 2.5vw, 64px) * var(--tv-dpr, 1));
+  width: clamp(calc(40px / var(--tv-dpr, 1)), 2.5vw, calc(64px / var(--tv-dpr, 1)));
+  height: clamp(calc(40px / var(--tv-dpr, 1)), 2.5vw, calc(64px / var(--tv-dpr, 1)));
 }
 
 /* Immersive photo stage (tv-mode 5.2): the photo ALWAYS fits the viewport

@@ -91,10 +91,10 @@ const SIZE_PROPS = new Set([
 describe("tv shell block (tv-mode 5.1)", () => {
   const block = readTvBlock();
 
-  it("root type is the viewport clamp scaled by --tv-dpr on html.tv", () => {
+  it("root type is the viewport clamp with per-leg ÷dpr floors on html.tv", () => {
     expect(block).toContain("html.tv {");
     expect(block).toContain(
-      "font-size: calc(clamp(16px, 1.05vw, 30px) * var(--tv-dpr, 1))",
+      "font-size: clamp(calc(16px / var(--tv-dpr, 1)), 1.05vw, calc(30px / var(--tv-dpr, 1)))",
     );
   });
 
@@ -103,15 +103,14 @@ describe("tv shell block (tv-mode 5.1)", () => {
     expect(block).toContain("padding: 2.5vh 2.5vw");
   });
 
-  it("content cap is lifted to min(92vw, 1800px), scaled by --tv-dpr", () => {
-    expect(block).toContain(
-      "max-width: calc(min(92vw, 1800px) * var(--tv-dpr, 1))",
-    );
+  it("content cap stays the shipped raw min(92vw, 1800px) — a layout cap, never dpr-wrapped", () => {
+    expect(block).toContain("max-width: min(92vw, 1800px)");
+    expect(block).not.toContain("max-width: calc(min(92vw, 1800px)");
   });
 
-  it("focus ring is the clamp scaled by --tv-dpr; the offset stays a raw fraction", () => {
+  it("focus ring is the clamp with per-leg ÷dpr floors; the offset stays a raw fraction", () => {
     expect(block).toContain(
-      "outline: calc(clamp(2px, 0.2vw, 5px) * var(--tv-dpr, 1)) solid hsl(var(--ring))",
+      "outline: clamp(calc(2px / var(--tv-dpr, 1)), 0.2vw, calc(5px / var(--tv-dpr, 1))) solid hsl(var(--ring))",
     );
     expect(block).toContain("outline-offset: clamp(2px, 0.2vw, 4px)");
   });
@@ -137,10 +136,10 @@ describe("tv shell block (tv-mode 5.1)", () => {
     expect(block).toContain("html.tv .cardact-trigger {");
     expect(block).toContain("opacity: 1");
     expect(block).toContain(
-      "width: calc(clamp(40px, 2.5vw, 64px) * var(--tv-dpr, 1))",
+      "width: clamp(calc(40px / var(--tv-dpr, 1)), 2.5vw, calc(64px / var(--tv-dpr, 1)))",
     );
     expect(block).toContain(
-      "height: calc(clamp(40px, 2.5vw, 64px) * var(--tv-dpr, 1))",
+      "height: clamp(calc(40px / var(--tv-dpr, 1)), 2.5vw, calc(64px / var(--tv-dpr, 1)))",
     );
   });
 
@@ -159,19 +158,14 @@ describe("tv shell block (tv-mode 5.1)", () => {
     expect(block).toContain(
       "max-height: calc(100vh - var(--tv-status-chrome)) !important",
     );
-    // Bidirectional drift guard: EXACTLY the px-bearing size props carry the
-    // wrap — a wrap drifting into a fraction rule (or vice versa) fails here.
+    // Bidirectional drift guard: EXACTLY the px-floored size props carry the
+    // ÷dpr legs (max-width is a layout cap and stays OUT of the set) — a leg
+    // drifting into a fraction rule (or vice versa) fails here.
     const wrappedProps = declarationsOf(block)
       .filter((d) => d.value.includes("--tv-dpr"))
       .map((d) => d.prop)
       .sort();
-    expect(wrappedProps).toEqual([
-      "font-size",
-      "height",
-      "max-width",
-      "outline",
-      "width",
-    ]);
+    expect(wrappedProps).toEqual(["font-size", "height", "outline", "width"]);
   });
 
   it("photo stage caps at calc(100vh - the status line var), replacing the desktop 136px chrome", () => {
