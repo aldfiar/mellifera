@@ -7,8 +7,10 @@
 // touch, guarded like lib/auth.ts so an unavailable or corrupt store floors
 // to "auto" — the autodetect default — never a crash.
 //
-// The ladder (design D2): STRONG markers (SmartTV, BRAVIA, AFT\d, KFT, Silk,
-// Leanback, or a model hint matching them) detect a TV decisively — no
+// The ladder (design D2): STRONG markers (the Smart-TV family — spaced,
+// underscored, hyphenated, or compound, case-insensitive — plus BRAVIA,
+// AFT\d, KFT, Silk, Leanback, or a model hint matching them) detect a TV
+// decisively — no
 // geometry needed. The generic "TV" token is WEAK: it detects a TV only when
 // corroboration also holds (≥16:9 aspect AND innerHeight ≤ 600 CSS px AND
 // maxTouchPoints === 0). Corroboration alone NEVER enables tv mode — an
@@ -42,7 +44,7 @@ export interface TvEnvironment {
 // hint (design D2). A single hit answers the ladder outright; corroboration
 // is not consulted and cannot vote the decision away.
 const STRONG_MARKERS: RegExp[] = [
-  /SmartTV/,
+  /smart[\s_-]*tv/i,
   /BRAVIA/,
   /AFT\d/,
   /KFT/,
@@ -52,8 +54,8 @@ const STRONG_MARKERS: RegExp[] = [
 
 // WEAK_TV_TOKEN — the generic "TV" token: not decisive on its own, and never
 // sufficient with corroboration either — it only upgrades corroboration into
-// a TV ruling. Word-bounded, so "SmartTV" (already strong) is not doubly
-// matched and "PortalTV"-style compounds do not fire.
+// a TV ruling. Word-bounded, so the Smart-TV variants (already strong) are
+// not doubly matched and "PortalTV"-style compounds do not fire.
 const WEAK_TV_TOKEN = /\bTV\b/;
 
 // corroboratesTvShape — the geometry half of the weak path: a wide (≥16:9,

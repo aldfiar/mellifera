@@ -14,22 +14,27 @@ import {
 // tv-mode 1.1 — table-driven vectors over the settled detection ladder
 // (design D2) and the override law. Every ladder row has a vector: each
 // strong marker under HOSTILE geometry (wide, tall, touchy — decisiveness
-// needs no corroboration), the weak "TV" token with and without each
-// corroboration leg, corroboration alone on an unmarked user agent, and the
-// override beating detection both ways. The dpr shapes of design D3 are
-// pinned at their reported viewports: the dpr-2 1080p panel (960×540) sits
-// inside corroboration; the dpr-1 4K panel (3840×2160) passes the exact-16:9
-// aspect leg but is too tall for the short leg, so the WEAK path cannot
-// claim it — the strong markers still do, geometry-free.
+// needs no corroboration), the widened Smart-TV family variants — spaced /
+// hyphenated / underscored / uppercased, plus a spaced model hint, against
+// a lookalike desktop negative (fix-autodetect 1.1) — the weak "TV" token
+// with and without each corroboration leg, corroboration alone on an
+// unmarked user agent, and the override beating detection both ways. The
+// dpr shapes of design D3 are pinned at their reported viewports: the dpr-2
+// 1080p panel (960×540) sits inside corroboration; the dpr-1 4K panel
+// (3840×2160) passes the exact-16:9 aspect leg but is too tall for the
+// short leg, so the WEAK path cannot claim it — the strong markers still
+// do, geometry-free.
 
 // DESKTOP_UA — no TV token of any kind: the corroboration-alone baseline.
 const DESKTOP_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-// WEAK_TV_UA — carries the generic "TV" token ("Smart TV" with the space is
-// NOT the strong "SmartTV" marker) and no strong marker at all.
+// WEAK_TV_UA — carries ONLY the generic word-bounded "TV" token and no
+// Smart-TV variant of any separator: after fix-autodetect 1.1 the widened
+// strong marker (/smart[\s_-]*tv/i) admits even the spaced "Smart TV"
+// string, so the weak-path vectors need a bare TV-token fixture.
 const WEAK_TV_UA =
-  "Mozilla/5.0 (Linux; Smart TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Linux; Android 9; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.0.0 Safari/537.36";
 
 // env — the ladder input builder. The defaults are a HOSTILE desktop shape
 // (wide, tall, touchy): any detection a vector reads off these defaults is
@@ -92,6 +97,41 @@ describe("detectTvEnvironment — the strong markers are decisive (D2)", () => {
     expect(
       detectTvEnvironment(
         env({ model, innerWidth: 960, innerHeight: 540, maxTouchPoints: 0 }),
+      ),
+    ).toBe(false);
+  });
+});
+
+// fix-autodetect 1.1 — the widened Smart-TV marker (/smart[\s_-]*tv/i)
+// across its separator and case variants, and the widening stays narrow: a
+// lookalike desktop UA at a full-HD zero-touch shape is still desktop.
+describe("detectTvEnvironment — the Smart-TV family variants (fix-autodetect 1.1)", () => {
+  it.each([
+    {
+      name: 'uppercase "SMART TV"',
+      ua: "Mozilla/5.0 (Linux; SMART TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.0.0 Safari/537.36",
+    },
+    {
+      name: 'hyphen "Smart-TV"',
+      ua: "Mozilla/5.0 (Linux; Smart-TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.0.0 Safari/537.36",
+    },
+    {
+      name: 'underscore "Smart_TV"',
+      ua: "Mozilla/5.0 (Linux; Smart_TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.0.0 Safari/537.36",
+    },
+    {
+      name: 'spaced "Smart TV Pro" as the model hint on a desktop UA — the async probe path',
+      model: "Smart TV Pro",
+    },
+  ])("family_variant_detects_decisively: $name", ({ ua, model }) => {
+    // Hostile geometry: the family hit alone must rule TV.
+    expect(detectTvEnvironment(env({ userAgent: ua, model }))).toBe(true);
+  });
+
+  it("family_widening_stays_narrow: a plain desktop UA at full-HD zero touch stays desktop", () => {
+    expect(
+      detectTvEnvironment(
+        env({ userAgent: DESKTOP_UA, innerWidth: 1920, innerHeight: 1080, maxTouchPoints: 0 }),
       ),
     ).toBe(false);
   });
@@ -197,6 +237,54 @@ describe("detectTvEnvironment — the dpr shapes (D3)", () => {
     expect(
       detectTvEnvironment(
         env({ userAgent: ua ?? WEAK_TV_UA, innerWidth, innerHeight, maxTouchPoints: 0 }),
+      ),
+    ).toBe(want);
+  });
+});
+
+// REAL_TV_UA — the operator's actual TV box (server access log, 2 Nov): an
+// Android WebView Yandex Browser TV "lite". Its device string is "Smart TV
+// Pro" — SPACED. The original /SmartTV/ compound marker never hit it, the
+// ladder fell to the weak path and died on the short leg at the dpr-1
+// 1080p shape (~1080px CSS height > 600); the async probe shared the same
+// blind spot over the model hint. fix-autodetect 1.1 widened the marker to
+// /smart[\s_-]*tv/i, so the spaced family — in the UA and in the model
+// hint alike — now resolves decisively, geometry-free. These rows are the
+// fix's regression anchors: expectations unchanged, all green.
+const REAL_TV_UA =
+  "Mozilla/5.0 (Linux; Android 14; Smart TV Pro Build/UTT2.250416.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/156.0.8078.47 YaBrowser/26.8.1.703 (lite) TV Safari/537.36";
+
+describe("detectTvEnvironment — the REAL device (Smart TV Pro / YaBrowser TV lite)", () => {
+  it.each([
+    {
+      name: "REAL UA, dpr-1 1080p shape (1920×1080, zero touch) — a TV must resolve TV",
+      innerWidth: 1920,
+      innerHeight: 1080,
+      want: true,
+    },
+    {
+      name: "REAL UA, dpr-2 1080p shape (960×540, zero touch) — corroboration holds",
+      innerWidth: 960,
+      innerHeight: 540,
+      want: true,
+    },
+    {
+      name: "REAL model hint 'Smart TV Pro' (spaced) on the 1080p shape — the probe path",
+      model: "Smart TV Pro",
+      innerWidth: 1920,
+      innerHeight: 1080,
+      want: true,
+    },
+  ])("real_device: $name", ({ model, innerWidth, innerHeight, want }) => {
+    expect(
+      detectTvEnvironment(
+        env({
+          userAgent: REAL_TV_UA,
+          model,
+          innerWidth,
+          innerHeight,
+          maxTouchPoints: 0,
+        }),
       ),
     ).toBe(want);
   });
