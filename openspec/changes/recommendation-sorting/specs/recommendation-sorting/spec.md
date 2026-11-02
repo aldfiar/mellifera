@@ -131,8 +131,11 @@ SHALL serve an additive `rec_score` per row and order score descending then
 `updated_at` descending, with `sort=recent` restoring pure recency. Series,
 item, and progress DTOs SHALL carry `rec_score,omitempty` so the ordering is
 observable. The per-series episode table SHALL keep its narrative order, and
-image libraries SHALL keep path order — recommendation ordering applies to
-collection grids, the continue rail, and next up only.
+image libraries SHALL keep path order regardless of any computed score — a
+library served by a photo-scanner module SHALL always serve path order,
+whatever the score model computes (the carve-out holds by mechanism, not by
+tie-break accident), and recommendation ordering applies to collection
+grids, the continue rail, and next up only.
 
 #### Scenario: A started serial with a new episode tops the grid
 
@@ -147,3 +150,10 @@ collection grids, the continue rail, and next up only.
   with weighted tags and a barely-started film with none
 - **THEN** the served order places the series' row first by rec_score and
   the tie case falls back to recency
+
+#### Scenario: Photo libraries keep path order regardless of score
+
+- **WHEN** a photo-scanner-module library is listed under the scored
+  default, whatever scores its items carry
+- **THEN** the served order is path order — no computed score, tie-break,
+  or default sort ever reorders a photo library's grid
