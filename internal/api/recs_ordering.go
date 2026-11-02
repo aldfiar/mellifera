@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/mellifera/mellifera/internal/recs"
@@ -50,6 +51,11 @@ const (
 type recsFacts struct {
 	weights  recs.Weights
 	progress map[string]struct{}
+	// rows is the full positive-progress set the progress map was built
+	// from — the continue surface's scored rows (D7's score-then-window
+	// input there). The collection listings never read it; listProgress
+	// serves from it so its page cut lands AFTER the score order.
+	rows []store.PlaybackProgress
 }
 
 // hasProgress reports the item's InProgress fact: a positive progress row
@@ -83,22 +89,23 @@ func (a *app) recsFactsFor(ctx context.Context) (recsFacts, error) {
 	for _, p := range rows {
 		progress[p.ItemID] = struct{}{}
 	}
-	return recsFacts{weights: w, progress: progress}, nil
+	return recsFacts{weights: w, progress: progress, rows: rows}, nil
 }
 
-// parseSort reads the collection listing's sort opt-out (D7): absent/empty is
-// the scored default; "path" restores today's store order. Any other value is
+// parseSort reads a scored listing's sort opt-out (D7): absent/empty is the
+// scored default; optOut restores today's store order ("path" on the
+// collection listings, "recent" on the continue surface). Any other value is
 // a bad request — a silently ignored sort value would serve an order the
 // client cannot reason about (the progress rail's stricter-parse precedent).
-func parseSort(r *http.Request) (byPath bool, bad string) {
+func parseSort(r *http.Request, optOut string) (opted bool, bad string) {
 	switch r.URL.Query().Get("sort") {
 	case "":
-	case "path":
-		byPath = true
+	case optOut:
+		opted = true
 	default:
-		bad = `sort must be "path" (the only opt-out; omit it for the scored default)`
+		bad = `sort must be "` + optOut + `" (the only opt-out; omit it for the scored default)`
 	}
-	return byPath, bad
+	return opted, bad
 }
 
 // allFilteredItems reads the FULL filtered item set (D7's score-then-window
@@ -279,4 +286,74 @@ func scoredServe[T any](rows []T, scores []float64, id func(T) string, name func
 		set(&out[i], e.Score)
 	}
 	return out
+}
+
+// progressScored is one continue-surface row with its derived score — the
+// pair orderByScoreRecency sorts.
+type progressScored struct {
+	row   store.PlaybackProgress
+	score float64
+}
+
+// orderByScoreRecency reorders progress rows into the continue surface's
+// served order (D7): score descending, then updated_at descending — recency,
+// NOT recs.Order's alphabetical floor (this surface's tiebreak is the stamp,
+// compared lexically: the exact order the store's own read serves and
+// sort=recent restores, over the same formatTime stamps) — item id as the
+// deterministic last floor. The comparator is total, so the unstable sort is
+// deterministic.
+func orderByScoreRecency(entries []progressScored) {
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].score != entries[j].score {
+			return entries[i].score > entries[j].score
+		}
+		if entries[i].row.UpdatedAt != entries[j].row.UpdatedAt {
+			return entries[i].row.UpdatedAt > entries[j].row.UpdatedAt
+		}
+		return entries[i].row.ItemID < entries[j].row.ItemID
+	})
+}
+
+// scoreProgress derives one recommendation score per progress row, aligned
+// with rows (D7), through the SAME scoreItems composition the item listing
+// uses: every listed row IS a resume point — the positive-progress fact is
+// true by construction, so InProgress (the resume bonus, the point of this
+// surface) holds and NewEpisode is impossible (D3's bonus needs an episode
+// with NO progress row) — and the tags ride the item's genres via itemTags.
+// The namer is per-library and rows may span libraries, so each row scores
+// under its own item's library namer, built once per distinct library. The
+// item rows ride per-row point reads: the store has no batched items-by-id
+// read, and the one-row-per-item upsert contract bounds the walk.
+func (a *app) scoreProgress(ctx context.Context, rows []store.PlaybackProgress, f recsFacts) ([]float64, error) {
+	items := make([]store.Item, len(rows))
+	byLib := make(map[int64][]int, len(rows))
+	for i, row := range rows {
+		it, err := a.deps.Store.GetItem(ctx, row.ItemID)
+		if err != nil {
+			return nil, err
+		}
+		items[i] = it
+		byLib[it.LibraryID] = append(byLib[it.LibraryID], i)
+	}
+	namers := make(map[int64]namer, len(byLib))
+	scores := make([]float64, len(rows))
+	for libID, idx := range byLib {
+		n, ok := namers[libID]
+		if !ok {
+			var err error
+			if n, err = a.namerFor(ctx, libID); err != nil {
+				return nil, err
+			}
+			namers[libID] = n
+		}
+		lib := make([]store.Item, len(idx))
+		for j, i := range idx {
+			lib[j] = items[i]
+		}
+		libScores := scoreItems(n, lib, f)
+		for j, i := range idx {
+			scores[i] = libScores[j]
+		}
+	}
+	return scores, nil
 }

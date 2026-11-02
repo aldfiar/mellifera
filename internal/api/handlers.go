@@ -256,11 +256,15 @@ type progressRequest struct {
 
 // progressDTO is the ONE wire shape for a stored playback position (no
 // store.PlaybackProgress leaked — INV4): the item id, integer seconds, and
-// the raw RFC3339 stamp as persisted.
+// the raw RFC3339 stamp as persisted. RecScore is the additive recommendation
+// score (recommendation-sorting D7), stamped only under the scored default —
+// sort=recent serves unscored, and omitempty keeps the field off the wire
+// there.
 type progressDTO struct {
-	ItemID          string `json:"item_id"`
-	PositionSeconds int64  `json:"position_seconds"`
-	UpdatedAt       string `json:"updated_at"`
+	ItemID          string  `json:"item_id"`
+	PositionSeconds int64   `json:"position_seconds"`
+	UpdatedAt       string  `json:"updated_at"`
+	RecScore        float64 `json:"rec_score,omitempty"`
 }
 
 // progressListResponse is the wire shape for GET /api/v1/progress.
@@ -784,18 +788,28 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toProgressDTO(rec))
 }
 
-// listProgress: parse ?limit → store.ListProgress → write progressListResponse.
-// One domain call. limit defaults to progressDefaultLimit and clamps to
+// listProgress: parse ?limit + ?sort → store reads → write
+// progressListResponse. limit defaults to progressDefaultLimit and clamps to
 // progressMaxLimit; a present non-positive or non-integer limit is 400
 // bad_request (stricter than the item tables' parsePagination, whose silent
 // fallbacks fit admin paging but not a user-facing rail). The store read is
 // orphan-tolerant and positive-positions-only, so the handler does no shaping.
 //
+// Ordering (recommendation-sorting D7): the scored default orders score-desc
+// then updated_at-desc — score-then-window, like the item listing: the FULL
+// positive set is read (recsFactsFor's own batched read; the table holds one
+// row per item), scored through the same scoreItems composition, ordered,
+// and THEN cut to limit, so a high scorer can never fall behind the recency
+// window. ?sort=recent restores today's order byte-for-byte: the store's own
+// updated_at-desc SQL window, unscored (rec_score omitted). An unknown sort
+// is 400 (the same parse posture as the collection listings).
+//
 // @Summary      Recent playback positions (Continue rail)
 // @Tags         progress
 // @ID           list-progress
 // @Router       /progress [get]
-// @Param        limit query int false "page size (default 20, max 100)"
+// @Param        limit query int    false "page size (default 20, max 100)"
+// @Param        sort  query string false "sort=recent restores updated_at order (default: recommendation score order, rec_score desc then recency)"
 // @Success      200 {object} progressListResponse
 // @Failure      400 {object} errorBody
 // @Failure      500 {object} errorBody
@@ -809,21 +823,62 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, progressMaxLimit)
 	}
-	recs, err := a.deps.Store.ListProgress(r.Context(), limit)
+	recent, bad := parseSort(r, "recent")
+	if bad != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
+		return
+	}
+	if recent {
+		// The opt-out keeps today's exact contract: the store's own recency
+		// window, unscored.
+		recs, err := a.deps.Store.ListProgress(r.Context(), limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		dtos := make([]progressDTO, len(recs))
+		for i, rec := range recs {
+			dtos[i] = toProgressDTO(rec)
+		}
+		writeJSON(w, http.StatusOK, progressListResponse{Items: dtos})
+		return
+	}
+	// The scored default (D7 score-then-window): recsFactsFor already carries
+	// the full positive set it built the progress facts from — no second
+	// read. Score, order score-desc/recency, THEN cut the page.
+	facts, err := a.recsFactsFor(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dtos := make([]progressDTO, len(recs))
-	for i, rec := range recs {
-		dtos[i] = toProgressDTO(rec)
+	scores, err := a.scoreProgress(r.Context(), facts.rows, facts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	entries := make([]progressScored, len(facts.rows))
+	for i, row := range facts.rows {
+		entries[i] = progressScored{row: row, score: scores[i]}
+	}
+	orderByScoreRecency(entries)
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	dtos := make([]progressDTO, len(entries))
+	for i, e := range entries {
+		dtos[i] = toProgressDTO(e.row)
+		dtos[i].RecScore = e.score
 	}
 	writeJSON(w, http.StatusOK, progressListResponse{Items: dtos})
 }
 
 // getProgress: parse {item_id} → store.GetProgress → write progressDTO. One
-// domain call. An absent record OR an item that no longer exists is 404
-// not_found — the store read JOINs to items, so orphaned rows never surface.
+// domain call plus the additive rec_score (recommendation-sorting D7): the
+// entity scores through the same composition as the list — scoreItems over
+// the batched facts under the item's library namer — so the single record
+// carries the same score its row serves. An absent record OR an item that no
+// longer exists is 404 not_found — the store read JOINs to items, so
+// orphaned rows never surface.
 //
 // @Summary      Get one item's stored playback position
 // @Tags         progress
@@ -844,7 +899,29 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusOK, toProgressDTO(rec))
+	// The additive score (D7): the record's item row and the item's library
+	// namer plus the batched facts — the same reads the scored list composes,
+	// scoped to the one entity. The stored zero position (a valid "back to
+	// start") is not in the positive-progress set, so it scores on tags alone
+	// — the InProgress fact is the positive row, exactly as everywhere else.
+	it, err := a.deps.Store.GetItem(r.Context(), itemID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	n, err := a.namerFor(r.Context(), it.LibraryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	facts, err := a.recsFactsFor(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dto := toProgressDTO(rec)
+	dto.RecScore = scoreItems(n, []store.Item{it}, facts)[0]
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // deleteLibrary: parse {id} → store.DeleteLibrary → 204. One domain call.
@@ -952,7 +1029,7 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
 	}
-	byPath, bad := parseSort(r)
+	byPath, bad := parseSort(r, "path")
 	if bad != "" {
 		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
@@ -1322,7 +1399,7 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "library query param must be an integer", false)
 		return
 	}
-	byPath, bad := parseSort(r)
+	byPath, bad := parseSort(r, "path")
 	if bad != "" {
 		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
