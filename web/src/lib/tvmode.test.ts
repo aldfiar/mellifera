@@ -614,3 +614,88 @@ describe("applyTvMode — the boot apply (the ThemeToggle.tsx idiom)", () => {
     expect(document.documentElement.classList.contains("tv")).toBe(false);
   });
 });
+
+// tv-dpr-scaling 1.1 — the --tv-dpr physical-density var, exercised ONLY
+// through the exported applyTvMode boot chain (the var has no second writer:
+// the sync toggle and the upgrade-only probe tail both land in writeTvMode).
+// dpr is stubbed the same way the UA is above — an own configurable property
+// shadowing the prototype getter — and the floor law (non-number, non-finite,
+// non-positive → 1; jsdom-undefined floors to 1) gets its own rows.
+describe("applyTvMode — the --tv-dpr physical-density var", () => {
+  function stubDevicePixelRatio(value: number): void {
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value,
+    });
+  }
+
+  function tvDprVar(): string {
+    return document.documentElement.style.getPropertyValue("--tv-dpr");
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, "devicePixelRatio");
+    Reflect.deleteProperty(navigator, "userAgent");
+    Reflect.deleteProperty(navigator, "userAgentData");
+    localStorage.removeItem(TV_KEY);
+    document.documentElement.style.removeProperty("--tv-dpr");
+    document.documentElement.classList.remove("tv");
+  });
+
+  it("boot_dpr_var_set_on_tv_ruling: tv ruling at dpr 2 → the class AND var '2'", async () => {
+    localStorage.setItem(TV_KEY, "on");
+    stubDevicePixelRatio(2);
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+    expect(tvDprVar()).toBe("2");
+  });
+
+  it("boot_dpr_var_floors_without_stub: tv ruling with no dpr stub → var '1'", async () => {
+    localStorage.setItem(TV_KEY, "on");
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+    expect(tvDprVar()).toBe("1");
+  });
+
+  it("boot_dpr_var_floors_at_zero: dpr 0 → var '1' (the floor row)", async () => {
+    localStorage.setItem(TV_KEY, "on");
+    stubDevicePixelRatio(0);
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+    expect(tvDprVar()).toBe("1");
+  });
+
+  it("boot_dpr_var_absent_on_desktop: desktop ruling → no tv class AND var ''", async () => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value: FAKE_DESKTOP_UA,
+    });
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(false);
+    expect(tvDprVar()).toBe("");
+  });
+
+  it("boot_dpr_var_follows_live_toggle: «Вкл» then «Выкл» → var set then REMOVED", async () => {
+    stubDevicePixelRatio(2);
+    localStorage.setItem(TV_KEY, "on");
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+    expect(tvDprVar()).toBe("2");
+    localStorage.setItem(TV_KEY, "off");
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(false);
+    expect(tvDprVar()).toBe("");
+  });
+
+  it("boot_dpr_var_carried_by_probe_upgrade: auto-desktop + TV model probe at dpr 2 → class AND var '2'", async () => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value: FAKE_DESKTOP_UA,
+    });
+    stubUserAgentData({ model: "AFT7" });
+    stubDevicePixelRatio(2);
+    await applyTvMode();
+    expect(document.documentElement.classList.contains("tv")).toBe(true);
+    expect(tvDprVar()).toBe("2");
+  });
+});
