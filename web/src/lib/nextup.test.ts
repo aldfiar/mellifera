@@ -71,8 +71,18 @@ const SHOW = (libraryId: number, season: number, episode: number): ItemDTO =>
     doc({ seriesPath: "Show", season, episode }),
   );
 
-function progress(itemId: string, position: number, at: string): ProgressDTO {
-  return { item_id: itemId, position_seconds: position, updated_at: at };
+function progress(
+  itemId: string,
+  position: number,
+  at: string,
+  recScore?: number,
+): ProgressDTO {
+  return {
+    item_id: itemId,
+    position_seconds: position,
+    updated_at: at,
+    ...(recScore !== undefined ? { rec_score: recScore } : {}),
+  };
 }
 
 // seriesRow — a SeriesDTO fixture: the row the (library, series path) key
@@ -180,6 +190,23 @@ describe("moved_core_parity", () => {
       records: [progress("itm_gone", 10, "2026-10-07T18:00:00Z")],
       itemById: new Map<string, ItemDTO>(),
       want: [],
+    },
+    {
+      name: "carries the best served rec_score across a series' rows; a score-less wire leaves it undefined",
+      records: [
+        progress("itm_1_s1e3", 10, "2026-10-07T18:00:00Z", 4.5),
+        progress("itm_1_s1e1", 10, "2026-10-06T18:00:00Z", 2),
+        progress("itm_2_s2e1", 10, "2026-10-05T18:00:00Z"),
+      ],
+      itemById: new Map<string, ItemDTO>([
+        ["itm_1_s1e3", SHOW(1, 1, 3)],
+        ["itm_1_s1e1", SHOW(1, 1, 1)],
+        ["itm_2_s2e1", SHOW(2, 2, 1)],
+      ]),
+      want: [
+        { libraryId: 1, seriesPath: "Show", season: 1, episode: 3, recScore: 4.5 },
+        { libraryId: 2, seriesPath: "Show", season: 2, episode: 1 },
+      ],
     },
   ])("startedSeries: $name", ({ records, itemById, want }) => {
     expect(startedSeries(records, itemById)).toEqual(want);
@@ -295,6 +322,33 @@ describe("moved_core_parity", () => {
         ["ser_1_show", [item("itm_broken", 1, doc({ seriesPath: "Show" }))]],
       ]),
       want: [],
+    },
+    {
+      name: "orders by the served rec_score, higher first — stable ties and score-less rows keep the served input order (D8, no client score model)",
+      started: [
+        { libraryId: 1, seriesPath: "Show", season: 1, episode: 1, recScore: 2 },
+        { libraryId: 2, seriesPath: "Other", season: 1, episode: 1, recScore: 9 },
+        { libraryId: 3, seriesPath: "Third", season: 1, episode: 1, recScore: 2 },
+        { libraryId: 4, seriesPath: "Bare", season: 1, episode: 1 },
+      ],
+      seriesByKey: new Map<string, SeriesDTO>([
+        ["1|Show", seriesRow("ser_1", 1, "Show")],
+        ["2|Other", seriesRow("ser_2", 2, "Other")],
+        ["3|Third", seriesRow("ser_3", 3, "Third")],
+        ["4|Bare", seriesRow("ser_4", 4, "Bare")],
+      ]),
+      episodesBySeriesId: new Map<string, ItemDTO[]>([
+        ["ser_1", [SHOW(1, 1, 2)]],
+        ["ser_2", [SHOW(2, 1, 2)]],
+        ["ser_3", [SHOW(3, 1, 2)]],
+        ["ser_4", [SHOW(4, 1, 2)]],
+      ]),
+      want: [
+        { item: SHOW(2, 1, 2), seriesId: "ser_2", title: "", label: "S01E02" },
+        { item: SHOW(1, 1, 2), seriesId: "ser_1", title: "", label: "S01E02" },
+        { item: SHOW(3, 1, 2), seriesId: "ser_3", title: "", label: "S01E02" },
+        { item: SHOW(4, 1, 2), seriesId: "ser_4", title: "", label: "S01E02" },
+      ],
     },
   ])(
     "nextUpEntries: $name",

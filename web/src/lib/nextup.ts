@@ -80,18 +80,24 @@ function tupleGt(a: EpisodeFacts, b: EpisodeFacts): boolean {
 }
 
 // StartedSeries — one touched series: the HIGHEST started (season, episode)
-// across its progress items (recency order comes from the progress list,
-// which the server returns newest-first).
+// across its progress items plus the series' SERVED rec_score (D8,
+// recommendation-sorting): the best score across its rows — under the served
+// score-desc list that is the row the server ranks the series by first; a
+// score-less wire (the sort=recent opt-out, an older server) leaves it
+// undefined. The score is ordering input only — it never renders.
 export interface StartedSeries {
   libraryId: number;
   seriesPath: string;
   season: number;
   episode: number;
+  recScore?: number;
 }
 
-// startedSeries — groups the progress list into touched series. tv-module
-// items (films) never enter — Next up is an episode concept; records whose
-// item has no parseable episode facts are skipped (the Next up fallback).
+// startedSeries — groups the progress list into touched series in SERVED
+// order (GET /progress default: rec_score desc, recency tiebreak — the SPA
+// consumes the served order, never a client re-sort). tv-module items (films)
+// never enter — Next up is an episode concept; records whose item has no
+// parseable episode facts are skipped (the Next up fallback).
 export function startedSeries(
   progress: ProgressDTO[],
   itemById: Map<string, ItemDTO>,
@@ -108,8 +114,20 @@ export function startedSeries(
     }
     const key = seriesKey(facts);
     const existing = byKey.get(key);
-    if (!existing || tupleGt(facts, existing)) {
-      byKey.set(key, facts);
+    if (!existing) {
+      byKey.set(key, { ...facts, recScore: record.rec_score });
+      continue;
+    }
+    if (tupleGt(facts, existing)) {
+      existing.season = facts.season;
+      existing.episode = facts.episode;
+    }
+    const score = record.rec_score;
+    if (
+      score !== undefined &&
+      (existing.recScore === undefined || score > existing.recScore)
+    ) {
+      existing.recScore = score;
     }
   }
   return [...byKey.values()];
@@ -126,19 +144,29 @@ export interface NextUpEntry {
   label: string;
 }
 
-// nextUpEntries — per started series (progress recency order), the
-// lowest-numbered episode strictly AFTER the highest started one, taken from
-// the series record's episode list (GET /series/{id}/episodes — one cached
-// fetch per started series). A series whose row did not resolve (the
-// episode-without-series fallback) or that has no later episode — none
-// exists, or its items carry no parseable facts — is omitted.
+// nextUpEntries — per started series, the lowest-numbered episode strictly
+// AFTER the highest started one, taken from the series record's episode list
+// (GET /series/{id}/episodes — one cached fetch per started series). Entries
+// order by the series' SERVED rec_score (recommendation-sorting D8 — the SPA
+// orders by the served number, it never re-implements the score model):
+// higher first, STABLE — ties and score-less rows keep the served progress
+// order (pure recency under a score-less wire). A series whose row did not
+// resolve (the episode-without-series fallback) or that has no later episode
+// — none exists, or its items carry no parseable facts — is omitted.
 export function nextUpEntries(
   started: StartedSeries[],
   seriesByKey: Map<string, SeriesDTO>,
   episodesBySeriesId: Map<string, ItemDTO[]>,
 ): NextUpEntry[] {
+  // Stable score-desc copy — Array#sort is stable, so equal/absent scores
+  // never disturb the served input order.
+  const ordered = [...started].sort(
+    (a, b) =>
+      (b.recScore ?? Number.NEGATIVE_INFINITY) -
+      (a.recScore ?? Number.NEGATIVE_INFINITY),
+  );
   const out: NextUpEntry[] = [];
-  for (const s of started) {
+  for (const s of ordered) {
     const series = seriesByKey.get(seriesKey(s));
     if (!series) {
       continue;

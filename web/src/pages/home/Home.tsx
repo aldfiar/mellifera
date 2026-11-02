@@ -414,8 +414,10 @@ function useProgressDocs(records: ProgressDTO[]): Map<string, ItemDTO> | null {
   return map;
 }
 
-// ContinueRow — GET /progress (newest-first, positive positions) as one card
-// per in-progress item: the item's frame-grabber thumb preview when the
+// ContinueRow — GET /progress (the SERVED order — rec_score desc with a
+// recency tiebreak by default; the row renders records exactly as served,
+// never a client re-sort) as one card per in-progress item: the item's
+// frame-grabber thumb preview when the
 // document carries that fact (authenticated fetch — absent fact → the honest
 // badge-only card), the SERVED display_name (display-naming — the server
 // composes serial-episode names), percent-of-duration label + bar when the
@@ -546,7 +548,9 @@ function ContinueCard(props: {
 // row did not resolve — the episode-without-series fallback — or with no
 // later episode is omitted; with nothing derivable the row renders its empty
 // state (honest, never a guess). Films never enter (startedSeries skips the
-// tv module).
+// tv module). Entries order by the served rec_score (recommendation-sorting
+// D8 — lib/nextup.ts, higher first, ties by the served order); the row is
+// interim until browse-scale's GET /home supersedes it.
 function NextUpRow(): ReactElement {
   const progress = useProgressList();
   const records = useMemo(() => progress.data?.items ?? [], [progress.data]);
