@@ -1,0 +1,6 @@
+schema: lite
+created: 2026-11-02
+goal: Strong-marker vocabulary accepts spaced variants (smart[\s_-]*tv) in BOTH
+  the UA scan and the async model-hint probe so dpr-1 full-HD Android TV
+  WebViews detect on first load; corroboration legs untouched (laptop lookalikes
+  stay desktop); the real-device repro rows go green.
