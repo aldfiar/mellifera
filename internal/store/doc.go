@@ -85,6 +85,15 @@
 //     symbol budget; primitive string signatures only (no new exported
 //     types), the store never parses an art value.
 //
+//   - InsertWatched/ListUnappliedWatched/ApplyTagWeights/ListTagWeights:
+//     the recommendation-sorting control set (methods — outside the symbol
+//     budget; primitive signatures, no new exported types, the art.go
+//     precedent). watched_items is the completion ledger whose applied_at
+//     IS NULL rows ARE the learning queue (the derived-work posture, no
+//     jobs table); tag_weights holds the learned affinity. NO user/profile
+//     column — the single implicit profile; the roles change owns that
+//     migration.
+//
 // # Invariants
 //
 //   - INV1: PARAMETERIZED SQL ONLY. Every value flows through ? placeholders;
