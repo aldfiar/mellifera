@@ -1,28 +1,9 @@
 # tv-mode Specification
 
 ## Purpose
-Turns the same embedded SPA into a 10-foot TV surface: a `.tv` display mode whose every size derives from the reported CSS viewport, D-pad focus walking and remote media keys mapped onto the existing player actions through one normalization table, overlays that close on browser Back instead of dropping the operator out of the SPA, persistent chrome without hover, an immersive photo stage, and a best-effort device autodetect that a manual «Режим ТВ» override always beats. The slice is SPA-first with exactly one serving-layer assist: the Go shell handler stamps each response with the caller's User-Agent header (`mellifera-client-ua` meta) so devices whose WebView fakes a JS-visible UA still autodetect truthfully.
+Turns the same embedded SPA into a 10-foot TV surface: a `.tv` display mode whose px-floor legs divide by the reported devicePixelRatio (`--tv-dpr`, set exactly while tv mode applies) so the designed fraction density lands on any panel — high-dpr boxes included — while pure viewport fractions stay raw, D-pad focus walking and remote media keys mapped onto the existing player actions through one normalization table, overlays that close on browser Back instead of dropping the operator out of the SPA, persistent chrome without hover, an immersive photo stage, and a best-effort device autodetect that a manual «Режим ТВ» override always beats. The slice is SPA-first with exactly one serving-layer assist: the Go shell handler stamps each response with the caller's User-Agent header (`mellifera-client-ua` meta) so devices whose WebView fakes a JS-visible UA still autodetect truthfully.
 
 ## Requirements
-
-### Requirement: TV display mode scales by the reported CSS viewport
-
-When the SPA boots in tv mode, the document root SHALL carry the `tv` class, and every tv-mode size SHALL derive from the reported CSS viewport through vw/vh-derived clamps — never a fixed px value — so a 1080p panel at dpr 1 (1920×1080), a 1080p panel at dpr 2 (960×540), a 4K panel at dpr 2 (1920×1080) and a 4K panel at dpr 1 (3840×2160) all land the same physical density (the dpr-1 4K trap: fixed px there is physically quarter-size). Tv mode SHALL apply overscan-safe edge padding of 2.5% of the viewport (TV Chrome does not compensate overscan), SHALL keep two full poster rows plus the header inside 100vh at any reported shape (on top of, never replacing, the shipped height-aware density contract), SHALL lift the content width cap toward the panel (≤ ~92vw), and SHALL scale the root type up (≈1.05vw clamped 16→30px) with a visibly thicker focus ring. Surfaces that never mount tv mode keep every desktop rule byte-for-byte.
-
-#### Scenario: Short viewport keeps two rows on screen
-
-- **WHEN** a tv-mode SPA renders a serial collection at a reported 960×540 viewport
-- **THEN** two full poster rows plus the collection header fit inside 100vh — no row is clipped at the fold, and the poster cards keep their 2:3 ratio with titles at or above the 14px type floor
-
-#### Scenario: The dpr-1 4K trap stays readable
-
-- **WHEN** a tv-mode SPA renders at a reported 3840×2160 viewport (4K at dpr 1)
-- **THEN** the card-title type resolves through the same vw-clamp as at 1920×1080 — the on-screen physical glyph height matches, and no tv-mode rule emits a bare fixed px size for type, rows, or padding
-
-#### Scenario: Overscan padding keeps the edges visible
-
-- **WHEN** a tv-mode SPA renders on a panel that cuts ~2.5% at every edge
-- **THEN** the shell's content starts inside a 2.5%-of-viewport padding zone, so no focusable card or the focus ring itself sits in the cut region
 
 ### Requirement: D-pad focus walks the page grids
 
@@ -231,3 +212,42 @@ A SPA load without tv mode SHALL render byte-for-byte as the tv-mode slice shipp
 
 - **WHEN** the server injects the caller-identity meta into a shell request from an ordinary desktop browser
 - **THEN** the page renders exactly as before the injection — no `tv` class, the desktop layout — the meta being the only added DOM node, and neither CSS nor the detection ladder changes the desktop rendering because of it
+
+### Requirement: TV display mode scales by the physical viewport
+
+When the SPA boots in tv mode, the document root SHALL carry the `tv` class and SHALL additionally carry a `--tv-dpr` custom property on the root's inline style, set to the reported `devicePixelRatio` (floored to 1 when it is absent, non-finite, or not positive) exactly while tv mode applies. The property SHALL be removed whenever the ruling is desktop — the boot desktop ruling and the live «Режим ТВ» toggle-off alike — and the async model-probe upgrade path SHALL set it together with the class. The px floor legs of the `.tv` block's size clamps — the root type's floor and cap legs, the focus-ring width's legs, and the persistent card-action trigger hit-target's legs — SHALL resolve through division by `var(--tv-dpr, 1)`, so each floor expresses one physical minimum at any dpr while the vw preferred legs stay raw and keep the designed fraction; on a device whose dpr is above 1 the fraction legs therefore win wherever raw CSS floors used to catch, and the layout renders the designed 10-foot density (more elements in view), never a multiplied overscale. The content cap `min(92vw, 1800px)` SHALL stay unwrapped — its px term is a layout cap, not a readability floor, and no division may shrink it. Every pure viewport-fraction rule SHALL stay unscaled: the 2.5% overscan padding, the poster chrome reserve, the status-line reserve and the stage cap arithmetic built on it, the poster-grid track budget (whose governing leg is a 100vh fraction with its raw floor leg), and the focus outline-offset. A device reporting dpr 1 SHALL render every tv-mode size identical to the shipped `.tv` block (the var default 1). A SPA load without tv mode SHALL never carry the property, and desktop rendering stays byte-identical. The two-rows-fit-100vh law, the overscan law, and the never-a-bare-px law are unchanged. The ≥40px card-action hit target reads in physical pixels under this law — at dpr 2 the fraction-resolved 24 CSS px are 48 physical px.
+
+#### Scenario: The operator's box renders the designed fraction
+
+- **WHEN** a tv-mode SPA renders at a reported 960×511 CSS viewport with devicePixelRatio 2
+- **THEN** the root type resolves through the 1.05vw fraction leg (≈10.08 CSS px, the divided 8/15 floor legs not binding) — the designed glass fraction with more elements in view, NOT the desktop-scale 16px floor and NOT a doubled scale — and the card-action trigger resolves 2.5vw (24 CSS px = 48 physical px), while the poster grid keeps its 100vh-fraction track budget and both poster rows still fit the viewport
+
+#### Scenario: The content cap never shrinks
+
+- **WHEN** a tv-mode SPA renders at a reported 1920×1080 CSS viewport with devicePixelRatio 2
+- **THEN** the content width resolves from the raw unwrapped `min(92vw, 1800px)` — the vw term governs below ~1957 CSS px exactly as shipped, and no `--tv-dpr` division ever reduces the cap
+
+#### Scenario: A dpr-1 device renders the shipped block unchanged
+
+- **WHEN** a tv-mode SPA renders at any reported CSS viewport with devicePixelRatio 1
+- **THEN** every wrapped rule evaluates ×1 — each tv-mode size identical to the shipped `.tv` block, and the dpr-1 4K panel keeps its vw-derived density exactly as before this change
+
+#### Scenario: Desktop and tv-off never carry the var
+
+- **WHEN** the SPA boots to a desktop ruling — an unknown box, a stored Выкл, or an unmarked desktop
+- **THEN** the document root carries no `tv` class and no `--tv-dpr` property, and desktop rendering is byte-identical to shipped
+
+#### Scenario: The live toggle-off clears the var
+
+- **WHEN** the operator switches «Режим ТВ» from Вкл to Выкл while the SPA is running at devicePixelRatio 2
+- **THEN** the `tv` class drops and the `--tv-dpr` property is removed in the same apply — desktop renders immediately with no residual var
+
+#### Scenario: The probe upgrade carries the var
+
+- **WHEN** the synchronous ladder rules desktop but the async model-hint probe upgrades the ruling to tv on a device reporting devicePixelRatio 2
+- **THEN** the `tv` class is added together with `--tv-dpr` 2 — an upgraded box never renders the class at the ×1 fallback density
+
+#### Scenario: Fraction rules stay unscaled
+
+- **WHEN** a tv-mode SPA renders at devicePixelRatio 2
+- **THEN** the overscan padding resolves from 2.5vh/2.5vw, the poster chrome reserve from 12vh, the status-line reserve from its 7vh clamp, and the focus outline-offset from its shipped clamp — none multiplied by `--tv-dpr` — and the poster grid's track budget still derives from the unchanged 100vh fraction with its raw floor leg, keeping two rows inside the viewport

@@ -167,6 +167,28 @@ function readTvEnvironment(): TvEnvironment {
   };
 }
 
+// writeTvMode — the single writer of the `tv` class AND the --tv-dpr
+// physical-density var on <html> (tv-dpr-scaling 1.1): the class toggles
+// exactly as before, and a TV ruling also publishes window.devicePixelRatio
+// exactly as read (design D1: String(dpr), no rounding — a fractional dpr is
+// the truthful physical reading; the module's guarded posture — a
+// non-number, non-finite, or non-positive reading floors to 1) so the CSS
+// ladder can scale physical density; a desktop ruling removes the var entirely, leaving no residue
+// from a previous TV state. Module-private: applyTvMode and probeTvModel
+// are the only callers.
+function writeTvMode(on: boolean): void {
+  const root = document.documentElement;
+  root.classList.toggle("tv", on);
+  if (on) {
+    const raw = window.devicePixelRatio;
+    const dpr =
+      typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : 1;
+    root.style.setProperty("--tv-dpr", String(dpr));
+  } else {
+    root.style.removeProperty("--tv-dpr");
+  }
+}
+
 // probeTvModel — the UPGRADE-ONLY async tail of the boot apply (design I1):
 // Chromium's high-entropy model hint may confirm a TV the synchronous ladder
 // could not see, so a resolving TV model ADDS the class — it never removes
@@ -186,7 +208,7 @@ async function probeTvModel(): Promise<void> {
       model !== undefined &&
       detectTvEnvironment({ ...readTvEnvironment(), model })
     ) {
-      document.documentElement.classList.add("tv");
+      writeTvMode(true);
     }
   } catch {
     // unavailable API / rejecting probe: stay with the synchronous ruling
@@ -203,7 +225,7 @@ async function probeTvModel(): Promise<void> {
 export function applyTvMode(): Promise<void> {
   const override = readTvOverride();
   const on = resolveTvMode(override, detectTvEnvironment(readTvEnvironment()));
-  document.documentElement.classList.toggle("tv", on);
+  writeTvMode(on);
   // Only an auto-desktop ruling may be upgraded: "on" is already on, and
   // "off" is a manual ruling the probe must respect (the override law).
   if (on || override !== "auto") {

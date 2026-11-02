@@ -91,9 +91,11 @@ const SIZE_PROPS = new Set([
 describe("tv shell block (tv-mode 5.1)", () => {
   const block = readTvBlock();
 
-  it("root type is the viewport clamp on html.tv", () => {
+  it("root type is the viewport clamp with per-leg ÷dpr floors on html.tv", () => {
     expect(block).toContain("html.tv {");
-    expect(block).toContain("font-size: clamp(16px, 1.05vw, 30px)");
+    expect(block).toContain(
+      "font-size: clamp(calc(16px / var(--tv-dpr, 1)), 1.05vw, calc(30px / var(--tv-dpr, 1)))",
+    );
   });
 
   it("shell padding is the 2.5vw / 2.5vh overscan pair", () => {
@@ -101,8 +103,16 @@ describe("tv shell block (tv-mode 5.1)", () => {
     expect(block).toContain("padding: 2.5vh 2.5vw");
   });
 
-  it("content cap is lifted to min(92vw, 1800px)", () => {
+  it("content cap stays the shipped raw min(92vw, 1800px) — a layout cap, never dpr-wrapped", () => {
     expect(block).toContain("max-width: min(92vw, 1800px)");
+    expect(block).not.toContain("max-width: calc(min(92vw, 1800px)");
+  });
+
+  it("focus ring is the clamp with per-leg ÷dpr floors; the offset stays a raw fraction", () => {
+    expect(block).toContain(
+      "outline: clamp(calc(2px / var(--tv-dpr, 1)), 0.2vw, calc(5px / var(--tv-dpr, 1))) solid hsl(var(--ring))",
+    );
+    expect(block).toContain("outline-offset: clamp(2px, 0.2vw, 4px)");
   });
 
   it("poster track budget derives from the 100vh fractions, not the desktop 182px chrome", () => {
@@ -125,7 +135,37 @@ describe("tv shell block (tv-mode 5.1)", () => {
     expect(css).toContain("@media (pointer: coarse)");
     expect(block).toContain("html.tv .cardact-trigger {");
     expect(block).toContain("opacity: 1");
-    expect(block).toContain("clamp(40px, 2.5vw, 64px)");
+    expect(block).toContain(
+      "width: clamp(calc(40px / var(--tv-dpr, 1)), 2.5vw, calc(64px / var(--tv-dpr, 1)))",
+    );
+    expect(block).toContain(
+      "height: clamp(calc(40px / var(--tv-dpr, 1)), 2.5vw, calc(64px / var(--tv-dpr, 1)))",
+    );
+  });
+
+  it("pure viewport fractions stay raw — never wrapped in --tv-dpr (D3')", () => {
+    // The unscaled set: padding, the poster-grid rule (its governing leg
+    // calc((100vh - var(--tv-poster-chrome)) / 3) is dpr-invariant; wrapping
+    // the 120px floor leg to 240 CSS px at dpr 2 would invert the max()
+    // precedence and clip the second row), the outline offset, the
+    // status-chrome reserve and the img cap are pure fractions and stay
+    // byte-raw.
+    expect(block).toContain("padding: 2.5vh 2.5vw");
+    expect(block).toContain("--tv-poster-chrome: 12vh");
+    expect(block).toContain("clamp(120px, 4vw, 240px)");
+    expect(block).not.toContain("clamp(120px, 4vw, 240px) * var(--tv-dpr");
+    expect(block).toContain("--tv-status-chrome: clamp(48px, 7vh, 110px)");
+    expect(block).toContain(
+      "max-height: calc(100vh - var(--tv-status-chrome)) !important",
+    );
+    // Bidirectional drift guard: EXACTLY the px-floored size props carry the
+    // ÷dpr legs (max-width is a layout cap and stays OUT of the set) — a leg
+    // drifting into a fraction rule (or vice versa) fails here.
+    const wrappedProps = declarationsOf(block)
+      .filter((d) => d.value.includes("--tv-dpr"))
+      .map((d) => d.prop)
+      .sort();
+    expect(wrappedProps).toEqual(["font-size", "height", "outline", "width"]);
   });
 
   it("photo stage caps at calc(100vh - the status line var), replacing the desktop 136px chrome", () => {

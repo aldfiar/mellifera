@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-11-02
+goal: TV layout on the operator's box engages the .tv vw/vh proportions via a
+  --tv-dpr custom property instead of every clamp flooring at desktop-scale
+  minimums
