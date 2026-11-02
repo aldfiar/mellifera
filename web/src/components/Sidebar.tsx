@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, House, Menu, Puzzle, Settings2 } from "lucide-react";
+import { ChevronLeft, House, Menu, Puzzle, Settings } from "lucide-react";
 
 import type { AdminStatus, LibraryDTO } from "@/lib/api";
 import { apiRequest, getItem } from "@/lib/api";
@@ -219,7 +219,7 @@ function SideNav(): ReactElement {
       </div>
 
       <NavLink to="/admin" className={sideLinkClass}>
-        <Settings2 aria-hidden="true" />
+        <Settings aria-hidden="true" />
         <span className="lbl">Admin</span>
       </NavLink>
 
