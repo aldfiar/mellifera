@@ -4,6 +4,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 
 import { RequireAuth } from "@/components/RequireAuth";
 import Sidebar from "@/components/Sidebar";
+import TvFocusRoot from "@/components/TvFocusRoot";
 import { getDeviceToken, getToken } from "@/lib/auth";
 import { useRelayWorker } from "@/lib/relayWorker";
 import Login from "@/pages/Login";
@@ -64,7 +65,8 @@ function RootGate({ children }: { children: ReactNode }): ReactElement {
 
 export default function App(): ReactElement {
   return (
-    <Routes>
+    <>
+      <Routes>
       <Route path="/login" element={<Login />} />
       <Route
         path="/"
@@ -147,6 +149,10 @@ export default function App(): ReactElement {
         }
       />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+      </Routes>
+      {/* tv-mode 3.2 (design D5/I6): the D-pad harness mounts AFTER <Routes>;
+          it renders null and arms per-event under the `tv` class only. */}
+      <TvFocusRoot />
+    </>
   );
 }

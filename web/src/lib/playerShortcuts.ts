@@ -4,15 +4,19 @@
 // (watch-flow-polish 3.4, design D6). No React, no DOM queries: a keydown
 // event and an actions object come in; effect calls go out. The watch view
 // (ItemDetail) owns the ONE window keydown listener and the actions' bodies
-// (the video DOM route + episode navigation). Layer 7 (TV mode) will
-// normalize remote media keys onto the SAME table — this module is the
-// single normalization point, so transport behavior cannot fork per input
-// device.
+// (the video DOM route + episode navigation). Layer 7 (TV mode) normalizes
+// the remote media keys onto the SAME table (tv-mode 3.4) — this module is
+// the single normalization point, so transport behavior cannot fork per
+// input device.
 //
 // Bindings (spec "Player keyboard control and legend"):
 //   Space  play/pause          ←/→   seek ∓/±10 s
 //   ↑/↓    volume step         F     fullscreen
 //   N/P    next/prev episode   0-9   seek to the matching tenth
+//
+//   Remote media keys (TV mode 3.4) normalize onto the same actions:
+//   MediaPlayPause play/pause       MediaTrackNext/MediaPrevTrack  N/P
+//   MediaFastForward/MediaRewind   →/←     MediaStop  exit the watch view
 //
 // Keystrokes are ignored while a form field (input/textarea/select) or a
 // contenteditable element owns focus — the guard reads ONLY event.target.
@@ -42,6 +46,9 @@ export interface PlayerShortcutActions {
   prevEpisode(): void;
   /** fraction: digit/10 — a tenth of the media's duration. */
   seekToFraction(fraction: number): void;
+  /** MediaStop only: leave playback back to the item page. The watch view
+   *  supplies the body; outside a watch view the implementation is a no-op. */
+  exitWatch(): void;
 }
 
 // ShortcutEvent — the structural subset of KeyboardEvent the table reads.
@@ -82,6 +89,14 @@ const SHORTCUTS: Record<string, (actions: PlayerShortcutActions) => void> = {
   N: (a) => a.nextEpisode(),
   p: (a) => a.prevEpisode(),
   P: (a) => a.prevEpisode(),
+  // Remote media keys (TV mode 3.4): the same normalization table, so a
+  // transport intent resolves identically no matter which device sent it.
+  MediaPlayPause: (a) => a.togglePlay(),
+  MediaTrackNext: (a) => a.nextEpisode(),
+  MediaPrevTrack: (a) => a.prevEpisode(),
+  MediaFastForward: (a) => a.seekBy(SEEK_STEP_SECONDS),
+  MediaRewind: (a) => a.seekBy(-SEEK_STEP_SECONDS),
+  MediaStop: (a) => a.exitWatch(),
   ...Object.fromEntries(
     Array.from({ length: 10 }, (_, digit) => [
       String(digit),

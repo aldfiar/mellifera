@@ -202,6 +202,18 @@ function resolveIdentityValue(doc: ItemDocument, field: string): unknown {
   return undefined;
 }
 
+// isActivationTarget — the Enter guard (tv-mode 5.2): a focused button or
+// link activates NATIVELY on Enter (OK on the remote; the tv focus walker
+// never re-handles it either), so the photo stage's Enter-as-slideshow-toggle
+// only owns Enter whose target is NOT such an element — otherwise a focused
+// slideshow button would double-toggle (native click + this listener).
+function isActivationTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.tagName === "BUTTON" || target.tagName === "A")
+  );
+}
+
 export default function ItemDetail(): ReactElement {
   const { id } = useParams<{ id: string }>();
   const { data, isLoading, error, refetch } = useItem(id ?? "");
@@ -251,9 +263,11 @@ export default function ItemDetail(): ReactElement {
     return () => window.clearInterval(timer);
   }, [slideshowRunning, view, step]);
 
-  // Keyboard — ←/→ browse; S toggles the slideshow (photos); Esc stops a
-  // RUNNING slideshow first and only navigates back when it is not running
-  // (6.4). No handoff state → no listeners at all. The arrows keep the
+  // Keyboard — ←/→ browse; S or Enter toggles the slideshow (photos; Enter
+  // is OK on the remote — tv-mode 5.2 — and stands down behind a focused
+  // button's native activation); Esc stops a RUNNING slideshow first and
+  // only navigates back when it is not running (6.4). No handoff state → no
+  // listeners at all. The arrows keep the
   // PHOTO/browse lane only: on the watch view (a video item) ←/→ belong to
   // the player transport (watch-flow-polish 3.4) — the watch view's own
   // listener scopes itself, this one stands down there. Esc stays shared.
@@ -276,7 +290,12 @@ export default function ItemDetail(): ReactElement {
         } else {
           navigate(view.backTo);
         }
-      } else if (isPhoto && (event.key === "s" || event.key === "S")) {
+      } else if (
+        isPhoto &&
+        (event.key === "s" ||
+          event.key === "S" ||
+          (event.key === "Enter" && !isActivationTarget(event.target)))
+      ) {
         setSlideshowRunning((running) => !running);
       }
     };
@@ -683,8 +702,21 @@ function ItemLoadedView(props: {
           );
         }
       },
+      exitWatch: () => {
+        // MediaStop (tv-mode 3.4/5.2): leave playback back to the item page —
+        // pause the mounted video and re-navigate the item route the way the
+        // N/P step paths navigate, dropping the browse handoff so the plain
+        // item page re-lands. No video mounted → the inherent no-op the
+        // interface documents (the watch listener only arms when it is).
+        const media = video();
+        if (media === null) {
+          return;
+        }
+        media.pause();
+        navigate(`/items/${item.id}`);
+      },
     };
-  }, [nextAdjacent, prevAdjacent, navigate]);
+  }, [nextAdjacent, prevAdjacent, navigate, item.id]);
 
   // ONE keydown listener for the watch view (watch-flow-polish 3.4): the
   // pure table normalizes the key, these actions act, and a handled key
@@ -764,6 +796,7 @@ function ItemLoadedView(props: {
         <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
           <section
             aria-label="Media stage"
+            data-tv-yield
             ref={mediaStageRef}
             className="flex min-w-0 flex-col gap-3"
           >
@@ -789,10 +822,14 @@ function ItemLoadedView(props: {
         </div>
       ) : (
         // Media-first, photo lane: the photo IS the page — full width, the
-        // identity block beneath it.
+        // identity block beneath it. The stage section carries data-tv-yield
+        // (tv-mode 5.2, design I4): the stage owns its own keys (←/→ step,
+        // S/Enter slideshow, Esc), so the tv focus walker yields inside it.
         <>
           {mediaStage !== null ? (
-            <section aria-label="Media stage">{mediaStage}</section>
+            <section aria-label="Media stage" data-tv-yield>
+              {mediaStage}
+            </section>
           ) : null}
           <IdentityBlock item={item} doc={doc} presentation={presentation} />
         </>

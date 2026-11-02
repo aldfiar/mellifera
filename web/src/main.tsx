@@ -4,6 +4,9 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 
+// Boot apply (tv-mode): imported before App so the `tv` class lands on <html>
+// before any consumer mounts (design I6; the ThemeToggle module-eval idiom).
+import "@/lib/tvmode";
 import App from "./App";
 import { queryClient } from "@/lib/queries";
 import "@/styles/index.css";

@@ -660,3 +660,114 @@ body.side-open .app-content {
   padding: 20px;
   box-shadow: 0 12px 40px hsl(var(--foreground) / 0.18);
 }
+
+/* ---- TV mode shell (tv-mode 5.1) -------------------------------------------
+   The ONE .tv display-mode block (design.md D1/D3): every rule is keyed under
+   html.tv, so the block is inert without the class and every desktop rule
+   above stays byte-identical. D3 is absolute — every size here is a vw/vh
+   clamp, never a bare fixed px: the same panel reports 960x540 at dpr 2 and
+   3840x2160 at dpr 1, so a fixed-px tv theme is physically quarter-size on
+   the latter. web/src/lib/tvCssContract.test.ts pins this block's text (the
+   density.test.ts fs-contract idiom), including a no-bare-px sweep over the
+   size declarations between the tv-mode markers.
+   MANUAL TEST NOTE (box 5.1 — unprobeable): jsdom cannot evaluate media
+   queries or layout, so this block is accepted by inspection at the gate
+   (the cardact-trigger MANUAL TEST NOTE precedent). To verify by hand:
+   force mellifera.tv=on in a 4K dpr-1 window and confirm (a) root type and
+   chrome scale with a window resize, (b) nothing renders under the overscan
+   edge, (c) focus is always visibly ringed after D-pad moves, (d) the ⋯ and
+   gear triggers are visible and >=40px without hover. */
+
+html.tv {
+  /* Root type: scales with the REPORTED CSS viewport (never a device-
+     resolution claim), floored/capped for legibility. */
+  font-size: clamp(16px, 1.05vw, 30px);
+}
+
+/* Overscan-safe shell: 2.5vw / 2.5vh (the settled D3 value) keeps every
+   surface inside the safe area on every panel shape. Tied specificity with
+   the desktop body.side-open / body:not(.side-open) .app-content padding
+   rules above — this block is appended later, so it wins the padding legs
+   while the panel's margin-left offset is left alone. */
+html.tv .app-content {
+  padding: 2.5vh 2.5vw;
+}
+
+/* Content cap lifted: pages carry max-w-5xl / max-w-6xl utilities (1024 /
+   1152px) on their mains; a tv viewport spans the sofa, so the cap widens
+   to min(92vw, 1800px). Higher specificity than the single-class utilities. */
+html.tv main {
+  max-width: min(92vw, 1800px);
+}
+
+/* Collection header collapses to ONE line in tv — the chrome the poster
+   budget below reserves against: the description and item-count lines drop,
+   leaving the title row. */
+html.tv main > header p {
+  display: none;
+}
+
+/* Collection rows fit 100vh as height fractions — the tv tier of the shipped
+   density contract (lib/density.ts). Same fraction law as posterCardMaxWidth
+   (two rows of 2:3 posters -> divisor 3; card width comes from row height,
+   and the existing 2:3 aspect-ratio rule on .scard .scard-poster stays), but
+   the chrome reserve is the collapsed one-line header expressed in vh — NOT
+   the desktop's measured 182px (SERIES_GRID_CHROME_PX, which Collection.tsx
+   still emits inline as --poster-track-w-1/2; overriding --poster-track-max
+   here replaces the tier pick wholesale). The floor is the density contract's
+   120px minimum, viewport-scaled above it. 12vh: re-check visually at apply
+   (the measured-chrome precedent). */
+html.tv .series-poster-grid {
+  --tv-poster-chrome: 12vh;
+  --poster-track-max: min(
+    100%,
+    max(clamp(120px, 4vw, 240px), calc((100vh - var(--tv-poster-chrome)) / 3))
+  );
+}
+
+/* Focus is ALWAYS visible in tv (D7): a thicker ring in the focus token —
+   the locked accent idiom's focus color — because at 3 m there is no hover
+   and a focus that shows only on :hover is a focus that never shows. */
+html.tv :focus-visible {
+  outline: clamp(2px, 0.2vw, 5px) solid hsl(var(--ring));
+  outline-offset: clamp(2px, 0.2vw, 4px);
+}
+
+/* Persistent reveal rides BOTH the (pointer: coarse) block above AND html.tv:
+   TV Chrome reports pointer: fine, so the coarse block never fires there and
+   the ⋯ / gear triggers would stay hover-gated without this twin. Same >=40px
+   hit target — floored at 40px, viewport-scaled above it. */
+html.tv .cardact-trigger {
+  opacity: 1;
+  width: clamp(40px, 2.5vw, 64px);
+  height: clamp(40px, 2.5vw, 64px);
+}
+
+/* Immersive photo stage (tv-mode 5.2): the photo ALWAYS fits the viewport
+   above ONE status line (the browse bar: collection · filename · index), so
+   the desktop cap — the measured 136px chrome (PHOTO_STAGE_CHROME_PX, riding
+   the <img> inline via photoStageMaxH) — is REPLACED in tv by the status
+   line's reserve expressed in vh (the same law as --tv-poster-chrome above).
+   The !important is the inline-style override: the desktop cap rides the
+   img's style attribute, and a stylesheet rule loses to inline style without
+   it. The desktop rule stays byte-identical (spec: default-desktop-unchanged
+   — the 80vh cap with its density-contract chrome). The photo lane's
+   metadata column under the stage hides — the stage is the page (spec: the
+   immersive stage). The photo lane is the only lane whose stage section is a
+   DIRECT child of main (the watch lane nests its stage inside the grid), so
+   the adjacent-sibling selector hits exactly its identity block and never
+   the watch view's info column. MANUAL TEST NOTE (unprobeable in jsdom):
+   force mellifera.tv=on on a photo item and confirm the photo never clips
+   at a short viewport and the identity block is gone. */
+html.tv main > section[aria-label="Media stage"] {
+  --tv-status-chrome: clamp(48px, 7vh, 110px);
+}
+
+html.tv main > section[aria-label="Media stage"] img {
+  max-height: calc(100vh - var(--tv-status-chrome)) !important;
+}
+
+html.tv main > section[aria-label="Media stage"] + * {
+  display: none;
+}
+/* ---- end tv-mode shell (tv-mode 5.1) ---- */

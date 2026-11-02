@@ -1,0 +1,9 @@
+schema: lite
+created: 2026-11-02
+goal: "Android TV browsers get a fitting 10-foot UI from the same embedded SPA:
+  .tv display mode CSS (vw/vh-derived clamps, overscan-safe padding, rows fit
+  100vh, immersive photo stage), D-pad focus grid-walker + media keys via one
+  key-normalization table shared with 3.4, history-Back closes overlays,
+  persistent reveal in tv mode, device autodetect ladder with manual Режим ТВ
+  override (localStorage mellifera.tv). Zero backend; Go tree untouched; dist
+  rebuilt."
