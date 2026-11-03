@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import Collection from "@/pages/collections/Collection";
 import ItemDetail from "@/pages/browse/ItemDetail";
-import { isWatchedElement, watchedPercent } from "@/components/WatchedStates";
+import {
+  InProgressBar,
+  isWatchedElement,
+  watchedPercent,
+  WatchedToggle,
+} from "@/components/WatchedStates";
 import * as apiModule from "@/lib/api";
 import type { ItemDTO, ItemResponse, LibraryDTO, SeriesDTO } from "@/lib/api";
 import type { ItemDocument } from "@/lib/document";
@@ -174,6 +181,202 @@ describe("WatchedStates — pure leaves", () => {
     expect(watchedPercent(900, 600)).toBe(100);
     expect(watchedPercent(1, null)).toBeNull();
     expect(watchedPercent(1, 0)).toBeNull();
+  });
+});
+
+// ---- WatchedToggle (collections-ux 2.2) ------------------------------------
+// The ✓ slot as a real <button> on the three mounted surfaces. jsdom sees no
+// media queries and no layout, so the disclosure law is asserted at its two
+// observable seams: (a) the button composes the law's class carrier
+// (cardact-trigger) and the state split rides the inline style — the watched
+// fill pins opacity inline (visible at rest everywhere, beating the reveal
+// cascade), the unwatched outline pins NO opacity (the reveal/coarse/tv
+// persistence rides the stylesheet verbatim); (b) the law's stylesheet half
+// is pinned by text (the clampCssContract readFileSync idiom) so the
+// composition can't silently lose its coarse-pointer and html.tv persistence.
+
+// ruleBody — the declaration body of the rule introduced by the given
+// selector text (the clampCssContract.test.ts helper, inlined: this suite
+// pins only the disclosure-law rules the toggle composes).
+function ruleBody(css: string, selector: string): string {
+  const at = css.indexOf(selector);
+  expect(at, `selector ${selector} missing from index.css`).toBeGreaterThanOrEqual(0);
+  const open = css.indexOf("{", at);
+  const close = css.indexOf("}", open);
+  expect(close, `rule ${selector} never closes`).toBeGreaterThan(open);
+  return css.slice(open + 1, close);
+}
+
+// mockStateWrite — the PUT /items/{id}/state capture: records every fetch
+// call and answers the itemStateDTO echo (collections-ux 1.2's shape).
+function mockStateWrite(itemId: string) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+    Promise.resolve(
+      jsonResponse(200, {
+        item_id: itemId,
+        state: "watched",
+        position_seconds: 0,
+      }),
+    ),
+  );
+}
+
+// renderToggle — WatchedToggle inside a clickable cardact-host div (the law
+// needs a hover/focus host; the div's onClick plays the card navigation the
+// toggle must never trigger). Returns the client's invalidateQueries spy so
+// a click's invalidation sweep is asserted on the real mutation.
+function renderToggle(watched: boolean, onCardClick?: () => void) {
+  const client = freshClient();
+  const invalidate = vi.spyOn(client, "invalidateQueries");
+  render(
+    <QueryClientProvider client={client}>
+      <div className="cardact-host" onClick={onCardClick}>
+        <WatchedToggle itemId="itm_1" watched={watched} />
+      </div>
+    </QueryClientProvider>,
+  );
+  return { invalidate };
+}
+
+describe("WatchedToggle — the three-state renders", () => {
+  it("watched: the filled accent ✓ at rest — a pressed button pinned visible inline (it beats the reveal cascade), top-left slot", () => {
+    renderToggle(true);
+
+    const toggle = screen.getByRole("button", { name: "Watched" });
+    expect(toggle.textContent).toBe("✓");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    // The law's class carrier — the composition, no new CSS.
+    expect(toggle.classList.contains("cardact-trigger")).toBe(true);
+    // At-rest fill: the inline opacity beats the base opacity 0 AND the
+    // hover/focus reveal rules — visible without hover on fine pointers too.
+    expect((toggle as HTMLElement).style.opacity).toBe("1");
+    // The mark's top-left slot (⋯ keeps the top-right): corner placement
+    // overrides the base class's right:6px inline.
+    expect((toggle as HTMLElement).style.left).toBe("6px");
+    expect((toggle as HTMLElement).style.right).toBe("auto");
+    // Filled, not outlined: the accent color (jsdom normalizes the hex —
+    // #a4c8f4); no inline ring — the class carrier's own border:none holds
+    // (pinned in the stylesheet sweep below).
+    expect((toggle as HTMLElement).style.color).toBe("rgb(164, 200, 244)");
+    expect((toggle as HTMLElement).style.border).toBe("");
+  });
+
+  it("unwatched: the quiet outline ✓ — aria-pressed false, NO inline opacity (the reveal law rides the stylesheet)", () => {
+    renderToggle(false);
+
+    const toggle = screen.getByRole("button", { name: "Unwatched" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    // The outline ring; the glyph color stays the base class's quiet muted
+    // foreground (no inline color override).
+    expect((toggle as HTMLElement).style.border).toContain("solid");
+    expect((toggle as HTMLElement).style.color).toBe("");
+    // The disclosure law's fine-pointer half is the stylesheet's job — no
+    // inline opacity, so hover/focus reveal + coarse/tv persistence apply.
+    expect((toggle as HTMLElement).style.opacity).toBe("");
+  });
+
+  it("in-progress: the bar stays with the outline toggle beside it", () => {
+    render(
+      <QueryClientProvider client={freshClient()}>
+        <div className="cardact-host">
+          <InProgressBar percent={33} />
+          <WatchedToggle itemId="itm_s" watched={false} />
+        </div>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("img", { name: "33% watched" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Unwatched" })).toBeDefined();
+  });
+});
+
+describe("WatchedToggle — the click contract", () => {
+  it("watched click writes {state: unwatched}; unwatched click writes {state: watched} — the target picked from the SERVED flag", async () => {
+    const put = mockStateWrite("itm_1");
+
+    const { unmount } = render(
+      <QueryClientProvider client={freshClient()}>
+        <div className="cardact-host">
+          <WatchedToggle itemId="itm_1" watched={true} />
+        </div>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Watched" }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const [url, init] = put.mock.calls[0];
+    expect(String(url)).toContain("/api/v1/items/itm_1/state");
+    expect(init?.method).toBe("PUT");
+    expect(JSON.parse(String(init?.body))).toEqual({ state: "unwatched" });
+
+    // The unwatched sibling flips the other way.
+    unmount();
+    const put2 = mockStateWrite("itm_2");
+    render(
+      <QueryClientProvider client={freshClient()}>
+        <div className="cardact-host">
+          <WatchedToggle itemId="itm_2" watched={false} />
+        </div>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Unwatched" }));
+    await waitFor(() => expect(put2).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(put2.mock.calls[0][1]?.body))).toEqual({
+      state: "watched",
+    });
+  });
+
+  it("the click never navigates the card — stopPropagation keeps the host handler silent", () => {
+    mockStateWrite("itm_1");
+    let navigated = false;
+    renderToggle(false, () => {
+      navigated = true;
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Unwatched" }));
+    expect(navigated).toBe(false);
+  });
+
+  it("the write invalidates the watched-flag readers — the five-family sweep on the real mutation", async () => {
+    mockStateWrite("itm_1");
+    const { invalidate } = renderToggle(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Unwatched" }));
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["items"] }),
+    );
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["series"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["series-episodes"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["item"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["progress"] });
+  });
+});
+
+describe("WatchedToggle — the disclosure-law stylesheet pin", () => {
+  // The composition's half of the law: the cardact rules the toggle rides
+  // must stay put in index.css — base reveal + the coarse-pointer and html.tv
+  // persistence twins (readFileSync, the clampCssContract idiom — jsdom
+  // evaluates no media queries).
+  const css = readFileSync(resolve(process.cwd(), "src/styles/index.css"), "utf8");
+
+  it("the base law: opacity 0 at rest, revealed on host hover/focus-within", () => {
+    const base = ruleBody(css, ".cardact-trigger {");
+    expect(base).toContain("opacity: 0");
+    // The filled ✓ reads as filled because the class carrier has no ring.
+    expect(base).toContain("border: none");
+    const reveal = [
+      ".cardact-host:hover .cardact-trigger",
+      ".cardact-host:focus-within .cardact-trigger",
+    ];
+    for (const selector of reveal) {
+      expect(css).toContain(selector);
+    }
+    expect(ruleBody(css, ".cardact-host:hover .cardact-trigger,")).toContain("opacity: 1");
+  });
+
+  it("the persistence twins: pointer coarse AND html.tv keep the trigger visible at rest", () => {
+    const coarse = css.slice(css.indexOf("@media (pointer: coarse)"));
+    expect(ruleBody(coarse, ".cardact-trigger {")).toContain("opacity: 1");
+    expect(ruleBody(css, "html.tv .cardact-trigger {")).toContain("opacity: 1");
   });
 });
 
