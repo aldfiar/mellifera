@@ -275,9 +275,11 @@ func TestListItemsScored(t *testing.T) {
 	taggedFilm := seedRecsItem(t, st, lib, "itm_f2", "film-b.mkv", map[string]any{
 		"sources": map[string]any{recsMetaNS: map[string]any{"description": "d", "genres": []string{"thriller"}}},
 	}, time.Time{})
-	if err := st.ApplyTagWeights(ctx, []string{"thriller", "thriller"}, time.Now().UTC()); err != nil {
+	if err := st.ApplyTagWeights(ctx, []string{"action", "thriller", "thriller"}, time.Now().UTC()); err != nil {
 		t.Fatalf("ApplyTagWeights: %v", err)
 	}
+	// interest action=1, thriller=2 — the watched film's tags-only score is
+	// base 1 + the action weight = 2; the tagged film's is 1 + 2 = 3.
 	plainFilm := seedRecsItem(t, st, lib, "itm_f3", "film-c.mkv", map[string]any{}, time.Time{}) // score 0 → omitted
 
 	// A started serial with a fresh unwatched episode: the new episode item
@@ -343,17 +345,19 @@ func TestListItemsScored(t *testing.T) {
 
 	t.Run("score_then_window", func(t *testing.T) {
 		// D7: the page cut applies AFTER the score order. Page 1 (limit 1)
-		// must be the top-scoring row; page 2 the second; a page past the
-		// end is empty — never unscored lr.Items.
+		// must be the served top row — the started episode, the partition
+		// having sunk the completed film below every unwatched one; page 2
+		// the second; a page past the end is empty — never unscored
+		// lr.Items.
 		resp := doRequest(t, h, http.MethodGet, listURL+"&limit=1", "", adminToken)
 		defer resp.Body.Close()
 		lr := decodeItems(t, resp)
-		wantIDs(t, servedIDs(lr.Items, func(d itemDTO) string { return d.ID }), watchedFilm.ID)
+		wantIDs(t, servedIDs(lr.Items, func(d itemDTO) string { return d.ID }), epStarted.ID)
 
 		resp = doRequest(t, h, http.MethodGet, listURL+"&limit=1&offset=1", "", adminToken)
 		defer resp.Body.Close()
 		lr = decodeItems(t, resp)
-		wantIDs(t, servedIDs(lr.Items, func(d itemDTO) string { return d.ID }), epStarted.ID)
+		wantIDs(t, servedIDs(lr.Items, func(d itemDTO) string { return d.ID }), epNew.ID)
 
 		resp = doRequest(t, h, http.MethodGet, listURL+"&limit=50&offset=5", "", adminToken)
 		defer resp.Body.Close()

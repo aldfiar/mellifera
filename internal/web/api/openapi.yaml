@@ -290,6 +290,17 @@ definitions:
         type: string
       title_override:
         type: string
+      watched:
+        description: |-
+          Watched is the additive served watched state (watched-states D1): a
+          watched_items ledger row exists for the item — read-time from the
+          batched ledger read, never persisted, never client-input. True-only
+          on the wire (omitempty): absent means unwatched, the same
+          honest-absence posture RecScore serves. Stamped on EVERY serving
+          route — unconditional on the wire even where the score is not (the
+          sort=path opt-out and the detail/episode routes stamp it while
+          serving no rec_score).
+        type: boolean
     type: object
   api.itemParsersRequest:
     properties:
@@ -567,6 +578,14 @@ definitions:
         type: number
       updated_at:
         type: string
+      watched:
+        description: |-
+          Watched is the additive served watched state (watched-states D1):
+          the row's item carries a watched_items ledger row — stamped from the
+          same batched ledger facts the score composition reads. True-only on
+          the wire (omitempty): absent means unwatched, the honest-absence
+          posture RecScore serves.
+        type: boolean
     type: object
   api.progressListResponse:
     properties:
@@ -577,6 +596,8 @@ definitions:
     type: object
   api.progressRequest:
     properties:
+      completed:
+        type: boolean
       position_seconds:
         type: integer
     type: object
@@ -659,6 +680,15 @@ definitions:
         type: string
       title_override:
         type: string
+      watched:
+        description: |-
+          Watched is the additive watched state (watched-states D1): true only
+          when EVERY backing episode carries a watched_items ledger row — the
+          all-episodes law the scoreSeries walk derives (a series with zero
+          episodes is never watched). Absent (omitempty) otherwise — true-only
+          on the wire, exactly as itemDTO's stamp; never persisted into the
+          document.
+        type: boolean
     type: object
   api.seriesListResponse:
     properties:
@@ -2131,6 +2161,11 @@ paths:
           score order, rec_score desc then recency)'
         in: query
         name: sort
+        type: string
+      - description: include=watched restores completed-watch rows the default withdrawal
+          drops
+        in: query
+        name: include
         type: string
       responses:
         "200":
