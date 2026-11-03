@@ -133,6 +133,25 @@ func watchedSet(ids []string) map[string]struct{} {
 	return watched
 }
 
+// withdrawWatched drops the ledgered rows from a progress listing's input set
+// (watched-states D2): the rail's purpose is resume points, and a completed
+// watch has none — its position is spent. includeWatched (the
+// ?include=watched opt-in) restores them; both branches run it so the opt-out
+// cannot resurrect withdrawn rows anywhere. The returned rows are exactly the
+// ones that serve — the caller stamps the ledgered ones watched.
+func withdrawWatched(rows []store.PlaybackProgress, watched map[string]struct{}, includeWatched bool) []store.PlaybackProgress {
+	if includeWatched {
+		return rows
+	}
+	kept := make([]store.PlaybackProgress, 0, len(rows))
+	for _, row := range rows {
+		if _, done := watched[row.ItemID]; !done {
+			kept = append(kept, row)
+		}
+	}
+	return kept
+}
+
 // parseSort reads a scored listing's sort opt-out (D7): absent/empty is the
 // scored default; optOut restores today's store order ("path" on the
 // collection listings, "recent" on the continue surface). Any other value is
@@ -147,6 +166,22 @@ func parseSort(r *http.Request, optOut string) (opted bool, bad string) {
 		bad = `sort must be "` + optOut + `" (the only opt-out; omit it for the scored default)`
 	}
 	return opted, bad
+}
+
+// parseInclude reads the progress listing's include grammar (watched-states
+// D2): absent/empty serves the withdrawal default (ledgered rows dropped);
+// "watched" restores them. Any other value is a bad request — the same
+// strict-parse posture as parseSort: a silently ignored value would serve a
+// row set the client cannot reason about.
+func parseInclude(r *http.Request) (watched bool, bad string) {
+	switch r.URL.Query().Get("include") {
+	case "":
+	case "watched":
+		watched = true
+	default:
+		bad = `include must be "watched" (the only include; omit it for the withdrawal default)`
+	}
+	return watched, bad
 }
 
 // allFilteredItems reads the FULL filtered item set (D7's score-then-window

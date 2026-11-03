@@ -826,12 +826,19 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 // updated_at-desc SQL window, unscored (rec_score omitted). An unknown sort
 // is 400 (the same parse posture as the collection listings).
 //
+// Withdrawal (watched-states D2): rows whose item is ledgered drop from the
+// default listing in BOTH branches — a completed watch has no resume point,
+// its position is spent. ?include=watched restores them (served rows then
+// carry watched: true); an unknown include value is 400, the same strict
+// parse the sort grammar serves.
+//
 // @Summary      Recent playback positions (Continue rail)
 // @Tags         progress
 // @ID           list-progress
 // @Router       /progress [get]
-// @Param        limit query int    false "page size (default 20, max 100)"
-// @Param        sort  query string false "sort=recent restores updated_at order (default: recommendation score order, rec_score desc then recency)"
+// @Param        limit   query int    false "page size (default 20, max 100)"
+// @Param        sort    query string false "sort=recent restores updated_at order (default: recommendation score order, rec_score desc then recency)"
+// @Param        include query string false "include=watched restores completed-watch rows the default withdrawal drops"
 // @Success      200 {object} progressListResponse
 // @Failure      400 {object} errorBody
 // @Failure      500 {object} errorBody
@@ -850,36 +857,55 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
 	}
+	includeWatched, bad := parseInclude(r)
+	if bad != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
+		return
+	}
 	if recent {
 		// The opt-out keeps today's exact contract: the store's own recency
-		// window, unscored.
+		// window, unscored — plus the SAME withdrawal default (watched-states
+		// D2), off the batched ledger read the branch makes none of today.
 		recs, err := a.deps.Store.ListProgress(r.Context(), limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
+		done, err := a.deps.Store.ListWatched(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		watched := watchedSet(done)
+		recs = withdrawWatched(recs, watched, includeWatched)
 		dtos := make([]progressDTO, len(recs))
 		for i, rec := range recs {
 			dtos[i] = toProgressDTO(rec)
+			if _, isWatched := watched[rec.ItemID]; isWatched {
+				dtos[i].Watched = true
+			}
 		}
 		writeJSON(w, http.StatusOK, progressListResponse{Items: dtos})
 		return
 	}
 	// The scored default (D7 score-then-window): recsFactsFor already carries
 	// the full positive set it built the progress facts from — no second
-	// read. Score, order score-desc/recency, THEN cut the page.
+	// read. The withdrawal (D2) trims the input set BEFORE the composition,
+	// so the page cut lands on the served rows. Score, order
+	// score-desc/recency, THEN cut the page.
 	facts, err := a.recsFactsFor(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	scores, err := a.scoreProgress(r.Context(), facts.rows, facts)
+	rows := withdrawWatched(facts.rows, facts.watched, includeWatched)
+	scores, err := a.scoreProgress(r.Context(), rows, facts)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	entries := make([]progressScored, len(facts.rows))
-	for i, row := range facts.rows {
+	entries := make([]progressScored, len(rows))
+	for i, row := range rows {
 		entries[i] = progressScored{row: row, score: scores[i]}
 	}
 	orderByScoreRecency(entries)

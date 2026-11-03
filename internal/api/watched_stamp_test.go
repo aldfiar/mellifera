@@ -334,3 +334,114 @@ func TestWatchedSeriesStamp(t *testing.T) {
 		})
 	}
 }
+
+// The watched-states 1.3 duty: the continue surface's withdrawal default —
+// rows whose item is ledgered drop from BOTH branches (the scored default AND
+// the sort=recent opt-out, which gains the batched ledger read it makes none
+// of today), ?include=watched restores them stamped watched: true, an unknown
+// include value is 400 (parseSort's strict-parse posture), and the
+// in-progress rows never move — exact order asserted per branch. Asserted
+// over the REAL router wiring and a real store, the repo's handler-test idiom.
+func TestProgressWatchedWithdrawal(t *testing.T) {
+	h, st, lib := newRecsAPI(t)
+	ctx := context.Background()
+
+	// Three films, positions written old → new: two in-progress and one
+	// completed watch whose positive position stays beside its ledger row
+	// (the detector writes the ledger beside the position). All score the
+	// same 1000 tier (no tags — pure resume bonus), so the scored default's
+	// tie break is recency: any order shift would be a withdrawal bug, not a
+	// scoring accident.
+	older := seedRecsItem(t, st, lib, "pww_o", "pww-o.mkv", map[string]any{}, time.Time{})
+	done := seedRecsItem(t, st, lib, "pww_d", "pww-d.mkv", map[string]any{}, time.Time{})
+	newer := seedRecsItem(t, st, lib, "pww_n", "pww-n.mkv", map[string]any{}, time.Time{})
+	if err := st.InsertWatched(ctx, done.ID, lib, "", time.Now().UTC()); err != nil {
+		t.Fatalf("InsertWatched: %v", err)
+	}
+	for _, p := range []struct {
+		id  string
+		pos int64
+	}{
+		{older.ID, 100},
+		{done.ID, 100},
+		{newer.ID, 100},
+	} {
+		if _, err := st.PutProgress(ctx, p.id, p.pos); err != nil {
+			t.Fatalf("PutProgress %s: %v", p.id, err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	served := func(t *testing.T, url string) []progressDTO {
+		t.Helper()
+		resp := doRequest(t, h, http.MethodGet, url, "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", url, resp.StatusCode)
+		}
+		return decodeProgressList(t, resp).Items
+	}
+	ids := func(rows []progressDTO) []string {
+		out := make([]string, len(rows))
+		for i, d := range rows {
+			out[i] = d.ItemID
+		}
+		return out
+	}
+
+	t.Run("default_withdraws_in_both_branches", func(t *testing.T) {
+		// Both branches drop the ledgered row; the in-progress rows keep
+		// their branch order (score-desc/recency, and the store's recency
+		// window respectively) — withdrawal never reorders.
+		wantIDs(t, ids(served(t, "/api/v1/progress")), newer.ID, older.ID)
+		wantIDs(t, ids(served(t, "/api/v1/progress?sort=recent")), newer.ID, older.ID)
+	})
+
+	t.Run("include_watched_restores_stamped", func(t *testing.T) {
+		// The opt-in restores the completed watch in BOTH branches, carrying
+		// watched: true on the wire; the in-progress rows stay unstamped
+		// (true-only omitempty). The branches place it differently: the
+		// scored default has no resume bonus for a completed watch
+		// (inProgress = hasProgress && !completed — its tags-only score
+		// sinks it last), while sort=recent is pure store recency.
+		for _, tc := range []struct {
+			url   string
+			order []string
+		}{
+			{"/api/v1/progress?include=watched", []string{newer.ID, older.ID, done.ID}},
+			{"/api/v1/progress?sort=recent&include=watched", []string{newer.ID, done.ID, older.ID}},
+		} {
+			rows := served(t, tc.url)
+			wantIDs(t, ids(rows), tc.order...)
+			for _, d := range rows {
+				watched, _ := wireWatchFlags(t, d)
+				if want := d.ItemID == done.ID; watched != want {
+					t.Fatalf("%s: row %s watched on wire = %v, want %v", tc.url, d.ItemID, watched, want)
+				}
+			}
+		}
+	})
+
+	t.Run("unknown_include_is_400_both_branches", func(t *testing.T) {
+		for _, url := range []string{
+			"/api/v1/progress?include=recent",
+			"/api/v1/progress?sort=recent&include=none",
+		} {
+			resp := doRequest(t, h, http.MethodGet, url, "", adminToken)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s: status = %d, want 400", url, resp.StatusCode)
+			}
+		}
+	})
+
+	t.Run("scored_default_stays_scored", func(t *testing.T) {
+		// The withdrawal must not unscore the surface: rec_score still rides
+		// the scored default's rows.
+		for _, d := range served(t, "/api/v1/progress") {
+			if _, has := progressWireScore(t, d); !has {
+				t.Fatalf("scored row %s omitted rec_score", d.ItemID)
+			}
+		}
+	})
+}
