@@ -1,0 +1,8 @@
+schema: lite
+created: 2026-11-03
+goal: >-
+  Watched elements leave the recommendations: the completion ledger gains a
+  served element state (item/series/progress DTOs), the continue rail
+  withdraws watched rows by default, scored grids sink watched entries below
+  unwatched, and the credits-exit case (watch to duration-minus-credits)
+  completes through an explicit client intent flag on the progress write.
