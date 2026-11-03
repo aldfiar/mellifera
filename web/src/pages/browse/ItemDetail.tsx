@@ -1244,7 +1244,10 @@ function IdentityBlock(props: {
           {showEyebrow ? (
             <p className="font-mono text-sm text-muted-foreground">{eyebrow}</p>
           ) : null}
-          <h1 className="break-words text-2xl font-semibold">
+          <h1
+            className="line-clamp-2 break-words text-2xl font-semibold"
+            title={heading}
+          >
             <span className={watched ? "watched-dim" : undefined}>{heading}</span>
             {watched ? (
               <>

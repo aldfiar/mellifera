@@ -2583,3 +2583,22 @@ describe("ItemDetail — player keyboard control (watch-flow-polish 3.4)", () =>
     expect(screen.getByText("Position 1 / 2")).toBeDefined();
   });
 });
+
+describe("ItemDetail — title clamp law (collections-ux 3.2)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("clamps the element page heading at two lines with the full name on the title attribute", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(ITEM_RESPONSE);
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+
+    renderAtId("itm_1_9", freshClient());
+
+    const heading = await screen.findByRole("heading", {
+      level: 1,
+      name: "Оська",
+    });
+    expect(heading.className).toContain("line-clamp-2");
+    expect(heading.getAttribute("title")).toBe("Оська");
+  });
+});

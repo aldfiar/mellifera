@@ -1239,7 +1239,13 @@ function MovieCard(props: {
           </span>
         ) : null}
         {watch.watched ? <WatchedMark className="absolute left-2 top-2" /> : null}
-        <span className={cn("text-sm font-medium", watch.watched && "watched-dim")}>
+        <span
+          className={cn(
+            "line-clamp-2 text-sm font-medium",
+            watch.watched && "watched-dim",
+          )}
+          title={title}
+        >
           {title}
         </span>
         {unidentified ? (
@@ -1803,8 +1809,13 @@ function EpisodesView(props: {
             className="w-24 shrink-0 rounded-md border object-cover"
           />
           <div className="flex min-w-0 flex-col gap-2">
-            <h2 className="text-xl font-semibold">{seriesTitle(series)}</h2>
-            <Synopsis about={series.metadata?.about} />
+            <h2
+              className="line-clamp-2 text-xl font-semibold"
+              title={seriesTitle(series)}
+            >
+              {seriesTitle(series)}
+            </h2>
+            <Synopsis about={series.metadata?.about} clamped />
           </div>
         </header>
       ) : null}
@@ -1889,6 +1900,7 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
             durationSeconds(item.document),
             progressRows,
           );
+          const title = itemTitle(item).title;
           return (
             <li key={item.id}>
               <Link
@@ -1905,11 +1917,12 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
                 ) : null}
                 <span
                   className={cn(
-                    "text-sm font-medium",
+                    "line-clamp-2 text-sm font-medium",
                     watch.watched && "watched-dim",
                   )}
+                  title={title}
                 >
-                  {itemTitle(item).title}
+                  {title}
                 </span>
                 <span className="flex gap-1">
                   <span className="chip">{item.media_type}</span>

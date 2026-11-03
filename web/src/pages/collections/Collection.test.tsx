@@ -2894,3 +2894,155 @@ describe("Collection — series artwork (artwork 3.3)", () => {
     expect(revoke).not.toHaveBeenCalled(); // nothing was created, nothing revoked
   });
 });
+
+describe("Collection — title clamp law (collections-ux 3.2)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // seriesRow — the serial-body idiom's /series wire row, reduced to the
+  // facts the clamp law pins: the SERVED display_name and the scraped About
+  // block the flow header's Synopsis consumes.
+  function seriesRow(parts: {
+    id: string;
+    displayName: string;
+    about?: MetadataAbout;
+  }): SeriesDTO {
+    const d: ItemDocument = { parsed: { dir_name_raw: parts.displayName } };
+    return {
+      id: parts.id,
+      module_id: "serial",
+      library_id: 1,
+      relative_path: parts.displayName,
+      document: d,
+      schema_version: 1,
+      status: "ready",
+      display_name: parts.displayName,
+      ...(parts.about !== undefined ? { metadata: { about: parts.about } } : {}),
+    };
+  }
+
+  it("clamps the flow header heading at two lines with the full name on the title attribute", async () => {
+    fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              seriesRow({
+                id: "ser_1_clamp",
+                displayName: "Очень Длинное Название Сериала",
+              }),
+            ],
+          }),
+        ),
+      "/api/v1/series/ser_1_clamp/episodes": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+    });
+    renderCollection("1");
+
+    fireEvent.click(
+      await screen.findByRole("link", { name: /Очень Длинное Название Сериала/ }),
+    );
+
+    const heading = await screen.findByRole("heading", {
+      name: "Очень Длинное Название Сериала",
+    });
+    expect(heading.className).toContain("line-clamp-2");
+    expect(heading.getAttribute("title")).toBe("Очень Длинное Название Сериала");
+  });
+
+  it("caps the flow header Synopsis at two lines (the watch view keeps its full paragraph)", async () => {
+    const description =
+      "Очень длинный синопсис, который в заголовке потока сериала обязан " +
+      "упереться в двухстрочный потолок, чтобы шапка не вырастала — а на " +
+      "странице просмотра остаётся полным абзацем.";
+    fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              seriesRow({
+                id: "ser_1_syn",
+                displayName: "Show 2019",
+                about: {
+                  source: "shikimori",
+                  description,
+                  genres: ["Драма"],
+                },
+              }),
+            ],
+          }),
+        ),
+      "/api/v1/series/ser_1_syn/episodes": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("link", { name: /Show 2019/ }));
+
+    const panel = await screen.findByRole("region", { name: "About" });
+    const para = within(panel).getByText(description);
+    expect(para.className).toContain("line-clamp-2");
+    // The FULL text rides the native title attribute on the clamped box.
+    expect(para.getAttribute("title")).toBe(description);
+  });
+
+  it("clamps the tv card title at two lines with the full name on the title attribute", async () => {
+    fetchWith({
+      ...headerSeam("tv", 1),
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              item(
+                "itm_1_clamp",
+                "tv",
+                "Movies/Очень Длинное Название Фильма 2019.mkv",
+                doc({ year: 2019 }),
+                "Очень Длинное Название Фильма",
+              ),
+            ],
+          }),
+        ),
+    });
+    renderCollection("1");
+
+    const card = await screen.findByRole("link", {
+      name: /Очень Длинное Название Фильма/,
+    });
+    const span = within(card).getByText("Очень Длинное Название Фильма");
+    expect(span.className).toContain("line-clamp-2");
+    expect(span.getAttribute("title")).toBe("Очень Длинное Название Фильма");
+  });
+
+  it("clamps the default-grid row title at two lines with the title attribute", async () => {
+    fetchWith({
+      ...headerSeam("other", 1),
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              item(
+                "itm_1_row",
+                "other",
+                "Misc/Очень Длинное Имя Ряда.mkv",
+                doc({}),
+                "Очень Длинное Имя Ряда",
+              ),
+            ],
+          }),
+        ),
+    });
+    renderCollection("1");
+
+    const row = await screen.findByRole("link", { name: /Очень Длинное Имя Ряда/ });
+    const span = within(row).getByText("Очень Длинное Имя Ряда");
+    expect(span.className).toContain("line-clamp-2");
+    expect(span.getAttribute("title")).toBe("Очень Длинное Имя Ряда");
+  });
+});
