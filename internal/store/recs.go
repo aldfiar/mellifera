@@ -43,6 +43,42 @@ ON CONFLICT(item_id) DO NOTHING`,
 	return nil
 }
 
+// DeleteWatched un-watches itemID (collections-ux): ONE transaction removes
+// the watched_items ledger row AND resets the playback_progress position to
+// 0 (the PutProgress upsert statement shape — 0 satisfies the CHECK
+// position_seconds >= 0). The reset is what makes the unwatch STICK: the
+// positive-positions-only reads (ListProgress / ListProgressAll WHERE > 0)
+// feed the recs janitor's boot backfill, so a still-positive position would
+// re-ledger the item on the next boot; a rewatch then inserts fresh against
+// the freed PRIMARY KEY. Idempotent: deleting an already-absent row touches
+// nothing and errors on nothing — unwatch is a settled state, not an event.
+func (s *Store) DeleteWatched(ctx context.Context, itemID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: delete watched %s (begin): %w", itemID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM watched_items WHERE item_id = ?", itemID,
+	); err != nil {
+		return fmt.Errorf("store: delete watched %s: %w", itemID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO playback_progress (item_id, position_seconds, updated_at)
+VALUES (?, 0, ?)
+ON CONFLICT(item_id) DO UPDATE SET
+  position_seconds = excluded.position_seconds,
+  updated_at       = excluded.updated_at`,
+		itemID, formatTime(time.Now().UTC()),
+	); err != nil {
+		return fmt.Errorf("store: delete watched %s (reset position): %w", itemID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: delete watched %s (commit): %w", itemID, err)
+	}
+	return nil
+}
+
 // ListWatched returns every completed watch's item id — the completion
 // ledger in FULL, regardless of applied_at (the scorer's completedness fact
 // must survive the janitor's stamp, unlike the learning queue's
