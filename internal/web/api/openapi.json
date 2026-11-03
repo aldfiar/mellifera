@@ -1146,6 +1146,59 @@
                 }
             }
         },
+        "/items/{id}/state": {
+            "put": {
+                "tags": [
+                    "progress"
+                ],
+                "summary": "Set an item's playback state (watched toggle)",
+                "operationId": "put-item-state",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "the target state: watched (ledger the completion) or unwatched (clear the ledger and the resume point)",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.itemStateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.itemStateDTO"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/items/{id}/title": {
             "put": {
                 "tags": [
@@ -2996,6 +3049,31 @@
             "properties": {
                 "item": {
                     "$ref": "#/definitions/api.itemDTO"
+                }
+            }
+        },
+        "api.itemStateDTO": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "type": "string"
+                },
+                "item_id": {
+                    "type": "string"
+                },
+                "position_seconds": {
+                    "type": "integer"
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.itemStateRequest": {
+            "type": "object",
+            "properties": {
+                "state": {
+                    "type": "string"
                 }
             }
         },
