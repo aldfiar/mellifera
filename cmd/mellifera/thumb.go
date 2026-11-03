@@ -70,7 +70,7 @@ type thumbRegrabber struct {
 // plugin manager — the composition root's one wiring point (main.go, beside
 // the Play closure). The returned closure never blocks the PUT longer than
 // the debounce check and never returns an error.
-func newThumbRegrab(st *store.Store, mgr *plugin.Manager) func(ctx context.Context, itemID string, position int64) {
+func newThumbRegrab(st *store.Store, mgr *plugin.Manager) func(ctx context.Context, itemID string, position int64, _ bool) {
 	r := &thumbRegrabber{
 		store:    st,
 		sources:  mgr,
@@ -86,7 +86,9 @@ func newThumbRegrab(st *store.Store, mgr *plugin.Manager) func(ctx context.Conte
 // DETACHED from the request context — context.WithoutCancel, because the
 // request ctx dies with the response while the ffmpeg grab outlives it (D-2).
 // The process-level shutdown still reaps it via the regrabTimeout budget.
-func (r *thumbRegrabber) onProgress(ctx context.Context, itemID string, position int64) {
+// completed (watched-states D3) is the write's explicit-completion intent —
+// the re-grab leg keys on position only and ignores it.
+func (r *thumbRegrabber) onProgress(ctx context.Context, itemID string, position int64, _ bool) {
 	pos := float64(position)
 	r.mu.Lock()
 	if last, ok := r.lastPos[itemID]; ok && math.Abs(pos-last) < r.debounce.Seconds() {

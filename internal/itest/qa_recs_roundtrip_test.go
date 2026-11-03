@@ -368,9 +368,12 @@ func qaRecsRunJanitor(ctx context.Context, st *store.Store, reg *module.Registry
 // mirror of cmd/mellifera's newWatchDetect (package main; every boundary it
 // joins — GetItem, InsertWatched, the document shape — is real). Synchronous,
 // idempotent, log-and-skip: below the floor or without a stored duration it
-// never inserts; a repeat insert is a PK no-op in the store.
-func qaRecsWatchDetect(st *store.Store, wake chan<- struct{}) func(context.Context, string, int64) {
-	return func(ctx context.Context, itemID string, position int64) {
+// never inserts; a repeat insert is a PK no-op in the store. A write carrying
+// the explicit completion intent (watched-states D3: completed true) inserts
+// regardless of the floor — intent needs no duration — mirroring the
+// production leg.
+func qaRecsWatchDetect(st *store.Store, wake chan<- struct{}) func(context.Context, string, int64, bool) {
+	return func(ctx context.Context, itemID string, position int64, completed bool) {
 		it, err := st.GetItem(ctx, itemID)
 		if err != nil {
 			return
@@ -379,12 +382,14 @@ func qaRecsWatchDetect(st *store.Store, wake chan<- struct{}) func(context.Conte
 		if err := json.Unmarshal(it.Document, &doc); err != nil {
 			return
 		}
-		dur, ok := qaRecsProbeDuration(doc["ffprobe"])
-		if !ok {
-			return // no stored duration — never auto-completes
-		}
-		if float64(position) < qaRecsFloor*dur {
-			return
+		if !completed {
+			dur, ok := qaRecsProbeDuration(doc["ffprobe"])
+			if !ok {
+				return // no stored duration — never auto-completes
+			}
+			if float64(position) < qaRecsFloor*dur {
+				return
+			}
 		}
 		if err := st.InsertWatched(ctx, itemID, it.LibraryID, qaRecsSeriesPath(doc), time.Now().UTC()); err != nil {
 			return

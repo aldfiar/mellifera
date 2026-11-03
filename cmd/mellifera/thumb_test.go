@@ -283,20 +283,20 @@ func TestThumbRegrabDebounce(t *testing.T) {
 	r := testRegrabber(st, &fakeThumbSources{src: g})
 
 	ctx := context.Background()
-	r.onProgress(ctx, "itm_1", 100) // first grab for the item: accepted
+	r.onProgress(ctx, "itm_1", 100, false) // first grab for the item: accepted
 	waitForGrabs(t, g, 1)
 
 	// Player-flush drift a few seconds apart, none crossing the 60 s delta
 	// from the last GRABBED position (100): all debounced to zero re-grabs.
 	for _, pos := range []int64{110, 130, 150} {
-		r.onProgress(ctx, "itm_1", pos)
+		r.onProgress(ctx, "itm_1", pos, false)
 	}
 	// A rejected write never spawns a goroutine, so after the second
 	// accepted grab below the count can only be 2 — the settle window is
 	// bounded by construction, not by sleep-and-hope.
-	r.onProgress(ctx, "itm_1", 200) // delta 100 from the last grab: accepted
+	r.onProgress(ctx, "itm_1", 200, false) // delta 100 from the last grab: accepted
 	waitForGrabs(t, g, 2)
-	r.onProgress(ctx, "itm_1", 210) // delta 10 from the new grab: debounced
+	r.onProgress(ctx, "itm_1", 210, false) // delta 10 from the new grab: debounced
 
 	deadline := time.Now().Add(250 * time.Millisecond)
 	for time.Now().Before(deadline) {

@@ -17,12 +17,13 @@ import (
 // other, and every leg keeps its own seam contract — a nil leg is skipped
 // (the seam's nil-safety holds per leg, not just per closure), and a leg's
 // failure never reaches the caller (each leg is log-and-skip internally; the
-// PUT response never carries any of it).
-func fanOut(legs ...func(context.Context, string, int64)) func(context.Context, string, int64) {
-	return func(ctx context.Context, itemID string, position int64) {
+// PUT response never carries any of it). completed (watched-states D3) is the
+// write's explicit-completion intent, handed to every leg.
+func fanOut(legs ...func(context.Context, string, int64, bool)) func(context.Context, string, int64, bool) {
+	return func(ctx context.Context, itemID string, position int64, completed bool) {
 		for _, leg := range legs {
 			if leg != nil {
-				leg(ctx, itemID, position)
+				leg(ctx, itemID, position, completed)
 			}
 		}
 	}
@@ -34,11 +35,15 @@ func fanOut(legs ...func(context.Context, string, int64)) func(context.Context, 
 // inserts one watched_items row (the PK makes a repeat write a no-op — a
 // rewatch never double-counts) and pokes the recs janitor's wake channel so
 // the learning pass runs now instead of waiting out the tick. No stored
-// duration ⇒ never auto-completes (the documented honest absence; manual
-// marking is a later affordance). Every failure is log-and-skip — a progress
-// write is never load-bearing, and the detector never changes a PUT response.
-func newWatchDetect(st *store.Store) func(context.Context, string, int64) {
-	return func(ctx context.Context, itemID string, position int64) {
+// duration ⇒ never auto-completes (the documented honest absence). A write
+// carrying the explicit completion intent (watched-states D3:
+// `completed: true`) inserts the row REGARDLESS of the position floor —
+// intent needs no duration, so a duration-less item completes on intent
+// too; the insert stays the same idempotent PK write and the wake poke is
+// unchanged. Every failure is log-and-skip — a progress write is never
+// load-bearing, and the detector never changes a PUT response.
+func newWatchDetect(st *store.Store) func(context.Context, string, int64, bool) {
+	return func(ctx context.Context, itemID string, position int64, completed bool) {
 		it, err := st.GetItem(ctx, itemID)
 		if err != nil {
 			slog.Warn("watch detect: item lookup failed", "item", itemID, "error", err)
@@ -49,20 +54,27 @@ func newWatchDetect(st *store.Store) func(context.Context, string, int64) {
 			slog.Warn("watch detect: stored document unreadable", "item", itemID, "error", err)
 			return
 		}
-		dur, ok := thumbProbeDuration(doc["ffprobe"])
-		if !ok {
-			slog.Debug("watch detect: no stored duration; not auto-completing", "item", itemID)
-			return
-		}
-		if float64(position) < watchedDurationFloor*dur {
-			return
+		dur, hasDur := thumbProbeDuration(doc["ffprobe"])
+		if !completed {
+			if !hasDur {
+				slog.Debug("watch detect: no stored duration; not auto-completing", "item", itemID)
+				return
+			}
+			if float64(position) < watchedDurationFloor*dur {
+				return
+			}
 		}
 		if err := st.InsertWatched(ctx, itemID, it.LibraryID, watchSeriesPath(doc), time.Now().UTC()); err != nil {
 			slog.Warn("watch detect: insert watched failed", "item", itemID, "error", err)
 			return
 		}
-		slog.Info("watch detect: completion recorded", "item", itemID,
-			"position_seconds", position, "duration_seconds", dur)
+		if completed {
+			slog.Info("watch detect: completion recorded (explicit intent)", "item", itemID,
+				"position_seconds", position)
+		} else {
+			slog.Info("watch detect: completion recorded", "item", itemID,
+				"position_seconds", position, "duration_seconds", dur)
+		}
 		notifyRecs()
 	}
 }

@@ -249,9 +249,13 @@ const (
 
 // progressRequest is the body of PUT /api/v1/progress/{item_id}. The pointer
 // carries presence: a MISSING position_seconds is a non-canonical body (400),
-// distinct from an explicit 0 (a valid "back to start").
+// distinct from an explicit 0 (a valid "back to start"). Completed is the
+// additive explicit-completion intent (watched-states D3): optional, absent
+// decodes to false — the plain floor-only write of today — and true rides the
+// OnProgress seam so the watch-detect leg can ledger past the 0.9 floor.
 type progressRequest struct {
 	PositionSeconds *int64 `json:"position_seconds"`
+	Completed       bool   `json:"completed"`
 }
 
 // progressDTO is the ONE wire shape for a stored playback position (no
@@ -764,8 +768,10 @@ func (a *app) libraryFolders(w http.ResponseWriter, r *http.Request) {
 // untouched; an unknown item is 404 not_found (store.PutProgress refuses
 // before writing, so no orphan row is minted). After a successful upsert the
 // Deps.OnProgress watch-event seam fires (continue-nextup-media D-2) with the
-// request context and the saved write's id + position — after the store call,
-// before the response write, so a closure observes only confirmed writes. A
+// request context and the saved write's id + position, plus the body's
+// explicit-completion intent (watched-states D3: `completed: true` — absent is
+// false) — after the store call, before the response write, so a closure
+// observes only confirmed writes. A
 // nil closure is a silent no-op (progress persistence is never load-bearing
 // on it), and the response is byte-identical either way. The endpoint is
 // never retried.
@@ -805,7 +811,7 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.deps.OnProgress != nil {
-		a.deps.OnProgress(r.Context(), itemID, *req.PositionSeconds)
+		a.deps.OnProgress(r.Context(), itemID, *req.PositionSeconds, req.Completed)
 	}
 	writeJSON(w, http.StatusOK, toProgressDTO(rec))
 }
