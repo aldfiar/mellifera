@@ -902,8 +902,11 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 	// The additive score (D7): the record's item row and the item's library
 	// namer plus the batched facts — the same reads the scored list composes,
 	// scoped to the one entity. The stored zero position (a valid "back to
-	// start") is not in the positive-progress set, so it scores on tags alone
-	// — the InProgress fact is the positive row, exactly as everywhere else.
+	// start") is not in the positive-progress set, so it carries no resume
+	// bonus — the InProgress fact is the positive row, exactly as everywhere
+	// else; an episode of a STARTED series still serves the new-episode bonus
+	// (the series-scoped seed below — D2/D3), the same score the grid
+	// composes for the same entity.
 	it, err := a.deps.Store.GetItem(r.Context(), itemID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -919,8 +922,24 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
+	// The series-scoped startedness seed (D2/D3): an episode scores against
+	// its SERIES' episode rows — a series started by a sibling episode (or by
+	// this episode's own stored ZERO position, which the positive-progress
+	// facts never carry) must serve the new-episode bonus exactly as the grid
+	// does; the one-item slice derivation alone would serve tags-only.
+	startedSeed := (map[string]bool)(nil)
+	if path := seriesPathOf(it); path != "" {
+		started, err := a.seriesStartedFact(r.Context(), n, path, facts)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		if started {
+			startedSeed = map[string]bool{path: true}
+		}
+	}
 	dto := toProgressDTO(rec)
-	dto.RecScore = scoreItems(n, []store.Item{it}, facts)[0]
+	dto.RecScore = scoreItems(n, []store.Item{it}, facts, startedSeed)[0]
 	writeJSON(w, http.StatusOK, dto)
 }
 
@@ -1084,7 +1103,7 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
-		dtos = scoredServe(dtos, scoreItems(n, items, facts),
+		dtos = scoredServe(dtos, scoreItems(n, items, facts, nil),
 			func(d itemDTO) string { return d.ID },
 			func(d itemDTO) string { return d.Display },
 			func(d *itemDTO, s float64) { d.RecScore = s },

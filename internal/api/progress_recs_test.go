@@ -281,3 +281,84 @@ func TestGetProgressRecScore(t *testing.T) {
 		}
 	})
 }
+
+// TestGetProgressRecScoreZeroPositionEpisodeStartedSeries pins the GATE 2
+// reviewer finding on the single-item route's scored composition: an episode
+// of a STARTED series whose OWN stored progress row sits at position ZERO (a
+// valid "back to start", excluded from the positive-progress facts) must
+// serve the new-episode bonus (500 + the joined series-genre weight, within
+// the new-episode window) — the SAME score the items grid serves for the
+// entity — NOT the tags-only score a one-item startedness derivation yields.
+// Both startedness legs are pinned (the spec's started-series definition):
+// a sibling episode carrying a positive progress row, and one carrying only
+// a watched-ledger row.
+func TestGetProgressRecScoreZeroPositionEpisodeStartedSeries(t *testing.T) {
+	h, st, lib := newRecsAPI(t)
+	ctx := context.Background()
+
+	// Two started series, one per startedness leg, both carrying the drama
+	// genre (weight 1) on the SERIES document the episodes join.
+	seedRecsSeries(t, st, lib, "prog-show", recsSeriesDoc("ProgShow", "drama"))
+	seedRecsSeries(t, st, lib, "watched-show", recsSeriesDoc("WatchedShow", "drama"))
+	// The startedness carriers: a positive-progress sibling and a
+	// watched-ledger-only sibling.
+	epProgSibling := seedRecsItem(t, st, lib, "itm_zp1", "prog-show/e1.mkv", recsEpisodeDoc("prog-show", ""), time.Time{})
+	epWatchedSibling := seedRecsItem(t, st, lib, "itm_zw1", "watched-show/e1.mkv", recsEpisodeDoc("watched-show", ""), time.Time{})
+	// The targets under test: fresh episodes whose OWN rows sit at position
+	// ZERO — the write is valid (recs_ordering.go's zero-position contract)
+	// but never lands in the positive-progress facts.
+	epProgTarget := seedRecsItem(t, st, lib, "itm_zp2", "prog-show/e2.mkv", recsEpisodeDoc("prog-show", ""), time.Time{})
+	epWatchedTarget := seedRecsItem(t, st, lib, "itm_zw2", "watched-show/e2.mkv", recsEpisodeDoc("watched-show", ""), time.Time{})
+	if err := st.ApplyTagWeights(ctx, []string{"drama"}, time.Now().UTC()); err != nil {
+		t.Fatalf("ApplyTagWeights: %v", err)
+	}
+	if _, err := st.PutProgress(ctx, epProgSibling.ID, 100); err != nil {
+		t.Fatalf("PutProgress prog sibling: %v", err)
+	}
+	if _, err := st.PutProgress(ctx, epProgTarget.ID, 0); err != nil {
+		t.Fatalf("PutProgress prog target: %v", err)
+	}
+	if err := st.InsertWatched(ctx, epWatchedSibling.ID, lib, "watched-show", time.Now().UTC()); err != nil {
+		t.Fatalf("InsertWatched watched sibling: %v", err)
+	}
+	if _, err := st.PutProgress(ctx, epWatchedTarget.ID, 0); err != nil {
+		t.Fatalf("PutProgress watched target: %v", err)
+	}
+
+	get := func(t *testing.T, id string) float64 {
+		t.Helper()
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/progress/"+id, "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		var pr progressDTO
+		if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+			t.Fatalf("decode progressDTO: %v", err)
+		}
+		got, has := progressWireScore(t, pr)
+		if !has {
+			t.Fatalf("rec_score omitted for %s — the scored route must carry it", id)
+		}
+		return got
+	}
+
+	for _, tc := range []struct {
+		name string
+		id   string
+	}{
+		{"progress_started_sibling", epProgTarget.ID},
+		{"watched_started_sibling", epWatchedTarget.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// 500 (the new-episode bonus, the target is fresh within the
+			// window) + 2 (the tag component: base 1 + the drama weight
+			// joined from the series document — recs.Score's 1+weight rule).
+			// The pre-fix composition served 2 (tags-only): its ONE-item
+			// slice derived startedness solely from the target's own facts.
+			if got := get(t, tc.id); got != 502 {
+				t.Fatalf("rec_score = %v, want 502 (new-episode bonus + tag component; series started by the sibling)", got)
+			}
+		})
+	}
+}

@@ -170,6 +170,14 @@ func (a *app) allFilteredItems(ctx context.Context, libraryID int64, status, pat
 // item IS the new episode, so the fresh entry bubbles in the grid it
 // serves.
 //
+// startedSeed is the series-scoped startedness the CALLER already derived —
+// the single-item progress route's scored composition scores a ONE-item
+// slice, so the slice derivation below cannot see a series started by a
+// sibling episode (or by the target's own zero-position row); getProgress
+// seeds the fact from the series' episode rows (seriesStartedFact). Listings
+// pass nil: their slice IS the full set, so the derivation below is
+// series-scoped already.
+//
 // The photo carve-out branches here first: a photo-scanner-module library
 // (photoModuleID off the namer's already-read library row) scores ALL
 // ZEROS — one ModuleID comparison, no store read — so no surface scoring
@@ -178,12 +186,15 @@ func (a *app) allFilteredItems(ctx context.Context, libraryID int64, status, pat
 // photo GRID's path order itself is enforced in listItems (the scoredServe
 // skip); zeroing here keeps every OTHER surface honest, since equal-zero
 // scores degrade to that surface's own recency/id floor.
-func scoreItems(n namer, items []store.Item, f recsFacts) []float64 {
+func scoreItems(n namer, items []store.Item, f recsFacts, startedSeed map[string]bool) []float64 {
 	scores := make([]float64, len(items))
 	if n.moduleID == photoModuleID {
 		return scores
 	}
-	started := make(map[string]bool)
+	started := make(map[string]bool, len(startedSeed))
+	for path := range startedSeed {
+		started[path] = true
+	}
 	for _, it := range items {
 		if f.hasProgress(it.ID) || f.completed(it.ID) {
 			if path := seriesPathOf(it); path != "" {
@@ -407,10 +418,39 @@ func (a *app) scoreProgress(ctx context.Context, rows []store.PlaybackProgress, 
 		for j, i := range idx {
 			lib[j] = items[i]
 		}
-		libScores := scoreItems(n, lib, f)
+		libScores := scoreItems(n, lib, f, nil)
 		for j, i := range idx {
 			scores[i] = libScores[j]
 		}
 	}
 	return scores, nil
+}
+
+// seriesStartedFact derives the startedness fact SERIES-SCOPED (D2/D3 — the
+// scoreSeries rule: started = ANY episode of the series carrying a progress
+// OR watched row) by reading that one series' episode rows. The single-item
+// progress route's scored composition hands scoreItems a ONE-item slice, so
+// it cannot see a series started by a sibling episode or by the target's own
+// ZERO-position row (a valid write excluded from the positive-progress
+// facts); this read restores the same startedness the grid composes from its
+// full set. One point read for ONE entity — never in a listing loop, so the
+// batched-read rule's anti-N+1 posture holds. The namer's seriesByPath
+// carries the series row the store read needs; a series row that is gone
+// reports not-started — honest absence, the same floor itemTags serves for
+// the identical loss.
+func (a *app) seriesStartedFact(ctx context.Context, n namer, path string, f recsFacts) (bool, error) {
+	sr, ok := n.seriesByPath[path]
+	if !ok {
+		return false, nil
+	}
+	eps, err := a.deps.Store.QueryItemsBySeries(ctx, sr, seriesBacking(sr.Document))
+	if err != nil {
+		return false, err
+	}
+	for _, ep := range eps {
+		if f.hasProgress(ep.ID) || f.completed(ep.ID) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
