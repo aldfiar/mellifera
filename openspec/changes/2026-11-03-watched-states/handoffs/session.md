@@ -22,9 +22,14 @@ Feature: `2026-11-03-watched-states` · lane strict · worktree `mellifera.workt
 
 **THE GATE CATCH (reviewer queue item g):** 3.4's full-suite anchor reded on `TestListItemsScored` — a test NO scoped duty ever matched (`'TestListItemsScored'` contains neither `Order` nor `TestQA` nor `Golden|Progress` patterns), so 3.2's retarget ran green-blind. Root cause was fixture-side, not production: the fixture's `ApplyTagWeights` write was `[]string{"thriller","thriller"}` — no action weight — so watchedFilm's tags-only score was honestly 1 (base), while the retargeted assertion wanted 2; `score_then_window` still pinned the pre-sink page order. Fixed IN-FIXTURE (weights write gains `action`; window retargeted to the served post-sink order) — pins kept at full strength, no production code touched, no assertion weakened. This is the SECOND demonstration of the baseline+gate full-suite-anchor law (cf. PR #21's exported-budget gate).
 
+## GATE 2 (2026-11-03, PASS after one closure round)
+
+- Round 1 (HEAD 8572c9b): 15/15 duty re-runs exit 0 (3.4 full chain 288.7s, regen deterministic); diff-vs-deltas PASS; queue a–g CONFIRMED-OK ((f)'s joint run directly: TestRecsRoundtrip 6/6; full suite covers the pattern gap); standards PASS; symbol-removal PASS; orphans clean. **FAIL: edge 9** — GET /progress/{item_id} served rec_score without `watched` (planned, unwaived).
+- Closure: task 1.6 (new id; drift gate honored) 2e31eab — `dto.Watched = facts.completed(itemID)` at handlers.go:1001 + two TestWatchedItemStamp pins (+35/−0). 3.4 second anchor green (16:38:55Z, zero churn); reviewer re-ran 1.6 (16:40:47Z) + pins fresh `-count=1`. Round 2: **PASS** — 18/18 edges evidenced.
+- Post-gate: review.md records the approval (pre-authorized conditional on PASS: "after review, if all pass, use deploy to alatoic server …"); then archive → merge-back (push + PR — greens git-check) → deploy via `MELLIFERA_REPO=<worktree> bash /Users/aldfiar/projects/go/mellifera-deploy/deploy.sh` → @wf-docs → close-out notes → `wf pipeline clean`.
+
 ## Notes for the next launch / the gate
 
-- GATE 2 next: @wf-reviewer re-runs every green duty (incl. 3.4's full gate chain — expensive but mandated), checks the diff vs the spec deltas, reads reviewer-queue items a–g above, and runs the item (f) joint directly (`go test ./internal/itest -run 'TestRecsRoundtrip$'`).
 - Serial order in group 1 (1.2 → 1.3 → 1.4): handlers.go contention; 1.4 (OnProgress seam widening, api + cmd/mellifera + three test-closure sites) flies solo — any concurrent Go task breaks compile mid-flight.
 - Group 2 plan: 2.1 solo (types + shared useProgressList) → {2.2 ∥ 2.3} → 2.4 (Collection.tsx holds SeriesCard/ItemGrid AND MarkWatchedRow).
 - Group 3 plan: {3.1 ∥ 3.2} → {3.3 ∥ 4.1} → {3.4, 4.2}. 3.3's duty runs nextup.test.ts which 3.2 edits — hence serial after 3.2.
