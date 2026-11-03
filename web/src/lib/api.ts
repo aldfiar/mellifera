@@ -163,11 +163,16 @@ export interface AdminStatus {
 // recommendation score; omitted while zero (omitempty). Ordering input only:
 // GET /progress serves score-desc/recency by default and consumers may show
 // or ignore the number — it is never a UI payload.
+// watched (watched-states 1.3/1.1, additive) — the row is a completed watch
+// the default listing withdraws; present ONLY on a ?include=watched restore
+// (true-only, omitempty): an absent field means not-watched, never a type
+// hole. Served state — never derived client-side.
 export interface ProgressDTO {
   item_id: string;
   position_seconds: number; // int64, > 0 in list responses
   updated_at: string;
   rec_score?: number;
+  watched?: boolean;
 }
 
 // handlers.go progressListResponse — newest-first, positive positions only
@@ -253,6 +258,11 @@ export interface ItemDTO {
   // sources.*.poster. Optional in TS like display_name — an absent field
   // means no art, never a type hole.
   artwork?: string;
+  // watched — the SERVED watched state (watched-states 1.1, additive;
+  // omitempty true-only): the item's ledger records a completed watch.
+  // Absent means not-watched, never a type hole. Served state — the SPA
+  // renders from this field and never derives watchedness client-side.
+  watched?: boolean;
 }
 
 // handlers.go itemsResponse — empty array, never null
@@ -379,6 +389,12 @@ export interface SeriesDTO {
   // read-time stamp ItemDTO carries — one shape, one resolution rule, both
   // wire nouns). Optional in TS: absence means no art, never an empty one.
   artwork?: string;
+  // watched — the SERVED series-level watched state (watched-states 1.2,
+  // additive; omitempty true-only): every backing episode's ledger records a
+  // completed watch. Absent means not-all-watched, never a type hole.
+  // Served state — the SPA renders from this field and never derives
+  // watchedness client-side.
+  watched?: boolean;
 }
 
 // handlers.go seriesListResponse — empty array, never null. GET /series is NOT
@@ -990,16 +1006,31 @@ export async function listItems(params: ListItemsParams): Promise<ItemsResponse>
   return apiRequest<ItemsResponse>(`${ENDPOINTS.items}?${qs.toString()}`);
 }
 
-// listProgress — GET /api/v1/progress[?limit=] (handlers.go listProgress).
-// Newest-first, positive positions only (server INV); the limit is sent only
-// when provided (server default 20, clamped to max 100; a PRESENT
-// non-integer limit is a 400 — omit it unless the caller really wants a
-// specific page size).
-export async function listProgress(limit?: number): Promise<ProgressListResponse> {
+// ListProgressParams — the optional GET /progress query knobs. limit: server
+// default 20, clamped to max 100; a PRESENT non-integer limit is a 400 — omit
+// it unless the caller really wants a specific page size. includeWatched:
+// watched-states 1.3 — the default listing withdraws completed-watch rows;
+// `?include=watched` restores them (400 on any other include value — the
+// strict-parse precedent), and the restored rows carry watched: true.
+export interface ListProgressParams {
+  limit?: number;
+  includeWatched?: boolean;
+}
+
+// listProgress — GET /api/v1/progress[?limit=][&include=watched] (handlers.go
+// listProgress). Newest-first, positive positions only (server INV).
+export async function listProgress(
+  params: ListProgressParams = {},
+): Promise<ProgressListResponse> {
+  const qs = new URLSearchParams();
+  if (params.limit !== undefined) {
+    qs.set("limit", String(params.limit));
+  }
+  if (params.includeWatched) {
+    qs.set("include", "watched");
+  }
   const path =
-    limit !== undefined
-      ? `${ENDPOINTS.progress}?limit=${String(limit)}`
-      : ENDPOINTS.progress;
+    qs.size > 0 ? `${ENDPOINTS.progress}?${qs.toString()}` : ENDPOINTS.progress;
   return apiRequest<ProgressListResponse>(path);
 }
 
@@ -1146,6 +1177,14 @@ export async function playItem(
   });
 }
 
+// PutProgressParams — the optional PUT /progress/{item_id} body flags.
+// completed (watched-states 1.4): the write is a completed watch — the
+// server's watch-detect leg ledgers it regardless of the 0.9 floor. Sent
+// only when true (the wire's completed is a plain bool; omission = false).
+export interface PutProgressParams {
+  completed?: boolean;
+}
+
 // putProgress — PUT /api/v1/progress/{item_id} (handlers.go putProgress,
 // web-ui-phase-3). The player's position-reporting channel: integer seconds,
 // best-effort (a progress failure never interrupts playback). 404 for an
@@ -1153,10 +1192,17 @@ export async function playItem(
 export async function putProgress(
   itemId: string,
   positionSeconds: number,
+  params: PutProgressParams = {},
 ): Promise<ProgressDTO> {
+  const body: Record<string, unknown> = {
+    position_seconds: positionSeconds,
+  };
+  if (params.completed) {
+    body.completed = true;
+  }
   return apiRequest<ProgressDTO>(ENDPOINTS.progressItem(itemId), {
     method: "PUT",
-    body: { position_seconds: positionSeconds } as unknown as BodyInit,
+    body: body as unknown as BodyInit,
   });
 }
 
