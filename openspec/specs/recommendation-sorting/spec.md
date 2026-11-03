@@ -88,7 +88,15 @@ rewatches are PK no-ops). An item with no stored duration SHALL never
 auto-complete. Detection SHALL ride the existing `Deps.OnProgress` seam
 fanned out beside the thumb re-grab, run after the stored upsert, and every
 failure SHALL be log-and-skip — a progress write is never load-bearing. The
-insertion SHALL poke the recs janitor task's wake channel.
+insertion SHALL poke the recs janitor task's wake channel. Because the
+detector fires only on new writes, progress stock that predates it SHALL be
+reconciled into the ledger exactly once per boot (the recs backfill): every
+positive progress row not yet ledgered whose position meets the same
+completion predicate inserts its idempotent row — stamped with the progress
+write's own `updated_at`, never restamping an existing ledger row — and
+pokes the wake, so the stock learns through the same janitor pass a live
+completion takes. The backfill SHALL run boot-only before the janitor's
+boot pass (never per tick) and SHALL stay log-and-skip.
 
 #### Scenario: Crossing 90% records the completion once
 
@@ -96,6 +104,15 @@ insertion SHALL poke the recs janitor task's wake channel.
   then a rewatch crosses it again
 - **THEN** exactly one watched row exists for the item and the later writes
   are no-ops
+
+#### Scenario: Pre-detector stock reconciles at boot
+
+- **WHEN** the server boots holding a positive progress row at ≥ 90% of its
+  stored duration with no watched_items row (a watch that finished before
+  the detector deployed)
+- **THEN** the boot's backfill ledger row carries the progress write's own
+  stamp, a rerun boot is a no-op, and the item stops scoring the InProgress
+  resume bonus
 
 #### Scenario: A detection failure never surfaces in the PUT
 

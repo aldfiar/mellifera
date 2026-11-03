@@ -597,6 +597,11 @@ func main() {
 		// wake's write side is notifyRecs, called by the watch detector.
 		janitorTask{name: "recs", interval: recsInterval, wake: recsWake, fn: newRecsSweep(st, reg)},
 	)
+	// The watch-ledger backfill (recommendation-sorting follow-up), BEFORE the
+	// boot pass: progress stock that predates the watch detector reconciles
+	// into watched_items here, so the recs task's boot run learns it in the
+	// same boot instead of waiting out a tick. Log-and-skip; boot-only.
+	newRecsBackfill(st)(ctx)
 	jan.runBoot(ctx)
 	go jan.run(ctx)
 

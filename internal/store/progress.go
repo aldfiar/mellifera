@@ -70,6 +70,37 @@ WHERE p.item_id = ?`, itemID)
 	return p, nil
 }
 
+// ListProgressAll returns EVERY positive playback position joined to its
+// non-deleted item — the unbounded sibling of ListProgress (same WHERE, same
+// ORDER, no LIMIT). The recs janitor's boot backfill reads the full stock:
+// progress rows that predate the watch detector carry no watched_items row,
+// and a LIMIT page would strand the tail unledgered across boots. Boot-only —
+// the per-request read stays limit-bound (ListProgress).
+func (s *Store) ListProgressAll(ctx context.Context) ([]PlaybackProgress, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT p.item_id, p.position_seconds, p.updated_at
+FROM playback_progress p
+JOIN items i ON i.id = p.item_id AND i.status <> 'deleted'
+WHERE p.position_seconds > 0
+ORDER BY p.updated_at DESC, p.item_id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list progress all: %w", err)
+	}
+	defer rows.Close()
+	out := make([]PlaybackProgress, 0)
+	for rows.Next() {
+		var p PlaybackProgress
+		if err := rows.Scan(&p.ItemID, &p.PositionSeconds, &p.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("store: list progress all scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list progress all: %w", err)
+	}
+	return out, nil
+}
+
 // ListProgress returns up to limit recent playback positions: rows with
 // position_seconds > 0 (zero/absent positions are not "continue" candidates)
 // JOINed to their non-deleted items — rows whose item is gone are skipped, not
