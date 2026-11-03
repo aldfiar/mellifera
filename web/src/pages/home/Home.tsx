@@ -33,6 +33,7 @@ import {
   type NextUpEntry,
 } from "@/lib/nextup";
 import { cn } from "@/lib/utils";
+import { unwatchedRows } from "@/lib/watchedRows";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 
 // Home — the root route's collections surface (web-ui-phase-3 group 4):
@@ -423,9 +424,14 @@ function useProgressDocs(records: ProgressDTO[]): Map<string, ItemDTO> | null {
 // composes serial-episode names), percent-of-duration label + bar when the
 // item's ffprobe duration is known (position label always), source
 // collection, updated stamp, and Play deep-linking into the item detail.
+// Watched-states D2: the shared query fetches ?include=watched, and the rail
+// is the client-side half of the withdrawal — it renders only rows with
+// `watched` absent/false (lib/watchedRows.ts, served flag only); the Next up
+// anchors keep consuming ALL served rows (a fully-watched series still
+// anchors its next unwatched episode).
 function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
   const progress = useProgressList();
-  const records: ProgressDTO[] = progress.data?.items ?? [];
+  const records: ProgressDTO[] = unwatchedRows(progress.data?.items ?? []);
   const docs = useProgressDocs(records);
 
   const cards = useMemo(() => {
