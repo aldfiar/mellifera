@@ -83,6 +83,14 @@ func TestWatchedItemStamp(t *testing.T) {
 		}
 		return rows
 	}
+	progressRow := func(t *testing.T, resp *http.Response) []stampRow {
+		t.Helper()
+		var d progressDTO
+		if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+			t.Fatalf("decode progressDTO: %v", err)
+		}
+		return []stampRow{{d.ItemID, d}}
+	}
 
 	tcs := []struct {
 		name     string
@@ -147,6 +155,27 @@ func TestWatchedItemStamp(t *testing.T) {
 			watched: map[string]bool{
 				epWatched.ID: true,
 			},
+		},
+		// The watched-states 1.6 duty: GET /progress/{item_id} — the ONE
+		// serving route that still missed the stamp (D1's every-serving-route
+		// law; no SPA consumer today, the wire is the contract). The handler
+		// already composes the batched facts for the score, so the stamp is
+		// the same facts.completed fold the scored list runs — pinned on both
+		// wire sides: the ledgered episode's row stamps, the plain film's row
+		// carries nothing (true-only omitempty). Unlike the listing, the
+		// single GET serves the watched row regardless of ?include — the
+		// withdrawal is a rail-page concern, never a per-record one.
+		{
+			name:    "single_progress_get_stamps_watched",
+			url:     "/api/v1/progress/" + epWatched.ID,
+			rows:    progressRow,
+			watched: map[string]bool{epWatched.ID: true},
+		},
+		{
+			name:    "single_progress_get_unwatched_absent",
+			url:     "/api/v1/progress/" + plainFilm.ID,
+			rows:    progressRow,
+			watched: map[string]bool{},
 		},
 	}
 

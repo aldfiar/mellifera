@@ -997,6 +997,10 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	dto := toProgressDTO(rec)
 	dto.RecScore = scoreItems(n, []store.Item{it}, facts, startedSeed)[0]
+	// The watched stamp (watched-states D1, every-serving-route law): the
+	// row's own item against the ledger set the batched facts already carry
+	// — no extra read; true-only on the wire (omitempty).
+	dto.Watched = facts.completed(itemID)
 	writeJSON(w, http.StatusOK, dto)
 }
 

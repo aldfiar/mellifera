@@ -12,6 +12,8 @@
   verify: go test ./... -run 'TestProgressCompletedFlag' || exit 1
 - [ ] 1.5 `internal/recs`: `Entry.Watched` + `Order` partitions watched last (each partition score desc → name → id); wire it in `scoredServe` callers
   verify: go test ./internal/recs -run 'TestOrderWatchedPartition' || exit 1
+- [ ] 1.6 `internal/api`: `GET /progress/{item_id}` stamps `watched,omitempty` on the progress row DTO from its already-composed facts — the rec_score route was the ONE serving route missing the stamp (D1's every-serving-route law; no SPA consumer today, the wire is the contract); pin it on the single-item GET in `TestWatchedItemStamp`
+  verify: go test ./internal/api -run 'TestWatchedItemStamp' || exit 1
 
 ## 2 - SPA: element states + intent writes
 
