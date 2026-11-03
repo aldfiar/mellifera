@@ -71,6 +71,10 @@ degrades enrichment but never blocks a scan.
   direct floor. A watched-artifact budget (default 32 GB) evicts old builds.
 - **Playback progress** — resume positions per item, with Continue and
   Next-up rails on the home page.
+- **Watched states** — episodes watched to ≥ 90 %, to the credits, or past
+  their `completed` flag are ledgered as watched; finished elements show a
+  ✓ state, leave the Continue rail, and sink to the bottom of scored grids;
+  `?include=watched` restores rail rows.
 - **Media serving** — originals and thumbnails served straight from the
   stored document paths, with strong ETags, 304s, and `Range` support.
 - **Web UI** — an embedded React SPA (no separate web server at serve time):
