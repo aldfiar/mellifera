@@ -8,8 +8,9 @@ import { skipSectionAt, type SkipSection } from "@/lib/skipSections";
 // playhead is inside a classified range (lib/skipSections — the SPA never
 // fabricates a skip range), fading away after 4 s inside the range and
 // returning when a seek lands inside again. Activation reports the seek
-// target — a beat past the range's end — and the Player routes it through
-// its existing standard seekTo (no new seek machinery). Color is state:
+// target — a beat past the range's end — plus the range's kind, and the
+// Player routes it through its standard seek (credits additionally fires
+// the completed progress write, watched-states D3). Color is state:
 // intro sky, credits violet — soft pastel, never a pill.
 
 // SKIP_FADE_MS — how long the chip stays fully visible inside the range
@@ -36,8 +37,9 @@ export interface SkipChipProps {
   sections: SkipSection[];
   /** The playhead position in seconds (the Player's timeupdate tracking). */
   currentTime: number;
-  /** Activation target sink — the Player's standard seekTo. */
-  onSkip: (seconds: number) => void;
+  /** Activation sink — the Player routes the seek target plus the range's
+   * kind (credits activation is the watched-states completion edge, D3). */
+  onSkip: (seconds: number, kind: SkipSection["kind"]) => void;
 }
 
 export default function SkipChip(props: SkipChipProps): ReactElement | null {
@@ -65,7 +67,7 @@ export default function SkipChip(props: SkipChipProps): ReactElement | null {
     <button
       type="button"
       data-testid="skip-chip"
-      onClick={() => onSkip(active.end + SKIP_SEEK_PAST_SECONDS)}
+      onClick={() => onSkip(active.end + SKIP_SEEK_PAST_SECONDS, active.kind)}
       className={`absolute bottom-4 right-4 z-10 rounded-lg px-4 py-2 text-sm font-medium shadow-lg transition-opacity duration-700 ${
         faded ? "pointer-events-none opacity-0" : "opacity-100"
       } ${CHIP_TONE[active.kind]}`}

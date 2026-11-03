@@ -1580,11 +1580,11 @@ function SeriesGrid(props: {
 // auto-retries). No view flip — the row is an ACTION, not a view: the menu
 // stays open on success (no collapse) and on failure (a row-local transient
 // error line renders under the row, cleared on the next attempt).
-// Known semantics, accepted default (design open question 1): the server has
-// no watched concept — position=duration does NOT leave the item on the
-// Continue rail (GET /progress is newest-first positive positions); for a
-// series it genuinely advances Next-up. Backlog: "watched flag /
-// Continue-rail filtering (Go)".
+// Effective semantics (watched-states D6): the full-duration write crosses
+// the server's 0.9 watch-detect floor, so the action LEDGERS the item as
+// watched — its Continue-rail row withdraws (GET /progress drops ledgered
+// rows by default) and its series advances Next-up. No new affordance and
+// no behavior change here: the existing action rides the floor law.
 function MarkWatchedRow(props: { itemId: string; duration: number }): ReactElement {
   const [error, setError] = useState<ApiError | null>(null);
   const mark = useMutation<ProgressDTO, ApiError, void>({

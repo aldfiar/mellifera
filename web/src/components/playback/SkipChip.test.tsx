@@ -84,12 +84,14 @@ describe("activation_seeks_past_section_end", () => {
     const { onSkip } = renderChip(45);
     fireEvent.click(theChip());
     expect(onSkip).toHaveBeenCalledTimes(1);
-    expect(onSkip).toHaveBeenCalledWith(90.5);
+    // The kind rides the activation too — the Player's credits-completion
+    // signal (watched-states D3); intro must never carry it.
+    expect(onSkip).toHaveBeenCalledWith(90.5, "intro");
   });
 
   it("seeks a beat past the credits range's end", () => {
     const { onSkip } = renderChip(4050);
     fireEvent.click(theChip());
-    expect(onSkip).toHaveBeenCalledWith(4100.5);
+    expect(onSkip).toHaveBeenCalledWith(4100.5, "credits");
   });
 });
