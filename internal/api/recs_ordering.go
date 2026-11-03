@@ -117,11 +117,20 @@ func (a *app) recsFactsFor(ctx context.Context) (recsFacts, error) {
 	if err != nil {
 		return recsFacts{}, err
 	}
-	watched := make(map[string]struct{}, len(doneIDs))
-	for _, id := range doneIDs {
+	watched := watchedSet(doneIDs)
+	return recsFacts{weights: w, progress: progress, watched: watched, rows: rows}, nil
+}
+
+// watchedSet folds the ledger's item ids into the membership set the watched
+// stamps read (watched-states D1) — the same fold recsFactsFor runs inside
+// its composition. The sort=path opt-out reuses it over its own single
+// ListWatched read: the stamp there needs the ledger alone, no score facts.
+func watchedSet(ids []string) map[string]struct{} {
+	watched := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
 		watched[id] = struct{}{}
 	}
-	return recsFacts{weights: w, progress: progress, watched: watched, rows: rows}, nil
+	return watched
 }
 
 // parseSort reads a scored listing's sort opt-out (D7): absent/empty is the

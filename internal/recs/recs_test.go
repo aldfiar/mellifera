@@ -149,6 +149,48 @@ func TestScoreBonusStacking(t *testing.T) {
 	}
 }
 
+func TestOrderWatchedPartition(t *testing.T) {
+	// D4: every unwatched entry before every watched one, each partition
+	// score desc → display name asc → id asc. The watched fixture towers
+	// past the unwatched scores — affinity alone must not buy the top
+	// partition back.
+	entries := []Entry{
+		{ID: "w1", DisplayName: "Watched High", Score: 1400, Watched: true},
+		{ID: "u3", DisplayName: "Zulu", Score: 400},
+		{ID: "w2", DisplayName: "Атом", Score: 1200, Watched: true},
+		{ID: "u1", DisplayName: "Alpha", Score: 100},
+		{ID: "u2", DisplayName: "Alpha", Score: 200},
+		{ID: "w3", DisplayName: "Атом", Score: 1200, Watched: true},
+		{ID: "u4", DisplayName: "Beta", Score: 400},
+	}
+	wantIDs := []string{"u4", "u3", "u2", "u1", "w1", "w2", "w3"}
+
+	Order(entries)
+	gotIDs := make([]string, 0, len(entries))
+	for _, e := range entries {
+		gotIDs = append(gotIDs, e.ID)
+	}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("Order gave %v, want %v", gotIDs, wantIDs)
+	}
+
+	// The partition law on the result: no watched entry precedes any
+	// unwatched entry, whatever the scores say.
+	lastUnwatched := -1
+	firstWatched := len(entries)
+	for i, e := range entries {
+		if e.Watched {
+			firstWatched = min(firstWatched, i)
+		} else {
+			lastUnwatched = i
+		}
+	}
+	if lastUnwatched > firstWatched {
+		t.Fatalf("partition broken: unwatched at %d after watched at %d: %v",
+			lastUnwatched, firstWatched, gotIDs)
+	}
+}
+
 func TestOrderingAlphabeticalTiebreak(t *testing.T) {
 	tests := []struct {
 		name    string
