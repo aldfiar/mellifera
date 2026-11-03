@@ -51,24 +51,6 @@ func TestWatchedItemStamp(t *testing.T) {
 		t.Fatalf("PutProgress film: %v", err)
 	}
 
-	// wireFlags re-marshals one wire row and reports which of the additive
-	// watched-states fields rode it (the omitempty probes, as in the recs
-	// goldens' wireHasRecScore).
-	wireFlags := func(t *testing.T, d any) (watched, recScore bool) {
-		t.Helper()
-		b, err := json.Marshal(d)
-		if err != nil {
-			t.Fatalf("remarshal wire row: %v", err)
-		}
-		var wire map[string]any
-		if err := json.Unmarshal(b, &wire); err != nil {
-			t.Fatalf("unmarshal wire row: %v", err)
-		}
-		_, watched = wire["watched"]
-		_, recScore = wire["rec_score"]
-		return watched, recScore
-	}
-
 	// stampRow is one surface row reduced to id + opaque DTO — item rows and
 	// progress rows share it, so one table covers both wire shapes.
 	type stampRow struct {
@@ -180,7 +162,168 @@ func TestWatchedItemStamp(t *testing.T) {
 				wantIDs(t, got, tc.order...)
 			}
 			for _, r := range rows {
-				watched, recScore := wireFlags(t, r.dto)
+				watched, recScore := wireWatchFlags(t, r.dto)
+				if watched != tc.watched[r.id] {
+					t.Fatalf("row %s: watched on wire = %v, want %v", r.id, watched, tc.watched[r.id])
+				}
+				if tc.unscored && recScore {
+					t.Fatalf("row %s served rec_score — the surface must stay unscored", r.id)
+				}
+			}
+		})
+	}
+}
+
+// wireWatchFlags re-marshals one wire row and reports which of the additive
+// watched-states fields rode it (the omitempty probes, as in the recs
+// goldens' wireHasRecScore) — shared by both watched-stamp duties.
+func wireWatchFlags(t *testing.T, d any) (watched, recScore bool) {
+	t.Helper()
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("remarshal wire row: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatalf("unmarshal wire row: %v", err)
+	}
+	_, watched = wire["watched"]
+	_, recScore = wire["rec_score"]
+	return watched, recScore
+}
+
+// The watched-states 1.2 duty: the seriesDTO watched stamp — the
+// all-episodes law derived in the scoreSeries walk, stamped on the scored
+// list, the single-series GET (wire parity with the list row), and the
+// sort=path branch (ledger set ALONE — rec_score stays absent, path order
+// untouched). Fully-watched stamps true; a partially-watched or episode-less
+// series stamps NOTHING (wire-absent, the true-only omitempty). Asserted
+// over the REAL router wiring and a real store, the repo's handler-test
+// idiom (newRecsAPI + seedRecs* helpers), the wire shape re-marshaled per
+// row.
+func TestWatchedSeriesStamp(t *testing.T) {
+	h, st, lib := newRecsAPI(t)
+	ctx := context.Background()
+
+	// Three series seeded in alphabetical path order (wshow-e < wshow-f <
+	// wshow-p), so no stamp can be an order accident: the fully-watched
+	// series sits MID-LIST in path order yet must sink last under the scored
+	// partition, and sort=path must keep the store order byte for byte.
+	empty := seedRecsSeries(t, st, lib, "wshow-e", recsSeriesDoc("WEmpty"))
+	full := seedRecsSeries(t, st, lib, "wshow-f", recsSeriesDoc("WFull"))
+	part := seedRecsSeries(t, st, lib, "wshow-p", recsSeriesDoc("WPart"))
+
+	// full: both episodes ledgered. part: one of two — the wire-absent half
+	// of the law. empty: no episode rows at all (a series with zero episodes
+	// is never watched). part's done episode starts the series and its fresh
+	// sibling carries the new-episode bonus, so the scored default floats
+	// part above the tag-less, score-zero empty series and sinks full last.
+	for _, id := range []string{"wst_sf1", "wst_sf2"} {
+		seedRecsItem(t, st, lib, id, "wshow-f/"+id+".mkv", recsEpisodeDoc("wshow-f", ""), time.Time{})
+		if err := st.InsertWatched(ctx, id, lib, "wshow-f", time.Now().UTC()); err != nil {
+			t.Fatalf("InsertWatched %s: %v", id, err)
+		}
+	}
+	seedRecsItem(t, st, lib, "wst_sp1", "wshow-p/wst_sp1.mkv", recsEpisodeDoc("wshow-p", ""), time.Time{})
+	seedRecsItem(t, st, lib, "wst_sp2", "wshow-p/wst_sp2.mkv", recsEpisodeDoc("wshow-p", ""), time.Time{})
+	if err := st.InsertWatched(ctx, "wst_sp1", lib, "wshow-p", time.Now().UTC()); err != nil {
+		t.Fatalf("InsertWatched wst_sp1: %v", err)
+	}
+
+	// stampRow is one surface row reduced to id + opaque DTO — list rows and
+	// the single-series envelope share it, so one table covers both shapes.
+	type stampRow struct {
+		id  string
+		dto any
+	}
+	listRows := func(t *testing.T, resp *http.Response) []stampRow {
+		t.Helper()
+		rows := decodeSeriesList(t, resp)
+		out := make([]stampRow, len(rows))
+		for i, d := range rows {
+			out[i] = stampRow{d.ID, d}
+		}
+		return out
+	}
+	singleRows := func(t *testing.T, resp *http.Response) []stampRow {
+		t.Helper()
+		var sr seriesResponse
+		if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+			t.Fatalf("decode seriesResponse: %v", err)
+		}
+		return []stampRow{{sr.Series.ID, sr.Series}}
+	}
+
+	tcs := []struct {
+		name     string
+		url      string
+		rows     func(t *testing.T, resp *http.Response) []stampRow
+		watched  map[string]bool // id → watched must ride the wire; every served row not listed here must NOT carry it
+		unscored bool            // rec_score must stay off EVERY row of the surface
+		order    []string        // when non-nil, the exact served id order
+	}{
+		{
+			name: "scored_list_stamps_from_the_score_walk",
+			url:  "/api/v1/series?library=" + itoa64(lib),
+			rows: listRows,
+			watched: map[string]bool{
+				full.ID: true,
+			},
+			// The partition reads the stamped field: the fully-watched
+			// series sinks last even though path order puts it mid-list;
+			// part's new-episode bonus floats it above the empty series.
+			order: []string{part.ID, empty.ID, full.ID},
+		},
+		{
+			name:     "single_get_fully_watched_true",
+			url:      "/api/v1/series/" + full.ID,
+			rows:     singleRows,
+			watched:  map[string]bool{full.ID: true},
+			unscored: true, // the detail route never carries rec_score
+		},
+		{
+			name:     "single_get_partially_watched_absent",
+			url:      "/api/v1/series/" + part.ID,
+			rows:     singleRows,
+			watched:  map[string]bool{},
+			unscored: true,
+		},
+		{
+			name:     "single_get_zero_episode_series_absent",
+			url:      "/api/v1/series/" + empty.ID,
+			rows:     singleRows,
+			watched:  map[string]bool{},
+			unscored: true,
+		},
+		{
+			name:     "sort_path_stamps_from_the_ledger_alone",
+			url:      "/api/v1/series?library=" + itoa64(lib) + "&sort=path",
+			rows:     listRows,
+			watched:  map[string]bool{full.ID: true},
+			unscored: true,
+			// QuerySeries' relative_path order, byte for byte — the stamp
+			// must not have reordered it (and no rec_score rides it).
+			order: []string{empty.ID, full.ID, part.ID},
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, h, http.MethodGet, tc.url, "", adminToken)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			rows := tc.rows(t, resp)
+			if tc.order != nil {
+				got := make([]string, len(rows))
+				for i, r := range rows {
+					got[i] = r.id
+				}
+				wantIDs(t, got, tc.order...)
+			}
+			for _, r := range rows {
+				watched, recScore := wireWatchFlags(t, r.dto)
 				if watched != tc.watched[r.id] {
 					t.Fatalf("row %s: watched on wire = %v, want %v", r.id, watched, tc.watched[r.id])
 				}

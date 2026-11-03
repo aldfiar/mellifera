@@ -330,6 +330,13 @@ type seriesDTO struct {
 	// D7) — the same read-time field itemDTO carries: see the field comment
 	// there; one score model, one stamping rule, both wire nouns.
 	RecScore float64 `json:"rec_score,omitempty"`
+	// Watched is the additive watched state (watched-states D1): true only
+	// when EVERY backing episode carries a watched_items ledger row — the
+	// all-episodes law the scoreSeries walk derives (a series with zero
+	// episodes is never watched). Absent (omitempty) otherwise — true-only
+	// on the wire, exactly as itemDTO's stamp; never persisted into the
+	// document.
+	Watched bool `json:"watched,omitempty"`
 }
 
 // seriesListResponse is the wire shape for GET /series.
@@ -1465,7 +1472,10 @@ func strongETag(fi os.FileInfo) string {
 // series' recs facts over batched reads — QuerySeries itself is unpaged, so
 // the full set scores directly; the per-series started/new-episode facts need
 // the library's episodes, one batched item read grouped by the parsed anchor.
-// ?sort=path restores today's relative_path order, unscored.
+// The watched stamp (watched-states D1) derives in the same scoreSeries walk
+// under the scored default; the ?sort=path branch stamps from the ledger set
+// alone (rec_score stays absent, path order untouched). ?sort=path restores
+// today's relative_path order, unscored.
 //
 // @Summary      List a library's series
 // @Tags         series
@@ -1520,12 +1530,45 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
-		dtos = scoredServe(dtos, scoreSeries(n, series, eps, facts),
+		// The watched stamps (watched-states D1) derive in the SAME
+		// scoreSeries episode walk that scores the rows — every backing
+		// episode ledgered, zero episodes never watched, zero extra reads.
+		// The stamp rides the row through scoredServe, whose partition reads
+		// the same fact off the field (one derivation, two consumers).
+		scores, watched := scoreSeries(n, series, eps, facts)
+		for i := range dtos {
+			if watched[i] {
+				dtos[i].Watched = true
+			}
+		}
+		dtos = scoredServe(dtos, scores,
 			func(d seriesDTO) string { return d.ID },
 			func(d seriesDTO) string { return d.Display },
-			func(d seriesDTO) bool { return seriesWatched(eps[d.RelativePath], facts) },
+			func(d seriesDTO) bool { return d.Watched },
 			func(d *seriesDTO, s float64) { d.RecScore = s },
 		)
+	} else {
+		// The watched stamps (watched-states D1) ride the opt-out branch
+		// from the LEDGER ALONE — no score composition (rec_score stays
+		// absent exactly as today) and the store's path order untouched (a
+		// field stamp never reorders). The same all-episodes law reads the
+		// set: a series stamps only when every backing episode is in it.
+		done, err := a.deps.Store.ListWatched(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		watched := watchedSet(done)
+		eps, err := a.libraryEpisodes(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		for i := range dtos {
+			if allLedgered(eps[dtos[i].RelativePath], watched) {
+				dtos[i].Watched = true
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, seriesListResponse{Items: dtos})
 }
@@ -1542,11 +1585,13 @@ func (a *app) libraryEpisodes(ctx context.Context, libraryID int64) (map[string]
 	return episodesBySeries(items), nil
 }
 
-// getSeries: parse {id} → store.GetSeries → write seriesResponse. One domain
-// call (pure delegation, INV1). The id is the opaque ser_ string id, so it is
-// NOT integer-parsed — chi.URLParam returns the raw string. A missing row
-// surfaces from store as a wrapped sql.ErrNoRows → 404 not_found. The
-// serial-level document is returned FULL and opaque (INV-full-document).
+// getSeries: parse {id} → store.GetSeries → write seriesResponse. The id is
+// the opaque ser_ string id, so it is NOT integer-parsed — chi.URLParam
+// returns the raw string. A missing row surfaces from store as a wrapped
+// sql.ErrNoRows → 404 not_found. The serial-level document is returned FULL
+// and opaque (INV-full-document). The additive watched stamp (watched-states
+// D1) composes the same batched facts the scored list runs, so the detail
+// view carries wire parity with its grid row.
 //
 // @Summary      Get a single series with its full serial-level document
 // @Tags         series
@@ -1581,6 +1626,24 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
+	}
+	// The watched stamp (watched-states D1): the detail view composes the
+	// same facts the scored list runs — wire parity with the grid row — and
+	// stamps the all-episodes law over the series' backing episodes (one
+	// batched store read). A partially-watched or episode-less series stamps
+	// nothing (true-only omitempty).
+	facts, err := a.recsFactsFor(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	eps, err := a.deps.Store.QueryItemsBySeries(r.Context(), sr, seriesBacking(sr.Document))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	if seriesWatched(eps, facts) {
+		dtos[0].Watched = true
 	}
 	writeJSON(w, http.StatusOK, seriesResponse{Series: dtos[0]})
 }
