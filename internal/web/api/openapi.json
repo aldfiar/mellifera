@@ -2001,7 +2001,7 @@
                         "required": true
                     },
                     {
-                        "description": "position to store (seconds)",
+                        "description": "position to store (seconds); completed:true marks an explicit completed watch (watched-states D3) — the watch-detect leg ledgers past the 0.9 floor",
                         "name": "request",
                         "in": "body",
                         "required": true,

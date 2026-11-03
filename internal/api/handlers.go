@@ -781,7 +781,7 @@ func (a *app) libraryFolders(w http.ResponseWriter, r *http.Request) {
 // @ID           put-progress
 // @Router       /progress/{item_id} [put]
 // @Param        item_id path string          true "item id (UUID)"
-// @Param        request body progressRequest true "position to store (seconds)"
+// @Param        request body progressRequest true "position to store (seconds); completed:true marks an explicit completed watch (watched-states D3) — the watch-detect leg ledgers past the 0.9 floor"
 // @Success      200 {object} progressDTO
 // @Failure      400 {object} errorBody
 // @Failure      404 {object} errorBody

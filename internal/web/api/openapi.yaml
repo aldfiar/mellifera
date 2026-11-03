@@ -2216,7 +2216,9 @@ paths:
         name: item_id
         required: true
         type: string
-      - description: position to store (seconds)
+      - description: position to store (seconds); completed:true marks an explicit
+          completed watch (watched-states D3) — the watch-detect leg ledgers past
+          the 0.9 floor
         in: body
         name: request
         required: true
