@@ -1124,6 +1124,7 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		dtos = scoredServe(dtos, scoreItems(n, items, facts, nil),
 			func(d itemDTO) string { return d.ID },
 			func(d itemDTO) string { return d.Display },
+			func(d itemDTO) bool { return facts.completed(d.ID) },
 			func(d *itemDTO, s float64) { d.RecScore = s },
 		)
 		// The watched stamps (watched-states D1) ride the SAME batched facts
@@ -1522,6 +1523,7 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		dtos = scoredServe(dtos, scoreSeries(n, series, eps, facts),
 			func(d seriesDTO) string { return d.ID },
 			func(d seriesDTO) string { return d.Display },
+			func(d seriesDTO) bool { return seriesWatched(eps[d.RelativePath], facts) },
 			func(d *seriesDTO, s float64) { d.RecScore = s },
 		)
 	}

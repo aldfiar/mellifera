@@ -343,17 +343,20 @@ func (n namer) genresFor(raw json.RawMessage) []string {
 }
 
 // scoredServe reorders rows into the served scored order — recs.Order, the
-// ONE comparator (score descending, ties by served display name ascending,
-// then id: the alphabetical floor) — and stamps each row's rec_score,
-// returning the ordered copy. scores align with the input order; id and name
-// read the identity and served display name the comparator needs; set stamps
-// the wire field. IDs are unique per surface (the item id, the ser_ id), so
-// the index map is total.
-func scoredServe[T any](rows []T, scores []float64, id func(T) string, name func(T) string, set func(*T, float64)) []T {
+// ONE comparator (every unwatched entry before every watched one, each
+// partition score descending, ties by served display name ascending, then
+// id: the alphabetical floor — watched-states D4) — and stamps each row's
+// rec_score, returning the ordered copy. scores align with the input order;
+// id and name read the identity and served display name the comparator
+// needs; watched reads the ledger fact the partition sinks on — the caller
+// feeds it from the SAME batched facts the score composed, never an extra
+// read; set stamps the wire field. IDs are unique per surface (the item id,
+// the ser_ id), so the index map is total.
+func scoredServe[T any](rows []T, scores []float64, id func(T) string, name func(T) string, watched func(T) bool, set func(*T, float64)) []T {
 	entries := make([]recs.Entry, len(rows))
 	pos := make(map[string]int, len(rows))
 	for i := range rows {
-		entries[i] = recs.Entry{ID: id(rows[i]), DisplayName: name(rows[i]), Score: scores[i]}
+		entries[i] = recs.Entry{ID: id(rows[i]), DisplayName: name(rows[i]), Score: scores[i], Watched: watched(rows[i])}
 		pos[id(rows[i])] = i
 	}
 	recs.Order(entries)
@@ -363,6 +366,24 @@ func scoredServe[T any](rows []T, scores []float64, id func(T) string, name func
 		set(&out[i], e.Score)
 	}
 	return out
+}
+
+// seriesWatched reports the series' watched fact (watched-states): every
+// backing episode ledgered — the same all-episodes law the seriesDTO stamp
+// derives — so an all-watched series sinks below unwatched ones in the
+// grid partition while a partially-watched one stays up (its InProgress
+// bonus already floats it). A series with no episode rows is unwatchable,
+// so it never counts as watched.
+func seriesWatched(eps []store.Item, f recsFacts) bool {
+	if len(eps) == 0 {
+		return false
+	}
+	for _, ep := range eps {
+		if !f.completed(ep.ID) {
+			return false
+		}
+	}
+	return true
 }
 
 // progressScored is one continue-surface row with its derived score — the
