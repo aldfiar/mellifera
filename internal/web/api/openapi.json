@@ -1919,6 +1919,12 @@
                         "description": "sort=recent restores updated_at order (default: recommendation score order, rec_score desc then recency)",
                         "name": "sort",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "include=watched restores completed-watch rows the default withdrawal drops",
+                        "name": "include",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1995,7 +2001,7 @@
                         "required": true
                     },
                     {
-                        "description": "position to store (seconds)",
+                        "description": "position to store (seconds); completed:true marks an explicit completed watch (watched-states D3) — the watch-detect leg ledgers past the 0.9 floor",
                         "name": "request",
                         "in": "body",
                         "required": true,
@@ -2956,6 +2962,10 @@
                 },
                 "title_override": {
                     "type": "string"
+                },
+                "watched": {
+                    "description": "Watched is the additive served watched state (watched-states D1): a\nwatched_items ledger row exists for the item — read-time from the\nbatched ledger read, never persisted, never client-input. True-only\non the wire (omitempty): absent means unwatched, the same\nhonest-absence posture RecScore serves. Stamped on EVERY serving\nroute — unconditional on the wire even where the score is not (the\nsort=path opt-out and the detail/episode routes stamp it while\nserving no rec_score).",
+                    "type": "boolean"
                 }
             }
         },
@@ -3376,6 +3386,10 @@
                 },
                 "updated_at": {
                     "type": "string"
+                },
+                "watched": {
+                    "description": "Watched is the additive served watched state (watched-states D1):\nthe row's item carries a watched_items ledger row — stamped from the\nsame batched ledger facts the score composition reads. True-only on\nthe wire (omitempty): absent means unwatched, the honest-absence\nposture RecScore serves.",
+                    "type": "boolean"
                 }
             }
         },
@@ -3393,6 +3407,9 @@
         "api.progressRequest": {
             "type": "object",
             "properties": {
+                "completed": {
+                    "type": "boolean"
+                },
                 "position_seconds": {
                     "type": "integer"
                 }
@@ -3492,6 +3509,10 @@
                 },
                 "title_override": {
                     "type": "string"
+                },
+                "watched": {
+                    "description": "Watched is the additive watched state (watched-states D1): true only\nwhen EVERY backing episode carries a watched_items ledger row — the\nall-episodes law the scoreSeries walk derives (a series with zero\nepisodes is never watched). Absent (omitempty) otherwise — true-only\non the wire, exactly as itemDTO's stamp; never persisted into the\ndocument.",
+                    "type": "boolean"
                 }
             }
         },

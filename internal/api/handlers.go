@@ -249,9 +249,13 @@ const (
 
 // progressRequest is the body of PUT /api/v1/progress/{item_id}. The pointer
 // carries presence: a MISSING position_seconds is a non-canonical body (400),
-// distinct from an explicit 0 (a valid "back to start").
+// distinct from an explicit 0 (a valid "back to start"). Completed is the
+// additive explicit-completion intent (watched-states D3): optional, absent
+// decodes to false — the plain floor-only write of today — and true rides the
+// OnProgress seam so the watch-detect leg can ledger past the 0.9 floor.
 type progressRequest struct {
 	PositionSeconds *int64 `json:"position_seconds"`
+	Completed       bool   `json:"completed"`
 }
 
 // progressDTO is the ONE wire shape for a stored playback position (no
@@ -265,6 +269,12 @@ type progressDTO struct {
 	PositionSeconds int64   `json:"position_seconds"`
 	UpdatedAt       string  `json:"updated_at"`
 	RecScore        float64 `json:"rec_score,omitempty"`
+	// Watched is the additive served watched state (watched-states D1):
+	// the row's item carries a watched_items ledger row — stamped from the
+	// same batched ledger facts the score composition reads. True-only on
+	// the wire (omitempty): absent means unwatched, the honest-absence
+	// posture RecScore serves.
+	Watched bool `json:"watched,omitempty"`
 }
 
 // progressListResponse is the wire shape for GET /api/v1/progress.
@@ -324,6 +334,13 @@ type seriesDTO struct {
 	// D7) — the same read-time field itemDTO carries: see the field comment
 	// there; one score model, one stamping rule, both wire nouns.
 	RecScore float64 `json:"rec_score,omitempty"`
+	// Watched is the additive watched state (watched-states D1): true only
+	// when EVERY backing episode carries a watched_items ledger row — the
+	// all-episodes law the scoreSeries walk derives (a series with zero
+	// episodes is never watched). Absent (omitempty) otherwise — true-only
+	// on the wire, exactly as itemDTO's stamp; never persisted into the
+	// document.
+	Watched bool `json:"watched,omitempty"`
 }
 
 // seriesListResponse is the wire shape for GET /series.
@@ -441,6 +458,15 @@ type itemDTO struct {
 	// (omitempty) when unscored or zero — honest absence, never a
 	// fabricated 0.
 	RecScore float64 `json:"rec_score,omitempty"`
+	// Watched is the additive served watched state (watched-states D1): a
+	// watched_items ledger row exists for the item — read-time from the
+	// batched ledger read, never persisted, never client-input. True-only
+	// on the wire (omitempty): absent means unwatched, the same
+	// honest-absence posture RecScore serves. Stamped on EVERY serving
+	// route — unconditional on the wire even where the score is not (the
+	// sort=path opt-out and the detail/episode routes stamp it while
+	// serving no rec_score).
+	Watched bool `json:"watched,omitempty"`
 }
 
 // createLibrary: parse createLibraryRequest → store.CreateLibrary → write
@@ -742,8 +768,10 @@ func (a *app) libraryFolders(w http.ResponseWriter, r *http.Request) {
 // untouched; an unknown item is 404 not_found (store.PutProgress refuses
 // before writing, so no orphan row is minted). After a successful upsert the
 // Deps.OnProgress watch-event seam fires (continue-nextup-media D-2) with the
-// request context and the saved write's id + position — after the store call,
-// before the response write, so a closure observes only confirmed writes. A
+// request context and the saved write's id + position, plus the body's
+// explicit-completion intent (watched-states D3: `completed: true` — absent is
+// false) — after the store call, before the response write, so a closure
+// observes only confirmed writes. A
 // nil closure is a silent no-op (progress persistence is never load-bearing
 // on it), and the response is byte-identical either way. The endpoint is
 // never retried.
@@ -753,7 +781,7 @@ func (a *app) libraryFolders(w http.ResponseWriter, r *http.Request) {
 // @ID           put-progress
 // @Router       /progress/{item_id} [put]
 // @Param        item_id path string          true "item id (UUID)"
-// @Param        request body progressRequest true "position to store (seconds)"
+// @Param        request body progressRequest true "position to store (seconds); completed:true marks an explicit completed watch (watched-states D3) — the watch-detect leg ledgers past the 0.9 floor"
 // @Success      200 {object} progressDTO
 // @Failure      400 {object} errorBody
 // @Failure      404 {object} errorBody
@@ -783,7 +811,7 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.deps.OnProgress != nil {
-		a.deps.OnProgress(r.Context(), itemID, *req.PositionSeconds)
+		a.deps.OnProgress(r.Context(), itemID, *req.PositionSeconds, req.Completed)
 	}
 	writeJSON(w, http.StatusOK, toProgressDTO(rec))
 }
@@ -804,12 +832,19 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 // updated_at-desc SQL window, unscored (rec_score omitted). An unknown sort
 // is 400 (the same parse posture as the collection listings).
 //
+// Withdrawal (watched-states D2): rows whose item is ledgered drop from the
+// default listing in BOTH branches — a completed watch has no resume point,
+// its position is spent. ?include=watched restores them (served rows then
+// carry watched: true); an unknown include value is 400, the same strict
+// parse the sort grammar serves.
+//
 // @Summary      Recent playback positions (Continue rail)
 // @Tags         progress
 // @ID           list-progress
 // @Router       /progress [get]
-// @Param        limit query int    false "page size (default 20, max 100)"
-// @Param        sort  query string false "sort=recent restores updated_at order (default: recommendation score order, rec_score desc then recency)"
+// @Param        limit   query int    false "page size (default 20, max 100)"
+// @Param        sort    query string false "sort=recent restores updated_at order (default: recommendation score order, rec_score desc then recency)"
+// @Param        include query string false "include=watched restores completed-watch rows the default withdrawal drops"
 // @Success      200 {object} progressListResponse
 // @Failure      400 {object} errorBody
 // @Failure      500 {object} errorBody
@@ -828,36 +863,55 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
 	}
+	includeWatched, bad := parseInclude(r)
+	if bad != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
+		return
+	}
 	if recent {
 		// The opt-out keeps today's exact contract: the store's own recency
-		// window, unscored.
+		// window, unscored — plus the SAME withdrawal default (watched-states
+		// D2), off the batched ledger read the branch makes none of today.
 		recs, err := a.deps.Store.ListProgress(r.Context(), limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
+		done, err := a.deps.Store.ListWatched(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		watched := watchedSet(done)
+		recs = withdrawWatched(recs, watched, includeWatched)
 		dtos := make([]progressDTO, len(recs))
 		for i, rec := range recs {
 			dtos[i] = toProgressDTO(rec)
+			if _, isWatched := watched[rec.ItemID]; isWatched {
+				dtos[i].Watched = true
+			}
 		}
 		writeJSON(w, http.StatusOK, progressListResponse{Items: dtos})
 		return
 	}
 	// The scored default (D7 score-then-window): recsFactsFor already carries
 	// the full positive set it built the progress facts from — no second
-	// read. Score, order score-desc/recency, THEN cut the page.
+	// read. The withdrawal (D2) trims the input set BEFORE the composition,
+	// so the page cut lands on the served rows. Score, order
+	// score-desc/recency, THEN cut the page.
 	facts, err := a.recsFactsFor(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	scores, err := a.scoreProgress(r.Context(), facts.rows, facts)
+	rows := withdrawWatched(facts.rows, facts.watched, includeWatched)
+	scores, err := a.scoreProgress(r.Context(), rows, facts)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	entries := make([]progressScored, len(facts.rows))
-	for i, row := range facts.rows {
+	entries := make([]progressScored, len(rows))
+	for i, row := range rows {
 		entries[i] = progressScored{row: row, score: scores[i]}
 	}
 	orderByScoreRecency(entries)
@@ -868,6 +922,9 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 	for i, e := range entries {
 		dtos[i] = toProgressDTO(e.row)
 		dtos[i].RecScore = e.score
+		// The watched stamp (watched-states D1): the row's own item against
+		// the ledger map the batched facts already carry — no extra read.
+		dtos[i].Watched = facts.completed(e.row.ItemID)
 	}
 	writeJSON(w, http.StatusOK, progressListResponse{Items: dtos})
 }
@@ -940,6 +997,10 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	dto := toProgressDTO(rec)
 	dto.RecScore = scoreItems(n, []store.Item{it}, facts, startedSeed)[0]
+	// The watched stamp (watched-states D1, every-serving-route law): the
+	// row's own item against the ledger set the batched facts already carry
+	// — no extra read; true-only on the wire (omitempty).
+	dto.Watched = facts.completed(itemID)
 	writeJSON(w, http.StatusOK, dto)
 }
 
@@ -1106,8 +1167,14 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		dtos = scoredServe(dtos, scoreItems(n, items, facts, nil),
 			func(d itemDTO) string { return d.ID },
 			func(d itemDTO) string { return d.Display },
+			func(d itemDTO) bool { return facts.completed(d.ID) },
 			func(d *itemDTO, s float64) { d.RecScore = s },
 		)
+		// The watched stamps (watched-states D1) ride the SAME batched facts
+		// the score composed — the ledger map lookup, no extra read.
+		for i := range dtos {
+			dtos[i].Watched = facts.completed(dtos[i].ID)
+		}
 		if offset > len(dtos) {
 			offset = len(dtos)
 		}
@@ -1115,6 +1182,24 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 			dtos = dtos[offset:end]
 		} else {
 			dtos = dtos[offset:]
+		}
+	} else {
+		// The watched stamps (watched-states D1) ride the opt-out branch
+		// from the LEDGER ALONE: one batched ListWatched read — no score
+		// composition (rec_score stays absent exactly as today), and the
+		// store's id-ordered window is untouched (a field stamp never
+		// reorders). The photo carve-out rides this same branch and stamps
+		// identically.
+		done, err := a.deps.Store.ListWatched(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		watched := watchedSet(done)
+		for i := range dtos {
+			if _, has := watched[dtos[i].ID]; has {
+				dtos[i].Watched = true
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, itemsResponse{Items: dtos})
@@ -1211,6 +1296,17 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dto := dtos[0]
+	// The additive watched stamp (watched-states D1): the detail view gains
+	// the same recsFactsFor composition getProgress runs — the batched
+	// ledger read answers the one fact the route serves. The route never
+	// carries rec_score (the scored single-record route is getProgress);
+	// the stamp is unconditional on the wire even where the score is not.
+	facts, err := a.recsFactsFor(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dto.Watched = facts.completed(id)
 	extras, err := a.deps.Store.ListItemParsers(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1412,7 +1508,10 @@ func strongETag(fi os.FileInfo) string {
 // series' recs facts over batched reads — QuerySeries itself is unpaged, so
 // the full set scores directly; the per-series started/new-episode facts need
 // the library's episodes, one batched item read grouped by the parsed anchor.
-// ?sort=path restores today's relative_path order, unscored.
+// The watched stamp (watched-states D1) derives in the same scoreSeries walk
+// under the scored default; the ?sort=path branch stamps from the ledger set
+// alone (rec_score stays absent, path order untouched). ?sort=path restores
+// today's relative_path order, unscored.
 //
 // @Summary      List a library's series
 // @Tags         series
@@ -1467,11 +1566,45 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
-		dtos = scoredServe(dtos, scoreSeries(n, series, eps, facts),
+		// The watched stamps (watched-states D1) derive in the SAME
+		// scoreSeries episode walk that scores the rows — every backing
+		// episode ledgered, zero episodes never watched, zero extra reads.
+		// The stamp rides the row through scoredServe, whose partition reads
+		// the same fact off the field (one derivation, two consumers).
+		scores, watched := scoreSeries(n, series, eps, facts)
+		for i := range dtos {
+			if watched[i] {
+				dtos[i].Watched = true
+			}
+		}
+		dtos = scoredServe(dtos, scores,
 			func(d seriesDTO) string { return d.ID },
 			func(d seriesDTO) string { return d.Display },
+			func(d seriesDTO) bool { return d.Watched },
 			func(d *seriesDTO, s float64) { d.RecScore = s },
 		)
+	} else {
+		// The watched stamps (watched-states D1) ride the opt-out branch
+		// from the LEDGER ALONE — no score composition (rec_score stays
+		// absent exactly as today) and the store's path order untouched (a
+		// field stamp never reorders). The same all-episodes law reads the
+		// set: a series stamps only when every backing episode is in it.
+		done, err := a.deps.Store.ListWatched(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		watched := watchedSet(done)
+		eps, err := a.libraryEpisodes(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		for i := range dtos {
+			if allLedgered(eps[dtos[i].RelativePath], watched) {
+				dtos[i].Watched = true
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, seriesListResponse{Items: dtos})
 }
@@ -1488,11 +1621,13 @@ func (a *app) libraryEpisodes(ctx context.Context, libraryID int64) (map[string]
 	return episodesBySeries(items), nil
 }
 
-// getSeries: parse {id} → store.GetSeries → write seriesResponse. One domain
-// call (pure delegation, INV1). The id is the opaque ser_ string id, so it is
-// NOT integer-parsed — chi.URLParam returns the raw string. A missing row
-// surfaces from store as a wrapped sql.ErrNoRows → 404 not_found. The
-// serial-level document is returned FULL and opaque (INV-full-document).
+// getSeries: parse {id} → store.GetSeries → write seriesResponse. The id is
+// the opaque ser_ string id, so it is NOT integer-parsed — chi.URLParam
+// returns the raw string. A missing row surfaces from store as a wrapped
+// sql.ErrNoRows → 404 not_found. The serial-level document is returned FULL
+// and opaque (INV-full-document). The additive watched stamp (watched-states
+// D1) composes the same batched facts the scored list runs, so the detail
+// view carries wire parity with its grid row.
 //
 // @Summary      Get a single series with its full serial-level document
 // @Tags         series
@@ -1527,6 +1662,24 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
+	}
+	// The watched stamp (watched-states D1): the detail view composes the
+	// same facts the scored list runs — wire parity with the grid row — and
+	// stamps the all-episodes law over the series' backing episodes (one
+	// batched store read). A partially-watched or episode-less series stamps
+	// nothing (true-only omitempty).
+	facts, err := a.recsFactsFor(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	eps, err := a.deps.Store.QueryItemsBySeries(r.Context(), sr, seriesBacking(sr.Document))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	if seriesWatched(eps, facts) {
+		dtos[0].Watched = true
 	}
 	writeJSON(w, http.StatusOK, seriesResponse{Series: dtos[0]})
 }
@@ -1576,6 +1729,18 @@ func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
+	}
+	// The watched stamps (watched-states D1): the episode table gains the
+	// same recsFactsFor composition the single-item route runs — each row
+	// stamps from the batched ledger facts. Narrative order stays (a field
+	// stamp never reorders) and the route serves no rec_score.
+	facts, err := a.recsFactsFor(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	for i := range dtos {
+		dtos[i].Watched = facts.completed(dtos[i].ID)
 	}
 	writeJSON(w, http.StatusOK, itemsResponse{Items: dtos})
 }

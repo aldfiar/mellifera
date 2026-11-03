@@ -81,7 +81,7 @@ func TestRecsUnstampedResume(t *testing.T) {
 	putRecsProbeItem(t, ctx, st, "it_resume", 2,
 		`{"format": {"duration": "3600"}}`,
 		`{"description": "d", "genres": ["Action", "Comedy"]}`)
-	newWatchDetect(st)(ctx, "it_resume", 3300) // 91.7% — completion recorded, NO sweep ran
+	newWatchDetect(st)(ctx, "it_resume", 3300, false) // 91.7% — completion recorded, NO sweep ran
 	if got := watchedCount(t, ctx, st); got != 1 {
 		t.Fatalf("unstamped watched rows before restart = %d, want 1", got)
 	}
@@ -152,14 +152,14 @@ func TestRecsRewatchNoop(t *testing.T) {
 		`{"format": {"duration": "600"}}`,
 		`{"description": "d", "genres": ["Action"]}`)
 	detect := newWatchDetect(st)
-	detect(ctx, "it_rewatch", 570) // 95% — first completion
+	detect(ctx, "it_rewatch", 570, false) // 95% — first completion
 	drainRecsWake(t)
 	newRecsSweep(st, reg)(ctx)
 	recsAssertWeights(t, st, map[string]int64{"action": 1})
 	recsAssertQueueEmpty(t, st)
 
 	// The rewatch: past the floor again, long after the first completion.
-	detect(ctx, "it_rewatch", 599)
+	detect(ctx, "it_rewatch", 599, false)
 	drainRecsWake(t)
 	if got := watchedCount(t, ctx, st); got != 0 {
 		t.Fatalf("rewatch landed %d unstamped rows, want 0 (PK dedupes)", got)
@@ -183,7 +183,7 @@ func TestRecsNoDurationNeverCompletes(t *testing.T) {
 	putRecsProbeItem(t, ctx, st, "it_nodur", 1, `{}`,
 		`{"description": "d", "genres": ["Action"]}`)
 
-	newWatchDetect(st)(ctx, "it_nodur", 999999) // no duration to compare against
+	newWatchDetect(st)(ctx, "it_nodur", 999999, false) // no duration to compare against
 
 	if got := watchedCount(t, ctx, st); got != 0 {
 		t.Fatalf("watched rows = %d, want 0 without a stored duration", got)

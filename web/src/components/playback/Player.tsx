@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import Hls from "hls.js";
 
 import type { PlaybackDescriptor } from "@/lib/api";
 import { putProgress, sendPlaybackEvent } from "@/lib/api";
 import type { PlaybackEventMode, PlaybackEventPhase } from "@/lib/api";
-import { skipSections } from "@/lib/skipSections";
+import { skipSections, type SkipKind } from "@/lib/skipSections";
 import SkipChip from "@/components/playback/SkipChip";
 import AutoNext from "@/components/playback/AutoNext";
 
@@ -38,7 +38,10 @@ import AutoNext from "@/components/playback/AutoNext";
 // playback so they are warm before any episode can end.
 // Progress: best-effort PUT /progress/{item_id} reporting
 // (throttled to ≥5 s of drift, plus pause/ended/unmount) — a progress
-// failure never interrupts playback.
+// failure never interrupts playback. The two explicit-completion edges
+// (watched-states D3) — the video's ended edge and the SkipChip credits
+// activation — carry `completed: true` on the write and force past the
+// floor-second reporting dedupe.
 //
 // Retry: a failed packaging run (state "failed") renders the retry affordance
 // wired to the page's onRetry (POST /play {retry:true}) — the ONLY playback
@@ -141,6 +144,34 @@ export default function Player(props: PlayerProps): ReactElement {
       // swallowed — the beacon is never load-bearing
     });
   };
+
+  // report — the player's ONE progress write helper (watched-states D3):
+  // every write — throttled playhead reporting, the pause/unmount flush, and
+  // the two explicit-completion edges — goes through it. `completed` marks
+  // the watched-states completion edges (the video `ended` edge and the
+  // SkipChip credits activation): the write carries `completed: true` and
+  // BYPASSES the floor-second `reportedRef` dedupe — finishing at an
+  // already-reported second is exactly the edge this flag exists for, and
+  // the dedupe must not silently swallow it. Unflagged writes keep the
+  // two-arg putProgress call (no params object rides the wire). Memoized on
+  // itemId so the reporting effect below can name it without re-subscribing
+  // its listeners per render.
+  const report = useCallback(
+    (position: number, completed = false): void => {
+      const seconds = Math.floor(position);
+      if (!completed && seconds === reportedRef.current) {
+        return;
+      }
+      reportedRef.current = seconds;
+      const write = completed
+        ? putProgress(itemId, seconds, { completed: true })
+        : putProgress(itemId, seconds);
+      write.catch(() => {
+        // progress is never load-bearing — swallow and keep playing
+      });
+    },
+    [itemId],
+  );
 
   // The classified intro/credits ranges (watch-flow-polish 3.1, D2): pure
   // SPA-side classification of the served sections — re-derived only when
@@ -295,40 +326,33 @@ export default function Player(props: PlayerProps): ReactElement {
   }, [voiceoverTrack, playPath, isHls]);
 
   // Progress reporting — best-effort; the playhead edges (pause/ended) and
-  // unmount flush the tail position.
+  // unmount flush the tail position. The ended edge is one of the two
+  // explicit-completion edges (watched-states D3): finishing the file
+  // finishes the episode — its write carries `completed: true` (see report).
   useEffect(() => {
     const video = videoRef.current;
     if (!video) {
       return;
     }
-    const report = (position: number): void => {
-      const seconds = Math.floor(position);
-      if (seconds === reportedRef.current) {
-        return;
-      }
-      reportedRef.current = seconds;
-      putProgress(itemId, seconds).catch(() => {
-        // progress is never load-bearing — swallow and keep playing
-      });
-    };
     const onTimeUpdate = (): void => {
       if (Math.abs(video.currentTime - reportedRef.current) >= PROGRESS_DRIFT_SECONDS) {
         report(video.currentTime);
       }
     };
     const onEdge = (): void => report(video.currentTime);
+    const onEnded = (): void => report(video.currentTime, true);
     video.addEventListener("timeupdate", onTimeUpdate);
     video.addEventListener("pause", onEdge);
-    video.addEventListener("ended", onEdge);
+    video.addEventListener("ended", onEnded);
     return () => {
       video.removeEventListener("timeupdate", onTimeUpdate);
       video.removeEventListener("pause", onEdge);
-      video.removeEventListener("ended", onEdge);
+      video.removeEventListener("ended", onEnded);
       if (video.currentTime > 0) {
         report(video.currentTime); // flush the tail on unmount
       }
     };
-  }, [itemId]);
+  }, [itemId, report]);
 
   // Playhead tracking — the skip chip's in-range input (watch-flow-polish
   // 3.1): every timeupdate re-reads currentTime; the chip renders only while
@@ -376,6 +400,18 @@ export default function Player(props: PlayerProps): ReactElement {
     }
   };
 
+  // handleSkip — the SkipChip's activation sink (watch-flow-polish 3.1):
+  // the standard seek above, plus — credits ONLY (watched-states D3) — the
+  // explicit-completion write at the jump position (the flag forces the
+  // write past the floor-second dedupe). An intro skip is a pure seek: no
+  // write, no flag — NO other path sets the flag.
+  const handleSkip = (seconds: number, kind: SkipKind): void => {
+    seekTo(seconds);
+    if (kind === "credits") {
+      report(seconds, true);
+    }
+  };
+
   return (
     <section aria-label="Player" className="flex flex-col gap-3">
       {error ? (
@@ -412,9 +448,10 @@ export default function Player(props: PlayerProps): ReactElement {
 
         {/* Skip chip (watch-flow-polish 3.1): over the video's bottom-right,
             rendered only inside a classified range; activation rides the
-            standard seekTo above. */}
+            standard seek (handleSkip — credits activation additionally fires
+            the completed write, watched-states D3). */}
         {skipRanges.length > 0 ? (
-          <SkipChip sections={skipRanges} currentTime={playhead} onSkip={seekTo} />
+          <SkipChip sections={skipRanges} currentTime={playhead} onSkip={handleSkip} />
         ) : null}
 
         {/* Auto-next card (watch-flow-polish 3.3): mounted for the WHOLE

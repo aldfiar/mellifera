@@ -117,11 +117,39 @@ func (a *app) recsFactsFor(ctx context.Context) (recsFacts, error) {
 	if err != nil {
 		return recsFacts{}, err
 	}
-	watched := make(map[string]struct{}, len(doneIDs))
-	for _, id := range doneIDs {
+	watched := watchedSet(doneIDs)
+	return recsFacts{weights: w, progress: progress, watched: watched, rows: rows}, nil
+}
+
+// watchedSet folds the ledger's item ids into the membership set the watched
+// stamps read (watched-states D1) — the same fold recsFactsFor runs inside
+// its composition. The sort=path opt-out reuses it over its own single
+// ListWatched read: the stamp there needs the ledger alone, no score facts.
+func watchedSet(ids []string) map[string]struct{} {
+	watched := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
 		watched[id] = struct{}{}
 	}
-	return recsFacts{weights: w, progress: progress, watched: watched, rows: rows}, nil
+	return watched
+}
+
+// withdrawWatched drops the ledgered rows from a progress listing's input set
+// (watched-states D2): the rail's purpose is resume points, and a completed
+// watch has none — its position is spent. includeWatched (the
+// ?include=watched opt-in) restores them; both branches run it so the opt-out
+// cannot resurrect withdrawn rows anywhere. The returned rows are exactly the
+// ones that serve — the caller stamps the ledgered ones watched.
+func withdrawWatched(rows []store.PlaybackProgress, watched map[string]struct{}, includeWatched bool) []store.PlaybackProgress {
+	if includeWatched {
+		return rows
+	}
+	kept := make([]store.PlaybackProgress, 0, len(rows))
+	for _, row := range rows {
+		if _, done := watched[row.ItemID]; !done {
+			kept = append(kept, row)
+		}
+	}
+	return kept
 }
 
 // parseSort reads a scored listing's sort opt-out (D7): absent/empty is the
@@ -138,6 +166,22 @@ func parseSort(r *http.Request, optOut string) (opted bool, bad string) {
 		bad = `sort must be "` + optOut + `" (the only opt-out; omit it for the scored default)`
 	}
 	return opted, bad
+}
+
+// parseInclude reads the progress listing's include grammar (watched-states
+// D2): absent/empty serves the withdrawal default (ledgered rows dropped);
+// "watched" restores them. Any other value is a bad request — the same
+// strict-parse posture as parseSort: a silently ignored value would serve a
+// row set the client cannot reason about.
+func parseInclude(r *http.Request) (watched bool, bad string) {
+	switch r.URL.Query().Get("include") {
+	case "":
+	case "watched":
+		watched = true
+	default:
+		bad = `include must be "watched" (the only include; omit it for the withdrawal default)`
+	}
+	return watched, bad
 }
 
 // allFilteredItems reads the FULL filtered item set (D7's score-then-window
@@ -215,21 +259,26 @@ func scoreItems(n namer, items []store.Item, f recsFacts, startedSeed map[string
 }
 
 // scoreSeries derives one recommendation score per series row, aligned with
-// srs, from the series' grouped episodes (D2/D3). Started means ANY episode
-// carries a progress OR watched row (the spec's started-series definition —
-// the watched ledger is the startedness leg the progress facts alone could
-// not see); the InProgress bonus needs an episode with a positive progress
-// row that has NOT completed (a fully-watched series keeps its progress rows
-// but carries no resume bonus — watched-to-the-end does not float); the
-// new-episode bonus needs the started series carrying an episode with
-// neither a progress nor a watched row discovered in the window. An
+// srs, from the series' grouped episodes (D2/D3) — plus the watched law
+// (watched-states D1) folded in the SAME walk: every episode's ledger fact
+// is already read, so the all-episodes fold costs nothing. Started means ANY
+// episode carries a progress OR watched row (the spec's started-series
+// definition — the watched ledger is the startedness leg the progress facts
+// alone could not see); the InProgress bonus needs an episode with a positive
+// progress row that has NOT completed (a fully-watched series keeps its
+// progress rows but carries no resume bonus — watched-to-the-end does not
+// float); the new-episode bonus needs the started series carrying an episode
+// with neither a progress nor a watched row discovered in the window. An
 // unstarted series never carries the bonus (D3). The tags are the series
 // document's own genres (D1). Photo libraries have no series rows (series
-// are serial-only), so no photo case exists here.
-func scoreSeries(n namer, srs []store.Series, eps map[string][]store.Item, f recsFacts) []float64 {
+// are serial-only), so no photo case exists here. Both returned slices align
+// with srs.
+func scoreSeries(n namer, srs []store.Series, eps map[string][]store.Item, f recsFacts) ([]float64, []bool) {
 	scores := make([]float64, len(srs))
+	watched := make([]bool, len(srs))
 	for i, sr := range srs {
 		started, inProgress, fresh := false, false, false
+		allDone := len(eps[sr.RelativePath]) > 0
 		for _, ep := range eps[sr.RelativePath] {
 			hasProgress, done := f.hasProgress(ep.ID), f.completed(ep.ID)
 			if hasProgress || done {
@@ -241,14 +290,16 @@ func scoreSeries(n namer, srs []store.Series, eps map[string][]store.Item, f rec
 			if !hasProgress && !done && time.Since(ep.CreatedAt) <= newEpisodeWindow {
 				fresh = true
 			}
+			allDone = allDone && done
 		}
+		watched[i] = allDone
 		scores[i] = recs.Score(recs.EntityState{
 			InProgress: inProgress,
 			NewEpisode: started && fresh,
 			Tags:       n.genresFor(sr.Document),
 		}, f.weights)
 	}
-	return scores
+	return scores, watched
 }
 
 // seriesPathOf reads an item's parsed series anchor
@@ -334,17 +385,20 @@ func (n namer) genresFor(raw json.RawMessage) []string {
 }
 
 // scoredServe reorders rows into the served scored order — recs.Order, the
-// ONE comparator (score descending, ties by served display name ascending,
-// then id: the alphabetical floor) — and stamps each row's rec_score,
-// returning the ordered copy. scores align with the input order; id and name
-// read the identity and served display name the comparator needs; set stamps
-// the wire field. IDs are unique per surface (the item id, the ser_ id), so
-// the index map is total.
-func scoredServe[T any](rows []T, scores []float64, id func(T) string, name func(T) string, set func(*T, float64)) []T {
+// ONE comparator (every unwatched entry before every watched one, each
+// partition score descending, ties by served display name ascending, then
+// id: the alphabetical floor — watched-states D4) — and stamps each row's
+// rec_score, returning the ordered copy. scores align with the input order;
+// id and name read the identity and served display name the comparator
+// needs; watched reads the ledger fact the partition sinks on — the caller
+// feeds it from the SAME batched facts the score composed, never an extra
+// read; set stamps the wire field. IDs are unique per surface (the item id,
+// the ser_ id), so the index map is total.
+func scoredServe[T any](rows []T, scores []float64, id func(T) string, name func(T) string, watched func(T) bool, set func(*T, float64)) []T {
 	entries := make([]recs.Entry, len(rows))
 	pos := make(map[string]int, len(rows))
 	for i := range rows {
-		entries[i] = recs.Entry{ID: id(rows[i]), DisplayName: name(rows[i]), Score: scores[i]}
+		entries[i] = recs.Entry{ID: id(rows[i]), DisplayName: name(rows[i]), Score: scores[i], Watched: watched(rows[i])}
 		pos[id(rows[i])] = i
 	}
 	recs.Order(entries)
@@ -354,6 +408,32 @@ func scoredServe[T any](rows []T, scores []float64, id func(T) string, name func
 		set(&out[i], e.Score)
 	}
 	return out
+}
+
+// seriesWatched reports the series' watched fact (watched-states): every
+// backing episode ledgered — the same all-episodes law the seriesDTO stamp
+// derives — so an all-watched series sinks below unwatched ones in the
+// grid partition while a partially-watched one stays up (its InProgress
+// bonus already floats it). A series with no episode rows is unwatchable,
+// so it never counts as watched.
+func seriesWatched(eps []store.Item, f recsFacts) bool {
+	return allLedgered(eps, f.watched)
+}
+
+// allLedgered is the all-episodes law over the ledger membership set: true
+// only when eps is non-empty and every episode id sits in the set. The full
+// facts read it through seriesWatched; the sort=path opt-out reads it
+// directly over its own watchedSet fold (the ledger alone — no score facts).
+func allLedgered(eps []store.Item, watched map[string]struct{}) bool {
+	if len(eps) == 0 {
+		return false
+	}
+	for _, ep := range eps {
+		if _, has := watched[ep.ID]; !has {
+			return false
+		}
+	}
+	return true
 }
 
 // progressScored is one continue-surface row with its derived score — the

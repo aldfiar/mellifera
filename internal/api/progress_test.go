@@ -211,7 +211,7 @@ func TestProgressOnProgress(t *testing.T) {
 		h := New(Deps{
 			AdminToken: adminToken,
 			Store:      st,
-			OnProgress: func(ctx context.Context, id string, pos int64) {
+			OnProgress: func(ctx context.Context, id string, pos int64, completed bool) {
 				_, err := st.GetProgress(ctx, id)
 				calls = append(calls, struct {
 					itemID   string

@@ -262,15 +262,20 @@ export function useItem(id: string): UseQueryResult<ItemResponse> {
   });
 }
 
-// useProgressList — GET /api/v1/progress via listProgress. Keyed ["progress"]:
-// the Home Continue/Next up rows share one cache entry, and the per-item
-// documents they fan out into reuse the ["item", id] entries the detail page
-// owns. Wire shape mirrored verbatim (progressListResponse — newest-first,
-// positive positions only, server-side limit default 20 / max 100).
+// useProgressList — GET /api/v1/progress?include=watched via listProgress
+// (watched-states 2.1). Keyed ["progress"]: the Home Continue/Next up rows
+// share one cache entry, and the per-item documents they fan out into reuse
+// the ["item", id] entries the detail page owns. The include rides THIS
+// shared fetch — every consumer (Home's rails, ItemDetail's resume row)
+// inherits the wider row set with one fetch: the default listing withdraws
+// completed-watch rows, so without the param ItemDetail's resume row and
+// Home's rail rows would silently differ per surface. Wire shape mirrored
+// verbatim (progressListResponse — newest-first, positive positions only,
+// server-side limit default 20 / max 100; restored rows carry watched: true).
 export function useProgressList(): UseQueryResult<ProgressListResponse> {
   return useQuery({
     queryKey: ["progress"],
-    queryFn: () => listProgress(),
+    queryFn: () => listProgress({ includeWatched: true }),
   });
 }
 

@@ -337,7 +337,7 @@ describe("Player — sections (click-to-seek)", () => {
 });
 
 describe("Player — progress reporting (PUT /progress)", () => {
-  it("reports the position on pause and on ended", () => {
+  it("reports the position on pause, and on ended with completed: true (watched-states D3)", () => {
     renderPlayer(HLS_DESCRIPTOR);
     const video = theVideo();
 
@@ -347,7 +347,9 @@ describe("Player — progress reporting (PUT /progress)", () => {
 
     video.currentTime = 90;
     fireEvent.ended(video);
-    expect(apiModule.putProgress).toHaveBeenLastCalledWith("itm_1_9", 90);
+    expect(apiModule.putProgress).toHaveBeenLastCalledWith("itm_1_9", 90, {
+      completed: true,
+    });
   });
 
   it("throttles timeupdate reporting to ≥5 s of drift", () => {

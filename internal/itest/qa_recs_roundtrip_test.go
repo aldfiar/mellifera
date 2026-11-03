@@ -21,12 +21,17 @@
 // the janitor's enrich resolver (learning write side) and the api namer's own
 // projection (serving read side); a ≥90% progress PUT through the real route
 // lands the completion ledger row; the wake-poked learning pass raises exactly
-// the watched series' genre weights; and the served order flips so the
-// weighted-genres series outranks an equal-tag-count unweighted one — the
-// proof that learning flowed end to end. The completion ledger's idempotency
-// is re-asserted at the joint level: a rewatch crossing 90% again inserts
-// nothing, applies nothing, and moves no weight (the second pass finds an
-// empty derived queue).
+// the watched series' genre weights; and the learned weights still land on the
+// wire (rec_score), while the served ORDER answers to the watched partition
+// (watched-states D4): the completed series sinks below the unweighted
+// unwatched one. The watched-states pins ride the same live wire: the
+// completed watch withdraws from the default continue rail and
+// ?include=watched restores it stamped; the series `watched` flag lands when
+// the last episode completes; an explicit `completed: true` intent ledgers
+// below the floor; and an unknown `include` value is a 400. The completion
+// ledger's idempotency is re-asserted at the joint level: a rewatch crossing
+// 90% again inserts nothing, applies nothing, and moves no weight (the second
+// pass finds an empty derived queue).
 //
 // cmd/mellifera is package main and cannot be imported, so its thin-shell
 // snippets on this loop are mirrored here in miniature (the harness contract,
@@ -51,6 +56,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -368,9 +374,12 @@ func qaRecsRunJanitor(ctx context.Context, st *store.Store, reg *module.Registry
 // mirror of cmd/mellifera's newWatchDetect (package main; every boundary it
 // joins — GetItem, InsertWatched, the document shape — is real). Synchronous,
 // idempotent, log-and-skip: below the floor or without a stored duration it
-// never inserts; a repeat insert is a PK no-op in the store.
-func qaRecsWatchDetect(st *store.Store, wake chan<- struct{}) func(context.Context, string, int64) {
-	return func(ctx context.Context, itemID string, position int64) {
+// never inserts; a repeat insert is a PK no-op in the store. A write carrying
+// the explicit completion intent (watched-states D3: completed true) inserts
+// regardless of the floor — intent needs no duration — mirroring the
+// production leg.
+func qaRecsWatchDetect(st *store.Store, wake chan<- struct{}) func(context.Context, string, int64, bool) {
+	return func(ctx context.Context, itemID string, position int64, completed bool) {
 		it, err := st.GetItem(ctx, itemID)
 		if err != nil {
 			return
@@ -379,12 +388,14 @@ func qaRecsWatchDetect(st *store.Store, wake chan<- struct{}) func(context.Conte
 		if err := json.Unmarshal(it.Document, &doc); err != nil {
 			return
 		}
-		dur, ok := qaRecsProbeDuration(doc["ffprobe"])
-		if !ok {
-			return // no stored duration — never auto-completes
-		}
-		if float64(position) < qaRecsFloor*dur {
-			return
+		if !completed {
+			dur, ok := qaRecsProbeDuration(doc["ffprobe"])
+			if !ok {
+				return // no stored duration — never auto-completes
+			}
+			if float64(position) < qaRecsFloor*dur {
+				return
+			}
 		}
 		if err := st.InsertWatched(ctx, itemID, it.LibraryID, qaRecsSeriesPath(doc), time.Now().UTC()); err != nil {
 			return
@@ -504,13 +515,15 @@ func qaRecsResolveWatchTags(ctx context.Context, st *store.Store, reg *module.Re
 }
 
 // qaRecsSeriesRow is the QA-local decode of the series wire shape plus the
-// scored surface's fields (display_name, rec_score) this joint asserts over.
+// scored surface's fields (display_name, rec_score) and the watched stamp
+// (watched-states D1) this joint asserts over.
 type qaRecsSeriesRow struct {
 	ID           string          `json:"id"`
 	RelativePath string          `json:"relative_path"`
 	Status       string          `json:"status"`
 	Display      string          `json:"display_name"`
 	RecScore     float64         `json:"rec_score"`
+	Watched      bool            `json:"watched,omitempty"`
 	Document     json.RawMessage `json:"document"`
 }
 
@@ -652,34 +665,57 @@ func qaRecsGenresLanded(t *testing.T, j *qaRecsJoint, want map[string][]string) 
 }
 
 // qaRecsProgressRow is the QA-local decode of the continue surface's scored
-// wire shape.
+// wire shape plus the watched stamp (watched-states D1).
 type qaRecsProgressRow struct {
 	ItemID          string  `json:"item_id"`
 	PositionSeconds int64   `json:"position_seconds"`
 	RecScore        float64 `json:"rec_score"`
+	Watched         bool    `json:"watched,omitempty"`
 }
 
 type qaRecsProgressList struct {
 	Items []qaRecsProgressRow `json:"items"`
 }
 
-// qaRecsListProgress lists the continue surface through the joint's own api.
+// qaRecsListProgress lists the continue surface through the joint's own api —
+// the withdrawal default (no sort, no include).
 func qaRecsListProgress(t *testing.T, j *qaRecsJoint) []qaRecsProgressRow {
+	return qaRecsListProgressInclude(t, j, "", "")
+}
+
+// qaRecsListProgressInclude lists the continue surface with the sort and
+// include opts ("" = query param omitted — the scored withdrawal default).
+// The unknown-include 400 is asserted directly in the withdrawal subtest via
+// doRequest: this helper fatals on any non-200 by construction.
+func qaRecsListProgressInclude(t *testing.T, j *qaRecsJoint, sort, include string) []qaRecsProgressRow {
 	t.Helper()
+	q := url.Values{}
+	if sort != "" {
+		q.Set("sort", sort)
+	}
+	if include != "" {
+		q.Set("include", include)
+	}
+	u := j.baseURL + "/api/v1/progress"
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
 	var resp qaRecsProgressList
-	if status := doRequest(t, j.w.client, http.MethodGet, j.baseURL+"/api/v1/progress", j.w.token, nil, &resp); status != http.StatusOK {
-		t.Fatalf("list progress: HTTP %d, want 200", status)
+	if status := doRequest(t, j.w.client, http.MethodGet, u, j.w.token, nil, &resp); status != http.StatusOK {
+		t.Fatalf("list progress (sort=%q include=%q): HTTP %d, want 200", sort, include, status)
 	}
 	return resp.Items
 }
 
 // qaRecsPutProgress writes one playback position through the real route (the
 // seam whose OnProgress fan-out fires the detector after the stored upsert).
-func qaRecsPutProgress(t *testing.T, j *qaRecsJoint, itemID string, position int64) {
+// completed is the explicit completion intent (watched-states D3): true
+// ledgers regardless of the 0.9 floor; false is the plain floor-only write.
+func qaRecsPutProgress(t *testing.T, j *qaRecsJoint, itemID string, position int64, completed bool) {
 	t.Helper()
 	status := doRequest(t, j.w.client, http.MethodPut,
 		j.baseURL+"/api/v1/progress/"+itemID, j.w.token,
-		map[string]any{"position_seconds": position}, nil)
+		map[string]any{"position_seconds": position, "completed": completed}, nil)
 	if status != http.StatusOK {
 		t.Fatalf("PUT progress %s: HTTP %d, want 200", itemID, status)
 	}
@@ -701,6 +737,10 @@ func TestRecsRoundtrip(t *testing.T) {
 	zuluE01, ok := byRel[qaRecsDirZulu+"/"+qaRecsEpZulu]
 	if !ok || zuluE01.ID == "" {
 		t.Fatalf("Zulu E01 item missing; have %v", relKeys(byRel))
+	}
+	alphaE01, ok := byRel[qaRecsDirAlpha+"/"+qaRecsEpAlpha]
+	if !ok || alphaE01.ID == "" {
+		t.Fatalf("Alpha E01 item missing; have %v", relKeys(byRel))
 	}
 
 	t.Run("enrich lands genres on both series documents", func(t *testing.T) {
@@ -725,8 +765,8 @@ func TestRecsRoundtrip(t *testing.T) {
 		}
 	})
 
-	t.Run("completion applies weights; weighted genres outrank equal-count unweighted", func(t *testing.T) {
-		qaRecsPutProgress(t, j, zuluE01.ID, qaRecsWatchPos)
+	t.Run("completion applies weights; the completed watch sinks below the unweighted grid", func(t *testing.T) {
+		qaRecsPutProgress(t, j, zuluE01.ID, qaRecsWatchPos, false)
 
 		// The detector leg ran synchronously inside the PUT (after the stored
 		// upsert, before the response write): the ledger row is observable
@@ -747,13 +787,20 @@ func TestRecsRoundtrip(t *testing.T) {
 				len(libIDs), paths, err)
 		}
 
-		// The scored serve: the weighted series outranks the equal-count
-		// unweighted one — the alphabetical-floor order FLIPS.
+		// The scored serve, under the watched partition (watched-states D4):
+		// the completed series sinks below the unwatched one WHATEVER the tag
+		// scores say — Zulu's learned score towers over Alpha's base and
+		// still lands second, so the alphabetical-floor order no longer
+		// flips.
 		rows := qaRecsListSeries(t, j, "")
-		if got := qaRecsOrder(rows); !reflect.DeepEqual(got, []string{qaRecsDirZulu, qaRecsDirAlpha}) {
-			t.Fatalf("scored order = %v, want [%s, %s] (learned weights must outrank the equal-count base)",
-				got, qaRecsDirZulu, qaRecsDirAlpha)
+		if got := qaRecsOrder(rows); !reflect.DeepEqual(got, []string{qaRecsDirAlpha, qaRecsDirZulu}) {
+			t.Fatalf("scored order = %v, want [%s, %s] (the watched partition sinks Zulu despite rec_score %v > %v)",
+				got, qaRecsDirAlpha, qaRecsDirZulu, qaRecsScoreLearned, qaRecsScoreBase)
 		}
+
+		// The partition reorders, never rescores: Zulu still carries its
+		// learned score, Alpha its base — the ordering is observable without
+		// the score lying about it.
 		scores := qaRecsScoreOf(rows)
 		if scores[qaRecsDirZulu] != qaRecsScoreLearned {
 			t.Fatalf("Zulu rec_score = %v, want %v (2 tags x (1 base + 1 learned))", scores[qaRecsDirZulu], qaRecsScoreLearned)
@@ -762,17 +809,16 @@ func TestRecsRoundtrip(t *testing.T) {
 			t.Fatalf("Alpha rec_score = %v, want %v (unwatched: base weights untouched)", scores[qaRecsDirAlpha], qaRecsScoreBase)
 		}
 
-		// The continue surface: the completed episode's row scores its
-		// series-weighted tags ALONE — a completed entity carries no resume
-		// bonus (tags-only 4, not 1004), and the tags ride the series
-		// document through the serve-side projection.
-		progress := qaRecsListProgress(t, j)
-		if len(progress) != 1 {
-			t.Fatalf("progress rows = %d, want 1", len(progress))
+		// The series watched flags (watched-states D1): the single-episode
+		// series whose one episode completed is all-episodes watched — true
+		// on the wire; Alpha carries no ledger row, and omitempty keeps the
+		// flag absent (decoded false — true-only on the wire).
+		watchedByDir := map[string]bool{}
+		for _, r := range rows {
+			watchedByDir[r.RelativePath] = r.Watched
 		}
-		if progress[0].ItemID != zuluE01.ID || progress[0].RecScore != qaRecsScoreLearned {
-			t.Fatalf("progress row = %+v, want item %s rec_score %v (completed: tags only, no inProgress bonus)",
-				progress[0], zuluE01.ID, qaRecsScoreLearned)
+		if !watchedByDir[qaRecsDirZulu] || watchedByDir[qaRecsDirAlpha] {
+			t.Fatalf("series watched flags = %v, want %s watched, %s absent", watchedByDir, qaRecsDirZulu, qaRecsDirAlpha)
 		}
 
 		// The opt-out: sort=path restores the path order unscored (the
@@ -789,7 +835,7 @@ func TestRecsRoundtrip(t *testing.T) {
 	})
 
 	t.Run("rewatch is a ledger no-op: weights unchanged", func(t *testing.T) {
-		qaRecsPutProgress(t, j, zuluE01.ID, qaRecsWatchPos) // crosses 90% again
+		qaRecsPutProgress(t, j, zuluE01.ID, qaRecsWatchPos, false) // crosses 90% again
 
 		watched, err := j.w.st.ListWatched(ctx)
 		if err != nil {
@@ -806,13 +852,103 @@ func TestRecsRoundtrip(t *testing.T) {
 		if got := qaRecsReadWeights(t, j.w.st); !reflect.DeepEqual(got, qaRecsWantWeights()) {
 			t.Fatalf("weights after rewatch = %v, want unchanged %v", got, qaRecsWantWeights())
 		}
+		// The partition order is stable across the rewatch: the completed
+		// series stays sunk, its score unstamped-double.
 		rows := qaRecsListSeries(t, j, "")
-		if got := qaRecsOrder(rows); !reflect.DeepEqual(got, []string{qaRecsDirZulu, qaRecsDirAlpha}) {
-			t.Fatalf("scored order after rewatch = %v, want unchanged [%s, %s]",
-				got, qaRecsDirZulu, qaRecsDirAlpha)
+		if got := qaRecsOrder(rows); !reflect.DeepEqual(got, []string{qaRecsDirAlpha, qaRecsDirZulu}) {
+			t.Fatalf("scored order after rewatch = %v, want unchanged [%s, %s] (the watched partition)",
+				got, qaRecsDirAlpha, qaRecsDirZulu)
 		}
 		if scores := qaRecsScoreOf(rows); scores[qaRecsDirZulu] != qaRecsScoreLearned || scores[qaRecsDirAlpha] != qaRecsScoreBase {
 			t.Fatalf("scores after rewatch = %v, want unchanged (no double-count)", scores)
+		}
+	})
+
+	t.Run("rail withdrawal: the completed watch leaves the default rail; include=watched restores it", func(t *testing.T) {
+		// The withdrawal default (watched-states D2), BOTH branches: the
+		// ledgered row is gone from the scored default AND from the
+		// sort=recent opt-out — a completed watch has no resume point.
+		if got := qaRecsListProgress(t, j); len(got) != 0 {
+			t.Fatalf("default rail rows = %+v, want none (the completed watch's position is spent)", got)
+		}
+		if got := qaRecsListProgressInclude(t, j, "recent", ""); len(got) != 0 {
+			t.Fatalf("sort=recent rows = %+v, want none (the withdrawal holds in the opt-out branch)", got)
+		}
+
+		// ?include=watched restores the row in both branches, stamped
+		// watched. The scored default scores the completed entity tags-only
+		// (the series-weighted learned score, no resume bonus); the recent
+		// opt-out serves unscored exactly as before.
+		restored := qaRecsListProgressInclude(t, j, "", "watched")
+		if len(restored) != 1 || restored[0].ItemID != zuluE01.ID {
+			t.Fatalf("include=watched rows = %+v, want exactly [%s]", restored, zuluE01.ID)
+		}
+		if !restored[0].Watched {
+			t.Fatalf("restored row %+v carries no watched stamp", restored[0])
+		}
+		if restored[0].RecScore != qaRecsScoreLearned {
+			t.Fatalf("restored row rec_score = %v, want %v (completed: tags only, no inProgress bonus)",
+				restored[0].RecScore, qaRecsScoreLearned)
+		}
+		recent := qaRecsListProgressInclude(t, j, "recent", "watched")
+		if len(recent) != 1 || recent[0].ItemID != zuluE01.ID || !recent[0].Watched {
+			t.Fatalf("sort=recent&include=watched rows = %+v, want exactly [%s] watched", recent, zuluE01.ID)
+		}
+		if recent[0].RecScore != 0 {
+			t.Fatalf("sort=recent restored row carries rec_score %v, want unscored (field omitted)", recent[0].RecScore)
+		}
+
+		// The strict parse: an unknown include value is a 400, never a
+		// silently served row set (the same posture as the sort grammar).
+		status := doRequest(t, j.w.client, http.MethodGet,
+			j.baseURL+"/api/v1/progress?include=all", j.w.token, nil, &qaRecsProgressList{})
+		if status != http.StatusBadRequest {
+			t.Fatalf("include=all: HTTP %d, want 400 (the strict include parse)", status)
+		}
+	})
+
+	t.Run("completed intent ledgers below the floor", func(t *testing.T) {
+		// The 0.3 s fixture has no integer-second mid position, so 0 s — 0 %,
+		// strictly below the 0.9 floor — carries the below-floor side; the
+		// floor's satisfied side is the completion subtest's 2 s write.
+		qaRecsPutProgress(t, j, alphaE01.ID, 0, false)
+		if watched, err := j.w.st.ListWatched(ctx); err != nil || len(watched) != 1 || watched[0] != zuluE01.ID {
+			t.Fatalf("ledger after the plain below-floor write = %v (err %v), want still exactly [%s] (the floor held)",
+				watched, err, zuluE01.ID)
+		}
+
+		// The explicit completion intent (watched-states D3): the SAME
+		// below-floor position with completed:true ledgers — intent needs no
+		// duration, no floor crossing.
+		qaRecsPutProgress(t, j, alphaE01.ID, 0, true)
+		watched, err := j.w.st.ListWatched(ctx)
+		if err != nil {
+			t.Fatalf("ListWatched: %v", err)
+		}
+		got := append([]string(nil), watched...)
+		sort.Strings(got)
+		if want := []string{alphaE01.ID, zuluE01.ID}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("ledger after the intent write = %v, want exactly %v", watched, want)
+		}
+
+		// The series flag follows the all-episodes law the same walk derives:
+		// Alpha's last episode completed, so BOTH series now stamp watched —
+		// the grid's partition sinks both, and within the watched leaf the
+		// intent write's wake has applied Alpha's genre weights too (both
+		// series score the learned 4), so the name floor orders them.
+		rows := qaRecsListSeries(t, j, "")
+		scores := qaRecsScoreOf(rows)
+		if scores[qaRecsDirZulu] != qaRecsScoreLearned || scores[qaRecsDirAlpha] != qaRecsScoreLearned {
+			t.Fatalf("all-watched scores = %v, want both %v (the intent write learned Alpha's genres too)", scores, qaRecsScoreLearned)
+		}
+		if got := qaRecsOrder(rows); !reflect.DeepEqual(got, []string{qaRecsDirAlpha, qaRecsDirZulu}) {
+			t.Fatalf("all-watched grid order = %v, want [%s, %s] (within-leaf score tie, name floor)",
+				got, qaRecsDirAlpha, qaRecsDirZulu)
+		}
+		for _, r := range rows {
+			if !r.Watched {
+				t.Fatalf("series %s carries no watched flag after its last episode completed", r.RelativePath)
+			}
 		}
 	})
 }

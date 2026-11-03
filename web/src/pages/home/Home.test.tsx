@@ -133,12 +133,14 @@ function progress(
   position: number,
   at: string,
   recScore?: number,
+  watched?: boolean,
 ): ProgressDTO {
   return {
     item_id: itemId,
     position_seconds: position,
     updated_at: at,
     ...(recScore !== undefined ? { rec_score: recScore } : {}),
+    ...(watched !== undefined ? { watched } : {}),
   };
 }
 
@@ -459,6 +461,100 @@ describe("Home — Continue row", () => {
     const empties = await screen.findAllByText(/Nothing in progress yet/);
     expect(empties.length).toBe(2); // Continue + Next up share one empty state
     expect(screen.queryByRole("region", { name: "Continue" })).toBeNull();
+  });
+});
+
+// watched-states (spec: "The Continue rail hides served-watched rows") — the
+// SPLIT asserted AT the page: one shared include=watched fetch feeds both
+// rows, the Continue rail renders only unwatched rows, and the Next up
+// anchors keep consuming EVERY served row (a fully-watched series still
+// surfaces its next unwatched episode). The pure halves live in
+// lib/watchedRows.test.ts and lib/nextup.test.ts; this is the Home-level
+// rendering of the split — the only seam where both halves run on one fetch.
+describe("Home — watched withdrawal split", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("the Continue rail hides served-watched rows while Next up still anchors from them", async () => {
+    // The include=watched row set: S01E01 is FULLY watched (the restored-row
+    // shape — watched flag beside a positive position) and anchors Show; the
+    // film row is plain in-progress.
+    fetchWith({
+      "/api/v1/progress": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              progress("itm_2_e1", 2400, "2026-10-07T18:00:00Z", undefined, true),
+              progress("itm_1_film", 100, "2026-10-06T18:00:00Z"),
+            ],
+          }),
+        ),
+      "/api/v1/items/itm_2_e1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            item: item(
+              "itm_2_e1",
+              2,
+              doc({ seriesPath: "Show", season: 1, episode: 1, title: "Show S01E01" }),
+            ),
+          }),
+        ),
+      "/api/v1/items/itm_1_film": () =>
+        Promise.resolve(
+          jsonResponse(200, { item: item("itm_1_film", 1, doc({ title: "Film One" }), "tv") }),
+        ),
+      "/api/v1/series?library=2": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              seriesRow("ser_2_show", 2, "Show", {}, { display_name: "Show Series" }),
+            ],
+          }),
+        ),
+      "/api/v1/series/ser_2_show/episodes": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              item("itm_2_e1", 2, doc({ seriesPath: "Show", season: 1, episode: 1 })),
+              item("itm_2_e2", 2, doc({ seriesPath: "Show", season: 1, episode: 2 })),
+            ],
+          }),
+        ),
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+      "/api/v1/items?library=2": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+      "/api/v1/libraries": () =>
+        Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films"), lib(2, "serial", "serials")] })),
+      "/api/v1/libraries/1/summary": () =>
+        Promise.resolve(jsonResponse(200, { library_id: 1, items: 2, updated_at: "" })),
+      "/api/v1/libraries/2/summary": () =>
+        Promise.resolve(jsonResponse(200, { library_id: 2, items: 2, updated_at: "" })),
+    });
+    renderHome();
+
+    // The rail half: ONLY the unwatched film row renders — the watched
+    // episode's card is gone despite its served 2400s position.
+    const continueRow = await screen.findByRole("region", { name: "Continue" });
+    const railLinks = within(continueRow)
+      .getAllByRole("link")
+      .map((l) => l.getAttribute("aria-label"));
+    expect(railLinks).toEqual(["Play Film One"]);
+    expect(within(continueRow).queryByText(/S01E01/)).toBeNull();
+
+    // The anchor half: the watched S01E01 row still anchors Show — its next
+    // unwatched episode surfaces in Next up (the half no pure-leaf test can
+    // see: the split happened INSIDE Home, over one shared fetch).
+    const nextUpRow = await screen.findByRole("region", { name: "Next up" });
+    const nextLinks = within(nextUpRow).getAllByRole("link");
+    expect(nextLinks.map((l) => l.getAttribute("aria-label"))).toEqual([
+      "Play Show Series S01E02",
+    ]);
+    expect(nextLinks[0]!.getAttribute("href")).toBe("/items/itm_2_e2");
   });
 });
 

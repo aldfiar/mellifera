@@ -149,6 +149,90 @@ func TestScoreBonusStacking(t *testing.T) {
 	}
 }
 
+func TestOrderWatchedPartition(t *testing.T) {
+	// D4: every unwatched entry before every watched one, each partition
+	// score desc → display name asc → id asc. The watched fixture towers
+	// past the unwatched scores — affinity alone must not buy the top
+	// partition back.
+	entries := []Entry{
+		{ID: "w1", DisplayName: "Watched High", Score: 1400, Watched: true},
+		{ID: "u3", DisplayName: "Zulu", Score: 400},
+		{ID: "w2", DisplayName: "Атом", Score: 1200, Watched: true},
+		{ID: "u1", DisplayName: "Alpha", Score: 100},
+		{ID: "u2", DisplayName: "Alpha", Score: 200},
+		{ID: "w3", DisplayName: "Атом", Score: 1200, Watched: true},
+		{ID: "u4", DisplayName: "Beta", Score: 400},
+	}
+	wantIDs := []string{"u4", "u3", "u2", "u1", "w1", "w2", "w3"}
+
+	Order(entries)
+	gotIDs := make([]string, 0, len(entries))
+	for _, e := range entries {
+		gotIDs = append(gotIDs, e.ID)
+	}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("Order gave %v, want %v", gotIDs, wantIDs)
+	}
+
+	// The partition law on the result: no watched entry precedes any
+	// unwatched entry, whatever the scores say.
+	lastUnwatched := -1
+	firstWatched := len(entries)
+	for i, e := range entries {
+		if e.Watched {
+			firstWatched = min(firstWatched, i)
+		} else {
+			lastUnwatched = i
+		}
+	}
+	if lastUnwatched > firstWatched {
+		t.Fatalf("partition broken: unwatched at %d after watched at %d: %v",
+			lastUnwatched, firstWatched, gotIDs)
+	}
+}
+
+// TestOrderWatchedLeaf pins the partition's PURE leaves (watched-states D4,
+// the leaf unit case): with one partition empty, Order IS the plain
+// comparator — score desc, display name asc, id asc — and the pure watched
+// leaf sorts byte-identically to the pure unwatched one, so the partition
+// law reorders across leaves only and never distorts the comparator within
+// one. Constructed entries; no store, no serve — the leaf's own law.
+func TestOrderWatchedLeaf(t *testing.T) {
+	leaf := func(watched bool) []Entry {
+		return []Entry{
+			{ID: "l1", DisplayName: "Mid", Score: 100, Watched: watched},
+			{ID: "l2", DisplayName: "Zulu", Score: 900, Watched: watched},
+			{ID: "l3", DisplayName: "Mid", Score: 100, Watched: watched},
+			{ID: "l4", DisplayName: "Alpha", Score: 900, Watched: watched},
+			{ID: "l5", DisplayName: "Mid", Score: 100, Watched: watched},
+		}
+	}
+	// 900s first (score desc), Alpha before Zulu (name asc), then the 100s
+	// in id order (the id floor).
+	wantIDs := []string{"l4", "l2", "l1", "l3", "l5"}
+
+	tests := []struct {
+		name    string
+		watched bool
+	}{
+		{name: "pure unwatched leaf: the plain comparator", watched: false},
+		{name: "pure watched leaf: same comparator inside the sunk partition", watched: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entries := leaf(tt.watched)
+			Order(entries)
+			gotIDs := make([]string, 0, len(entries))
+			for _, e := range entries {
+				gotIDs = append(gotIDs, e.ID)
+			}
+			if !reflect.DeepEqual(gotIDs, wantIDs) {
+				t.Fatalf("Order gave %v, want %v", gotIDs, wantIDs)
+			}
+		})
+	}
+}
+
 func TestOrderingAlphabeticalTiebreak(t *testing.T) {
 	tests := []struct {
 		name    string

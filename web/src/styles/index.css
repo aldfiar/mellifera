@@ -274,6 +274,23 @@ body.side-open .app-content {
 .dot-audio {
   background: #a4c8f4;
 }
+
+/* Watched element states (watched-states 2.3): the ✓ is a color-change mark
+   in the library's pastel accent — the default-library dot pastel above (the
+   watched mark is type-agnostic), never a pill or badge chrome (D5: watched
+   is a media state, not a pipeline state). Watched titles dim to ~0.55.
+   Both rules deliberately live OUTSIDE the tv shell block: html.tv only
+   overrides what it declares, so the ✓ state survives the tv CSS layer
+   unchanged. */
+.watched-mark {
+  flex: none;
+  color: #a4c8f4;
+  font-size: 0.85em;
+  line-height: 1;
+}
+.watched-dim {
+  opacity: 0.55;
+}
 .clink .cnt {
   margin-left: auto;
   font-size: 10.5px;

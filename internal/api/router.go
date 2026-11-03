@@ -66,10 +66,13 @@ type Deps struct {
 	// invoked by putProgress after a successful PutProgress, with the
 	// request context — the cmd-side implementation detaches it
 	// (context.WithoutCancel) because the stop-frame re-grab outlives the
-	// response. Nil-safe (a nil closure is a no-op; progress persistence is
-	// never load-bearing on it), mirroring Deps.Scan/Status. Keeps api free
-	// of plugin imports (INV2).
-	OnProgress func(ctx context.Context, itemID string, position int64)
+	// response. completed is the request's explicit-completion intent
+	// (watched-states D3): true only when the write carried
+	// `completed: true` — absent decodes to false, the plain floor-only
+	// write of today. Nil-safe (a nil closure is a no-op; progress
+	// persistence is never load-bearing on it), mirroring Deps.Scan/Status.
+	// Keeps api free of plugin imports (INV2).
+	OnProgress func(ctx context.Context, itemID string, position int64, completed bool)
 	// Reenrich is the explicit re-enrichment kickoff closure (enrichment
 	// design Interfaces, D-1/D-6): built in cmd/mellifera over
 	// enrich.Queue.ReenrichSource, owning the strip pass and the per-library

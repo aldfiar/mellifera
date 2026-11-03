@@ -5,10 +5,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -80,7 +85,7 @@ func TestWatchDetectRecordsCompletion(t *testing.T) {
 	drainRecsWake(t) // a clean wake slate
 
 	detect := newWatchDetect(st)
-	detect(ctx, "it_ep", 1400) // 96.5% of 1450.109 — past the 90% floor
+	detect(ctx, "it_ep", 1400, false) // 96.5% of 1450.109 — past the 90% floor
 
 	itemIDs, libraryIDs, seriesPaths, _, err := st.ListUnappliedWatched(ctx)
 	if err != nil {
@@ -101,7 +106,7 @@ func TestWatchDetectRecordsCompletion(t *testing.T) {
 
 	// The repeat: the PK folds it to a no-op (still one row) and the wake's
 	// capacity-1 buffer coalesces the second poke.
-	detect(ctx, "it_ep", 1449)
+	detect(ctx, "it_ep", 1449, false)
 	if got := watchedCount(t, ctx, st); got != 1 {
 		t.Fatalf("watched rows after repeat = %d, want 1 (PK idempotence)", got)
 	}
@@ -120,7 +125,7 @@ func TestWatchDetectBelowThresholdSkips(t *testing.T) {
 	putWatchItem(t, ctx, st, "it_mid", 1,
 		`{"format": {"duration": "1450.109"}}`, `{}`)
 
-	newWatchDetect(st)(ctx, "it_mid", 700) // 48% — well short of the floor
+	newWatchDetect(st)(ctx, "it_mid", 700, false) // 48% — well short of the floor
 
 	if got := watchedCount(t, ctx, st); got != 0 {
 		t.Fatalf("watched rows = %d, want 0 below the threshold", got)
@@ -137,7 +142,7 @@ func TestWatchDetectNoDurationHonestAbsence(t *testing.T) {
 	st, ctx := watchDetectFixture(t)
 	putWatchItem(t, ctx, st, "it_nodur", 1, `{}`, `{}`)
 
-	newWatchDetect(st)(ctx, "it_nodur", 999999)
+	newWatchDetect(st)(ctx, "it_nodur", 999999, false)
 
 	if got := watchedCount(t, ctx, st); got != 0 {
 		t.Fatalf("watched rows = %d, want 0 without a stored duration", got)
@@ -156,7 +161,7 @@ func TestWatchDetectFilmItemNoSeries(t *testing.T) {
 	putWatchItem(t, ctx, st, "it_film", 2,
 		`{"format": {"duration": "5400"}}`, `{}`)
 
-	newWatchDetect(st)(ctx, "it_film", 5400) // exactly at 100%
+	newWatchDetect(st)(ctx, "it_film", 5400, false) // exactly at 100%
 
 	_, _, seriesPaths, _, err := st.ListUnappliedWatched(ctx)
 	if err != nil {
@@ -177,14 +182,14 @@ func TestOnProgressFanOutDispatchesBothLegs(t *testing.T) {
 		position int64
 	}
 	var thumb, watch []call
-	thumbLeg := func(_ context.Context, itemID string, position int64) {
+	thumbLeg := func(_ context.Context, itemID string, position int64, _ bool) {
 		thumb = append(thumb, call{itemID, position})
 	}
-	watchLeg := func(_ context.Context, itemID string, position int64) {
+	watchLeg := func(_ context.Context, itemID string, position int64, _ bool) {
 		watch = append(watch, call{itemID, position})
 	}
 
-	fanOut(thumbLeg, nil, watchLeg)(context.Background(), "itm_1", 1234)
+	fanOut(thumbLeg, nil, watchLeg)(context.Background(), "itm_1", 1234, false)
 
 	if len(thumb) != 1 || len(watch) != 1 {
 		t.Fatalf("leg calls: thumb=%d watch=%d, want 1/1 (nil leg skipped, no panic)", len(thumb), len(watch))
@@ -208,7 +213,7 @@ func TestOnProgressFanOutWiredDetectorJoint(t *testing.T) {
 	drainRecsWake(t)
 
 	onProgress := fanOut(newThumbRegrab(st, mgr), newWatchDetect(st))
-	onProgress(ctx, "it_joint", 3300) // 91.7% — completion
+	onProgress(ctx, "it_joint", 3300, false) // 91.7% — completion
 
 	itemIDs, _, seriesPaths, _, err := st.ListUnappliedWatched(ctx)
 	if err != nil {
@@ -232,7 +237,7 @@ func TestWatchDetectInsertCarriesTimestamp(t *testing.T) {
 		`{"format": {"duration": "600"}}`, `{}`)
 
 	before := time.Now().UTC().Add(-time.Second)
-	newWatchDetect(st)(ctx, "it_ts", 600)
+	newWatchDetect(st)(ctx, "it_ts", 600, false)
 	after := time.Now().UTC().Add(time.Second)
 
 	_, _, _, completed, err := st.ListUnappliedWatched(ctx)
@@ -245,5 +250,122 @@ func TestWatchDetectInsertCarriesTimestamp(t *testing.T) {
 	if completed[0].Before(before) || completed[0].After(after) {
 		t.Fatalf("completed_at = %v, want within [%v, %v]", completed[0], before, after)
 	}
+	drainRecsWake(t)
+}
+
+// TestProgressCompletedFlag drives the explicit-completion leg (watched-states
+// 1.4, design D3) through the REAL wire joint — a PUT /progress carrying
+// `completed: true` over api.New wired with the composition root's
+// fanOut(newThumbRegrab, newWatchDetect), the main.go shape verbatim:
+//
+//   - a completed write at ~50% of the stored duration ledgers exactly once
+//     (the floor can never fire there; repeat writes are PK no-ops and the
+//     wake coalesces);
+//   - a completed write on a duration-less item ledgers (intent needs no
+//     duration);
+//   - a floor-only write below 0.9 (no flag) ledgers nothing;
+//   - a flagless write behaves as today — below the floor nothing, at 100%
+//     one row — and the response shape is unchanged either way.
+//
+// (The detector's failure posture has no wire-exposable leg here: the store
+// refuses malformed JSON at PutItem and the handler 404s an unknown item
+// before the seam fires, so the log-and-skip paths stay covered at the leg
+// level by the existing TestWatchDetect* suite.)
+func TestProgressCompletedFlag(t *testing.T) {
+	st, ctx := watchDetectFixture(t)
+	mgr := plugin.Open(plugin.Deps{})
+	const token = "watch-flag-token"
+	h := api.New(api.Deps{
+		AdminToken: token,
+		Store:      st,
+		OnProgress: fanOut(newThumbRegrab(st, mgr), newWatchDetect(st)),
+	})
+	put := func(t *testing.T, itemID, body string) *http.Response {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/progress/"+itemID, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Result()
+	}
+	wantWatched := func(t *testing.T, want int, label string) {
+		t.Helper()
+		if got := watchedCount(t, ctx, st); got != want {
+			t.Fatalf("%s: watched rows = %d, want %d", label, got, want)
+		}
+	}
+
+	drainRecsWake(t) // a clean wake slate
+
+	// The intent leg at ~50%: ledgered exactly once, wake poked — the floor
+	// alone could never produce this row.
+	putWatchItem(t, ctx, st, "it_flag50", 1,
+		`{"format": {"duration": "1200"}}`, `{"series_relative_path": "Serial"}`)
+	resp := put(t, "it_flag50", `{"position_seconds": 600, "completed": true}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("completed write status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	wantWatched(t, 1, "completed write at 50%")
+	if !drainRecsWake(t) {
+		t.Fatal("recs wake not poked by the completed write")
+	}
+
+	// The repeat write: the PK folds it to a no-op (still one row) and the
+	// capacity-1 wake coalesces the second poke.
+	respAgain := put(t, "it_flag50", `{"position_seconds": 600, "completed": true}`)
+	defer respAgain.Body.Close()
+	if respAgain.StatusCode != http.StatusOK {
+		t.Fatalf("repeat completed write status = %d, want %d", respAgain.StatusCode, http.StatusOK)
+	}
+	wantWatched(t, 1, "repeat completed write")
+	if poked := drainRecsWake(t); !poked {
+		t.Fatal("repeat completion did not poke the wake")
+	}
+	drainRecsWake(t) // leave a clean slate for the next assertion
+
+	// Intent without a stored duration: the honest-absence skip never fires
+	// for an explicit completion — intent needs no duration.
+	putWatchItem(t, ctx, st, "it_flag_nodur", 1, `{}`, `{}`)
+	respNodur := put(t, "it_flag_nodur", `{"position_seconds": 30, "completed": true}`)
+	defer respNodur.Body.Close()
+	if respNodur.StatusCode != http.StatusOK {
+		t.Fatalf("duration-less completed write status = %d, want %d", respNodur.StatusCode, http.StatusOK)
+	}
+	wantWatched(t, 2, "completed write on a duration-less item")
+	drainRecsWake(t)
+
+	// Floor-only below 0.9 (no flag): not a completion — no row, no poke.
+	putWatchItem(t, ctx, st, "it_flag_floor", 1,
+		`{"format": {"duration": "1200"}}`, `{}`)
+	respFloor := put(t, "it_flag_floor", `{"position_seconds": 600}`)
+	defer respFloor.Body.Close()
+	if respFloor.StatusCode != http.StatusOK {
+		t.Fatalf("floor-only write status = %d, want %d", respFloor.StatusCode, http.StatusOK)
+	}
+	wantWatched(t, 2, "floor-only write below the floor")
+	if drainRecsWake(t) {
+		t.Fatal("wake poked without a completion insert")
+	}
+
+	// Flagless at 100% behaves as today: the floor ledgers one more row, and
+	// the response is the plain progressDTO — byte-identical to the
+	// pre-flag shape.
+	respFull := put(t, "it_flag_floor", `{"position_seconds": 1200}`)
+	defer respFull.Body.Close()
+	if respFull.StatusCode != http.StatusOK {
+		t.Fatalf("flagless full write status = %d, want %d", respFull.StatusCode, http.StatusOK)
+	}
+	var pr struct {
+		ItemID          string `json:"item_id"`
+		PositionSeconds int64  `json:"position_seconds"`
+	}
+	if err := json.NewDecoder(respFull.Body).Decode(&pr); err != nil {
+		t.Fatalf("decode progressDTO: %v", err)
+	}
+	if pr.ItemID != "it_flag_floor" || pr.PositionSeconds != 1200 {
+		t.Fatalf("DTO = %+v, want item_id it_flag_floor position 1200", pr)
+	}
+	wantWatched(t, 3, "flagless write at 100%")
 	drainRecsWake(t)
 }

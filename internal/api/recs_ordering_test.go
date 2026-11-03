@@ -248,14 +248,20 @@ func TestListSeriesScored(t *testing.T) {
 
 // TestListItemsScored covers the item listing's scored default: the tier
 // order over films and episodes, episode tags joined from the series
-// document (D1), the display-name tie-break at the top tier, the zero-score
+// document (D1), the watched partition (a completed item sinks below every
+// unwatched row and scores tags-only — the resume bonus is skipped), the
+// display-name tie-break at the top tier, the zero-score
 // omission, and D7's score-then-window — the page cut applies AFTER the
 // score order, so no page can outrank page 1.
 func TestListItemsScored(t *testing.T) {
 	h, st, lib := newRecsAPI(t)
 	ctx := context.Background()
 
-	// Films (no series anchor; tags from the item's own document).
+	// Films (no series anchor; tags from the item's own document). The
+	// watched film carries BOTH facts the detector writes — the positive
+	// position AND the ledger row — so it is genuinely completed: its resume
+	// bonus is skipped (tags-only score) and the partition sinks it below
+	// every unwatched row whatever their scores.
 	watchedFilm := seedRecsItem(t, st, lib, "itm_f1", "film-a.mkv", map[string]any{
 		"_view":   map[string]any{"title": map[string]any{"value": "AAA watched"}},
 		"sources": map[string]any{recsMetaNS: map[string]any{"description": "d", "genres": []string{"action"}}},
@@ -263,12 +269,17 @@ func TestListItemsScored(t *testing.T) {
 	if _, err := st.PutProgress(ctx, watchedFilm.ID, 600); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
+	if err := st.InsertWatched(ctx, watchedFilm.ID, lib, "", time.Now().UTC()); err != nil {
+		t.Fatalf("InsertWatched: %v", err)
+	}
 	taggedFilm := seedRecsItem(t, st, lib, "itm_f2", "film-b.mkv", map[string]any{
 		"sources": map[string]any{recsMetaNS: map[string]any{"description": "d", "genres": []string{"thriller"}}},
 	}, time.Time{})
-	if err := st.ApplyTagWeights(ctx, []string{"thriller", "thriller"}, time.Now().UTC()); err != nil {
+	if err := st.ApplyTagWeights(ctx, []string{"action", "thriller", "thriller"}, time.Now().UTC()); err != nil {
 		t.Fatalf("ApplyTagWeights: %v", err)
 	}
+	// interest action=1, thriller=2 — the watched film's tags-only score is
+	// base 1 + the action weight = 2; the tagged film's is 1 + 2 = 3.
 	plainFilm := seedRecsItem(t, st, lib, "itm_f3", "film-c.mkv", map[string]any{}, time.Time{}) // score 0 → omitted
 
 	// A started serial with a fresh unwatched episode: the new episode item
@@ -291,14 +302,16 @@ func TestListItemsScored(t *testing.T) {
 		}
 		lr := decodeItems(t, resp)
 		got := servedIDs(lr.Items, func(d itemDTO) string { return d.ID })
-		// 1001 each for the two watched rows (the film's own action tag; the
-		// episode's drama tag joined from the SERIES document — D1), display
-		// "AAA watched" winning the tie against "Mid Episode"; then the new
-		// episode (500 + the joined drama tag), the weighted film, the plain
-		// film.
-		wantIDs(t, got, watchedFilm.ID, epStarted.ID, epNew.ID, taggedFilm.ID, plainFilm.ID)
+		// The watched partition sinks the completed film below every
+		// unwatched row, whatever the scores: the unwatched page keeps its
+		// tier order — the started episode (1000 + its drama tag joined from
+		// the SERIES document — D1), the new episode (500 + the joined tag),
+		// the weighted film, the plain film — and the completed film serves
+		// LAST at its tags-only score (1 base + the action weight; the
+		// resume bonus is skipped).
+		wantIDs(t, got, epStarted.ID, epNew.ID, taggedFilm.ID, plainFilm.ID, watchedFilm.ID)
 		wantScores := map[string]float64{
-			watchedFilm.ID: 1001, epStarted.ID: 1001, epNew.ID: 501, taggedFilm.ID: 3,
+			watchedFilm.ID: 2, epStarted.ID: 1001, epNew.ID: 501, taggedFilm.ID: 3,
 		}
 		for _, d := range lr.Items {
 			if want, has := wantScores[d.ID]; has && d.RecScore != want {
@@ -332,17 +345,19 @@ func TestListItemsScored(t *testing.T) {
 
 	t.Run("score_then_window", func(t *testing.T) {
 		// D7: the page cut applies AFTER the score order. Page 1 (limit 1)
-		// must be the top-scoring row; page 2 the second; a page past the
-		// end is empty — never unscored lr.Items.
+		// must be the served top row — the started episode, the partition
+		// having sunk the completed film below every unwatched one; page 2
+		// the second; a page past the end is empty — never unscored
+		// lr.Items.
 		resp := doRequest(t, h, http.MethodGet, listURL+"&limit=1", "", adminToken)
 		defer resp.Body.Close()
 		lr := decodeItems(t, resp)
-		wantIDs(t, servedIDs(lr.Items, func(d itemDTO) string { return d.ID }), watchedFilm.ID)
+		wantIDs(t, servedIDs(lr.Items, func(d itemDTO) string { return d.ID }), epStarted.ID)
 
 		resp = doRequest(t, h, http.MethodGet, listURL+"&limit=1&offset=1", "", adminToken)
 		defer resp.Body.Close()
 		lr = decodeItems(t, resp)
-		wantIDs(t, servedIDs(lr.Items, func(d itemDTO) string { return d.ID }), epStarted.ID)
+		wantIDs(t, servedIDs(lr.Items, func(d itemDTO) string { return d.ID }), epNew.ID)
 
 		resp = doRequest(t, h, http.MethodGet, listURL+"&limit=50&offset=5", "", adminToken)
 		defer resp.Body.Close()

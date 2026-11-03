@@ -92,19 +92,32 @@ func Score(e EntityState, w Weights) float64 {
 }
 
 // Entry is one scored surface row: the identity the tie-break needs (the
-// served display name, then id) beside its derived score.
+// served display name, then id) beside its derived score and its watched
+// state (D4) — the caller stamps Watched from the ledger before ordering;
+// recs sees the fact alone, never the ledger.
 type Entry struct {
 	ID          string
 	DisplayName string
 	Score       float64
+
+	// Watched sinks the entry below every unwatched one (D4): on collection
+	// grids a completed element can no longer outrank an unstarted one
+	// through tag affinity. False — the zero value — keeps the entry in the
+	// unwatched partition, so surfaces that do not know watched state
+	// (today's unwired callers) order exactly as before.
+	Watched bool
 }
 
-// Order sorts entries in place into served order (D2): score descending,
-// ties by display name ascending, then by id — the alphabetical floor,
-// the deterministic fallback every scored surface shares.
+// Order sorts entries in place into served order (D2, D4): every unwatched
+// entry before every watched one, each partition score descending, ties by
+// display name ascending, then by id — the alphabetical floor, the
+// deterministic fallback every scored surface shares.
 func Order(entries []Entry) {
 	sort.Slice(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
+		if a.Watched != b.Watched {
+			return !a.Watched
+		}
 		if a.Score != b.Score {
 			return a.Score > b.Score
 		}
