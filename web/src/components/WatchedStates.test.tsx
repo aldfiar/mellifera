@@ -18,18 +18,21 @@ import * as apiModule from "@/lib/api";
 import type { ItemDTO, ItemResponse, LibraryDTO, SeriesDTO } from "@/lib/api";
 import type { ItemDocument } from "@/lib/document";
 
-// Task 2.3 (watched-states): the element states on the browsable surfaces —
-// episode rows (EpisodesView), series cards (SeriesGrid), item-grid cards
-// (ItemGrid — the film/tv grid under the html.tv CSS layer too), and the
-// element page heading. The tri-state law is asserted AT the real components
-// through the same seams the pages' own suites use (Collection.test.tsx's
-// fetchWith idiom, ItemDetail.test.tsx's api-seam spies): a watched element
-// renders the ✓ pastel mark + dimmed title + NO progress bar even when a
-// served position exists; an in-progress sibling keeps today's bar; a new
-// element renders clean; wire absence (the omitempty field gone) behaves as
-// not-watched. The ✓ mark is a color-change span — its layout/cost is CSS's
-// contract (index.css, outside the tv shell block, so the state survives the
-// html.tv layer unchanged; tvCssContract pins that block by text).
+// Task 2.3 (watched-states, as amended by collections-ux 2.3): the element
+// states on the browsable surfaces — episode rows (EpisodesView), series
+// cards (SeriesGrid), item-grid cards (ItemGrid — the film/tv grid under the
+// html.tv CSS layer too), and the element page heading. The tri-state law is
+// asserted AT the real components through the same seams the pages' own
+// suites use (Collection.test.tsx's fetchWith idiom, ItemDetail.test.tsx's
+// api-seam spies): a watched element renders the ✓ + dimmed title + NO
+// progress bar even when a served position exists; an in-progress sibling
+// keeps today's bar; a new element renders clean; wire absence (the
+// omitempty field gone) behaves as not-watched. On the three mounted toggle
+// surfaces (episode rows, item-grid cards, heading) the ✓ is the
+// WatchedToggle BUTTON — series cards keep the passive mark (the bulk toggle
+// is v1.1). The mark's layout/cost is CSS's contract (index.css, outside the
+// tv shell block, so the state survives the html.tv layer unchanged;
+// tvCssContract pins that block by text).
 
 // fetchWith — a URL-dispatched fetch mock (verbatim from Collection.test.tsx):
 // handlers maps a URL substring to the response factory; earlier entries win.
@@ -414,10 +417,11 @@ describe("WatchedStates — episode rows (EpisodesView)", () => {
     renderCollection("/collections/1?series=sr_1");
     await screen.findByText("Pilot");
 
-    // Watched: ✓ mark + dimmed title…
+    // Watched: the ✓ TOGGLE (a real button, corner placement) + dimmed title…
     const pilot = cardOf("Pilot");
-    const mark = within(pilot).getByRole("img", { name: "Watched" });
-    expect(mark.textContent).toBe("✓");
+    const toggle = within(pilot).getByRole("button", { name: "Watched" });
+    expect(toggle.textContent).toBe("✓");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Pilot").classList.contains("watched-dim")).toBe(
       true,
     );
@@ -432,13 +436,17 @@ describe("WatchedStates — episode rows (EpisodesView)", () => {
       screen.getByText("Second Wind").classList.contains("watched-dim"),
     ).toBe(false);
     expect(within(second).queryByRole("img", { name: "Watched" })).toBeNull();
+    // The bar stays WITH the outline toggle beside it (the unwatched write
+    // path is live on an in-progress card too).
+    expect(within(second).getByRole("button", { name: "Unwatched" })).toBeDefined();
 
-    // New sibling: clean — no mark, no bar, no dim.
+    // New sibling: clean — no bar, no dim, outline toggle only.
     const cold = cardOf("Cold Open");
     expect(within(cold).queryByRole("img")).toBeNull();
     expect(
       screen.getByText("Cold Open").classList.contains("watched-dim"),
     ).toBe(false);
+    expect(within(cold).getByRole("button", { name: "Unwatched" })).toBeDefined();
   });
 });
 
@@ -508,7 +516,9 @@ describe("WatchedStates — item-grid cards (ItemGrid, the film/tv grid)", () =>
     await screen.findByText("Done Film");
 
     const done = cardOf("Done Film");
-    within(done).getByRole("img", { name: "Watched" });
+    // The toggle surface: the watched ✓ is the button, corner placement.
+    const watchedToggle = within(done).getByRole("button", { name: "Watched" });
+    expect(watchedToggle.getAttribute("aria-pressed")).toBe("true");
     expect(
       screen.getByText("Done Film").classList.contains("watched-dim"),
     ).toBe(true);
@@ -527,6 +537,9 @@ describe("WatchedStates — item-grid cards (ItemGrid, the film/tv grid)", () =>
     expect(
       screen.getByText("New Film").classList.contains("watched-dim"),
     ).toBe(false);
+    // Both unwatched cards carry the outline toggle (the write path).
+    expect(within(started).getByRole("button", { name: "Unwatched" })).toBeDefined();
+    expect(within(fresh).getByRole("button", { name: "Unwatched" })).toBeDefined();
   });
 });
 
@@ -568,31 +581,48 @@ describe("WatchedStates — the element page heading", () => {
     );
   }
 
-  it("a watched element's heading gains the ✓ beside the served display name", async () => {
+  it("a watched element's heading gains the ✓ toggle beside the served display name", async () => {
     detailSeam(detailItem(true));
     renderDetail();
 
     const h1 = await screen.findByRole("heading", { level: 1 });
     await waitFor(() =>
-      expect(within(h1).getByRole("img", { name: "Watched" }).textContent).toBe(
-        "✓",
-      ),
+      expect(
+        within(h1.parentElement as HTMLElement).getByRole("button", {
+          name: "Watched",
+        }).textContent,
+      ).toBe("✓"),
     );
-    // The served display name is dimmed; the mark itself carries the accent.
+    // The toggle is the law's inline variant (always visible — the heading
+    // is no hover-card) and it sits OUTSIDE the h1, so the heading's
+    // accessible name stays the display name alone.
+    const toggle = within(h1.parentElement as HTMLElement).getByRole("button", {
+      name: "Watched",
+    });
+    expect(toggle.classList.contains("cardact-trigger--inline")).toBe(true);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(h1.textContent).toBe("Hot Show S01E01");
+    // The served display name is dimmed; the fill carries the accent.
     expect(
       within(h1).getByText("Hot Show S01E01").classList.contains("watched-dim"),
     ).toBe(true);
   });
 
-  it("wire absence (no served watched flag) leaves the heading clean", async () => {
+  it("wire absence (no served watched flag): the heading renders clean, with the outline toggle beside it", async () => {
     detailSeam(detailItem());
     renderDetail();
 
     const h1 = await screen.findByRole("heading", { level: 1 });
     await waitFor(() => expect(within(h1).getByText("Hot Show S01E01")).toBeDefined());
-    expect(within(h1).queryByRole("img", { name: "Watched" })).toBeNull();
     expect(
       within(h1).getByText("Hot Show S01E01").classList.contains("watched-dim"),
     ).toBe(false);
+    // The toggle surface is ALWAYS mounted — an unwatched element renders
+    // the quiet outline ✓ (the unwatched write path), inline placement.
+    const toggle = within(h1.parentElement as HTMLElement).getByRole("button", {
+      name: "Unwatched",
+    });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(toggle.classList.contains("cardact-trigger--inline")).toBe(true);
   });
 });

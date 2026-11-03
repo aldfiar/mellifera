@@ -11,7 +11,6 @@ import {
   hasOriginalFile,
   isServedArtPath,
   postLibraryRefresh,
-  putProgress,
   type ApiError,
   type EnrichPreview,
   type ItemDTO,
@@ -48,6 +47,7 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 import {
   InProgressBar,
   WatchedMark,
+  WatchedToggle,
   isWatchedElement,
   watchedPercent,
 } from "@/components/WatchedStates";
@@ -1191,8 +1191,10 @@ function MovieCard(props: {
     props.invalidate ?? ["items"],
   );
   const pending = set.isPending || clear.isPending;
-  // Mark watched is gated on a KNOWN duration: photos and unprobed rows
-  // never see the row — never a guessed duration.
+  // The item's duration feeds ONLY the in-progress bar percent now: photos
+  // and unprobed rows render no bar — never a guessed percent. The watched
+  // WRITE no longer rides it (the Mark-watched menu row is retired — the
+  // WatchedToggle owns the state write through PUT /items/{id}/state).
   const duration = durationSeconds(item.document);
   // The element state (watched-states 2.3): ✓ corner mark + dimmed title on
   // a watched card (the ⋯ trigger owns the top-right corner, so the mark
@@ -1225,6 +1227,12 @@ function MovieCard(props: {
 
   return (
     <div className="cardact-host relative flex h-full flex-col gap-2">
+      {/* The ✓ toggle (watched-states 2.3): a real <button> at the mark's
+          top-left slot — it lives OUTSIDE the Link (a button never nests
+          inside an anchor) as the ⋯ trigger's sibling, stopPropagation keeps
+          the click off the card's navigation. Watched: filled ✓ clickable at
+          rest; unwatched: the quiet outline under the disclosure law. */}
+      <WatchedToggle itemId={item.id} watched={watch.watched} />
       <Link
         to={`/items/${item.id}`}
         state={handoff}
@@ -1238,7 +1246,6 @@ function MovieCard(props: {
             <MediaImg src={thumb} />
           </span>
         ) : null}
-        {watch.watched ? <WatchedMark className="absolute left-2 top-2" /> : null}
         <span
           className={cn(
             "line-clamp-2 text-sm font-medium",
@@ -1262,11 +1269,6 @@ function MovieCard(props: {
         identify={identify}
         identifyFirst={unidentified}
         refresh={refresh}
-        rows={
-          duration !== null ? (
-            <MarkWatchedRow itemId={item.id} duration={duration} />
-          ) : undefined
-        }
         rename={({ collapse, back }) => (
           <RenameTitle
             entityLabel={title}
@@ -1580,46 +1582,6 @@ function SeriesGrid(props: {
 }
 
 
-// MarkWatchedRow — the item menu's "Mark watched" action row (ui-management
-// §2): PUTs the item's FULL duration as the playback position through the
-// player's existing putProgress channel (retry:0 — a failure surfaces, never
-// auto-retries). No view flip — the row is an ACTION, not a view: the menu
-// stays open on success (no collapse) and on failure (a row-local transient
-// error line renders under the row, cleared on the next attempt).
-// Effective semantics (watched-states D6): the full-duration write crosses
-// the server's 0.9 watch-detect floor, so the action LEDGERS the item as
-// watched — its Continue-rail row withdraws (GET /progress drops ledgered
-// rows by default) and its series advances Next-up. No new affordance and
-// no behavior change here: the existing action rides the floor law.
-function MarkWatchedRow(props: { itemId: string; duration: number }): ReactElement {
-  const [error, setError] = useState<ApiError | null>(null);
-  const mark = useMutation<ProgressDTO, ApiError, void>({
-    mutationFn: () => putProgress(props.itemId, props.duration),
-    retry: 0,
-  });
-
-  return (
-    <div>
-      <button
-        type="button"
-        className="cardact-row"
-        onClick={() => {
-          setError(null);
-          mark.mutate(undefined, { onError: setError });
-        }}
-      >
-        Mark watched
-      </button>
-      {error ? (
-        <p role="alert" className="cardact-foot text-destructive">
-          {error.code}: {error.message}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-
 // SeriesCard — one series card: poster-ratio placeholder (media serving is a
 // deferred capability), display title (the SERVED display_name, display-
 // naming — title_override already rides inside it), and the fact chip — the
@@ -1902,7 +1864,13 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
           );
           const title = itemTitle(item).title;
           return (
-            <li key={item.id}>
+            // The li hosts the card (watched-states 2.3): cardact-relative so
+            // the ✓ toggle positions at the mark's top-left slot, and the
+            // cardact-host so the toggle rides the ⋯ trigger's disclosure
+            // law. The button sits OUTSIDE the Link — a click on it never
+            // reaches the card's navigation.
+            <li key={item.id} className="cardact-host relative">
+              <WatchedToggle itemId={item.id} watched={watch.watched} />
               <Link
                 to={`/items/${item.id}`}
                 state={browseState(
@@ -1910,11 +1878,8 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
                   index,
                   props.libraryId,
                 )}
-                className="relative flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
+                className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
               >
-                {watch.watched ? (
-                  <WatchedMark className="absolute left-2 top-2" />
-                ) : null}
                 <span
                   className={cn(
                     "line-clamp-2 text-sm font-medium",

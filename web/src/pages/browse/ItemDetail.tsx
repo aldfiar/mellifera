@@ -68,7 +68,7 @@ import {
 } from "@/lib/document";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 import {
-  WatchedMark,
+  WatchedToggle,
   isWatchedElement,
 } from "@/components/WatchedStates";
 import {
@@ -1244,18 +1244,26 @@ function IdentityBlock(props: {
           {showEyebrow ? (
             <p className="font-mono text-sm text-muted-foreground">{eyebrow}</p>
           ) : null}
-          <h1
-            className="line-clamp-2 break-words text-2xl font-semibold"
-            title={heading}
-          >
-            <span className={watched ? "watched-dim" : undefined}>{heading}</span>
-            {watched ? (
-              <>
-                {" "}
-                <WatchedMark />
-              </>
-            ) : null}
-          </h1>
+          <div className="flex items-start gap-2">
+            <h1
+              className="line-clamp-2 min-w-0 break-words text-2xl font-semibold"
+              title={heading}
+            >
+              <span className={watched ? "watched-dim" : undefined}>
+                {heading}
+              </span>
+            </h1>
+            {/* The ✓ toggle (watched-states 2.3): beside the served display
+                name, the law's always-visible inline variant (the heading is
+                no hover-card — the affordance must be visible at rest). The
+                button stays OUTSIDE the h1 so the heading's accessible name
+                remains the display name alone. */}
+            <WatchedToggle
+              itemId={item.id}
+              watched={watched}
+              placement="inline"
+            />
+          </div>
         </div>
         <ItemActions
           item={item}

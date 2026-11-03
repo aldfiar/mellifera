@@ -1849,6 +1849,42 @@ describe("ItemDetail — display name heading + on-page rename", () => {
     expect(screen.queryByText("S01E02")).toBeNull();
   });
 
+  // collections-ux 2.3: the element page heading is one of the three mounted
+  // toggle surfaces — the ✓ is a real <button> beside the display name (the
+  // law's inline variant: always visible at rest), the served flag drives the
+  // pressed state, and a click writes PUT /items/{id}/state with the flip.
+  it("mounts the watched toggle beside the heading and writes the state flip on click", async () => {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue({
+      ...ITEM_RESPONSE,
+      item: { ...ITEM_RESPONSE.item, watched: true },
+    });
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+    const putItemState = vi.spyOn(apiModule, "putItemState").mockResolvedValue({
+      item_id: "itm_1_9",
+      state: "unwatched",
+      position_seconds: 0,
+    });
+
+    renderAtId("itm_1_9", freshClient());
+
+    const heading = await screen.findByRole("heading", { level: 1 });
+    const toggle = within(heading.parentElement as HTMLElement).getByRole(
+      "button",
+      { name: "Watched" },
+    );
+    // The always-visible inline variant; the served flag reads pressed.
+    expect(toggle.classList.contains("cardact-trigger--inline")).toBe(true);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    // The button sits OUTSIDE the h1 — the heading's accessible name stays
+    // the display name alone.
+    expect(heading.querySelector("button")).toBeNull();
+
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(putItemState).toHaveBeenCalledWith("itm_1_9", "unwatched"),
+    );
+  });
+
   it("opens the rename form from the missing-name slot and PUTs the title override", async () => {
     vi.spyOn(apiModule, "getItem").mockResolvedValue(EPISODE_WITH_NAME);
     vi.spyOn(apiModule, "getLibrary").mockResolvedValue(SERIAL_LIBRARY);
