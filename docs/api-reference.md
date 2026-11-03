@@ -142,6 +142,13 @@ report `path:""`; `404` for an unknown library.
 - `library` (required, integer), `limit` (default `50`, capped at `200`),
   `offset` (default `0`), `status` (optional lifecycle filter — §4; absent or
   empty ⇒ all; an unknown value matches no rows, it is not an error).
+- **Ordering (recommendation-sorting).** The scored default: recommendation
+  score descending, ties by the served `display_name` ascending then id.
+  `sort=path` restores the store's path order; any other `sort` value is
+  `400 bad_request`. Each row carries `rec_score` (number, omitempty — absent
+  when unscored or zero; present only under the scored default). Photo-module
+  libraries (`module_id: "image"`) always serve path order regardless of
+  scores; `GET /series/{id}/episodes` keeps its narrative order.
 - `400 bad_request` on a non-integer `library`; `500 internal_error`
   (retryable). Each item:
 
@@ -226,11 +233,14 @@ and renders the resulting object URL.
 
 Serial-level views (`serial-library` spec). `library` is required (a
 non-integer value is `400`); the list comes back whole — no limit/offset —
-`relative_path`-ordered, `{"items":[seriesDTO]}`. A seriesDTO mirrors itemDTO:
-`id` is the opaque `ser_<libraryID>_<sha16>`, plus `module_id`, `library_id`,
-`relative_path`, the full serial-level `document` (opaque bytes),
-`schema_version`, and the series lifecycle `status` (`pending`/`stale`/
-`ready`/`deleted`).
+scored-ordered by default (recommendation-sorting: recommendation score
+descending, ties by served `display_name` then id; `sort=path` restores the
+path order; any other `sort` value is `400`), `{"items":[seriesDTO]}`. A
+seriesDTO mirrors itemDTO: `id` is the opaque `ser_<libraryID>_<sha16>`, plus
+`module_id`, `library_id`, `relative_path`, the additive `rec_score`
+(number, omitempty — present only under the scored default), the full
+serial-level `document` (opaque bytes), `schema_version`, and the series
+lifecycle `status` (`pending`/`stale`/`ready`/`deleted`).
 
 ### `GET /api/v1/series/{id}` — fetch one series
 
@@ -348,12 +358,14 @@ banner and one beacon — `{mode:"hls", phase:"video-error",
 code:"rendition-layout-unsupported", detail:"rendition"}` — mounting
 nothing; `single-variant`/absent layouts mount the direct floor as before.
 
-### `GET /api/v1/progress?limit=` — recent playback positions
+### `GET /api/v1/progress?limit=` — the continue surface
 
-### `GET /api/v1/progress?limit=` — recent playback positions
-
-Newest-first, positive positions only: `200 OK` with
-`{"items":[{"item_id":"itm_…","position_seconds":42,"updated_at":"…"}]}`.
+Scored newest-first (recommendation-sorting): `rec_score` descending with an
+`updated_at`-descending tiebreak, positive positions only — `sort=recent`
+restores pure recency (any other `sort` value is `400`). `200 OK` with
+`{"items":[{"item_id":"itm_…","position_seconds":42,"rec_score":1500,
+"updated_at":"…"}]}` — each row carries the additive `rec_score` (number,
+omitempty: absent when unscored or zero, e.g. under `sort=recent`).
 `limit` defaults to `20`, clamps to `100`; a PRESENT non-integer or
 non-positive limit is `400` (stricter than the item tables' silent fallbacks —
 this feeds a user-facing rail).

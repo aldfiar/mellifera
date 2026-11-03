@@ -42,10 +42,17 @@ under `<data dir>/streams/` under the `MELLIFERA_ORCH_BUDGET_GB` budget (default
 fallback). Walkthrough beats: play a packaged MKV past the 600 s head-first chunk, seek
 via chapter sections, watch the eviction log line under a small budget. The periodic sweep runs
 under the cmd-level janitor registry (artwork, `cmd/mellifera/janitor.go`):
-one named task per ticker goroutine — `streams` (this sweep, fixed 60 s) and
+one named task per ticker goroutine — `streams` (this sweep, fixed 60 s),
 `art` (the art store's settle+GC walk, `MELLIFERA_ART_INTERVAL`, default 6 h,
-`0` = off); every enabled task also runs once at boot, so a restarted server
-resumes its settle before serving.
+`0` = off), and `recs` (recommendation-sorting — the tag-interest learner: each
+pass applies unstamped `watched_items` rows by raising every watched entity's
+convention-genre weights by 1; fixed 60 s tick plus an immediate wake on every
+completion insert, no env knob — restart-safe, unstamped rows ARE the pending
+work); every enabled task also runs once at boot, so a restarted server
+resumes its settle and learning before serving. Walkthrough beat: watch a
+video past 90 % of its duration — the completion is recorded exactly once
+(no stored duration ⇒ never auto-completes) and the next `recs` pass logs the
+tags it raised.
 
 exiftool install: macOS `brew install exiftool` · Debian/Ubuntu
 `apt install libimage-exiftool-perl` · Fedora/RHEL `dnf install perl-Image-ExifTool`
