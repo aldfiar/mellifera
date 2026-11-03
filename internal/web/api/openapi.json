@@ -647,6 +647,12 @@
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "sort=path restores id order (default: recommendation score order, rec_score desc)",
+                        "name": "sort",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "page size (default 50, max 200)",
                         "name": "limit",
@@ -1907,6 +1913,12 @@
                         "description": "page size (default 20, max 100)",
                         "name": "limit",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "sort=recent restores updated_at order (default: recommendation score order, rec_score desc then recency)",
+                        "name": "sort",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -2134,6 +2146,12 @@
                         "name": "library",
                         "in": "query",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "sort=path restores path order (default: recommendation score order, rec_score desc)",
+                        "name": "sort",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -2923,6 +2941,10 @@
                 "module_id": {
                     "type": "string"
                 },
+                "rec_score": {
+                    "description": "RecScore is the additive recommendation score (recommendation-sorting\nD7): the read-time score the scored default ordered this listing by —\n1000·inProgress + 500·newEpisode + min(Σ tag weights, 400) — stamped\nper row so the ordering is observable, never client-input. Present\nonly under the scored default (sort=path computes no scores); omitted\n(omitempty) when unscored or zero — honest absence, never a\nfabricated 0.",
+                    "type": "number"
+                },
                 "relative_path": {
                     "type": "string"
                 },
@@ -3349,6 +3371,9 @@
                 "position_seconds": {
                     "type": "integer"
                 },
+                "rec_score": {
+                    "type": "number"
+                },
                 "updated_at": {
                     "type": "string"
                 }
@@ -3451,6 +3476,10 @@
                 },
                 "module_id": {
                     "type": "string"
+                },
+                "rec_score": {
+                    "description": "RecScore is the additive recommendation score (recommendation-sorting\nD7) — the same read-time field itemDTO carries: see the field comment\nthere; one score model, one stamping rule, both wire nouns.",
+                    "type": "number"
                 },
                 "relative_path": {
                     "type": "string"

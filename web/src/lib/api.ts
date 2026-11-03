@@ -159,10 +159,15 @@ export interface AdminStatus {
 
 // handlers.go progressDTO — the ONE wire shape for a stored playback position
 // (web-ui-phase-3 group 2). updated_at is the raw RFC3339 stamp as persisted.
+// rec_score (recommendation-sorting 3.2, additive) — the item's served
+// recommendation score; omitted while zero (omitempty). Ordering input only:
+// GET /progress serves score-desc/recency by default and consumers may show
+// or ignore the number — it is never a UI payload.
 export interface ProgressDTO {
   item_id: string;
   position_seconds: number; // int64, > 0 in list responses
   updated_at: string;
+  rec_score?: number;
 }
 
 // handlers.go progressListResponse — newest-first, positive positions only

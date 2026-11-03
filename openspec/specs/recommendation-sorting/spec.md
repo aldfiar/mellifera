@@ -1,6 +1,15 @@
-# recommendation-sorting Delta
+# recommendation-sorting Specification
 
-## ADDED Requirements
+## Purpose
+Rank what the operator likely wants next: the server derives, at read time and
+never persists, one recommendation score per entity — a strong in-progress
+bonus, a new-episode bonus for fresh entries of a started series, and a
+capped tag-interest term learned from completed watches — and serves listings
+ordered by it (rec_score on the wire, score-desc default with explicit
+opt-outs), so grids, the progress surface, and the SPA's continue/next-up
+rows all present the same best-first order without a client-side model.
+
+## Requirements
 
 ### Requirement: Recommendation score model
 
@@ -79,7 +88,15 @@ rewatches are PK no-ops). An item with no stored duration SHALL never
 auto-complete. Detection SHALL ride the existing `Deps.OnProgress` seam
 fanned out beside the thumb re-grab, run after the stored upsert, and every
 failure SHALL be log-and-skip — a progress write is never load-bearing. The
-insertion SHALL poke the recs janitor task's wake channel.
+insertion SHALL poke the recs janitor task's wake channel. Because the
+detector fires only on new writes, progress stock that predates it SHALL be
+reconciled into the ledger exactly once per boot (the recs backfill): every
+positive progress row not yet ledgered whose position meets the same
+completion predicate inserts its idempotent row — stamped with the progress
+write's own `updated_at`, never restamping an existing ledger row — and
+pokes the wake, so the stock learns through the same janitor pass a live
+completion takes. The backfill SHALL run boot-only before the janitor's
+boot pass (never per tick) and SHALL stay log-and-skip.
 
 #### Scenario: Crossing 90% records the completion once
 
@@ -87,6 +104,15 @@ insertion SHALL poke the recs janitor task's wake channel.
   then a rewatch crosses it again
 - **THEN** exactly one watched row exists for the item and the later writes
   are no-ops
+
+#### Scenario: Pre-detector stock reconciles at boot
+
+- **WHEN** the server boots holding a positive progress row at ≥ 90% of its
+  stored duration with no watched_items row (a watch that finished before
+  the detector deployed)
+- **THEN** the boot's backfill ledger row carries the progress write's own
+  stamp, a rerun boot is a no-op, and the item stops scoring the InProgress
+  resume bonus
 
 #### Scenario: A detection failure never surfaces in the PUT
 
@@ -131,8 +157,11 @@ SHALL serve an additive `rec_score` per row and order score descending then
 `updated_at` descending, with `sort=recent` restoring pure recency. Series,
 item, and progress DTOs SHALL carry `rec_score,omitempty` so the ordering is
 observable. The per-series episode table SHALL keep its narrative order, and
-image libraries SHALL keep path order — recommendation ordering applies to
-collection grids, the continue rail, and next up only.
+image libraries SHALL keep path order regardless of any computed score — a
+library served by a photo-scanner module SHALL always serve path order,
+whatever the score model computes (the carve-out holds by mechanism, not by
+tie-break accident), and recommendation ordering applies to collection
+grids, the continue rail, and next up only.
 
 #### Scenario: A started serial with a new episode tops the grid
 
@@ -147,3 +176,10 @@ collection grids, the continue rail, and next up only.
   with weighted tags and a barely-started film with none
 - **THEN** the served order places the series' row first by rec_score and
   the tie case falls back to recency
+
+#### Scenario: Photo libraries keep path order regardless of score
+
+- **WHEN** a photo-scanner-module library is listed under the scored
+  default, whatever scores its items carry
+- **THEN** the served order is path order — no computed score, tie-break,
+  or default sort ever reorders a photo library's grid

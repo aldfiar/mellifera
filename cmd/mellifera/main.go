@@ -361,14 +361,16 @@ func main() {
 			}
 			return retryFailedPack(ctx, st, enrichQueue.EnqueuePack, row, cfg.optInCodecs)
 		},
-		// Stop-frame re-grab (continue-nextup-media D-1..D-4): the watch-event
-		// seam — a per-item debounced, request-detached re-grab of the
-		// frame-grabber thumbnail at the viewer's stop position. The JPEG
-		// overwrites the same deterministic path, so there is NO document
-		// write and NO enrich round-trip (grabbed_at stays stale by design);
-		// every executor failure is log-and-skip — progress is never
-		// load-bearing and the PUT response never carries it.
-		OnProgress: newThumbRegrab(st, mgr),
+		// Watch-event seam, fanned out (continue-nextup-media D-1..D-4 +
+		// recommendation-sorting D4): leg 1 is the per-item debounced,
+		// request-detached stop-frame re-grab of the frame-grabber thumbnail —
+		// the JPEG overwrites the same deterministic path, so there is NO
+		// document write and NO enrich round-trip (grabbed_at stays stale by
+		// design). Leg 2 is the watch detector — a synchronous, idempotent
+		// watched_items insert at ≥ 90% of the stored ffprobe duration, then a
+		// recs-janitor wake poke. Both legs are log-and-skip: progress is
+		// never load-bearing and the PUT response never carries either.
+		OnProgress: fanOut(newThumbRegrab(st, mgr), newWatchDetect(st)),
 		// Watch defaults (watch-flow-polish): the auto-next countdown seconds
 		// GET /api/v1/watch-defaults serves verbatim. The env knob follows the
 		// envInt pattern — default 10, floored at 1 so a non-positive value can
@@ -589,7 +591,17 @@ func main() {
 	jan := newJanitor(
 		janitorTask{name: "streams", interval: sweepInterval, fn: sweep},
 		janitorTask{name: "art", interval: cfg.artInterval, fn: artSettle},
+		// recs is the tag-affinity learning task (recommendation-sorting D5):
+		// boot-run + 60 s tick + the completion wake — the sweep consumes the
+		// derived unapplied-watched queue through the enrich tag resolver. The
+		// wake's write side is notifyRecs, called by the watch detector.
+		janitorTask{name: "recs", interval: recsInterval, wake: recsWake, fn: newRecsSweep(st, reg)},
 	)
+	// The watch-ledger backfill (recommendation-sorting follow-up), BEFORE the
+	// boot pass: progress stock that predates the watch detector reconciles
+	// into watched_items here, so the recs task's boot run learns it in the
+	// same boot instead of waiting out a tick. Log-and-skip; boot-only.
+	newRecsBackfill(st)(ctx)
 	jan.runBoot(ctx)
 	go jan.run(ctx)
 

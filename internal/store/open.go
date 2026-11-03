@@ -284,6 +284,31 @@ var schemaSQL = []string{
   updated_at  TEXT NOT NULL,
   PRIMARY KEY (entity_id, entity_kind)
 )`,
+	// watched_items is the completion ledger (recommendation-sorting D4/D5):
+	// ONE row per completed item, item_id PRIMARY KEY — the insert is a PK
+	// no-op on repeat writes and rewatches, so a rewatch never double-counts.
+	// series_relative_path is NULL for film/tv items (an episode item carries
+	// its series' path for the episode→series join). applied_at IS NULL is the
+	// learning queue — the derived-work posture, no jobs table: unstamped rows
+	// ARE the pending work the recs janitor consumes. NO user/profile column:
+	// the single implicit profile; the roles change owns that migration.
+	`CREATE TABLE IF NOT EXISTS watched_items (
+  item_id              TEXT PRIMARY KEY,
+  library_id           INTEGER NOT NULL,
+  series_relative_path TEXT,
+  completed_at         TEXT NOT NULL,
+  applied_at           TEXT
+)`,
+	// tag_weights is the learned tag-affinity store (recommendation-sorting
+	// D5): ONE row per normalized tag (the tag rule — trim + Unicode casefold
+	// — applied by the caller before any write; the store stays
+	// value-agnostic), weight monotonically growing by +1 per completed
+	// watch. v1 bounds the weight's influence with the score cap, not decay.
+	`CREATE TABLE IF NOT EXISTS tag_weights (
+  tag        TEXT PRIMARY KEY,
+  weight     INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+)`,
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
 	// series_library backs the per-library series listing/sweep paths

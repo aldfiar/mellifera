@@ -8,7 +8,7 @@ against the live dev DB and code at HEAD 2026-10-24):
 - Series listing is `ORDER BY relative_path` (`internal/store/series.go`
   :125-156) and the SPA renders served order — today's "alphabet" is path
   order server-side. Item listing orders by `id` (`internal/store/items.go`
-  :101-106).
+  :96/:115).
 - `playback_progress` holds one position per item (`internal/store/progress.go`,
   listed `updated_at DESC`). No watched/completed concept exists anywhere.
 - Every video item document carries the verbatim ffprobe blob at top-level
@@ -24,7 +24,7 @@ against the live dev DB and code at HEAD 2026-10-24):
   mechanism is live, the data refills on refresh.
 - `Deps.OnProgress` fires after every successful `PutProgress`
   (playback-progress spec; wired to the debounced thumb re-grab at
-  `cmd/mellifera/main.go` :364).
+  `cmd/mellifera/main.go` :371).
 - The janitor is a named multi-task registry in `cmd/mellifera/janitor.go`
   (artwork D8): boot-run + per-task interval tick; day-one tasks `streams`
   and `art`.
@@ -108,8 +108,9 @@ against the live dev DB and code at HEAD 2026-10-24):
 - **D6 — `internal/recs` is a pure leaf (≤ 8 exports).** It imports nothing
   from mellifera (plain input structs: progress facts, watched set, weights,
   tag lists, timestamps) and exports the score function + an ordering helper.
-  The api composes: batched per-page store reads (the display.go D-9 pricing
-  posture) feed `recs`, which returns scores; handlers sort. This keeps api
+  The api composes: batched store reads over the full scored set (the
+  display.go D-9 pricing posture) feed `recs`, which returns scores;
+  handlers sort. This keeps api
   at its export budget and the model unit-testable without a store.
 - **D7 — Ordering is served, with explicit opt-outs.** `GET /series?library=N`
   and the item listing default to score-desc (`sort=path` restores today's
@@ -117,7 +118,12 @@ against the live dev DB and code at HEAD 2026-10-24):
   then `updated_at` desc (`sort=recent` restores pure recency). DTO fields
   `rec_score,omitempty` are additive on seriesDTO/itemDTO/progress rows —
   the SPA and any client can show or ignore them; they exist so ordering is
-  observable and testable, not as UI payload.
+  observable and testable, not as UI payload. Scoring composes with
+  pagination score-then-window: the item listing reads the full filtered
+  set, scores and sorts it, then applies offset/limit in the handler —
+  never SQL-window ordering under a score-desc default (a windowed read
+  would let page 2 outrank page 1). The series listing is unpaged
+  (`QuerySeries` returns every row of a library) and unaffected.
 - **D8 — Continue and Next up consume served scores, never client-side
   scoring.** Continue renders the served progress order. Next up stays a
   client derivation (started series → next unwatched episode) but orders its
@@ -142,12 +148,20 @@ against the live dev DB and code at HEAD 2026-10-24):
   (`watched_items`, `tag_weights`).
 - `internal/recs`: `Score(EntityState, Weights) float64` (name final at
   build); constants exported read-only via doc comment.
+- `internal/enrich`: the janitor's tag resolver lives here beside
+  `ResolveGates` — the genres-of-winning-document walk over the
+  gate-resolved chain (D1), exported for cmd (which already imports
+  enrich). api is barred twice over: INV2 forbids api→enrich
+  (`internal/api/doc.go:54`) and api sits at its export budget, so api
+  keeps its own unexported `namer` projection untouched.
 - api handlers: `listSeries`, `listItems`, `listProgress` gain `sort` parsing
   + recs composition; `seriesDTO`/`itemDTO`/progress row gain
   `rec_score,omitempty`.
 - cmd: `OnProgress: fanOut(newThumbRegrab(...), newWatchDetect(...))`;
-  janitor task `recs` registered after `art`; wake channel closed on process
-  exit.
+  janitor task `recs` registered after `art`; the wake send is
+  select-on-ctx — no channel close (the janitor loop exits on `ctx.Done`,
+  and a send racing shutdown must not panic; the wake precedent
+  `cmd/mellifera/main.go:238-241` carries no close).
 
 ## Open questions (answered at propose time, none blocking GATE 1)
 

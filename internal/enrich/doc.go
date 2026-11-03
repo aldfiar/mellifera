@@ -26,7 +26,7 @@
 // Leases are in-memory and expire lazily; pending work survives a restart in
 // items + the ledger and is re-derived on the next Start.
 //
-// # Public API (7 symbols)
+// # Public API (12 symbols)
 //
 //   - Deps: the collaborators (store, plugin manager, module registry) plus
 //     the streams lane's PackItem packaging seam (nil = lane disabled).
@@ -38,6 +38,17 @@
 //   - QueueConfig: the §4.4 knobs (zero-value = defaults).
 //   - Stats: a best-effort liveness snapshot (pending/in-flight/done/failed).
 //   - NewQueue: construct a Queue over Deps + QueueConfig (not yet running).
+//   - FetchGate / NewFetchGate: the per-plugin outbound pacing gate (enrichment
+//     D-5), constructed in cmd/mellifera and injected into the chain.
+//   - Relay: the client-relayed-fetch deferred-handoff transport (Claim/Ingest),
+//     constructed in cmd/mellifera beside the queue.
+//   - ResolveGates: the operator gate prefs materialized onto COPIES of a
+//     module's source bindings (plugin-title-enrichment D3) — the chain
+//     resolution every consumer (api presentation, queue derivation, the tag
+//     resolver) shares.
+//   - ResolveGenres: the learning loop's tag resolver (recommendation-sorting
+//     D1) — the genres array of the winning document's first effectively-enabled
+//     synopsis-group carrier over a gate-resolved chain; honest absence is nil.
 //
 // The pack vocabulary is NOT on this surface: PackOutcome (one published
 // packaging build returned over the PackItem seam) and MasterRuleVersion

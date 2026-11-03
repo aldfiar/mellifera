@@ -10,6 +10,7 @@ require (
 	github.com/swaggo/http-swagger v1.3.4
 	golang.org/x/image v0.44.0
 	golang.org/x/sync v0.22.0
+	golang.org/x/text v0.40.0
 	google.golang.org/grpc v1.83.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.55.0
@@ -38,7 +39,6 @@ require (
 	github.com/swaggo/swag v1.8.1 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

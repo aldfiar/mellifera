@@ -256,11 +256,15 @@ type progressRequest struct {
 
 // progressDTO is the ONE wire shape for a stored playback position (no
 // store.PlaybackProgress leaked — INV4): the item id, integer seconds, and
-// the raw RFC3339 stamp as persisted.
+// the raw RFC3339 stamp as persisted. RecScore is the additive recommendation
+// score (recommendation-sorting D7), stamped only under the scored default —
+// sort=recent serves unscored, and omitempty keeps the field off the wire
+// there.
 type progressDTO struct {
-	ItemID          string `json:"item_id"`
-	PositionSeconds int64  `json:"position_seconds"`
-	UpdatedAt       string `json:"updated_at"`
+	ItemID          string  `json:"item_id"`
+	PositionSeconds int64   `json:"position_seconds"`
+	UpdatedAt       string  `json:"updated_at"`
+	RecScore        float64 `json:"rec_score,omitempty"`
 }
 
 // progressListResponse is the wire shape for GET /api/v1/progress.
@@ -316,6 +320,10 @@ type seriesDTO struct {
 	// (omitempty) when the chain is unwired or no group has a carrier —
 	// honest absence, never an empty block.
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// RecScore is the additive recommendation score (recommendation-sorting
+	// D7) — the same read-time field itemDTO carries: see the field comment
+	// there; one score model, one stamping rule, both wire nouns.
+	RecScore float64 `json:"rec_score,omitempty"`
 }
 
 // seriesListResponse is the wire shape for GET /series.
@@ -425,6 +433,14 @@ type itemDTO struct {
 	// D5) — the same read-time block seriesDTO carries: see the field comment
 	// there; one shape, one resolution rule, both wire nouns.
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// RecScore is the additive recommendation score (recommendation-sorting
+	// D7): the read-time score the scored default ordered this listing by —
+	// 1000·inProgress + 500·newEpisode + min(Σ tag weights, 400) — stamped
+	// per row so the ordering is observable, never client-input. Present
+	// only under the scored default (sort=path computes no scores); omitted
+	// (omitempty) when unscored or zero — honest absence, never a
+	// fabricated 0.
+	RecScore float64 `json:"rec_score,omitempty"`
 }
 
 // createLibrary: parse createLibraryRequest → store.CreateLibrary → write
@@ -772,18 +788,28 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toProgressDTO(rec))
 }
 
-// listProgress: parse ?limit → store.ListProgress → write progressListResponse.
-// One domain call. limit defaults to progressDefaultLimit and clamps to
+// listProgress: parse ?limit + ?sort → store reads → write
+// progressListResponse. limit defaults to progressDefaultLimit and clamps to
 // progressMaxLimit; a present non-positive or non-integer limit is 400
 // bad_request (stricter than the item tables' parsePagination, whose silent
 // fallbacks fit admin paging but not a user-facing rail). The store read is
 // orphan-tolerant and positive-positions-only, so the handler does no shaping.
 //
+// Ordering (recommendation-sorting D7): the scored default orders score-desc
+// then updated_at-desc — score-then-window, like the item listing: the FULL
+// positive set is read (recsFactsFor's own batched read; the table holds one
+// row per item), scored through the same scoreItems composition, ordered,
+// and THEN cut to limit, so a high scorer can never fall behind the recency
+// window. ?sort=recent restores today's order byte-for-byte: the store's own
+// updated_at-desc SQL window, unscored (rec_score omitted). An unknown sort
+// is 400 (the same parse posture as the collection listings).
+//
 // @Summary      Recent playback positions (Continue rail)
 // @Tags         progress
 // @ID           list-progress
 // @Router       /progress [get]
-// @Param        limit query int false "page size (default 20, max 100)"
+// @Param        limit query int    false "page size (default 20, max 100)"
+// @Param        sort  query string false "sort=recent restores updated_at order (default: recommendation score order, rec_score desc then recency)"
 // @Success      200 {object} progressListResponse
 // @Failure      400 {object} errorBody
 // @Failure      500 {object} errorBody
@@ -797,21 +823,62 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, progressMaxLimit)
 	}
-	recs, err := a.deps.Store.ListProgress(r.Context(), limit)
+	recent, bad := parseSort(r, "recent")
+	if bad != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
+		return
+	}
+	if recent {
+		// The opt-out keeps today's exact contract: the store's own recency
+		// window, unscored.
+		recs, err := a.deps.Store.ListProgress(r.Context(), limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		dtos := make([]progressDTO, len(recs))
+		for i, rec := range recs {
+			dtos[i] = toProgressDTO(rec)
+		}
+		writeJSON(w, http.StatusOK, progressListResponse{Items: dtos})
+		return
+	}
+	// The scored default (D7 score-then-window): recsFactsFor already carries
+	// the full positive set it built the progress facts from — no second
+	// read. Score, order score-desc/recency, THEN cut the page.
+	facts, err := a.recsFactsFor(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dtos := make([]progressDTO, len(recs))
-	for i, rec := range recs {
-		dtos[i] = toProgressDTO(rec)
+	scores, err := a.scoreProgress(r.Context(), facts.rows, facts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	entries := make([]progressScored, len(facts.rows))
+	for i, row := range facts.rows {
+		entries[i] = progressScored{row: row, score: scores[i]}
+	}
+	orderByScoreRecency(entries)
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	dtos := make([]progressDTO, len(entries))
+	for i, e := range entries {
+		dtos[i] = toProgressDTO(e.row)
+		dtos[i].RecScore = e.score
 	}
 	writeJSON(w, http.StatusOK, progressListResponse{Items: dtos})
 }
 
 // getProgress: parse {item_id} → store.GetProgress → write progressDTO. One
-// domain call. An absent record OR an item that no longer exists is 404
-// not_found — the store read JOINs to items, so orphaned rows never surface.
+// domain call plus the additive rec_score (recommendation-sorting D7): the
+// entity scores through the same composition as the list — scoreItems over
+// the batched facts under the item's library namer — so the single record
+// carries the same score its row serves. An absent record OR an item that no
+// longer exists is 404 not_found — the store read JOINs to items, so
+// orphaned rows never surface.
 //
 // @Summary      Get one item's stored playback position
 // @Tags         progress
@@ -832,7 +899,48 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	writeJSON(w, http.StatusOK, toProgressDTO(rec))
+	// The additive score (D7): the record's item row and the item's library
+	// namer plus the batched facts — the same reads the scored list composes,
+	// scoped to the one entity. The stored zero position (a valid "back to
+	// start") is not in the positive-progress set, so it carries no resume
+	// bonus — the InProgress fact is the positive row, exactly as everywhere
+	// else; an episode of a STARTED series still serves the new-episode bonus
+	// (the series-scoped seed below — D2/D3), the same score the grid
+	// composes for the same entity.
+	it, err := a.deps.Store.GetItem(r.Context(), itemID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	n, err := a.namerFor(r.Context(), it.LibraryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	facts, err := a.recsFactsFor(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	// The series-scoped startedness seed (D2/D3): an episode scores against
+	// its SERIES' episode rows — a series started by a sibling episode (or by
+	// this episode's own stored ZERO position, which the positive-progress
+	// facts never carry) must serve the new-episode bonus exactly as the grid
+	// does; the one-item slice derivation alone would serve tags-only.
+	startedSeed := (map[string]bool)(nil)
+	if path := seriesPathOf(it); path != "" {
+		started, err := a.seriesStartedFact(r.Context(), n, path, facts)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		if started {
+			startedSeed = map[string]bool{path: true}
+		}
+	}
+	dto := toProgressDTO(rec)
+	dto.RecScore = scoreItems(n, []store.Item{it}, facts, startedSeed)[0]
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // deleteLibrary: parse {id} → store.DeleteLibrary → 204. One domain call.
@@ -901,11 +1009,18 @@ func (a *app) scanLibrary(w http.ResponseWriter, r *http.Request) {
 }
 
 // listItems: parse {id} + optional ?status=/?path_prefix=/?top_level= +
-// pagination → store.QueryItems → write itemsResponse. One domain call. An
-// absent/empty ?status= passes "" so all statuses are returned (INV-empty-all);
-// api does not validate the status set (store/enrich own it — pure delegation).
-// The folder filters are normalized HERE (parsePathFilter) so the store only
-// ever sees a pre-trimmed prefix.
+// ?sort= + pagination → store items → write itemsResponse. An absent/empty
+// ?status= passes "" so all statuses are returned (INV-empty-all); api does
+// not validate the status set (store/enrich own it — pure delegation). The
+// folder filters are normalized HERE (parsePathFilter) so the store only ever
+// sees a pre-trimmed prefix.
+//
+// Ordering (recommendation-sorting D7): the scored default reads the FULL
+// filtered set (allFilteredItems), scores every row via recs over batched
+// facts (recsFactsFor), orders score-desc with the alphabetical floor
+// (scoredServe), and THEN applies offset/limit in the handler — score-then-
+// window, so page 2 can never outrank page 1. ?sort=path restores today's
+// order: QueryItems' id-ordered SQL window, unscored (rec_score omitted).
 //
 // @Summary      List items (optionally filtered by library + status + folder)
 // @Tags         items
@@ -915,6 +1030,7 @@ func (a *app) scanLibrary(w http.ResponseWriter, r *http.Request) {
 // @Param        status      query string  false "status filter (empty = all)"
 // @Param        path_prefix query string  false "folder prefix filter — only items whose relative_path is under prefix/ (leading/trailing slashes trimmed, '.'/'..' segments rejected)"
 // @Param        top_level   query boolean false "only items with no subfolder in relative_path (conflicts with path_prefix)"
+// @Param        sort        query string  false "sort=path restores id order (default: recommendation score order, rec_score desc)"
 // @Param        limit       query int     false "page size (default 50, max 200)"
 // @Param        offset      query int     false "page offset"
 // @Success      200 {object} itemsResponse
@@ -932,15 +1048,16 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
 	}
-	limit, offset := parsePagination(r)
-	items, err := a.deps.Store.QueryItems(r.Context(), id, status, pathPrefix, topLevel, limit, offset)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+	byPath, bad := parseSort(r, "path")
+	if bad != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
 	}
+	limit, offset := parsePagination(r)
 	// The display-naming namer is per-library: the naming options off the
-	// library row plus the whole-series map the composed names join against.
-	// A MISSING library floors to the empty namer inside namerFor — the one
+	// library row plus the whole-series map the composed names join against
+	// (and, under the scored default, the episode→series tags join). A
+	// MISSING library floors to the empty namer inside namerFor — the one
 	// floor every namerFor call site shares — so the browse contract for a
 	// nonexistent ?library= stays 200-with-empty-items. Any other read
 	// failure is a real failure → 500, like any other store read here.
@@ -949,10 +1066,56 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
+	// The photo carve-out (recommendation-sorting, "Photo libraries keep
+	// path order regardless of score"): a photo-scanner-module library
+	// serves the store's order under the scored DEFAULT too — no computed
+	// score, tie-break, or default sort ever reorders its grid. One
+	// ModuleID comparison off the library row the namer already carries;
+	// the scoredServe block below never runs, so the wire carries no
+	// rec_score either. An explicit sort value still parses first, so an
+	// unknown sort stays a 400 on a photo library like anywhere else.
+	if n.moduleID == photoModuleID {
+		byPath = true
+	}
+	var items []store.Item
+	if byPath {
+		// The opt-out keeps today's exact contract: the store's own
+		// id-ordered SQL window, unscored.
+		items, err = a.deps.Store.QueryItems(r.Context(), id, status, pathPrefix, topLevel, limit, offset)
+	} else {
+		items, err = a.allFilteredItems(r.Context(), id, status, pathPrefix, topLevel)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
 	dtos, err := a.itemDTOs(r.Context(), items, n)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
+	}
+	if !byPath {
+		// D7 score-then-window: score the full set (facts are two batched
+		// reads), order through recs.Order's comparator, THEN cut the page —
+		// never SQL-window order under the scored default.
+		facts, err := a.recsFactsFor(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		dtos = scoredServe(dtos, scoreItems(n, items, facts, nil),
+			func(d itemDTO) string { return d.ID },
+			func(d itemDTO) string { return d.Display },
+			func(d *itemDTO, s float64) { d.RecScore = s },
+		)
+		if offset > len(dtos) {
+			offset = len(dtos)
+		}
+		if end := offset + limit; end < len(dtos) {
+			dtos = dtos[offset:end]
+		} else {
+			dtos = dtos[offset:]
+		}
 	}
 	writeJSON(w, http.StatusOK, itemsResponse{Items: dtos})
 }
@@ -1239,17 +1402,24 @@ func strongETag(fi os.FileInfo) string {
 }
 
 // listSeries: parse ?library (required integer) → store.QuerySeries → write
-// seriesListResponse. One domain call (pure delegation, INV1). A missing or
-// non-integer ?library= is a 400 (parse step) — unlike the items listing there
-// is no all-libraries form, because a serial catalog is always browsed within
-// one library. All statuses are returned (the store's "" status pass-through);
-// api does not validate the status set (store/enrich own it).
+// seriesListResponse. A missing or non-integer ?library= is a 400 (parse
+// step) — unlike the items listing there is no all-libraries form, because a
+// serial catalog is always browsed within one library. All statuses are
+// returned (the store's "" status pass-through); api does not validate the
+// status set (store/enrich own it).
+//
+// Ordering (recommendation-sorting D7): the scored default composes each
+// series' recs facts over batched reads — QuerySeries itself is unpaged, so
+// the full set scores directly; the per-series started/new-episode facts need
+// the library's episodes, one batched item read grouped by the parsed anchor.
+// ?sort=path restores today's relative_path order, unscored.
 //
 // @Summary      List a library's series
 // @Tags         series
 // @ID           list-series
 // @Router       /series [get]
-// @Param        library query int true "library id filter"
+// @Param        library query int    true "library id filter"
+// @Param        sort    query string false "sort=path restores path order (default: recommendation score order, rec_score desc)"
 // @Success      200 {object} seriesListResponse
 // @Failure      400 {object} errorBody
 // @Failure      500 {object} errorBody
@@ -1257,6 +1427,11 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.URL.Query().Get("library"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "library query param must be an integer", false)
+		return
+	}
+	byPath, bad := parseSort(r, "path")
+	if bad != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
 	}
 	series, err := a.deps.Store.QuerySeries(r.Context(), id, "")
@@ -1277,7 +1452,40 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
+	if !byPath {
+		// The scored default (D7): QuerySeries returns EVERY row of the
+		// library unpaged, so the full set scores directly — no window. The
+		// per-series context facts ride one batched episode read grouped by
+		// the parsed series anchor.
+		facts, err := a.recsFactsFor(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		eps, err := a.libraryEpisodes(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+		dtos = scoredServe(dtos, scoreSeries(n, series, eps, facts),
+			func(d seriesDTO) string { return d.ID },
+			func(d seriesDTO) string { return d.Display },
+			func(d *seriesDTO, s float64) { d.RecScore = s },
+		)
+	}
 	writeJSON(w, http.StatusOK, seriesListResponse{Items: dtos})
+}
+
+// libraryEpisodes reads the library's FULL item set (one batched read — the
+// batched-read rule bars per-series episode queries) and groups the rows by
+// their parsed series anchor: the per-series started/new-episode facts the
+// series scoring composes from.
+func (a *app) libraryEpisodes(ctx context.Context, libraryID int64) (map[string][]store.Item, error) {
+	items, err := a.allFilteredItems(ctx, libraryID, "", "", false)
+	if err != nil {
+		return nil, err
+	}
+	return episodesBySeries(items), nil
 }
 
 // getSeries: parse {id} → store.GetSeries → write seriesResponse. One domain

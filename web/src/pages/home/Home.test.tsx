@@ -128,8 +128,18 @@ function seriesRow(
   };
 }
 
-function progress(itemId: string, position: number, at: string): ProgressDTO {
-  return { item_id: itemId, position_seconds: position, updated_at: at };
+function progress(
+  itemId: string,
+  position: number,
+  at: string,
+  recScore?: number,
+): ProgressDTO {
+  return {
+    item_id: itemId,
+    position_seconds: position,
+    updated_at: at,
+    ...(recScore !== undefined ? { rec_score: recScore } : {}),
+  };
 }
 
 // stubObjectUrls — jsdom has no createObjectURL/revokeObjectURL; the media
@@ -549,6 +559,74 @@ describe("Home — Next up row", () => {
     expect(
       spy.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/series?library=1")),
     ).toEqual([]);
+  });
+
+  it("orders Next up by the served rec_score — the higher-scored series' episode first even when the served list order disagrees (recommendation-sorting D8)", async () => {
+    fetchWith({
+      "/api/v1/progress": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              // Served order deliberately disagrees with the scores (the
+              // lower-scored series' row first): the served rec_score, not
+              // list position, decides the row's order; a tie would fall to
+              // the served order (recency).
+              progress("itm_2_cold_e1", 100, "2026-10-07T18:00:00Z", 2),
+              progress("itm_2_hot_e1", 100, "2026-10-06T18:00:00Z", 9),
+            ],
+          }),
+        ),
+      "/api/v1/items/itm_2_cold_e1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            item: item("itm_2_cold_e1", 2, doc({ seriesPath: "Cold", season: 1, episode: 1 })),
+          }),
+        ),
+      "/api/v1/items/itm_2_hot_e1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            item: item("itm_2_hot_e1", 2, doc({ seriesPath: "Hot", season: 1, episode: 1 })),
+          }),
+        ),
+      "/api/v1/series?library=2": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              seriesRow("ser_2_cold", 2, "Cold", {}, { display_name: "Cold Show" }),
+              seriesRow("ser_2_hot", 2, "Hot", {}, { display_name: "Hot Show" }),
+            ],
+          }),
+        ),
+      "/api/v1/series/ser_2_cold/episodes": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [item("itm_2_cold_e2", 2, doc({ seriesPath: "Cold", season: 1, episode: 2 }))],
+          }),
+        ),
+      "/api/v1/series/ser_2_hot/episodes": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [item("itm_2_hot_e2", 2, doc({ seriesPath: "Hot", season: 1, episode: 2 }))],
+          }),
+        ),
+      "/api/v1/items?library=2": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+      "/api/v1/libraries": () =>
+        Promise.resolve(jsonResponse(200, { items: [lib(2, "serial", "serials")] })),
+      "/api/v1/libraries/2/summary": () =>
+        Promise.resolve(jsonResponse(200, { library_id: 2, items: 4, updated_at: "" })),
+    });
+    renderHome();
+
+    const nextUpRow = await screen.findByRole("region", { name: "Next up" });
+    const cards = within(nextUpRow).getAllByRole("link");
+    expect(cards.length).toBe(2);
+    // rec_score 9 (Hot) outranks rec_score 2 (Cold) regardless of the
+    // progress rows' served positions.
+    expect(cards[0]!.getAttribute("href")).toBe("/items/itm_2_hot_e2");
+    expect(cards[0]!.getAttribute("aria-label")).toBe("Play Hot Show S01E02");
+    expect(cards[1]!.getAttribute("href")).toBe("/items/itm_2_cold_e2");
+    expect(cards[1]!.getAttribute("aria-label")).toBe("Play Cold Show S01E02");
   });
 
   it("renders the Next up empty state when the series has no later episode", async () => {
