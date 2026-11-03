@@ -19,7 +19,7 @@ Archived 2026-11-03. Branch `feature/recommendation-sorting` (base main f03a3f3)
 | 5.2 | qa-closeout | 0 | 2026-11-02T23:42:38Z | wf-reviewer | 14.9 s (swag regen + npm ci + vite build — byte-identical dist) |
 | 5.3 | qa-closeout | 0 | 2026-11-02T23:42:01Z | wf-reviewer | 7 ms |
 | 5.4 | qa-closeout | 0 | 2026-11-02T23:43:11Z | wf-reviewer | 20.4 s (build + check.sh export budgets + lint + web vitest 35 files/453 tests + tsc) |
-| git-check | built-in | 0 | 2026-11-03T06:35:28Z | session | 70 ms (final tree, post-fix, pushed) |
+| git-check | built-in | 0 | 2026-11-03T06:54:47Z | session | 53 ms (final tree — archive commit 402525d committed + pushed) |
 
 38 receipts total under `.tmp/recommendation-sorting/receipts.jsonl` (deleted by `wf pipeline clean` — this table is the durable record). Red receipts journaled along the way, all honored then fixed: 5.1 (2 reds — synchronous janitor call, missing ModulePresentation wiring in the shared pbWorld harness; test bugs, not production defects), 3.2's flag-fix run (1 red — coder's own test expectation mis-derived the tag constant; code was correct).
 
@@ -34,7 +34,7 @@ Reviewer verdict FLAG (one finding on 3.2: the single-item progress route under-
 
 ## Commits (apply order)
 
-a4bf5db (1.1) → 2c467e3 (1.2) → 1f7cf83 (2.2) → ee026cd (2.1) → 22ea7c1 (2.3) → 4360ea2 (3.1) → 7f72330 (3.2) → 8f1351c (3.3) → 5e0b08d (4.1) → 0d5bac9 (5.1) → f10091f (5.2) → 70fbca5 (5.3) → 5.4 no commit (gates already green on the tree) → cc8ef9f (gate records + openspec artifacts) → 9e5e2d6 (GATE 2 flag fix + gate record) → archive commit (this folder + merged spec deltas + docs pass).
+a4bf5db (1.1) → 2c467e3 (1.2) → 1f7cf83 (2.2) → ee026cd (2.1) → 22ea7c1 (2.3) → 4360ea2 (3.1) → 7f72330 (3.2) → 8f1351c (3.3) → 5e0b08d (4.1) → 0d5bac9 (5.1) → f10091f (5.2) → 70fbca5 (5.3) → 5.4 no commit (gates already green on the tree) → cc8ef9f (gate records + openspec artifacts) → 9e5e2d6 (GATE 2 flag fix + gate record) → 402525d (archive: spec deltas merged, Purpose policed, close-out notes, docs pass).
 
 ## Living specs touched by the archive
 
