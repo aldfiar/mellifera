@@ -137,8 +137,12 @@ func TestWatchedItemStamp(t *testing.T) {
 			order: []string{epWatched.ID, epFresh.ID, plainFilm.ID, watchedFilm.ID},
 		},
 		{
-			name: "progress_rows_stamp_from_the_batched_facts",
-			url:  "/api/v1/progress",
+			// ?include=watched — since 1.3 the default listing withdraws the
+			// ledgered episode's row, so its stamp is observable only on the
+			// opt-in (TestProgressWatchedWithdrawal pins the withdrawal and
+			// the 400 parse; the in-progress film's row stays unstamped).
+			name: "progress_rows_stamp_under_include_watched",
+			url:  "/api/v1/progress?include=watched",
 			rows: progressRows,
 			watched: map[string]bool{
 				epWatched.ID: true,

@@ -121,8 +121,9 @@ func TestGoldenStartedSerialTopsGrid(t *testing.T) {
 // the resume bonus" scenario: a completed item (positive progress row AND a
 // watched-ledger row — the detector writes the ledger beside the position)
 // scores its TAGS ONLY, while a mid-media item keeps the resume tier and
-// tops the grid. The completed item still outranks a plain one by its tag
-// component.
+// tops the grid. The watched partition sinks the completed item below even
+// the zero-score plain one — the partition WORKING is the served order's
+// point — while its tags-only score stays observable on the wire.
 func TestGoldenCompletedSkipsResumeBonus(t *testing.T) {
 	h, st, lib := newRecsAPI(t)
 	ctx := context.Background()
@@ -160,7 +161,10 @@ func TestGoldenCompletedSkipsResumeBonus(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	lr := decodeItems(t, resp)
-	wantIDs(t, servedIDs(lr.Items, func(d itemDTO) string { return d.ID }), mid.ID, done.ID, plain.ID)
+	// The partition: every unwatched entry first (mid's resume tier, then
+	// plain's zero at the alphabetical floor), the ledgered item LAST —
+	// despite its score 2 beating plain's 0.
+	wantIDs(t, servedIDs(lr.Items, func(d itemDTO) string { return d.ID }), mid.ID, plain.ID, done.ID)
 	scores := map[string]float64{}
 	for _, d := range lr.Items {
 		scores[d.ID] = d.RecScore

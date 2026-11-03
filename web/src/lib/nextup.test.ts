@@ -76,12 +76,14 @@ function progress(
   position: number,
   at: string,
   recScore?: number,
+  watched?: boolean,
 ): ProgressDTO {
   return {
     item_id: itemId,
     position_seconds: position,
     updated_at: at,
     ...(recScore !== undefined ? { rec_score: recScore } : {}),
+    ...(watched !== undefined ? { watched } : {}),
   };
 }
 
@@ -197,6 +199,23 @@ describe("moved_core_parity", () => {
         progress("itm_1_s1e3", 10, "2026-10-07T18:00:00Z", 4.5),
         progress("itm_1_s1e1", 10, "2026-10-06T18:00:00Z", 2),
         progress("itm_2_s2e1", 10, "2026-10-05T18:00:00Z"),
+      ],
+      itemById: new Map<string, ItemDTO>([
+        ["itm_1_s1e3", SHOW(1, 1, 3)],
+        ["itm_1_s1e1", SHOW(1, 1, 1)],
+        ["itm_2_s2e1", SHOW(2, 2, 1)],
+      ]),
+      want: [
+        { libraryId: 1, seriesPath: "Show", season: 1, episode: 3, recScore: 4.5 },
+        { libraryId: 2, seriesPath: "Show", season: 2, episode: 1 },
+      ],
+    },
+    {
+      name: "watched rows still anchor — the shared progress query serves include=watched, so a completed episode's row anchors its series and carries its score",
+      records: [
+        progress("itm_1_s1e3", 10, "2026-10-07T18:00:00Z", 4.5, true),
+        progress("itm_1_s1e1", 10, "2026-10-06T18:00:00Z"),
+        progress("itm_2_s2e1", 10, "2026-10-05T18:00:00Z", undefined, true),
       ],
       itemById: new Map<string, ItemDTO>([
         ["itm_1_s1e3", SHOW(1, 1, 3)],
