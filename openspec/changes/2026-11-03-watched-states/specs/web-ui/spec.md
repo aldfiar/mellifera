@@ -11,10 +11,11 @@ and NO progress bar; an in-progress element (a positive served position on
 an unwatched item) renders the progress bar as today; a new element renders
 today's clean state. The SPA SHALL NOT derive watched client-side (a zero
 `rec_score` is not a watched signal). The ✓ is a color-change mark — no
-pill or badge chrome. Sites: per-series episode table rows, serial-grid
-series cards (the series DTO's `watched`), tv-grid episode-file cards, the
-element page heading beside the served display name, and Continue rail
-rows.
+pill or badge chrome. Sites: per-series episode table rows, series cards in
+the collection series grid (SeriesCard; the series DTO's `watched`), cards
+in the collection item grid (ItemGrid — TV mode is the same grids under the
+html.tv CSS layer), the element page heading beside the served display
+name, and Continue rail rows.
 
 #### Scenario: A finished episode renders watched
 

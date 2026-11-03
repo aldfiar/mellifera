@@ -34,18 +34,25 @@ visible state in the UI and never appear as to-watch recommendations.
 1. **Served watched state (additive, read-time).** `watched,omitempty`
    (true-only bool) on the item, series, and progress DTOs — derived at read
    time from the `watched_items` ledger through the existing batched
-   `recsFacts` composition (no new store reads, no new tables). Series
+   `recsFacts` composition, stamped on every serving route: the single-item
+   and single-series GETs, the series-episodes listing, the `sort=recent`
+   rail branch, and the `sort=path` collection branches gain the
+   composition or the ledger set (no new tables, no new store methods; the
+   flag stamps unconditionally even where the score stays absent). Series
    watched = every backing episode ledgered.
 2. **The continue rail withdraws watched rows.** `GET /progress` excludes
-   ledger rows by default; `?include=watched` restores them. Home fetches
-   `include=watched` once and splits client-side: the rail renders only
+   ledger rows by default in BOTH branches (scored and `sort=recent`);
+   `?include=watched` restores them. Home fetches `include=watched` once —
+   the param rides the SHARED progress query (queries.ts), so ItemDetail's
+   resume row inherits it — and splits client-side: the rail renders only
    unwatched rows, the Next-up anchor derivation keeps using all rows.
 3. **Explicit completion on the progress write (the credits leg).** The
    progress PUT accepts an additive optional `completed` flag; when set, the
-   detector ledgered the item regardless of the 0.9 floor. The SPA sets it on
+   detector ledgers the item regardless of the 0.9 floor. The SPA sets it on
    the video `ended` edge (beside auto-next) and on SkipChip credits
-   activation — skip-the-credits counts as finished. The passive 0.9 floor
-   and the boot backfill stay as the backstop.
+   activation — skip-the-credits counts as finished; the flagged write
+   bypasses the player's position dedupe so the edge cannot be swallowed.
+   The passive 0.9 floor and the boot backfill stay as the backstop.
 4. **Scored grids sink watched entries.** `recs.Entry` gains `Watched`;
    `recs.Order` partitions watched entries LAST (each partition keeps score
    desc → display name → id). Watched elements stay visible in collections
@@ -53,14 +60,19 @@ visible state in the UI and never appear as to-watch recommendations.
 5. **UI element states.** Per-element tri-state rendering — watched (✓ mark
    in the library pastel accent, dimmed title, no progress bar),
    in-progress (progress bar as today), new (clean). Sites: episode table
-   rows, serial-grid series cards, tv-grid episode cards, element page
-   heading, Continue rail. The SPA renders the served flag only — it never
-   derives watched client-side.
+   rows (EpisodesView), series cards (SeriesCard in SeriesGrid,
+   series-poster-grid), film/tv cards (ItemGrid; TV mode is the html.tv CSS
+   layer over the same grids), element page heading, Continue rail. The SPA
+   renders the served flag only — it never derives watched client-side.
 
 ## Non-goals
 
-- Manual mark-watched / mark-unwatched toggles (a `DELETE /items/{id}/watched`
-  reset affordance is the listed follow-up; the ledger stays append-only).
+- Building a manual mark-watched affordance — one already exists
+  (`MarkWatchedRow`, Collection.tsx) and becomes effective through this
+  change: its full-duration write crosses the 0.9 floor and ledgers the
+  item (only its stale in-code comment is refreshed; no behavior change).
+  The follow-up is the `DELETE /items/{id}/watched` reset (un-watch /
+  rewatch); the ledger stays append-only.
 - Multi-profile ledgers (single implicit profile, as the spec states — the
   roles change owns that migration).
 - Server-side credits-chapter classification (no chapter facts to read; the
