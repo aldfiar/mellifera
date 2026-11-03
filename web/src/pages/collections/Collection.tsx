@@ -32,6 +32,7 @@ import {
   useLibrary,
   useLibraryFolders,
   useLibrarySummary,
+  useProgressList,
   useScanLibrary,
   useSeries,
   useSeriesEpisodes,
@@ -44,6 +45,12 @@ import { cn } from "@/lib/utils";
 import { formatPosition } from "@/pages/home/Home";
 import type { BrowseHandoff } from "@/pages/browse/ItemDetail";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
+import {
+  InProgressBar,
+  WatchedMark,
+  isWatchedElement,
+  watchedPercent,
+} from "@/components/WatchedStates";
 import { DialogShell } from "@/components/DialogShell";
 import {
   CardActions,
@@ -1113,6 +1120,41 @@ function MoviesBody(props: {
   );
 }
 
+// itemWatchState — one item card's tri-state read (watched-states 2.3): the
+// SERVED watched flag plus, for an UNwatched item, the served position over
+// the item's duration as the in-progress bar percent (D5: watched → ✓ +
+// dimmed title, NO bar; in progress → today's bar; new → clean). Rows come
+// from the shared ["progress"] cache (one fetch feeding every grid — the
+// include=watched query 2.1 wired), never a per-surface fetch. Pure: the
+// hook form below is the component-facing half.
+function itemWatchState(
+  item: ItemDTO,
+  duration: number | null,
+  rows: ProgressDTO[],
+): { watched: boolean; percent: number | null } {
+  const watched = isWatchedElement(item.watched);
+  const record = rows.find((entry) => entry.item_id === item.id);
+  const percent =
+    !watched && record !== undefined
+      ? watchedPercent(record.position_seconds, duration)
+      : null;
+  return { watched, percent };
+}
+
+// useItemWatchState — itemWatchState over the shared progress list, for
+// card components that own one item.
+function useItemWatchState(
+  item: ItemDTO,
+  duration: number | null,
+): { watched: boolean; percent: number | null } {
+  const progress = useProgressList();
+  return itemWatchState(
+    item,
+    duration,
+    progress.data?.items ?? [],
+  );
+}
+
 // MovieCard — one movie file card: the frame-grabber thumb (via the
 // authenticated media fetch, D5) over a quiet placeholder box when the
 // document carries the frame-grabber fact, then the served title (floored
@@ -1152,6 +1194,10 @@ function MovieCard(props: {
   // Mark watched is gated on a KNOWN duration: photos and unprobed rows
   // never see the row — never a guessed duration.
   const duration = durationSeconds(item.document);
+  // The element state (watched-states 2.3): ✓ corner mark + dimmed title on
+  // a watched card (the ⋯ trigger owns the top-right corner, so the mark
+  // takes the top-left), today's in-progress bar on a started unwatched one.
+  const watch = useItemWatchState(item, duration);
   const chain = props.chain ?? [];
   const identify =
     chain.length > 0
@@ -1192,13 +1238,17 @@ function MovieCard(props: {
             <MediaImg src={thumb} />
           </span>
         ) : null}
-        <span className="text-sm font-medium">{title}</span>
+        {watch.watched ? <WatchedMark className="absolute left-2 top-2" /> : null}
+        <span className={cn("text-sm font-medium", watch.watched && "watched-dim")}>
+          {title}
+        </span>
         {unidentified ? (
           <span className="text-xs text-muted-foreground">Not identified</span>
         ) : null}
         {meta !== "" ? (
           <span className="text-xs text-muted-foreground">{meta}</span>
         ) : null}
+        {watch.percent !== null ? <InProgressBar percent={watch.percent} /> : null}
       </Link>
       <CardActions
         triggerLabel={`Actions for ${title}`}
@@ -1584,6 +1634,10 @@ function SeriesCard(props: {
   const { sr } = props;
   const season = seriesSeason(sr.document);
   const backing = seriesBacking(sr.document);
+  // The element state (watched-states 2.3): the series DTO's own SERVED flag
+  // — all-watched series render the ✓ corner mark + dimmed title (no bar:
+  // the series DTO carries no position, and the SPA never derives one).
+  const watched = isWatchedElement(sr.watched);
   // The card poster (artwork 3.3): ONLY the served artwork field, and only
   // its served proxy form rides the authenticated byte channel — a raw
   // remote URL (an unmaterialized winner's transient) floors to the
@@ -1619,13 +1673,16 @@ function SeriesCard(props: {
         className="block"
         aria-label={`Open ${seriesTitle(sr)}`}
       >
+        {watched ? <WatchedMark className="absolute left-2 top-2" /> : null}
         <PosterFrame
           src={artSrc}
           name={seriesTitle(sr)}
           className="scard-poster"
         />
         <span className="scard-body">
-          <span className="scard-title">{seriesTitle(sr)}</span>
+          <span className={cn("scard-title", watched && "watched-dim")}>
+            {seriesTitle(sr)}
+          </span>
           {season !== null ? (
             <span className="flex flex-wrap gap-1">
               <span className="chip">Season {String(season)}</span>
@@ -1808,6 +1865,10 @@ function EpisodeCard(props: {
 // here; serial collections now use the series grid above.
 function ItemGrid(props: { libraryId: number }): ReactElement {
   const { query, items, offset, prev, next } = usePagedItems(props.libraryId);
+  // The tri-state rows (watched-states 2.3): one subscription, the shared
+  // ["progress"] cache — every card reads its own served flag + position.
+  const progress = useProgressList();
+  const progressRows = progress.data?.items ?? [];
 
   if (query.isLoading) {
     return <LoadingState label="Loading items…" />;
@@ -1822,25 +1883,45 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
   return (
     <section className="flex flex-col gap-3">
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {items.map((item, index) => (
-          <li key={item.id}>
-            <Link
-              to={`/items/${item.id}`}
-              state={browseState(
-                items.map((i) => i.id),
-                index,
-                props.libraryId,
-              )}
-              className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
-            >
-              <span className="text-sm font-medium">{itemTitle(item).title}</span>
-              <span className="flex gap-1">
-                <span className="chip">{item.media_type}</span>
-                <span className="chip">{item.status}</span>
-              </span>
-            </Link>
-          </li>
-        ))}
+        {items.map((item, index) => {
+          const watch = itemWatchState(
+            item,
+            durationSeconds(item.document),
+            progressRows,
+          );
+          return (
+            <li key={item.id}>
+              <Link
+                to={`/items/${item.id}`}
+                state={browseState(
+                  items.map((i) => i.id),
+                  index,
+                  props.libraryId,
+                )}
+                className="relative flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
+              >
+                {watch.watched ? (
+                  <WatchedMark className="absolute left-2 top-2" />
+                ) : null}
+                <span
+                  className={cn(
+                    "text-sm font-medium",
+                    watch.watched && "watched-dim",
+                  )}
+                >
+                  {itemTitle(item).title}
+                </span>
+                <span className="flex gap-1">
+                  <span className="chip">{item.media_type}</span>
+                  <span className="chip">{item.status}</span>
+                </span>
+                {watch.percent !== null ? (
+                  <InProgressBar percent={watch.percent} />
+                ) : null}
+              </Link>
+            </li>
+          );
+        })}
       </ul>
       <Pagination offset={offset} count={items.length} onPrev={prev} onNext={next} />
     </section>

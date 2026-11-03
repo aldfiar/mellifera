@@ -68,6 +68,10 @@ import {
 } from "@/lib/document";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 import {
+  WatchedMark,
+  isWatchedElement,
+} from "@/components/WatchedStates";
+import {
   ParserFooter,
   SlotNote,
   humanizeField,
@@ -1228,6 +1232,11 @@ function IdentityBlock(props: {
       !present(resolveIdentityValue(doc, field)),
   );
 
+  // The element state (watched-states 2.3): a watched element's heading
+  // gains the ✓ beside the served display name, the name dimmed to the
+  // watched opacity. The SERVED item flag only — never derived.
+  const watched = isWatchedElement(item.watched);
+
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <div className="flex items-start justify-between gap-2">
@@ -1235,7 +1244,15 @@ function IdentityBlock(props: {
           {showEyebrow ? (
             <p className="font-mono text-sm text-muted-foreground">{eyebrow}</p>
           ) : null}
-          <h1 className="break-words text-2xl font-semibold">{heading}</h1>
+          <h1 className="break-words text-2xl font-semibold">
+            <span className={watched ? "watched-dim" : undefined}>{heading}</span>
+            {watched ? (
+              <>
+                {" "}
+                <WatchedMark />
+              </>
+            ) : null}
+          </h1>
         </div>
         <ItemActions
           item={item}
