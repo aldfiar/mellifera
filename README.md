@@ -74,7 +74,8 @@ degrades enrichment but never blocks a scan.
 - **Watched states** — episodes watched to ≥ 90 %, to the credits, or flagged
   `completed` are ledgered as watched; finished elements show a
   ✓ state, leave the Continue rail, and sink to the bottom of scored grids;
-  `?include=watched` restores rail rows. The ✓ is a one-click toggle
+  `?include=watched` restores rail rows. The `watched` chip beside the ⋯
+  trigger — always visible in both states — is a one-click toggle
   (`PUT /items/{id}/state`): un-watching removes the ledger row and resets
   the resume position.
 - **Media serving** — originals and thumbnails served straight from the
