@@ -29,7 +29,8 @@ import type { ItemDocument } from "@/lib/document";
 // keeps today's bar; a new element renders clean; wire absence (the
 // omitempty field gone) behaves as not-watched. On the three mounted toggle
 // surfaces (episode rows, item-grid cards, heading) the slot is the
-// WatchedToggle BUTTON — the always-visible `watched` text chip — series
+// WatchedToggle BUTTON — the single ✓ glyph (no word ever renders; the
+// state rides the aria pair + the wtoggle class) — series
 // cards keep the passive ✓ mark (the bulk toggle is v1.1). The mark's
 // layout/cost is CSS's contract (index.css, outside the
 // tv shell block, so the state survives the html.tv layer unchanged;
@@ -188,18 +189,23 @@ describe("WatchedStates — pure leaves", () => {
   });
 });
 
-// ---- WatchedToggle (collections-ux 2.2, reworked by watched-toggle-label 1.1)
-// The watched slot as a real <button> on the three mounted surfaces: a quiet
-// `watched` text chip, TOP-RIGHT (inline right:40px, no left override — one
-// stylesheet gutter past the ⋯ trigger's own slot), ALWAYS visible. jsdom
-// sees no media queries and no layout, so the control's contract is asserted
-// at its two observable seams: (a) the button composes the class carrier
-// (cardact-trigger) and the state split rides the inline style — BOTH states
-// pin opacity 1 (the disclosure law is retired for this control) and the
-// chip's auto width/height + padding beat the fixed 28px/40px trigger sizes;
-// (b) the ⋯ trigger's own law — base reveal + coarse-pointer and html.tv
-// persistence — is pinned by text (the clampCssContract readFileSync idiom)
-// so the stylesheet composition can't silently lose it.
+// ---- WatchedToggle (collections-ux 2.2, reworked to the glyph law by
+// watched-signal-refinement 1.1)
+// The watched slot as a real <button> on the three mounted surfaces: ONE
+// ✓ glyph (never a word — the aria pair "Watched"/"Unwatched" carries the
+// state), one carrier form on every mount — `cardact-trigger
+// cardact-trigger--inline` — with the state split CLASS-driven
+// (`wtoggle--watched`/`wtoggle--unwatched`) and zero inline styles: no
+// opacity/size/position/color/border overrides (D5: no pill, badge, or
+// ring chrome in either state; the visibility law is context-scoped in
+// CSS, task 3.1). jsdom sees no media queries and no layout, so the
+// control's contract is asserted at its two observable seams: (a) the
+// button composes the carrier + state class and pins the INLINE-STYLE
+// ABSENCE — every style property the old chip pinned must stay ""
+// (the chip idiom must not creep back); (b) the ⋯ trigger's own law —
+// base reveal + coarse-pointer and html.tv persistence — is pinned by
+// text (the clampCssContract readFileSync idiom) so the stylesheet
+// composition can't silently lose it.
 
 // ruleBody — the declaration body of the rule introduced by the given
 // selector text (the clampCssContract.test.ts helper, inlined: this suite
@@ -211,6 +217,19 @@ function ruleBody(css: string, selector: string): string {
   const close = css.indexOf("}", open);
   expect(close, `rule ${selector} never closes`).toBeGreaterThan(open);
   return css.slice(open + 1, close);
+}
+
+// rulesOf — EVERY (selector, body) pair in the stylesheet, comments
+// stripped (the clampCssContract idiom again). @media wrappers never match —
+// their inner rules surface with their own selector text — so the negative
+// pins below sweep the WHOLE file: a stray hide outside the 3.1 block
+// cannot hide behind a block slice.
+function rulesOf(css: string): Array<{ selector: string; body: string }> {
+  const sansComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  return Array.from(sansComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)).map((m) => ({
+    selector: m[1].trim(),
+    body: m[2],
+  }));
 }
 
 // mockStateWrite — the PUT /items/{id}/state capture: records every fetch
@@ -245,54 +264,55 @@ function renderToggle(watched: boolean, onCardClick?: () => void) {
 }
 
 describe("WatchedToggle — the three-state renders", () => {
-  it("watched: the accent text chip at rest — a pressed button pinned visible inline, top-right slot past the ⋯ trigger", () => {
+  it("watched: the single ✓ glyph — a pressed button on the carrier form, state class `wtoggle--watched`, ZERO inline styles", () => {
     renderToggle(true);
 
     const toggle = screen.getByRole("button", { name: "Watched" });
-    expect(toggle.textContent).toBe("watched");
+    expect(toggle.textContent).toBe("✓");
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    // The class carrier — the composition, no new CSS.
+    // One carrier form on every mount — the class carrier + the inline
+    // variant + the state class (the media-query twins need classes to
+    // target; the state split is class-driven, not inline).
     expect(toggle.classList.contains("cardact-trigger")).toBe(true);
-    // Always visible: the disclosure law is retired for this control — the
-    // inline opacity beats the base opacity 0 AND the hover/focus reveal
-    // rules (visible without hover on fine pointers too).
-    expect((toggle as HTMLElement).style.opacity).toBe("1");
-    // The chip sizing: inline auto width/height + chip padding beat the
-    // base 28px box and the coarse-pointer/html.tv 40px twins.
-    expect((toggle as HTMLElement).style.width).toBe("auto");
-    expect((toggle as HTMLElement).style.height).toBe("auto");
-    expect((toggle as HTMLElement).style.padding).toBe("2px 8px");
-    // Top-right slot, one stylesheet gutter past the ⋯ trigger's 28px box
-    // (right:40px clears its 34px left edge) — and NO left override.
-    expect((toggle as HTMLElement).style.right).toBe("40px");
+    expect(toggle.classList.contains("cardact-trigger--inline")).toBe(true);
+    expect(toggle.classList.contains("wtoggle--watched")).toBe(true);
+    expect(toggle.classList.contains("wtoggle--unwatched")).toBe(false);
+    // The inline-style ABSENCE pin (the chip idiom must not creep back —
+    // this is the twins-restoration pin): no opacity/size/position
+    // overrides, no inline ring. Sizing, slot, colors, and the visibility
+    // law all ride CSS (task 3.1).
+    expect((toggle as HTMLElement).style.opacity).toBe("");
+    expect((toggle as HTMLElement).style.width).toBe("");
+    expect((toggle as HTMLElement).style.height).toBe("");
+    expect((toggle as HTMLElement).style.padding).toBe("");
+    expect((toggle as HTMLElement).style.right).toBe("");
     expect((toggle as HTMLElement).style.left).toBe("");
-    // Filled accent text (jsdom normalizes the hex — #a4c8f4); no inline
-    // ring — the class carrier's own border:none holds (pinned in the
-    // stylesheet sweep below).
-    expect((toggle as HTMLElement).style.color).toBe("rgb(164, 200, 244)");
     expect((toggle as HTMLElement).style.border).toBe("");
   });
 
-  it("unwatched: the quiet ghost chip with the 1px border ring — aria-pressed false, pinned visible inline like the watched state", () => {
+  it("unwatched: the ghost ✓ — aria-pressed false, state class `wtoggle--unwatched`, ZERO inline styles like the watched state", () => {
     renderToggle(false);
 
     const toggle = screen.getByRole("button", { name: "Unwatched" });
     expect(toggle.getAttribute("aria-pressed")).toBe("false");
-    expect(toggle.textContent).toBe("watched");
-    // The outline ring + the muted ghost text (the accent is watched-only).
-    expect((toggle as HTMLElement).style.border).toContain("solid");
-    expect((toggle as HTMLElement).style.color).toBe(
-      "hsl(var(--muted-foreground))",
-    );
-    // The disclosure law is retired for this control too — always visible,
-    // same corner slot and chip sizing as the watched state.
-    expect((toggle as HTMLElement).style.opacity).toBe("1");
-    expect((toggle as HTMLElement).style.right).toBe("40px");
+    expect(toggle.textContent).toBe("✓");
+    // Same carrier form, opposite state class.
+    expect(toggle.classList.contains("cardact-trigger")).toBe(true);
+    expect(toggle.classList.contains("cardact-trigger--inline")).toBe(true);
+    expect(toggle.classList.contains("wtoggle--unwatched")).toBe(true);
+    expect(toggle.classList.contains("wtoggle--watched")).toBe(false);
+    // The same inline-style absence — no ring chrome (D5: retired in BOTH
+    // states), no visibility/size/position overrides.
+    expect((toggle as HTMLElement).style.opacity).toBe("");
+    expect((toggle as HTMLElement).style.width).toBe("");
+    expect((toggle as HTMLElement).style.height).toBe("");
+    expect((toggle as HTMLElement).style.padding).toBe("");
+    expect((toggle as HTMLElement).style.right).toBe("");
     expect((toggle as HTMLElement).style.left).toBe("");
-    expect((toggle as HTMLElement).style.width).toBe("auto");
+    expect((toggle as HTMLElement).style.border).toBe("");
   });
 
-  it("in-progress: the bar stays with the outline toggle beside it", () => {
+  it("in-progress: the bar stays with the ghost toggle beside it", () => {
     render(
       <QueryClientProvider client={freshClient()}>
         <div className="cardact-host">
@@ -398,6 +418,157 @@ describe("WatchedToggle — the cardact stylesheet pin", () => {
     expect(ruleBody(coarse, ".cardact-trigger {")).toContain("opacity: 1");
     expect(ruleBody(css, "html.tv .cardact-trigger {")).toContain("opacity: 1");
   });
+
+  // ---- watched-signal-refinement 3.1: the D4 block + the visibility law.
+  // The toggle's own stylesheet composition is pinned by text (jsdom
+  // evaluates no stylesheets): the block's presence and location, the D1
+  // scoping, the D9 state split, the restore shapes, the reveals, and the
+  // row rule.
+
+  // The 3.1 block opens with this header; slicing from it scopes the
+  // coarse-restore pin to THIS block's media rule (the ⋯ trigger's own
+  // coarse block lives earlier in the file and must never satisfy it).
+  const D4_BLOCK_START =
+    "/* ---- Watched toggle + card meta row (watched-signal-refinement 3.1)";
+  const HIDE_SELECTOR =
+    ".card-meta-row .cardact-trigger.wtoggle--unwatched {";
+
+  it("the D4 block: present, AFTER the cardact section, BEFORE the tv shell block", () => {
+    const at = css.indexOf(D4_BLOCK_START);
+    expect(at, "the 3.1 block header missing from index.css").toBeGreaterThanOrEqual(0);
+    expect(at).toBeGreaterThan(css.indexOf(".cardact-trigger {"));
+    expect(at).toBeLessThan(css.indexOf("/* ---- TV mode shell (tv-mode 5.1)"));
+  });
+
+  it("the row rule: flex meta row, right-aligned toggle child, meta-line glyph scale", () => {
+    const row = ruleBody(css, ".card-meta-row {");
+    expect(row).toContain("display: flex");
+    expect(row).toContain("align-items: center");
+    expect(row).toContain("gap: 8px");
+    expect(row).toContain("padding: 0 12px 12px");
+    expect(ruleBody(css, ".card-meta-row > .cardact-trigger {")).toContain(
+      "margin-left: auto",
+    );
+    // The ✓ at the meta-line scale via the `.watched-mark` em idiom
+    // (0.85em ≈ 12px) — never the ⋯ trigger's 16px.
+    expect(ruleBody(css, ".card-meta-row .cardact-trigger {")).toContain(
+      "font-size: 0.85em",
+    );
+  });
+
+  it("the state colors: watched accent / unwatched muted ghost, no border chrome in either (D5)", () => {
+    const watched = ruleBody(css, ".wtoggle--watched {");
+    expect(watched).toContain("color: #a4c8f4");
+    expect(watched).not.toContain("border");
+    const unwatched = ruleBody(css, ".wtoggle--unwatched {");
+    expect(unwatched).toContain("color: hsl(var(--muted-foreground))");
+    expect(unwatched).not.toContain("border");
+  });
+
+  it("the D3 hover pair: accent hue held on watched, background-only clear on unwatched — AFTER the base hover", () => {
+    expect(ruleBody(css, ".wtoggle--watched:hover {")).toContain(
+      "background: transparent",
+    );
+    expect(ruleBody(css, ".wtoggle--watched:hover {")).toContain("color: #a4c8f4");
+    expect(ruleBody(css, ".wtoggle--unwatched:hover {")).toContain(
+      "background: transparent",
+    );
+    // Equal specificity with `.cardact-trigger:hover` — source order
+    // decides, so both overrides must sit after it.
+    const baseHoverAt = css.indexOf(".cardact-trigger:hover {");
+    expect(css.indexOf(".wtoggle--watched:hover {")).toBeGreaterThan(baseHoverAt);
+    expect(css.indexOf(".wtoggle--unwatched:hover {")).toBeGreaterThan(baseHoverAt);
+  });
+
+  it("D1 scoping: the hide is .card-meta-row-scoped — no GLOBAL .cardact-trigger--inline hide exists", () => {
+    const hide = ruleBody(css, HIDE_SELECTOR);
+    expect(hide).toContain("opacity: 0");
+    expect(hide).toContain("pointer-events: none");
+    // The heading keeps `--inline`'s always-visible: every rule naming the
+    // inline carrier must leave the at-rest opacity at 1.
+    for (const rule of rulesOf(css)) {
+      if (rule.selector.includes("cardact-trigger--inline")) {
+        expect(
+          rule.body,
+          `global --inline hide leaked: ${rule.selector}`,
+        ).not.toContain("opacity: 0");
+      }
+    }
+  });
+
+  it("D9: the watched ✓ carries NO hide-at-rest rule — the hide names wtoggle--unwatched only", () => {
+    for (const rule of rulesOf(css)) {
+      if (rule.selector.includes("wtoggle--watched")) {
+        expect(
+          rule.body,
+          `watched hide leaked: ${rule.selector}`,
+        ).not.toContain("opacity: 0");
+        expect(rule.body).not.toContain("pointer-events: none");
+      }
+    }
+    // Guard the guard: the unwatched hide IS in the file, so the sweep
+    // above is not vacuously green.
+    expect(
+      rulesOf(css).some(
+        (r) =>
+          r.selector.includes("wtoggle--unwatched") &&
+          r.body.includes("opacity: 0"),
+      ),
+    ).toBe(true);
+  });
+
+  it("each restore carries the hide's state-scoped shape and sets BOTH opacity: 1 AND pointer-events: auto", () => {
+    // A bare `.cardact-trigger` restore would silently lose to the 0,3,0
+    // hide, and an opacity-only restore would pass every presence pin while
+    // leaving the unwatched toggle visible-but-untappable at rest.
+    const d4 = css.slice(css.indexOf(D4_BLOCK_START));
+    // Coarse: THIS block's media rule (sliced from the block start — the ⋯
+    // trigger's own coarse block earlier in the file is a bare 0,1,0 that
+    // loses to the hide regardless of media queries), equal specificity
+    // with the hide, later in the block (tie-and-later).
+    const coarseAt = d4.indexOf("@media (pointer: coarse)");
+    expect(coarseAt, "the block carries no coarse restore").toBeGreaterThan(0);
+    const coarseRestore = ruleBody(d4.slice(coarseAt), HIDE_SELECTOR);
+    expect(coarseRestore).toContain("opacity: 1");
+    expect(coarseRestore).toContain("pointer-events: auto");
+    // TV: the same state-scoped shape under the html.tv prefix — TV Chrome
+    // reports pointer: fine, so this restore (0,4,1, beats outright) is the
+    // operative one there; the clamp sizes ride the untouched existing twin.
+    const tvRestore = ruleBody(
+      css,
+      `html.tv ${HIDE_SELECTOR}`,
+    );
+    expect(tvRestore).toContain("opacity: 1");
+    expect(tvRestore).toContain("pointer-events: auto");
+    // Both restores sit after the hide in source.
+    const hideAt = css.indexOf(HIDE_SELECTOR);
+    expect(css.indexOf(D4_BLOCK_START) + coarseAt).toBeGreaterThan(hideAt);
+    expect(css.indexOf(`html.tv ${HIDE_SELECTOR}`)).toBeGreaterThan(hideAt);
+  });
+
+  it("the own reveals: host hover/focus-within + own :focus-visible restore BOTH opacity and pointer-events (>=0,4,0)", () => {
+    // The base reveal sets opacity only — never pointer-events — so a
+    // hover-revealed toggle would stay visible but unclickable without
+    // these; each restores BOTH.
+    const host = ruleBody(
+      css,
+      ".cardact-host:hover .cardact-trigger.wtoggle--unwatched,",
+    );
+    expect(host).toContain("opacity: 1");
+    expect(host).toContain("pointer-events: auto");
+    expect(css).toContain(
+      ".cardact-host:focus-within .cardact-trigger.wtoggle--unwatched",
+    );
+    // The keyboard path (tab reaches the hidden button): own :focus-visible,
+    // state-scoped — 0,4,0 with the row prefix, never a bare 0,3,0 placed
+    // before the hide.
+    const focus = ruleBody(
+      css,
+      ".card-meta-row .cardact-trigger.wtoggle--unwatched:focus-visible {",
+    );
+    expect(focus).toContain("opacity: 1");
+    expect(focus).toContain("pointer-events: auto");
+  });
 });
 
 describe("WatchedStates — episode rows (EpisodesView)", () => {
@@ -434,14 +605,30 @@ describe("WatchedStates — episode rows (EpisodesView)", () => {
     renderCollection("/collections/1?series=sr_1");
     await screen.findByText("Pilot");
 
-    // Watched: the `watched` chip TOGGLE (a real button, corner placement)…
+    // Watched: the ✓ glyph TOGGLE (a real button on the carrier form)…
     const pilot = cardOf("Pilot");
     const toggle = within(pilot).getByRole("button", { name: "Watched" });
-    expect(toggle.textContent).toBe("watched");
+    expect(toggle.textContent).toBe("✓");
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Pilot").classList.contains("watched-dim")).toBe(
       true,
     );
+    // The meta-row contract (watched-signal-refinement 2.2): the toggle's
+    // parent is the card-meta-row, the meta line span is its sibling, and the
+    // row sits OUTSIDE the Link inside the card border box — the border/
+    // rounded/hover chrome now lives on the host (D2), the Link is chrome-free.
+    const metaRow = toggle.parentElement as HTMLElement;
+    expect(metaRow.classList.contains("card-meta-row")).toBe(true);
+    const metaSpan = metaRow.querySelector("span.text-muted-foreground");
+    expect(metaSpan).not.toBeNull();
+    expect(metaSpan).not.toBe(toggle);
+    expect(toggle.closest("a")).toBeNull();
+    expect(metaRow.closest("a")).toBeNull();
+    const host = metaRow.parentElement as HTMLElement;
+    expect(host.classList.contains("cardact-host")).toBe(true);
+    expect(host.classList.contains("border")).toBe(true);
+    const cardLink = within(pilot).getByRole("link");
+    expect(cardLink.classList.contains("border")).toBe(false);
     // …and NO progress bar, even though the served list carries its row
     // (600/600 would announce "100% watched" — the tri-state suppresses it).
     // The in-progress sibling's bar is awaited FIRST so the shared
@@ -453,11 +640,19 @@ describe("WatchedStates — episode rows (EpisodesView)", () => {
       screen.getByText("Second Wind").classList.contains("watched-dim"),
     ).toBe(false);
     expect(within(second).queryByRole("img", { name: "Watched" })).toBeNull();
-    // The bar stays WITH the outline toggle beside it (the unwatched write
-    // path is live on an in-progress card too).
-    expect(within(second).getByRole("button", { name: "Unwatched" })).toBeDefined();
+    // The bar stays WITH the ghost toggle beside it (the unwatched write
+    // path is live on an in-progress card too) — both moved into the same
+    // card-meta-row (2.2; the bar's markup itself untouched).
+    const secondToggle = within(second).getByRole("button", {
+      name: "Unwatched",
+    });
+    const secondRow = secondToggle.parentElement as HTMLElement;
+    expect(secondRow.classList.contains("card-meta-row")).toBe(true);
+    expect(
+      within(secondRow).getByRole("img", { name: "33% watched" }).parentElement,
+    ).toBe(secondRow);
 
-    // New sibling: clean — no bar, no dim, outline toggle only.
+    // New sibling: clean — no bar, no dim, ghost toggle only.
     const cold = cardOf("Cold Open");
     expect(within(cold).queryByRole("img")).toBeNull();
     expect(
@@ -533,12 +728,24 @@ describe("WatchedStates — item-grid cards (ItemGrid, the film/tv grid)", () =>
     await screen.findByText("Done Film");
 
     const done = cardOf("Done Film");
-    // The toggle surface: the watched ✓ is the button, corner placement.
+    // The toggle surface: the watched ✓ is the button, one carrier form.
     const watchedToggle = within(done).getByRole("button", { name: "Watched" });
     expect(watchedToggle.getAttribute("aria-pressed")).toBe("true");
     expect(
       screen.getByText("Done Film").classList.contains("watched-dim"),
     ).toBe(true);
+    // The meta-row contract (watched-signal-refinement 2.2): no meta line on
+    // this grid — the row carries the bar (when served) + the toggle, sits
+    // OUTSIDE the Link inside the border box (the li itself hosts the
+    // cardact-host chrome, D2), and the Link is chrome-free.
+    const gridRow = watchedToggle.parentElement as HTMLElement;
+    expect(gridRow.classList.contains("card-meta-row")).toBe(true);
+    expect(watchedToggle.closest("a")).toBeNull();
+    expect(gridRow.closest("a")).toBeNull();
+    expect(gridRow.parentElement).toBe(done);
+    expect(done.classList.contains("border")).toBe(true);
+    const gridLink = within(done).getByRole("link");
+    expect(gridLink.classList.contains("border")).toBe(false);
 
     // The in-progress sibling's bar awaited first (shared cache landed),
     // then the watched card's bar absence is meaningful.
@@ -554,9 +761,26 @@ describe("WatchedStates — item-grid cards (ItemGrid, the film/tv grid)", () =>
     expect(
       screen.getByText("New Film").classList.contains("watched-dim"),
     ).toBe(false);
-    // Both unwatched cards carry the outline toggle (the write path).
-    expect(within(started).getByRole("button", { name: "Unwatched" })).toBeDefined();
-    expect(within(fresh).getByRole("button", { name: "Unwatched" })).toBeDefined();
+    // Both unwatched cards carry the ghost toggle (the write path) in the
+    // card-meta-row — the in-progress card's bar rides the same row.
+    const startedToggle = within(started).getByRole("button", {
+      name: "Unwatched",
+    });
+    expect(
+      (startedToggle.parentElement as HTMLElement).classList.contains(
+        "card-meta-row",
+      ),
+    ).toBe(true);
+    expect(
+      within(startedToggle.parentElement as HTMLElement).getByRole("img", {
+        name: "33% watched",
+      }).parentElement,
+    ).toBe(startedToggle.parentElement);
+    expect(
+      (within(fresh).getByRole("button", { name: "Unwatched" }).parentElement as HTMLElement).classList.contains(
+        "card-meta-row",
+      ),
+    ).toBe(true);
   });
 });
 
@@ -598,7 +822,7 @@ describe("WatchedStates — the element page heading", () => {
     );
   }
 
-  it("a watched element's heading gains the `watched` chip toggle beside the served display name", async () => {
+  it("a watched element's heading gains the ✓ glyph toggle beside the served display name", async () => {
     detailSeam(detailItem(true));
     renderDetail();
 
@@ -608,10 +832,11 @@ describe("WatchedStates — the element page heading", () => {
         within(h1.parentElement as HTMLElement).getByRole("button", {
           name: "Watched",
         }).textContent,
-      ).toBe("watched"),
+      ).toBe("✓"),
     );
-    // The toggle is the law's inline variant (always visible — the heading
-    // is no hover-card) and it sits OUTSIDE the h1, so the heading's
+    // The toggle is the law's inline variant (visible at rest — the heading
+    // is exempt from the meta-row hide per D1: it never sits in a
+    // `.card-meta-row`) and it sits OUTSIDE the h1, so the heading's
     // accessible name stays the display name alone.
     const toggle = within(h1.parentElement as HTMLElement).getByRole("button", {
       name: "Watched",
@@ -625,7 +850,7 @@ describe("WatchedStates — the element page heading", () => {
     ).toBe(true);
   });
 
-  it("wire absence (no served watched flag): the heading renders clean, with the outline toggle beside it", async () => {
+  it("wire absence (no served watched flag): the heading renders clean, with the ghost toggle beside it", async () => {
     detailSeam(detailItem());
     renderDetail();
 
@@ -635,7 +860,7 @@ describe("WatchedStates — the element page heading", () => {
       within(h1).getByText("Hot Show S01E01").classList.contains("watched-dim"),
     ).toBe(false);
     // The toggle surface is ALWAYS mounted — an unwatched element renders
-    // the quiet ghost chip (the unwatched write path), inline placement.
+    // the ghost ✓ (the unwatched write path), visible at rest per D1.
     const toggle = within(h1.parentElement as HTMLElement).getByRole("button", {
       name: "Unwatched",
     });
