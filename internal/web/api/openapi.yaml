@@ -131,6 +131,124 @@ definitions:
       stripped:
         type: integer
     type: object
+  api.adminGroup:
+    properties:
+      created_at:
+        type: string
+      doc:
+        items:
+          type: integer
+        type: array
+      id:
+        type: integer
+      name:
+        type: string
+      schema_version:
+        type: integer
+      updated_at:
+        type: string
+    type: object
+  api.adminGroupCollection:
+    properties:
+      library_id:
+        type: integer
+      position:
+        type: integer
+    type: object
+  api.adminGroupCollectionsResponse:
+    properties:
+      collections:
+        items:
+          $ref: '#/definitions/api.adminGroupCollection'
+        type: array
+    type: object
+  api.adminGroupsResponse:
+    properties:
+      groups:
+        items:
+          $ref: '#/definitions/api.adminGroup'
+        type: array
+    type: object
+  api.adminUser:
+    properties:
+      created_at:
+        type: string
+      disabled:
+        type: boolean
+      display_name:
+        type: string
+      id:
+        type: integer
+      role:
+        type: string
+      updated_at:
+        type: string
+      username:
+        type: string
+    type: object
+  api.adminUserCreated:
+    properties:
+      created_at:
+        type: string
+      disabled:
+        type: boolean
+      display_name:
+        type: string
+      id:
+        type: integer
+      notice:
+        type: string
+      role:
+        type: string
+      updated_at:
+        type: string
+      username:
+        type: string
+    type: object
+  api.adminUserPatchRequest:
+    properties:
+      disabled:
+        type: boolean
+      role:
+        type: string
+    type: object
+  api.adminUsersResponse:
+    properties:
+      users:
+        items:
+          $ref: '#/definitions/api.adminUser'
+        type: array
+    type: object
+  api.adminVisibilityExplain:
+    properties:
+      chain_mutes:
+        additionalProperties:
+          type: boolean
+        type: object
+      granting_groups:
+        items:
+          $ref: '#/definitions/api.adminVisibilityGroup'
+        type: array
+      library_id:
+        type: integer
+      user_id:
+        type: integer
+      visible:
+        type: boolean
+      visible_library_ids:
+        items:
+          type: integer
+        type: array
+    type: object
+  api.adminVisibilityGroup:
+    properties:
+      group_id:
+        type: integer
+      group_name:
+        type: string
+      position:
+        type: integer
+    type: object
   api.apiError:
     properties:
       code:
@@ -172,6 +290,8 @@ definitions:
         type: string
       device_id:
         type: string
+      user_id:
+        type: integer
     type: object
   api.devicesResponse:
     properties:
@@ -381,6 +501,18 @@ definitions:
       updated_at:
         type: string
     type: object
+  api.loginRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    type: object
+  api.loginResponse:
+    properties:
+      token:
+        type: string
+    type: object
   api.pairCreateResponse:
     properties:
       code:
@@ -567,6 +699,32 @@ definitions:
     properties:
       selection:
         type: string
+    type: object
+  api.profileGroup:
+    properties:
+      id:
+        type: integer
+      name:
+        type: string
+    type: object
+  api.profileResponse:
+    properties:
+      groups:
+        items:
+          $ref: '#/definitions/api.profileGroup'
+        type: array
+      kind:
+        type: string
+      name:
+        type: string
+      prefs:
+        items:
+          type: integer
+        type: array
+      role:
+        type: string
+      user_id:
+        type: integer
     type: object
   api.progressDTO:
     properties:
@@ -945,6 +1103,553 @@ paths:
       summary: Revoke a paired device's token
       tags:
       - admin
+  /admin/devices/{id}/user:
+    put:
+      operationId: admin-devices-bind-user
+      parameters:
+      - description: device id (the credentials rowid the device list shows)
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: '{user_id: number|null}'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "204":
+          description: bound (the device now rides the user's Viewer) or unbound (the
+            legacy see-all viewer)
+        "400":
+          description: malformed body or non-integer device id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown device id or unknown user
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Bind a device to a user (null unbinds)
+      tags:
+      - admin
+  /admin/groups:
+    get:
+      operationId: admin-groups-list
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.adminGroupsResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List groups
+      tags:
+      - admin
+    post:
+      operationId: admin-groups-create
+      parameters:
+      - description: '{name}'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "201":
+          description: the created group (empty doc at schema version 1)
+          schema:
+            $ref: '#/definitions/api.adminGroup'
+        "400":
+          description: malformed body or empty name
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "409":
+          description: group name already taken
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Create a group
+      tags:
+      - admin
+  /admin/groups/{id}:
+    delete:
+      operationId: admin-groups-delete
+      parameters:
+      - description: group id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: deleted; the group's member and collection rows cascaded
+        "400":
+          description: non-integer id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown group id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Delete a group
+      tags:
+      - admin
+    get:
+      operationId: admin-groups-get
+      parameters:
+      - description: group id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.adminGroup'
+        "400":
+          description: non-integer id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown group id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Get a group
+      tags:
+      - admin
+    patch:
+      operationId: admin-groups-rename
+      parameters:
+      - description: group id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: '{name}'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "200":
+          description: the renamed row (id, members, and doc stay put)
+          schema:
+            $ref: '#/definitions/api.adminGroup'
+        "400":
+          description: malformed body, non-integer id, or empty name
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown group id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "409":
+          description: group name already taken
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Rename a group
+      tags:
+      - admin
+  /admin/groups/{id}/collections:
+    get:
+      operationId: admin-groups-collections-list
+      parameters:
+      - description: group id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.adminGroupCollectionsResponse'
+        "400":
+          description: non-integer id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown group id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List a group's member Collections with positions
+      tags:
+      - admin
+    post:
+      operationId: admin-groups-collection-add
+      parameters:
+      - description: group id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: '{library_id, position?}'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "204":
+          description: collection added at the position (re-adding replaces the position)
+        "400":
+          description: malformed body or missing library_id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown group id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Add a Collection to a group at a display position
+      tags:
+      - admin
+  /admin/groups/{id}/collections/{library_id}:
+    delete:
+      operationId: admin-groups-collection-remove
+      parameters:
+      - description: group id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: library id
+        in: path
+        name: library_id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: collection removed (idempotent — a non-member removal is a
+            no-op)
+        "400":
+          description: non-integer id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown group id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Remove a Collection from a group
+      tags:
+      - admin
+  /admin/groups/{id}/doc:
+    put:
+      operationId: admin-groups-doc-put
+      parameters:
+      - description: group id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: '{doc (JSON object), schema_version?}'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "204":
+          description: document replaced whole; the next group GET serves it verbatim
+        "400":
+          description: malformed body, or doc not a JSON object
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown group id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Replace a group's mute document
+      tags:
+      - admin
+  /admin/groups/{id}/users:
+    get:
+      operationId: admin-groups-members-list
+      parameters:
+      - description: group id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.adminUsersResponse'
+        "400":
+          description: non-integer id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown group id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List a group's member users
+      tags:
+      - admin
+    post:
+      operationId: admin-groups-member-add
+      parameters:
+      - description: group id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: '{username}'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "204":
+          description: member added (idempotent — re-adding is a no-op)
+        "400":
+          description: malformed body or empty username
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown group or user
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Add a member user to a group
+      tags:
+      - admin
+  /admin/groups/{id}/users/{username}:
+    delete:
+      operationId: admin-groups-member-remove
+      parameters:
+      - description: group id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: username
+        in: path
+        name: username
+        required: true
+        type: string
+      responses:
+        "204":
+          description: member removed (idempotent — a non-member removal is a no-op)
+        "400":
+          description: non-integer id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown group or user
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Remove a member user from a group
+      tags:
+      - admin
   /admin/pairings:
     get:
       operationId: admin-pairings
@@ -1234,6 +1939,298 @@ paths:
       summary: Admin liveness snapshot (plugins + enrich queue)
       tags:
       - admin
+  /admin/users:
+    get:
+      operationId: admin-users-list
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.adminUsersResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List user accounts
+      tags:
+      - admin
+    post:
+      operationId: admin-users-create
+      parameters:
+      - description: '{username, password}'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "201":
+          description: the created account; the FIRST user's response additionally
+            carries the one-way-door notice
+          schema:
+            $ref: '#/definitions/api.adminUserCreated'
+        "400":
+          description: malformed body, missing username or password
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "409":
+          description: username already taken
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Create a user account
+      tags:
+      - admin
+  /admin/users/{id}:
+    delete:
+      operationId: admin-users-delete
+      parameters:
+      - description: user id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: deleted; the user's sessions, ledger rows, and group membership
+            cascaded
+        "400":
+          description: non-integer id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown user id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "409":
+          description: the last remaining user cannot be deleted
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Delete a user account
+      tags:
+      - admin
+    patch:
+      operationId: admin-users-patch
+      parameters:
+      - description: user id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: '{role?, disabled?}'
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.adminUserPatchRequest'
+      responses:
+        "200":
+          description: the updated row
+          schema:
+            $ref: '#/definitions/api.adminUser'
+        "400":
+          description: malformed body, non-integer id, unknown role, or no patchable
+            field
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown user id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Patch a user's role and/or disabled flag
+      tags:
+      - admin
+  /admin/users/{id}/adopt-legacy:
+    post:
+      operationId: admin-users-adopt-legacy
+      parameters:
+      - description: user id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: slot-0 rows merged newer-wins into the user's slots and slot
+            0 drained; a rerun is a no-op
+        "400":
+          description: non-integer id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown user id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Adopt the user's legacy ledger rows (one-shot)
+      tags:
+      - admin
+  /admin/users/{id}/password:
+    put:
+      operationId: admin-users-reset-password
+      parameters:
+      - description: user id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: '{password}'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "204":
+          description: password reset; the user's live sessions are revoked
+        "400":
+          description: malformed body, non-integer id, or empty password
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown user id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Reset a user's password
+      tags:
+      - admin
+  /admin/visibility-explain:
+    get:
+      operationId: admin-visibility-explain
+      parameters:
+      - description: user id
+        in: query
+        name: user_id
+        required: true
+        type: integer
+      - description: library id
+        in: query
+        name: library_id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: 'the resolved grant: visible flag, granting groups with positions,
+            the full visible set, chain mutes'
+          schema:
+            $ref: '#/definitions/api.adminVisibilityExplain'
+        "400":
+          description: missing or non-integer user_id/library_id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown user id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Explain a user's visibility over a library
+      tags:
+      - admin
   /art/object/{oid}:
     get:
       operationId: get-art-object
@@ -1263,6 +2260,65 @@ paths:
       summary: Serve an art object's bytes
       tags:
       - art
+  /auth/login:
+    post:
+      operationId: auth-login
+      parameters:
+      - description: username and password
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.loginRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.loginResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: invalid credentials — uniform, no enumeration
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "429":
+          description: per-(IP, username) rate limit exceeded
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Log in and mint a session token
+      tags:
+      - auth
+  /auth/logout:
+    post:
+      operationId: auth-logout
+      responses:
+        "204":
+          description: session deleted
+        "401":
+          description: no session row behind the presented credential
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Log out by deleting the presented session
+      tags:
+      - auth
   /enrich/failures:
     get:
       operationId: enrich-failures
@@ -2149,6 +3205,74 @@ paths:
       summary: Record a playback-event beacon (fire-and-forget telemetry)
       tags:
       - playback
+  /profile:
+    get:
+      operationId: profile-get
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.profileResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: the credential's bound user no longer exists
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Serve the caller's resolved identity
+      tags:
+      - profile
+  /profile/prefs:
+    put:
+      operationId: profile-put-prefs
+      parameters:
+      - description: the whole preference document (JSON object)
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "204":
+          description: document replaced
+        "400":
+          description: malformed body, or not a JSON object
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: the credential's bound user no longer exists
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "409":
+          description: principal carries no per-user document (env admin, unbound
+            device)
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Replace the caller's preference document
+      tags:
+      - profile
   /progress:
     get:
       operationId: list-progress
@@ -2267,7 +3391,9 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
         "409":
-          description: Conflict
+          description: no live relay claim under the calling principal, or the claimant's
+            viewer no longer sees the job's library (nothing ingested, the job returns
+            to the pool)
           schema:
             $ref: '#/definitions/api.errorBody'
         "413":
@@ -2290,11 +3416,13 @@ paths:
       operationId: relay-claim
       responses:
         "200":
-          description: descriptor for the claimed job
+          description: descriptor for the claimed job (within the caller's visible
+            libraries)
           schema:
             $ref: '#/definitions/api.relayClaimResponse'
         "204":
-          description: nothing claimable
+          description: nothing claimable (including nothing within the caller's visible
+            libraries)
         "401":
           description: Unauthorized
           schema:
