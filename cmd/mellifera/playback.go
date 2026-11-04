@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/orchestrator"
 	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/refusal"
@@ -318,7 +319,7 @@ func newSweep(st *store.Store, root string, validate func(itemID, nonce string) 
 // Evictions): the set of things the frontier will (re)pack must not be its
 // own recurring eviction victim.
 func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) error, optInCodecs bool) map[string]bool {
-	libs, err := st.ListLibraries(ctx)
+	libs, err := st.ListLibraries(ctx, access.System())
 	if err != nil {
 		slog.Warn("orchestrator: list libraries failed", "error", err)
 		return nil
@@ -328,13 +329,13 @@ func sweepFrontier(ctx context.Context, st *store.Store, enqueue func(string) er
 	watched := make(map[string]bool)
 	in := orchestrator.FrontierIn{Watched: watched, Now: time.Now()}
 	for _, l := range libs {
-		series, err := st.QuerySeries(ctx, l.ID, "")
+		series, err := st.QuerySeries(ctx, l.ID, "", access.System())
 		if err != nil {
 			slog.Warn("orchestrator: query series failed", "library", l.ID, "error", err)
 			continue
 		}
 		for _, sr := range series {
-			items, err := st.QueryItemsBySeries(ctx, sr, seriesBacking(sr.Document))
+			items, err := st.QueryItemsBySeries(ctx, sr, seriesBacking(sr.Document), access.System())
 			if err != nil {
 				slog.Warn("orchestrator: query episodes failed", "series", sr.ID, "error", err)
 				continue
@@ -389,7 +390,7 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 		live := true
 		allStale := false // orphan and deleted rows: every directory is waste
 		current := ""     // the build the document names ("" when none does)
-		if row, err := st.GetItem(ctx, idDir.Name()); err != nil {
+		if row, err := st.GetItem(ctx, idDir.Name(), access.System()); err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
 				slog.Warn("orchestrator: artifact item lookup failed", "item", idDir.Name(), "error", err)
 				continue // unreadable store: skip, never evict blind
@@ -460,7 +461,7 @@ func sweepRetention(ctx context.Context, st *store.Store, root string, grace tim
 		}
 		var nonce string
 		var updated time.Time // zero = no row (orphan): mtime is the only anchor
-		if row, err := st.GetItem(ctx, idDir.Name()); err != nil {
+		if row, err := st.GetItem(ctx, idDir.Name(), access.System()); err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
 				slog.Warn("orchestrator: retention item lookup failed", "item", idDir.Name(), "error", err)
 				continue // unreadable store: skip, never evict blind
@@ -518,7 +519,7 @@ func evictDir(path string) bool {
 // sweep itself: a failed write leaves the loop in place for one more pass —
 // the next eviction of the same item retries the unpublish.
 func resetStreamsState(ctx context.Context, st *store.Store, itemID, nonce string) {
-	row, err := st.GetItem(ctx, itemID)
+	row, err := st.GetItem(ctx, itemID, access.System())
 	if err != nil {
 		return // orphaned or unreadable: nothing published to unpublish
 	}
@@ -568,7 +569,7 @@ func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate 
 		if !idDir.IsDir() {
 			continue
 		}
-		row, err := st.GetItem(ctx, idDir.Name())
+		row, err := st.GetItem(ctx, idDir.Name(), access.System())
 		if err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
 				slog.Warn("orchestrator: integrity item lookup failed", "item", idDir.Name(), "error", err)
@@ -647,7 +648,7 @@ func streamCooldowns(ctx context.Context, st *store.Store) map[string]time.Time 
 // (eviction order — any-progress-based, deliberately untouched by the watched
 // predicate: the budget LRU clock is a separate signal, design D5).
 func watchState(ctx context.Context, st *store.Store) (map[string]float64, map[string]time.Time) {
-	rows, err := st.ListProgress(ctx, watchScanLimit)
+	rows, err := st.ListProgress(ctx, watchScanLimit, access.System())
 	if err != nil {
 		slog.Warn("orchestrator: list progress failed", "error", err)
 		return map[string]float64{}, map[string]time.Time{}

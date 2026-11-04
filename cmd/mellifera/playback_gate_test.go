@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/refusal"
@@ -95,7 +96,7 @@ func TestPlayRetryGate(t *testing.T) {
 
 	row := func(id string) store.Item {
 		t.Helper()
-		r, err := st.GetItem(ctx, id)
+		r, err := st.GetItem(ctx, id, access.System())
 		if err != nil {
 			t.Fatalf("GetItem %s: %v", id, err)
 		}
@@ -612,7 +613,7 @@ func TestDescriptorLazyRepack(t *testing.T) {
 // mustRow fetches one seeded item row or fails the test.
 func mustRow(t *testing.T, st *store.Store, ctx context.Context, id string) store.Item {
 	t.Helper()
-	r, err := st.GetItem(ctx, id)
+	r, err := st.GetItem(ctx, id, access.System())
 	if err != nil {
 		t.Fatalf("GetItem %s: %v", id, err)
 	}

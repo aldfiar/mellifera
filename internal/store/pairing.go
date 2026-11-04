@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -23,13 +24,21 @@ type PairingRequest struct {
 	ExpiresAt time.Time
 }
 
-// DeviceToken is one stored client credential (device-pairing D4/D6): a minted
-// device id and the SHA-256 hash of its bearer token — the raw value is never
-// persisted — plus the approval code of the pairing that minted it.
+// DeviceToken is one paired-device credential (accounts D6): the SHA-256 hash
+// of its bearer token — the raw value is never persisted — plus the approval
+// code of the pairing that minted it (carried as the credentials label, the
+// admin panel's recognition field). ID is the credentials rowid as a decimal
+// string: the management key the admin device list shows and revoke deletes
+// by (post-migration devices are keyed by their credentials row, not by the
+// retired minted-hex device id). UserID is the bound user (l6-accounts 7.1):
+// the credentials row's user_id, 0 when the row is unbound (NULL) — the auth
+// chain carries it on the device principal so viewerFor can resolve the
+// bound user's scope.
 type DeviceToken struct {
 	ID        string
 	TokenHash string
 	Code      string
+	UserID    int64
 	CreatedAt time.Time
 }
 
@@ -111,48 +120,66 @@ ORDER BY created_at, id`)
 	return out, nil
 }
 
-// InsertDeviceToken persists one device credential: id, the token's SHA-256
-// hash (UNIQUE — a raw token is hashed exactly once and never stored) and the
-// approval code of the minting pairing. A duplicate hash or id is a wrapped
-// UNIQUE violation; the minting service never reuses either.
-func (s *Store) InsertDeviceToken(ctx context.Context, tok DeviceToken) error {
+// InsertDeviceCredential persists one device credential post-migration
+// (accounts 2.2/D6): the token's SHA-256 hash (UNIQUE — a raw token is hashed
+// exactly once and never stored) and the label (the minting pairing's approval
+// code — the admin panel's recognition field). The row is unbound (user_id
+// NULL) and non-expiring (expires_at NULL — device tokens never expire, the
+// pairing lazy-expiry posture). A duplicate hash is a wrapped UNIQUE
+// violation; the minting service never reuses one. The dormant device_tokens
+// table is never written.
+func (s *Store) InsertDeviceCredential(ctx context.Context, tokenHash, label string, createdAt time.Time) error {
 	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO device_tokens (id, token_hash, code, created_at)
-VALUES (?, ?, ?, ?)`,
-		tok.ID, tok.TokenHash, tok.Code, formatTime(tok.CreatedAt),
+INSERT INTO credentials (kind, token_hash, user_id, label, created_at, expires_at)
+VALUES ('device', ?, NULL, ?, ?, NULL)`,
+		tokenHash, label, formatTime(createdAt),
 	); err != nil {
-		return fmt.Errorf("store: insert device token %s: %w", tok.ID, err)
+		return fmt.Errorf("store: insert device credential: %w", err)
 	}
 	return nil
 }
 
-// LookupDeviceTokenByHash resolves a bearer credential to its device row: the
-// auth middleware hashes the presented token and looks the hash up. A miss is
-// a wrapped sql.ErrNoRows (the caller reads it as "not a device token").
-func (s *Store) LookupDeviceTokenByHash(ctx context.Context, tokenHash string) (DeviceToken, error) {
+// LookupDeviceCredentialByHash resolves a bearer credential to its device
+// row: the auth middleware hashes the presented token and looks the hash up
+// in credentials kind='device' — where both the one-time guarded copy of the
+// legacy device_tokens rows and every post-migration mint land, so a device
+// paired before or after the migration resolves alike. The kind filter stays:
+// session credentials resolve through identity.VerifySession (which re-checks
+// the user's disabled flag and projects the user's role — facts a bare row
+// cannot carry), so this lookup answers only "is this a device token, and
+// whose is it" (user_id rides DeviceToken.UserID, 0 = unbound). A miss is a
+// wrapped sql.ErrNoRows (the caller reads it as "not a device token").
+func (s *Store) LookupDeviceCredentialByHash(ctx context.Context, tokenHash string) (DeviceToken, error) {
 	var tok DeviceToken
+	var id int64
 	var createdAt string
+	var userID sql.NullInt64
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, token_hash, code, created_at
-FROM device_tokens
-WHERE token_hash = ?`, tokenHash)
-	if err := row.Scan(&tok.ID, &tok.TokenHash, &tok.Code, &createdAt); err != nil {
-		return DeviceToken{}, fmt.Errorf("store: lookup device token by hash: %w", err)
+SELECT id, token_hash, label, user_id, created_at
+FROM credentials
+WHERE kind = 'device' AND token_hash = ?`, tokenHash)
+	if err := row.Scan(&id, &tok.TokenHash, &tok.Code, &userID, &createdAt); err != nil {
+		return DeviceToken{}, fmt.Errorf("store: lookup device credential by hash: %w", err)
 	}
+	tok.UserID = userID.Int64
 	t, err := parseTime(createdAt)
 	if err != nil {
-		return DeviceToken{}, fmt.Errorf("store: lookup device token by hash (created_at): %w", err)
+		return DeviceToken{}, fmt.Errorf("store: lookup device credential by hash (created_at): %w", err)
 	}
+	tok.ID = strconv.FormatInt(id, 10)
 	tok.CreatedAt = t
 	return tok, nil
 }
 
-// ListDevices returns every paired device, oldest first (created_at ASC, id as
-// the deterministic tie-break) — the admin device panel's backing read.
+// ListDevices returns every paired device — migrated legacy rows and
+// post-migration mints alike — oldest first (created_at ASC, id as the
+// deterministic tie-break): the admin device panel's backing read over
+// credentials kind='device'.
 func (s *Store) ListDevices(ctx context.Context) ([]DeviceToken, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, token_hash, code, created_at
-FROM device_tokens
+SELECT id, token_hash, label, user_id, created_at
+FROM credentials
+WHERE kind = 'device'
 ORDER BY created_at, id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list devices: %w", err)
@@ -161,14 +188,18 @@ ORDER BY created_at, id`)
 	out := make([]DeviceToken, 0)
 	for rows.Next() {
 		var tok DeviceToken
+		var id int64
 		var createdAt string
-		if err := rows.Scan(&tok.ID, &tok.TokenHash, &tok.Code, &createdAt); err != nil {
+		var userID sql.NullInt64
+		if err := rows.Scan(&id, &tok.TokenHash, &tok.Code, &userID, &createdAt); err != nil {
 			return nil, fmt.Errorf("store: list devices scan: %w", err)
 		}
+		tok.UserID = userID.Int64
 		t, err := parseTime(createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("store: list devices (created_at): %w", err)
 		}
+		tok.ID = strconv.FormatInt(id, 10)
 		tok.CreatedAt = t
 		out = append(out, tok)
 	}
@@ -178,11 +209,18 @@ ORDER BY created_at, id`)
 	return out, nil
 }
 
-// DeleteDevice revokes a device credential by deleting its row. An unknown id
-// is a wrapped sql.ErrNoRows (zero rows deleted) — the api layer maps it to
-// 404, so revoking a twice-deleted device fails loudly instead of silently.
+// DeleteDevice revokes a device credential by deleting its credentials row.
+// The id is the decimal rowid the admin device list surfaced; anything else
+// (malformed or unknown) is a wrapped sql.ErrNoRows (zero rows deleted) —
+// the api layer maps it to 404, so revoking a twice-deleted device fails
+// loudly instead of silently. The dormant device_tokens table is untouched.
 func (s *Store) DeleteDevice(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, "DELETE FROM device_tokens WHERE id = ?", id)
+	rowID, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		return fmt.Errorf("store: delete device %s: %w", id, sql.ErrNoRows)
+	}
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM credentials WHERE kind = 'device' AND id = ?", rowID)
 	if err != nil {
 		return fmt.Errorf("store: delete device %s: %w", id, err)
 	}
@@ -190,6 +228,66 @@ func (s *Store) DeleteDevice(ctx context.Context, id string) error {
 		return fmt.Errorf("store: delete device %s (affected): %w", id, err)
 	} else if n == 0 {
 		return fmt.Errorf("store: delete device %s: %w", id, sql.ErrNoRows)
+	}
+	return nil
+}
+
+// SetDeviceUser binds or unbinds one device credential to a user (accounts
+// 9.3): userID non-nil writes the binding (the row's next request resolves
+// THAT user's Viewer), nil writes NULL — the unbind, which returns the row to
+// the legacy see-all device viewer. The caller has validated the user exists
+// (identity.UserByID) before calling; the column's FOREIGN KEY is the
+// storage-side backstop, never the primary check. The kind='device' guard in
+// the WHERE is the domain law: a session credential addressed by its rowid
+// (or any non-device row) reads as an unknown device, and an unknown rowid
+// surfaces as the wrapped sql.ErrNoRows (the DeleteDevice convention — the
+// api layer maps it to 404). The dormant device_tokens table is untouched.
+func (s *Store) SetDeviceUser(ctx context.Context, rowID int64, userID *int64) error {
+	var uid any
+	if userID != nil {
+		uid = *userID
+	}
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE credentials SET user_id = ? WHERE kind = 'device' AND id = ?", uid, rowID)
+	if err != nil {
+		return fmt.Errorf("store: set device user %d: %w", rowID, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("store: set device user %d (affected): %w", rowID, err)
+	} else if n == 0 {
+		return fmt.Errorf("store: set device user %d: %w", rowID, sql.ErrNoRows)
+	}
+	return nil
+}
+
+// migrateDeviceTokens is the ONE-TIME GUARDED copy of the legacy device_tokens
+// rows into credentials (accounts 2.2/D6), run at Open once the DDL has
+// created the credentials side: every legacy row becomes a kind='device'
+// credential with its token_hash carried over VERBATIM (the existing SHA-256
+// discipline — never re-hashed), the approval code riding along as the label,
+// user_id NULL (unbound) and expires_at NULL (device tokens never expire).
+// The guard is the hash itself: only rows whose token_hash has no credentials
+// counterpart are copied, so the statement is idempotent across boots and can
+// never collide with a post-migration mint (which writes credentials
+// directly). The source table stays dormant — read never again by device
+// management, written never again at all.
+func migrateDeviceTokens(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: migrate device tokens (begin): %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO credentials (kind, token_hash, user_id, label, created_at, expires_at)
+SELECT 'device', dt.token_hash, NULL, dt.code, dt.created_at, NULL
+FROM device_tokens dt
+WHERE NOT EXISTS (
+  SELECT 1 FROM credentials c WHERE c.token_hash = dt.token_hash
+)`); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("store: migrate device tokens (copy): %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: migrate device tokens (commit): %w", err)
 	}
 	return nil
 }

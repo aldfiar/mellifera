@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
@@ -132,7 +133,7 @@ func putSeriesRow(t *testing.T, s *store.Store, moduleID string, libID int64, re
 	}); err != nil {
 		t.Fatalf("PutSeries %s: %v", rel, err)
 	}
-	sr, err := s.GetSeriesByPath(context.Background(), libID, rel)
+	sr, err := s.GetSeriesByPath(context.Background(), libID, rel, access.System())
 	if err != nil {
 		t.Fatalf("GetSeriesByPath %s: %v", rel, err)
 	}
@@ -247,13 +248,13 @@ func waitForSeriesStatus(t *testing.T, s *store.Store, id, want string, timeout 
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		sr, err := s.GetSeries(context.Background(), id)
+		sr, err := s.GetSeries(context.Background(), id, access.System())
 		if err == nil && sr.Status == want {
 			return sr
 		}
 		time.Sleep(time.Millisecond)
 	}
-	sr, _ := s.GetSeries(context.Background(), id)
+	sr, _ := s.GetSeries(context.Background(), id, access.System())
 	t.Fatalf("series %s status = %q, want %q (timeout %v)", id, sr.Status, want, timeout)
 	return sr
 }
@@ -408,10 +409,10 @@ func TestSeriesLedgerAndRestart(t *testing.T) {
 // rowDocument returns the current opaque document of an item or series row.
 func rowDocument(t *testing.T, s *store.Store, id string) json.RawMessage {
 	t.Helper()
-	if it, err := s.GetItem(context.Background(), id); err == nil {
+	if it, err := s.GetItem(context.Background(), id, access.System()); err == nil {
 		return it.Document
 	}
-	sr, err := s.GetSeries(context.Background(), id)
+	sr, err := s.GetSeries(context.Background(), id, access.System())
 	if err != nil {
 		t.Fatalf("row %s unreadable as item and series: %v", id, err)
 	}
@@ -496,7 +497,7 @@ func TestSeriesSettlesIndependently(t *testing.T) {
 	q.Notify(ctx, 1)
 
 	sr := waitForSeriesStatus(t, s, seriesID, statusReady, 3*time.Second)
-	it, err := s.GetItem(ctx, itemID)
+	it, err := s.GetItem(ctx, itemID, access.System())
 	if err != nil {
 		t.Fatalf("GetItem episode: %v", err)
 	}

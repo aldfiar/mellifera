@@ -69,14 +69,16 @@
 //     lifecycle pending → approved | denied | expired → consumed is owned by
 //     internal/pairing — expiry is lazy on read, the store never sweeps.
 //
-//   - DeviceToken: one paired-device credential row — the SHA-256 hash of the
-//     bearer token only, never the raw value (device-pairing D4); revocation
-//     = DeleteDevice.
+//   - DeviceToken: one paired-device credential row (accounts D6 — lives in
+//     credentials kind='device') — the SHA-256 hash of the bearer token only,
+//     never the raw value (device-pairing D4); revocation = DeleteDevice.
 //
 //   - CreatePairingRequest/GetPairingRequest/SetPairingStatus/
-//     ListPendingPairings/InsertDeviceToken/LookupDeviceTokenByHash/
+//     ListPendingPairings/InsertDeviceCredential/LookupDeviceCredentialByHash/
 //     ListDevices/DeleteDevice: the pairing control-table CRUD set (methods —
-//     outside the symbol budget).
+//     outside the symbol budget). The legacy device_tokens table is dormant:
+//     migrateDeviceTokens copies it into credentials once at Open
+//     (hash-preserving, guarded by token_hash), and nothing writes it after.
 //
 //   - UpsertArtOverride/GetArtOverride/DeleteArtOverride: the per-entity
 //     artwork-selection set, and InsertArtFetch/LookupArtFetch/DeleteArtFetch/

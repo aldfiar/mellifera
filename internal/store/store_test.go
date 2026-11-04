@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // openStore opens a Store on a fresh temp SQLite file and closes it on cleanup.
@@ -99,7 +101,7 @@ func TestStore_Library(t *testing.T) {
 		if id <= 0 {
 			t.Fatalf("CreateLibrary id = %d, want > 0", id)
 		}
-		got, err := s.GetLibrary(ctx, id)
+		got, err := s.GetLibrary(ctx, id, access.System())
 		if err != nil {
 			t.Fatalf("GetLibrary: %v", err)
 		}
@@ -111,7 +113,7 @@ func TestStore_Library(t *testing.T) {
 	})
 
 	t.Run("not_found", func(t *testing.T) {
-		if _, err := s.GetLibrary(ctx, 99999); !errors.Is(err, sql.ErrNoRows) {
+		if _, err := s.GetLibrary(ctx, 99999, access.System()); !errors.Is(err, sql.ErrNoRows) {
 			t.Fatalf("GetLibrary missing = %v, want sql.ErrNoRows", err)
 		}
 	})
@@ -122,7 +124,7 @@ func TestStore_Library(t *testing.T) {
 	// with every field round-tripped. Same assertion shape as create_get.
 	t.Run("list_ordering_and_empty", func(t *testing.T) {
 		emptyStore := openStore(t)
-		got, err := emptyStore.ListLibraries(ctx)
+		got, err := emptyStore.ListLibraries(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListLibraries empty: %v", err)
 		}
@@ -153,7 +155,7 @@ func TestStore_Library(t *testing.T) {
 			}
 			ids = append(ids, id)
 		}
-		list, err := listStore.ListLibraries(ctx)
+		list, err := listStore.ListLibraries(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListLibraries: %v", err)
 		}
@@ -243,7 +245,7 @@ func TestStore_Items(t *testing.T) {
 			}
 
 			// Idempotency: exactly one row for this library (public API, no db reach-in).
-			items, err := s.QueryItems(ctx, libID, "", "", false, 100, 0)
+			items, err := s.QueryItems(ctx, libID, "", "", false, 100, 0, access.System())
 			if err != nil {
 				t.Fatalf("QueryItems: %v", err)
 			}
@@ -252,7 +254,7 @@ func TestStore_Items(t *testing.T) {
 			}
 
 			// GetItem round-trips the opaque document byte-for-byte (Cyrillic + nested).
-			got, err := s.GetItem(ctx, it.ID)
+			got, err := s.GetItem(ctx, it.ID, access.System())
 			if err != nil {
 				t.Fatalf("GetItem: %v", err)
 			}
@@ -322,7 +324,7 @@ func TestStore_QueryItems(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := s.QueryItems(ctx, libID, "", "", false, tc.limit, tc.offset)
+			got, err := s.QueryItems(ctx, libID, "", "", false, tc.limit, tc.offset, access.System())
 			if err != nil {
 				t.Fatalf("QueryItems(%d,%d): %v", tc.limit, tc.offset, err)
 			}
@@ -378,7 +380,7 @@ func TestStore_QueryItems_PathFilter(t *testing.T) {
 
 	gotFIDs := func(prefix string, topLevel bool, status string) []string {
 		t.Helper()
-		items, err := s.QueryItems(ctx, libID, status, prefix, topLevel, 100, 0)
+		items, err := s.QueryItems(ctx, libID, status, prefix, topLevel, 100, 0, access.System())
 		if err != nil {
 			t.Fatalf("QueryItems(prefix=%q,top=%v,status=%q): %v", prefix, topLevel, status, err)
 		}
@@ -409,7 +411,7 @@ func TestStore_QueryItems_PathFilter(t *testing.T) {
 	assertSet("top-level only", gotFIDs("", true, ""), "fid-top")
 	assertSet("folder+status compose", gotFIDs("ecchi", false, "ready"), "fid-e1", "fid-en")
 	// LibraryFolders parity on the same seed: chip counts == filtered totals.
-	folders, err := s.LibraryFolders(ctx, libID)
+	folders, err := s.LibraryFolders(ctx, libID, access.System())
 	if err != nil {
 		t.Fatalf("LibraryFolders: %v", err)
 	}
@@ -472,25 +474,25 @@ func TestStore_ItemsStatus_RoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PutItem new: %v", err)
 	}
-	en, err := s.GetItem(ctx, "en1")
+	en, err := s.GetItem(ctx, "en1", access.System())
 	if err != nil {
 		t.Fatalf("GetItem en1: %v", err)
 	}
 	if en.Status != "enriched" {
 		t.Fatalf("GetItem(en1).Status = %q, want 'enriched'", en.Status)
 	}
-	nw, _ := s.GetItem(ctx, "nw1")
+	nw, _ := s.GetItem(ctx, "nw1", access.System())
 	if nw.Status != "new" {
 		t.Fatalf("GetItem(nw1).Status = %q, want 'new' (PutItem default)", nw.Status)
 	}
-	only, err := s.QueryItems(ctx, libID, "enriched", "", false, 100, 0)
+	only, err := s.QueryItems(ctx, libID, "enriched", "", false, 100, 0, access.System())
 	if err != nil {
 		t.Fatalf("QueryItems(enriched): %v", err)
 	}
 	if len(only) != 1 || only[0].ID != "en1" {
 		t.Fatalf("QueryItems(enriched) = %+v, want [en1]", only)
 	}
-	all, err := s.QueryItems(ctx, libID, "", "", false, 100, 0)
+	all, err := s.QueryItems(ctx, libID, "", "", false, 100, 0, access.System())
 	if err != nil {
 		t.Fatalf("QueryItems(all): %v", err)
 	}
@@ -590,7 +592,7 @@ func TestStore_DeleteLibrary(t *testing.T) {
 	// Control rows: per-item ones for BOTH libraries' items, per-series
 	// title overrides, and the library-scope tables for both libraries.
 	for _, itemID := range []string{"itm_a1", "itm_b1"} {
-		if _, err := s.PutProgress(ctx, itemID, 42); err != nil {
+		if _, err := s.PutProgress(ctx, itemID, 42, access.System()); err != nil {
 			t.Fatalf("PutProgress %s: %v", itemID, err)
 		}
 	}
@@ -652,7 +654,7 @@ func TestStore_DeleteLibrary(t *testing.T) {
 	if n := count("metadata_source_prefs", "library_id = 0"); n != 1 {
 		t.Fatalf("module-scope source pref = %d, want 1 (library delete never touches module scope)", n)
 	}
-	if _, err := s.GetLibrary(ctx, target); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.GetLibrary(ctx, target, access.System()); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("GetLibrary deleted = %v, want sql.ErrNoRows", err)
 	}
 	// Second delete of the same id: sql.ErrNoRows (404 at the api layer).

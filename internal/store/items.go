@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // Item is a persisted media item: a denormalized identity plus the §3.1
@@ -69,9 +71,13 @@ ON CONFLICT(file_id) DO UPDATE SET
 	return nil
 }
 
-// GetItem loads an item by id. A missing row yields a wrapped sql.ErrNoRows.
-func (s *Store) GetItem(ctx context.Context, id string) (Item, error) {
-	row := s.db.QueryRowContext(ctx, itemColumns+" FROM items WHERE id = ?", id)
+// GetItem loads an item by id within the viewer's visible libraries — a row
+// whose library is outside the visible set reads exactly like a missing row
+// (wrapped sql.ErrNoRows; hidden ≡ not-found).
+func (s *Store) GetItem(ctx context.Context, id string, v access.Viewer) (Item, error) {
+	clause, visArgs := visibleWhere(v, "library_id")
+	args := append([]any{id}, visArgs...)
+	row := s.db.QueryRowContext(ctx, itemColumns+" FROM items WHERE "+andVisible("id = ?", clause), args...)
 	it, err := scanItem(row)
 	if err != nil {
 		return Item{}, fmt.Errorf("store: get item %q: %w", id, err)
@@ -90,8 +96,10 @@ func (s *Store) GetItem(ctx context.Context, id string) (Item, error) {
 // count and its paged stream agree). The filters compose with status.
 // Everything user-controlled rides BOUND args -- nothing is ever interpolated
 // into SQL (INV1); the caller (api) owns normalization, the store trusts a
-// pre-trimmed prefix.
-func (s *Store) QueryItems(ctx context.Context, libraryID int64, status, pathPrefix string, topLevel bool, limit, offset int) ([]Item, error) {
+// pre-trimmed prefix. v scopes the window to the viewer's visible libraries:
+// rows outside the visible set never surface (a non-nil empty result, never an
+// error — the listing window can only shrink, never fail).
+func (s *Store) QueryItems(ctx context.Context, libraryID int64, status, pathPrefix string, topLevel bool, limit, offset int, v access.Viewer) ([]Item, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -111,15 +119,17 @@ func (s *Store) QueryItems(ctx context.Context, libraryID int64, status, pathPre
 	if topLevel {
 		where += " AND instr(relative_path, '/') = 0"
 	}
+	clause, visArgs := visibleWhere(v, "library_id")
+	args = append(args, visArgs...)
 	rows, err := s.db.QueryContext(ctx,
-		itemColumns+" FROM items WHERE "+where+" ORDER BY id LIMIT ? OFFSET ?",
+		itemColumns+" FROM items WHERE "+andVisible(where, clause)+" ORDER BY id LIMIT ? OFFSET ?",
 		append(args, limit, offset)...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query items lib %d: %w", libraryID, err)
 	}
 	defer rows.Close()
-	var out []Item
+	out := make([]Item, 0)
 	for rows.Next() {
 		it, err := scanItem(rows)
 		if err != nil {

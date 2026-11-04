@@ -57,10 +57,14 @@ type pairingActionResponse struct {
 }
 
 // deviceDTO is one paired device as the admin list sees it. The token itself
-// is hash-at-rest and NEVER rendered here (pairing INV3).
+// is hash-at-rest and NEVER rendered here (pairing INV3). UserID is the bind
+// posture (accounts 9.3): the bound user's id, 0 when the row is unbound
+// (user_id NULL — the legacy see-all viewer) — the device-pairing spec's
+// "both states visible on the device list" fact the bind affordance renders.
 type deviceDTO struct {
 	DeviceID  string    `json:"device_id"`
 	Code      string    `json:"code"`
+	UserID    int64     `json:"user_id"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -243,7 +247,11 @@ func (a *app) denyPairing(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// listDevices: GET /api/v1/admin/devices — the paired-device registry.
+// listDevices: GET /api/v1/admin/devices — the paired-device registry. The
+// read goes to the store registry DIRECTLY (the same call pairing.Service
+// delegates to): the bind posture (accounts 9.3) rides DeviceToken.UserID,
+// a pairing-lifecycle fact the pairing service's own Device shape
+// deliberately does not carry.
 //
 // @Summary     List every paired device
 // @Tags        admin
@@ -253,19 +261,14 @@ func (a *app) denyPairing(w http.ResponseWriter, r *http.Request) {
 // @Failure     500 {object} errorBody
 // @Failure     503 {object} errorBody
 func (a *app) listDevices(w http.ResponseWriter, r *http.Request) {
-	devices, ok := a.pairingService()
-	if !ok {
-		writeError(w, http.StatusServiceUnavailable, "unavailable", "pairing endpoint disabled", false)
-		return
-	}
-	toks, err := devices.Devices(r.Context())
+	toks, err := a.deps.Store.ListDevices(r.Context())
 	if err != nil {
-		writePairingError(w, err)
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
 	devs := make([]deviceDTO, 0, len(toks))
 	for _, tok := range toks {
-		devs = append(devs, deviceDTO{DeviceID: tok.ID, Code: tok.Code, CreatedAt: tok.CreatedAt})
+		devs = append(devs, deviceDTO{DeviceID: tok.ID, Code: tok.Code, UserID: tok.UserID, CreatedAt: tok.CreatedAt})
 	}
 	writeJSON(w, http.StatusOK, devicesResponse{Devices: devs})
 }

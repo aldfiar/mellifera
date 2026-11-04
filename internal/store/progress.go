@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // PlaybackProgress is one stored playback position (web-ui-phase-3): plain
@@ -20,19 +22,36 @@ type PlaybackProgress struct {
 	ItemID          string
 	PositionSeconds int64
 	UpdatedAt       string
+	// UserID is the ledger slot the row lives in (l6-accounts D7) — the
+	// playback_progress user_id column, 0 for the legacy slot. Every store
+	// ledger read populates it; the api wire shape (progressDTO) deliberately
+	// omits it — a row's slot never crosses the wire.
+	UserID int64
 }
 
-// PutProgress upserts the playback position for itemID: the
-// INSERT ... ON CONFLICT overwrites position_seconds and refreshes
-// updated_at, so the table holds exactly ONE row per item whose stamp always
-// reflects the latest write. The item must exist — a missing items row yields
-// a wrapped sql.ErrNoRows (the api layer maps it to 404) and NOTHING is
-// written, so the write path never mints orphan rows even though the reads
-// below tolerate them. The column CHECK (position_seconds >= 0) is the
-// storage-side backstop; callers validate first (api → 400).
-func (s *Store) PutProgress(ctx context.Context, itemID string, positionSeconds int64) (PlaybackProgress, error) {
+// PutProgress upserts the playback position for itemID into THE VIEWER's
+// ledger slot (l6-accounts D7): the write targets (v.UserID, item_id), so
+// each user's position for an item is an independent row — user A's put
+// never touches user B's row. Legacy viewers (System, Admin, LegacyDevice
+// and the zero Viewer) carry UserID 0 and write the user_id=0 legacy slot
+// (the single-profile era's slot): the INSERT ... ON CONFLICT overwrites
+// position_seconds and refreshes updated_at, so each slot holds exactly ONE
+// row per item whose stamp always reflects the latest write. The item must
+// exist — a missing items row yields a wrapped sql.ErrNoRows (the api layer
+// maps it to 404) and NOTHING is written, so the write path never mints
+// orphan rows even though the reads below tolerate them. The column CHECK
+// (position_seconds >= 0) is the storage-side backstop; callers validate
+// first (api → 400).
+//
+// v scopes both halves of the write: the item-existence check treats an
+// item outside the viewer's visible set exactly like a missing row (hidden
+// ≡ unknown — nothing is written), and the write itself stamps v.UserID's
+// slot.
+func (s *Store) PutProgress(ctx context.Context, itemID string, positionSeconds int64, v access.Viewer) (PlaybackProgress, error) {
+	clause, visArgs := visibleWhere(v, "library_id")
+	args := append([]any{itemID}, visArgs...)
 	var one int
-	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM items WHERE id = ?", itemID).Scan(&one)
+	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM items WHERE "+andVisible("id = ?", clause), args...).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PlaybackProgress{}, fmt.Errorf("store: put progress %s: %w", itemID, err)
 	}
@@ -41,12 +60,12 @@ func (s *Store) PutProgress(ctx context.Context, itemID string, positionSeconds 
 	}
 	updatedAt := formatTime(time.Now().UTC())
 	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO playback_progress (item_id, position_seconds, updated_at)
-VALUES (?, ?, ?)
-ON CONFLICT(item_id) DO UPDATE SET
+INSERT INTO playback_progress (user_id, item_id, position_seconds, updated_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(user_id, item_id) DO UPDATE SET
   position_seconds = excluded.position_seconds,
   updated_at       = excluded.updated_at`,
-		itemID, positionSeconds, updatedAt,
+		v.UserID, itemID, positionSeconds, updatedAt,
 	); err != nil {
 		return PlaybackProgress{}, fmt.Errorf("store: put progress %s: %w", itemID, err)
 	}
@@ -57,14 +76,27 @@ ON CONFLICT(item_id) DO UPDATE SET
 // item's row, so a record whose item no longer exists (or is deleted) reads as
 // absent — the orphan-tolerant read (playback-progress spec): a wrapped
 // sql.ErrNoRows, never an error.
-func (s *Store) GetProgress(ctx context.Context, itemID string) (PlaybackProgress, error) {
+//
+// v scopes the read per the ledger-read scoping law (ledgerSlotWhere, D7):
+// a SEE-ALL viewer reads across every slot and library; a USER-scope viewer
+// reads ONLY (v.UserID, visible-library) rows — the own-slot conjunct rides
+// p.user_id and the visibility conjunct rides the joined item row's
+// library_id (playback_progress has no library column — the row's library
+// identity lives on its item, design D3). A row in another user's slot, or
+// one whose item sits in a no-longer-granted library (revoked grant), reads
+// exactly as absent (hidden ≡ not-found) — existence never leaks.
+func (s *Store) GetProgress(ctx context.Context, itemID string, v access.Viewer) (PlaybackProgress, error) {
+	slotClause, slotArgs := ledgerSlotWhere(v, "p.user_id")
+	clause, visArgs := visibleWhere(v, "i.library_id")
+	args := append([]any{itemID}, slotArgs...)
+	args = append(args, visArgs...)
 	var p PlaybackProgress
 	row := s.db.QueryRowContext(ctx, `
-SELECT p.item_id, p.position_seconds, p.updated_at
+SELECT p.item_id, p.position_seconds, p.updated_at, p.user_id
 FROM playback_progress p
 JOIN items i ON i.id = p.item_id AND i.status <> 'deleted'
-WHERE p.item_id = ?`, itemID)
-	if err := row.Scan(&p.ItemID, &p.PositionSeconds, &p.UpdatedAt); err != nil {
+WHERE `+andVisible(andVisible("p.item_id = ?", slotClause), clause), args...)
+	if err := row.Scan(&p.ItemID, &p.PositionSeconds, &p.UpdatedAt, &p.UserID); err != nil {
 		return PlaybackProgress{}, fmt.Errorf("store: get progress %s: %w", itemID, err)
 	}
 	return p, nil
@@ -76,13 +108,24 @@ WHERE p.item_id = ?`, itemID)
 // progress rows that predate the watch detector carry no watched_items row,
 // and a LIMIT page would strand the tail unledgered across boots. Boot-only —
 // the per-request read stays limit-bound (ListProgress).
-func (s *Store) ListProgressAll(ctx context.Context) ([]PlaybackProgress, error) {
+//
+// v scopes the read per the ledger-read scoping law (ledgerSlotWhere, D7):
+// the boot-backfill caller passes access.System() and keeps seeing EVERY
+// slot and library (learning is global — the documented invariant), with
+// System's empty clauses keeping the SQL byte-identical to pre-accounts. A
+// USER-scope viewer gets its OWN slot plus the visibility conjunct (the
+// joined item's library_id — the row's identity column per D3; no limit
+// window to order it against).
+func (s *Store) ListProgressAll(ctx context.Context, v access.Viewer) ([]PlaybackProgress, error) {
+	slotClause, slotArgs := ledgerSlotWhere(v, "p.user_id")
+	clause, visArgs := visibleWhere(v, "i.library_id")
+	args := append(slotArgs, visArgs...)
 	rows, err := s.db.QueryContext(ctx, `
-SELECT p.item_id, p.position_seconds, p.updated_at
+SELECT p.item_id, p.position_seconds, p.updated_at, p.user_id
 FROM playback_progress p
 JOIN items i ON i.id = p.item_id AND i.status <> 'deleted'
-WHERE p.position_seconds > 0
-ORDER BY p.updated_at DESC, p.item_id`)
+WHERE `+andVisible(andVisible("p.position_seconds > 0", slotClause), clause)+`
+ORDER BY p.updated_at DESC, p.item_id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list progress all: %w", err)
 	}
@@ -90,7 +133,7 @@ ORDER BY p.updated_at DESC, p.item_id`)
 	out := make([]PlaybackProgress, 0)
 	for rows.Next() {
 		var p PlaybackProgress
-		if err := rows.Scan(&p.ItemID, &p.PositionSeconds, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ItemID, &p.PositionSeconds, &p.UpdatedAt, &p.UserID); err != nil {
 			return nil, fmt.Errorf("store: list progress all scan: %w", err)
 		}
 		out = append(out, p)
@@ -107,14 +150,28 @@ ORDER BY p.updated_at DESC, p.item_id`)
 // an error — ordered newest-first (item_id as the deterministic tie-break).
 // The `status <> 'deleted'` literal is the same one read-side carve-out
 // LibrarySummary/LibraryFolders make (INV-value-agnostic-store).
-func (s *Store) ListProgress(ctx context.Context, limit int) ([]PlaybackProgress, error) {
+//
+// v scopes the read per the ledger-read scoping law (ledgerSlotWhere, D7):
+// a USER-scope viewer's window holds ONLY (v.UserID, visible-library) rows —
+// the own-slot conjunct rides p.user_id and the visibility conjunct rides the
+// joined item row's library_id (the row's identity column per D3 —
+// playback_progress itself has no library column) — and both land in the
+// WHERE list, BEFORE the ORDER BY/LIMIT window, so the window fills with
+// readable rows only (filtered-before-limit: neither a hidden row nor another
+// user's row ever displaces a readable one). SEE-ALL viewers keep the
+// all-slot, all-library window byte-identical to pre-accounts.
+func (s *Store) ListProgress(ctx context.Context, limit int, v access.Viewer) ([]PlaybackProgress, error) {
+	slotClause, slotArgs := ledgerSlotWhere(v, "p.user_id")
+	clause, visArgs := visibleWhere(v, "i.library_id")
+	args := append(slotArgs, visArgs...)
+	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `
-SELECT p.item_id, p.position_seconds, p.updated_at
+SELECT p.item_id, p.position_seconds, p.updated_at, p.user_id
 FROM playback_progress p
 JOIN items i ON i.id = p.item_id AND i.status <> 'deleted'
-WHERE p.position_seconds > 0
+WHERE `+andVisible(andVisible("p.position_seconds > 0", slotClause), clause)+`
 ORDER BY p.updated_at DESC, p.item_id
-LIMIT ?`, limit)
+LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list progress: %w", err)
 	}
@@ -122,7 +179,7 @@ LIMIT ?`, limit)
 	out := make([]PlaybackProgress, 0)
 	for rows.Next() {
 		var p PlaybackProgress
-		if err := rows.Scan(&p.ItemID, &p.PositionSeconds, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ItemID, &p.PositionSeconds, &p.UpdatedAt, &p.UserID); err != nil {
 			return nil, fmt.Errorf("store: list progress scan: %w", err)
 		}
 		out = append(out, p)

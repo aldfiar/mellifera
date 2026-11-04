@@ -162,14 +162,21 @@ var schemaSQL = []string{
   completed_at         TEXT,
   consumed             INTEGER NOT NULL DEFAULT 0
 )`,
-	// playback_progress is the web-ui-phase-3 position store: ONE row per item
-	// (item_id PK — the upsert overwrites), plain integer seconds with a >= 0
-	// CHECK, and the stamp every write refreshes. Reads join to items, so rows
-	// whose item is gone are skipped, never an error.
+	// playback_progress is the web-ui-phase-3 position store: ONE row per
+	// (user, item) — the composite PK upsert overwrites — plain integer
+	// seconds with a >= 0 CHECK, and the stamp every write refreshes. user_id
+	// is the accounts-era slot key (l6-accounts-access 2.3): INTEGER NOT NULL
+	// DEFAULT 0, and 0 is the LEGACY slot — every pre-accounts write names no
+	// user_id, so the DEFAULT lands it here unchanged, and the pre-accounts
+	// item_id-only table was rebuilt to this shape at Open with every legacy
+	// row carried into slot 0 (migrateLedgersUserScoped). Reads join to items,
+	// so rows whose item is gone are skipped, never an error.
 	`CREATE TABLE IF NOT EXISTS playback_progress (
-  item_id          TEXT PRIMARY KEY,
+  user_id          INTEGER NOT NULL DEFAULT 0,
+  item_id          TEXT NOT NULL,
   position_seconds INTEGER NOT NULL CHECK (position_seconds >= 0),
-  updated_at       TEXT NOT NULL
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (user_id, item_id)
 )`,
 	// item_parsers is the element-only parser attachment control table
 	// (parser-display D-3): ONE row per attached (item, plugin), position
@@ -246,12 +253,11 @@ var schemaSQL = []string{
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL
 )`,
-	// device_tokens is the durable client-credential table (device-pairing
-	// D4/D6): ONE row per paired device, keyed by a minted device id. It
-	// carries ONLY the SHA-256 hash of the bearer token — the raw value is
-	// handed to the device exactly once at pickup and never persisted — and
-	// the approval code of the pairing that minted it, for recognition in
-	// the admin device list. Revocation = DELETE row.
+	// device_tokens is the LEGACY client-credential table (device-pairing
+	// D4/D6), dormant since the accounts credentials migration (2.2/D6): the
+	// one-time guarded copy at Open carried every row into credentials
+	// (hash-preserving) and nothing writes it anymore — it stays only as the
+	// migration's copy source. Paired devices live in credentials kind='device'.
 	`CREATE TABLE IF NOT EXISTS device_tokens (
   id         TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,
@@ -285,19 +291,26 @@ var schemaSQL = []string{
   PRIMARY KEY (entity_id, entity_kind)
 )`,
 	// watched_items is the completion ledger (recommendation-sorting D4/D5):
-	// ONE row per completed item, item_id PRIMARY KEY — the insert is a PK
-	// no-op on repeat writes and rewatches, so a rewatch never double-counts.
-	// series_relative_path is NULL for film/tv items (an episode item carries
-	// its series' path for the episode→series join). applied_at IS NULL is the
-	// learning queue — the derived-work posture, no jobs table: unstamped rows
-	// ARE the pending work the recs janitor consumes. NO user/profile column:
-	// the single implicit profile; the roles change owns that migration.
+	// ONE row per completed (user, item) — the composite PK makes the insert
+	// a no-op on repeat writes and rewatches, so a rewatch never
+	// double-counts. user_id is the accounts-era slot key
+	// (l6-accounts-access 2.3): INTEGER NOT NULL DEFAULT 0, and 0 is the
+	// LEGACY slot — the single implicit profile every pre-accounts statement
+	// reads and writes unchanged (the pre-accounts item_id-only table was
+	// rebuilt to this shape at Open with every legacy row carried into slot
+	// 0, migrateLedgersUserScoped). series_relative_path is NULL for film/tv
+	// items (an episode item carries its series' path for the episode→series
+	// join). applied_at IS NULL is the learning queue — the derived-work
+	// posture, no jobs table: unstamped rows ARE the pending work the recs
+	// janitor consumes.
 	`CREATE TABLE IF NOT EXISTS watched_items (
-  item_id              TEXT PRIMARY KEY,
+  user_id              INTEGER NOT NULL DEFAULT 0,
+  item_id              TEXT NOT NULL,
   library_id           INTEGER NOT NULL,
   series_relative_path TEXT,
   completed_at         TEXT NOT NULL,
-  applied_at           TEXT
+  applied_at           TEXT,
+  PRIMARY KEY (user_id, item_id)
 )`,
 	// tag_weights is the learned tag-affinity store (recommendation-sorting
 	// D5): ONE row per normalized tag (the tag rule — trim + Unicode casefold
@@ -308,6 +321,88 @@ var schemaSQL = []string{
   tag        TEXT PRIMARY KEY,
   weight     INTEGER NOT NULL,
   updated_at TEXT NOT NULL
+)`,
+	// users is the personal-account table (accounts spec "User accounts and
+	// roles"): ONE row per user, keyed by a minted id (AUTOINCREMENT — users
+	// are deletable, so rowid reuse after a delete must never alias an old
+	// id). username is lowercase-normalized UNIQUE — normalization is the
+	// caller's discipline (internal/identity), the store stays
+	// value-agnostic. role is CHECK-guarded to the user|admin pair (D11:
+	// roles PROJECT onto the existing principal routing, never fork it);
+	// password_hash holds argon2id material only — no plaintext or reversible
+	// password form ever lands here. prefs_json is the per-user preference
+	// document (opaque JSON, the module config_json discipline — the store
+	// never parses it); disabled is the 0/1 fail-closed gate (the
+	// metadata_source_prefs enabled convention). Timestamps are the repo TEXT
+	// RFC3339 convention.
+	`CREATE TABLE IF NOT EXISTS users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  username      TEXT NOT NULL UNIQUE,
+  display_name  TEXT NOT NULL DEFAULT '',
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL CHECK (role IN ('user','admin')),
+  prefs_json    TEXT NOT NULL DEFAULT '{}',
+  disabled      INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+)`,
+	// groups is the admin-composed named scope (accounts spec "Groups and
+	// membership"): ONE row per group. doc_json is the schema-versioned
+	// operator document (per-source mutes, D8) with schema_version its
+	// version companion — the modules config_json + schema_version pattern.
+	// Migrations NEVER rewrite an operator-authored document: new knob shapes
+	// read as absent, never backfilled.
+	`CREATE TABLE IF NOT EXISTS groups (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  name           TEXT NOT NULL UNIQUE,
+  doc_json       TEXT NOT NULL DEFAULT '{}',
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+)`,
+	// group_collections is the member-Collections membership axis (accounts
+	// spec "Groups and membership"): ONE row per (group, library) — the
+	// composite PK is the UNIQUE pair — position carrying the display
+	// position. Overlapping groups are allowed (two groups may carry the same
+	// library); resolving the per-user display order (min-position, tie by
+	// group id) is the caller's rule, the store stays value-agnostic. Rows
+	// are control state beside the library rows: an orphaned grant row
+	// (library deleted) is harmless and invisible (D5).
+	`CREATE TABLE IF NOT EXISTS group_collections (
+  group_id   INTEGER NOT NULL,
+  library_id INTEGER NOT NULL,
+  position   INTEGER NOT NULL,
+  PRIMARY KEY (group_id, library_id)
+)`,
+	// group_members is the member-users membership axis (accounts spec
+	// "Groups and membership"): ONE row per (group, user) — the composite PK
+	// is the UNIQUE pair. A user's visible set is the union of its groups'
+	// member Collections (D5); a user in no group sees nothing.
+	`CREATE TABLE IF NOT EXISTS group_members (
+  group_id INTEGER NOT NULL,
+  user_id  INTEGER NOT NULL,
+  PRIMARY KEY (group_id, user_id)
+)`,
+	// credentials is the unified client-credential table (accounts D6): ONE
+	// row per device binding or session, kind CHECK-guarded to the
+	// device|session pair. token_hash carries ONLY the SHA-256 hash of the
+	// bearer token — the raw value is handed out exactly once and never
+	// persisted (the device_tokens discipline, whose rows this table
+	// supersedes: migrateDeviceTokens copies the legacy rows at Open,
+	// hash-preserving and guarded by the hash, and the pairing mint writes
+	// device rows here directly post-migration). user_id is NULL for unbound
+	// devices, REFERENCES users(id) for a bound device or a session; label is
+	// the human name (for device rows, the minting pairing's approval code);
+	// expires_at NULL is a non-expiring credential (device tokens never
+	// expire — the pairing lazy-expiry posture). Revocation = DELETE row.
+	`CREATE TABLE IF NOT EXISTS credentials (
+  id         INTEGER PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK (kind IN ('device','session')),
+  token_hash TEXT NOT NULL UNIQUE,
+  user_id    INTEGER NULL REFERENCES users(id),
+  label      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  expires_at TEXT NULL
 )`,
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
@@ -320,6 +415,15 @@ var schemaSQL = []string{
 	`CREATE INDEX IF NOT EXISTS items_tmdb_id ON items(tmdb_id)`,
 	`CREATE INDEX IF NOT EXISTS items_kinopoisk_id ON items(kinopoisk_id)`,
 	`CREATE INDEX IF NOT EXISTS items_module ON items(module_id, display_title)`,
+	// Ledger read paths (accounts 2.3): the scorer walks completed_at
+	// (ListWatched/ListUnappliedWatched ORDER BY) and the learning queue
+	// filters and stamps applied_at IS NULL (ListUnappliedWatched /
+	// ApplyTagWeights). Plain (non-per-user) indexes: the 4-arg-era queries
+	// they serve are not user-keyed yet; migrateLedgersUserScoped re-creates
+	// them after the watched_items rebuild (the DROP takes the old ones with
+	// the legacy table), IF NOT EXISTS keeps every path idempotent.
+	`CREATE INDEX IF NOT EXISTS watched_items_completed_at ON watched_items(completed_at)`,
+	`CREATE INDEX IF NOT EXISTS watched_items_applied_at ON watched_items(applied_at)`,
 }
 
 // Open opens the SQLite database at dsn, sets WAL journal mode + a 5s
@@ -340,6 +444,13 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("store: migrate: %w", err)
 		}
+	}
+	// The one-time guarded device_tokens → credentials copy (accounts 2.2/D6)
+	// runs after the DDL has ensured both tables exist; idempotent across
+	// boots (the guard is the token_hash itself).
+	if err := migrateDeviceTokens(ctx, db); err != nil {
+		db.Close()
+		return nil, err
 	}
 	if err := ensureItemsStatus(ctx, db); err != nil {
 		db.Close()
@@ -362,6 +473,16 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, err
 	}
 	if err := ensurePlaybackProgressSeconds(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// The one-time guarded ledger rebuild (accounts 2.3): playback_progress
+	// and watched_items gain the user_id slot key via create-new → INSERT
+	// SELECT → drop → rename. It runs LAST because the copy names
+	// position_seconds — the column ensurePlaybackProgressSeconds has just
+	// ALTERed in on pre-phase-3 databases — so every legacy shape Open
+	// supports is rebuild-ready here.
+	if err := migrateLedgersUserScoped(ctx, db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -504,11 +625,136 @@ func ensureLibrariesNamingElementName(ctx context.Context, db *sql.DB) error {
 // added via ensureColumn's guarded ALTER when absent (with a DEFAULT 0 —
 // NOT NULL ADD COLUMN requires one; the upsert always supplies the value).
 // Fresh DBs already get the column from the CREATE TABLE in schemaSQL. The
-// placeholder columns are left dormant on migrated DBs: no code ever read or
-// wrote them, so dropping them is not worth a table rebuild.
+// placeholder columns survive the ALTER on migrated DBs; the ledger rebuild
+// below (which nothing needs ordering against — no code ever read or wrote
+// the placeholders) retires them with the legacy table it drops.
 func ensurePlaybackProgressSeconds(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "playback_progress", "position_seconds",
 		"ALTER TABLE playback_progress ADD COLUMN position_seconds INTEGER NOT NULL DEFAULT 0 CHECK (position_seconds >= 0)")
+}
+
+// migrateLedgersUserScoped is THE repo's first table-rebuild migration
+// (accounts 2.3): playback_progress and watched_items move from the
+// item_id-only PRIMARY KEY to the user-scoped composite (user_id, item_id).
+// SQLite cannot ALTER a PK, so each rebuild is create-new → INSERT SELECT
+// every legacy row into the user_id=0 slot (0 = the legacy single-profile
+// slot; the DEFAULT keeps pre-accounts statements landing there verbatim) →
+// drop → rename — ONE transaction per table, so a failure mid-rebuild rolls
+// back to the legacy table untouched. The guard is PRAGMA table_info: a table
+// whose PK is already (user_id, item_id) skips (INV-idempotent-migration —
+// Open is safe to re-run on any database). Legacy column values are carried
+// verbatim (positions, stamps, NULLs): zero row loss is the migration's
+// contract. The watched_items rebuild re-creates its secondary indexes after
+// the rename (DROP TABLE takes the schema-loop indexes with the legacy
+// table); every statement re-runs harmlessly elsewhere via IF NOT EXISTS /
+// the PK guard.
+func migrateLedgersUserScoped(ctx context.Context, db *sql.DB) error {
+	rebuilds := []struct {
+		table    string   // the legacy table the rebuild replaces
+		newDDL   string   // the user-scoped shape, created as <table>_user_scoped
+		copyStmt string   // the INSERT SELECT carrying every legacy row into slot 0
+		indexes  []string // secondary indexes re-created after the rename
+	}{
+		{
+			table: "playback_progress",
+			newDDL: `CREATE TABLE playback_progress_user_scoped (
+  user_id          INTEGER NOT NULL DEFAULT 0,
+  item_id          TEXT NOT NULL,
+  position_seconds INTEGER NOT NULL CHECK (position_seconds >= 0),
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (user_id, item_id)
+)`,
+			copyStmt: `
+INSERT INTO playback_progress_user_scoped
+  (user_id, item_id, position_seconds, updated_at)
+SELECT 0, item_id, position_seconds, updated_at
+FROM playback_progress`,
+		},
+		{
+			table: "watched_items",
+			newDDL: `CREATE TABLE watched_items_user_scoped (
+  user_id              INTEGER NOT NULL DEFAULT 0,
+  item_id              TEXT NOT NULL,
+  library_id           INTEGER NOT NULL,
+  series_relative_path TEXT,
+  completed_at         TEXT NOT NULL,
+  applied_at           TEXT,
+  PRIMARY KEY (user_id, item_id)
+)`,
+			copyStmt: `
+INSERT INTO watched_items_user_scoped
+  (user_id, item_id, library_id, series_relative_path, completed_at, applied_at)
+SELECT 0, item_id, library_id, series_relative_path, completed_at, applied_at
+FROM watched_items`,
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS watched_items_completed_at ON watched_items(completed_at)",
+				"CREATE INDEX IF NOT EXISTS watched_items_applied_at ON watched_items(applied_at)",
+			},
+		},
+	}
+	for _, rb := range rebuilds {
+		scoped, err := ledgerPKIsUserScoped(ctx, db, rb.table)
+		if err != nil {
+			return err
+		}
+		if scoped {
+			continue
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("store: migrate %s to user-scoped PK (begin): %w", rb.table, err)
+		}
+		stmts := append([]string{rb.newDDL, rb.copyStmt,
+			"DROP TABLE " + rb.table,
+			"ALTER TABLE " + rb.table + "_user_scoped RENAME TO " + rb.table,
+		}, rb.indexes...)
+		for _, stmt := range stmts {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("store: migrate %s to user-scoped PK: %w", rb.table, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("store: migrate %s to user-scoped PK (commit): %w", rb.table, err)
+		}
+	}
+	return nil
+}
+
+// ledgerPKIsUserScoped reports whether table's PRIMARY KEY is already
+// (user_id, item_id) — the guard that keeps the ledger rebuild idempotent.
+// PRAGMA table_info's pk column carries the 1-based position within the PK
+// (0 outside it), so the exact composite reads as user_id→1, item_id→2.
+func ledgerPKIsUserScoped(ctx context.Context, db *sql.DB, table string) (bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, fmt.Errorf("store: migrate %s (table_info): %w", table, err)
+	}
+	defer rows.Close()
+	pk := make(map[string]int)
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    sql.NullString
+			pkPos   int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pkPos); err != nil {
+			return false, fmt.Errorf("store: migrate %s (scan): %w", table, err)
+		}
+		pk[name] = pkPos
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("store: migrate %s (rows): %w", table, err)
+	}
+	// The exact composite (user_id→1, item_id→2) is the only already-migrated
+	// shape: the pre-accounts PKs (item_id alone, or the §9.1 placeholder
+	// shape) and any unrecognized shape all read false and take the rebuild —
+	// where a column the copy names but the table lacks fails loudly inside
+	// the transaction, never silently.
+	return pk["user_id"] == 1 && pk["item_id"] == 2, nil
 }
 
 // Close releases the database handle.

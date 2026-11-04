@@ -2,12 +2,14 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { useNavigate } from "react-router-dom";
 
-import type { ItemDTO, WatchDefaultsDTO } from "@/lib/api";
+import { useProfile } from "@/components/Profile";
+import { ApiError, type ItemDTO, type ProfileDTO, type ProfilePrefs, type WatchDefaultsDTO } from "@/lib/api";
 import { episodeFacts, nextEpisodeAfter } from "@/lib/nextup";
 import {
   useItem,
   useSeries,
   useSeriesEpisodes,
+  useUpdateProfilePrefs,
   useWatchDefaults,
 } from "@/lib/queries";
 
@@ -41,7 +43,29 @@ import {
 // mellifera.autoNextCancelled — writer and reader BOTH live in this module
 // (design.md Interfaces); no other module touches the key. sessionStorage
 // (never localStorage): the suppression survives reloads and dies with the
-// tab; the durable per-user opt-out arrives with Layer 6.
+// tab; the DURABLE per-user opt-out is the served profile document's
+// auto_next flag (l6-accounts 8.4) — see the prefs block below.
+//
+// Prefs (l6-accounts 8.4): the per-user auto_next flag rides the caller's
+// profile document (ProfilePrefs in lib/api — the backend stores the bytes
+// verbatim and never merges, so the toggle READ-MERGE-WRITES: the SERVED
+// prefs come from the SHARED ["profile"] cache (the same entry the sidebar
+// gate and the identity block read — one fetch, consumers cannot disagree),
+// the flipped key spreads over them, and the merged WHOLE document goes out
+// through PUT /profile/prefs via useUpdateProfilePrefs). No localStorage —
+// the preference is the user's, not the browser's (the web-ui spec delta).
+// The kind law is the served user-backedness (profile.go): kind "user" gets
+// an editable toggle; kind "admin" (the env admin token) gets the toggle
+// RENDERED BUT DISABLED — the env watch-defaults are env config, not
+// profile state, so there is no per-user document behind that credential
+// (a write 409s); kind "device" gets NO toggle at all (prefs is null — a
+// device has no preference surface). No served identity yet → no toggle
+// (fail closed, the isAdminProfile posture). When the document carries no
+// auto_next key, the env watch-defaults answer: the card behaves exactly as
+// before (countdown per the served shape, D5), and the toggle's position
+// shows the env default posture (armed). A failed write surfaces the
+// canonical code + message on the card — the toggle never moves and never
+// silently reverts.
 
 // AUTO_NEXT_CANCELLED_KEY — the session-scoped suppression key. Set-once
 // per session (this module never clears it); its PRESENCE suppresses the
@@ -77,6 +101,28 @@ function servedEpisodeTitle(item: ItemDTO): string {
   return typeof title === "string" && title !== "" ? title : "";
 }
 
+// readAutoNextPref — the served document's auto_next override, or undefined
+// when it carries none (the key absent, or the value not a boolean — a
+// malformed value is refused, never guessed: the servedCountdown
+// discipline). undefined is NOT false — it is "the env watch-defaults
+// answer" (the fallback law), never a durable opt-out.
+function readAutoNextPref(prefs: ProfilePrefs | null | undefined): boolean | undefined {
+  const value = prefs?.auto_next;
+  return typeof value === "boolean" ? value : undefined;
+}
+
+// prefsErrorCopy — the surfaced write-failure copy: the canonical code +
+// message verbatim from the ApiError (states.tsx ErrorState's vocabulary,
+// compressed to the card's footprint); a non-Api rejection carries its
+// message alone. Rendered, never swallowed — a failed pref write must be
+// readable on the card it was attempted from.
+function prefsErrorCopy(error: Error | null): string | null {
+  if (error === null) {
+    return null;
+  }
+  return error instanceof ApiError ? `${error.code}: ${error.message}` : error.message;
+}
+
 export interface AutoNextProps {
   itemId: string;
   /** The Player's ended edge — true from the video's `ended` event until a replay, a seek, or a re-attach closes it. */
@@ -106,6 +152,27 @@ export default function AutoNext(props: AutoNextProps): ReactElement | null {
     return nextEpisodeAfter(item, episodes.data?.items ?? []);
   }, [item, series, episodes.data]);
   const defaults = useWatchDefaults();
+  // The per-user prefs ride the SHARED served-profile cache (["profile"] —
+  // the same entry the sidebar gate and the identity block read); the
+  // write goes through useUpdateProfilePrefs, the one read-merge-write
+  // path over that cache.
+  const profile = useProfile();
+  const prefsMutation = useUpdateProfilePrefs();
+  const p = profile.data;
+  // The kind law (profile.go's user-backedness): ONLY kind "user" has a
+  // per-user preference document behind its credential. The env admin
+  // (kind "admin") and the unbound device (kind "device") would 409 on a
+  // write; a served identity that has not arrived yet grants nothing.
+  const prefsKind: ProfileDTO["kind"] | undefined = p?.kind;
+  const prefsEditable = prefsKind === "user";
+  const toggleRendered = prefsKind === "user" || prefsKind === "admin";
+
+  // The effective auto-next posture: the served override governs when the
+  // document carries the key; absent, the env watch-defaults answer and the
+  // card behaves exactly as before (countdown per the served shape — D5).
+  // The toggle's position shows this effective value, so the env fallback
+  // is what renders when no override is served.
+  const autoNextEnabled = readAutoNextPref(p?.prefs) ?? true;
 
   const navigate = useNavigate();
   const watch = useCallback(() => {
@@ -113,6 +180,20 @@ export default function AutoNext(props: AutoNextProps): ReactElement | null {
       navigate(`/items/${next.item.id}`);
     }
   }, [next, navigate]);
+
+  // toggleAutoNext — the durable flip: READ-MERGE-WRITE through the shared
+  // cache — the SERVED document (never localStorage) spreads, the flipped
+  // auto_next lands on top, and the WHOLE merged document goes out (the
+  // server never merges). On success useUpdateProfilePrefs rewrites the
+  // cache and this card re-renders flipped; on failure the card surfaces
+  // the canonical copy and the toggle stays at the served position.
+  const toggleAutoNext = () => {
+    if (!prefsEditable) {
+      return;
+    }
+    const served: ProfilePrefs = p?.prefs ?? {};
+    prefsMutation.mutate({ ...served, auto_next: !autoNextEnabled });
+  };
 
   if (!props.ended || next === null) {
     return null;
@@ -130,8 +211,21 @@ export default function AutoNext(props: AutoNextProps): ReactElement | null {
     <AutoNextCard
       nameLine={nameLine}
       episodeTitle={servedEpisodeTitle(next.item)}
-      countdownSeconds={servedCountdown(defaults.data)}
+      // The durable override floors the countdown: auto_next=false means no
+      // countdown and NEVER autoplay, whatever the env shape serves.
+      countdownSeconds={autoNextEnabled ? servedCountdown(defaults.data) : null}
       onWatch={watch}
+      autoNextToggle={
+        toggleRendered
+          ? {
+              enabled: autoNextEnabled,
+              editable: prefsEditable,
+              busy: prefsMutation.isPending,
+              onToggle: toggleAutoNext,
+            }
+          : null
+      }
+      prefsError={prefsErrorCopy(prefsMutation.error)}
     />
   );
 }
@@ -149,6 +243,13 @@ function AutoNextCard(props: {
   episodeTitle: string;
   countdownSeconds: number | null;
   onWatch: () => void;
+  autoNextToggle: {
+    enabled: boolean;
+    editable: boolean;
+    busy: boolean;
+    onToggle: () => void;
+  } | null;
+  prefsError: string | null;
 }): ReactElement | null {
   const { onWatch } = props;
   const [cancelled, setCancelled] = useState<boolean>(() =>
@@ -198,6 +299,38 @@ function AutoNextCard(props: {
           className="text-xs text-muted-foreground"
         >
           Автопереход через {String(remaining)} с
+        </p>
+      ) : null}
+      {/* The durable per-user toggle (l6-accounts 8.4): kind user —
+          editable, kind admin — rendered but disabled (the env
+          watch-defaults are env config, not profile state), kind device /
+          no served identity — absent (null). The position is the SERVED
+          document's effective value via the shared cache; a failed write
+          surfaces below and the position never silently moves. */}
+      {props.autoNextToggle !== null ? (
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            data-testid="auto-next-toggle"
+            checked={props.autoNextToggle.enabled}
+            disabled={!props.autoNextToggle.editable || props.autoNextToggle.busy}
+            onChange={props.autoNextToggle.onToggle}
+            title={
+              props.autoNextToggle.editable
+                ? undefined
+                : "Задаётся конфигурацией сервера"
+            }
+          />
+          Автопереход
+        </label>
+      ) : null}
+      {props.prefsError !== null ? (
+        <p
+          role="alert"
+          data-testid="auto-next-prefs-error"
+          className="text-xs text-destructive"
+        >
+          {props.prefsError}
         </p>
       ) : null}
       <div className="flex gap-2">

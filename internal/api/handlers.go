@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -32,6 +33,9 @@ type app struct {
 	// Deps closure: there is no domain behind it), one instance per router
 	// so tests get fresh budgets.
 	beacons *beaconLimiter
+	// logins is the login endpoint's per-(IP, username) rate limiter
+	// (l6-accounts D6) — the same handler-local shape as beacons.
+	logins *loginLimiter
 }
 
 // Pagination defaults. limit clamps to defaultLimit; a client limit above
@@ -631,7 +635,10 @@ func (a *app) getLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "library id must be an integer", false)
 		return
 	}
-	lib, err := a.deps.Store.GetLibrary(r.Context(), id)
+	// The handler's authority scope (6.2): resolved once here, passed to every
+	// viewer-scoped read below; the Deps closure takes the stashed context.
+	v, ctx := a.viewerFor(r)
+	lib, err := a.deps.Store.GetLibrary(ctx, id, v)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
@@ -642,7 +649,7 @@ func (a *app) getLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	dto := toLibraryDTO(lib)
 	if a.deps.ModulePresentation != nil {
-		mp, err := a.deps.ModulePresentation(r.Context(), lib.ModuleID, id)
+		mp, err := a.deps.ModulePresentation(ctx, lib.ModuleID, id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -652,7 +659,7 @@ func (a *app) getLibrary(w http.ResponseWriter, r *http.Request) {
 		// closure's config order. Absent/empty chain = config order (the seed
 		// default). A chain read error is a real failure → 500, like any other
 		// store read here.
-		chain, err := a.deps.Store.GetLibraryChain(r.Context(), id)
+		chain, err := a.deps.Store.GetLibraryChain(ctx, id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -713,7 +720,8 @@ func (a *app) librarySummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "library id must be an integer", false)
 		return
 	}
-	items, updatedAt, err := a.deps.Store.LibrarySummary(r.Context(), id)
+	v, ctx := a.viewerFor(r)
+	items, updatedAt, err := a.deps.Store.LibrarySummary(ctx, id, v)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
@@ -744,7 +752,8 @@ func (a *app) libraryFolders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "library id must be an integer", false)
 		return
 	}
-	folders, err := a.deps.Store.LibraryFolders(r.Context(), id)
+	v, ctx := a.viewerFor(r)
+	folders, err := a.deps.Store.LibraryFolders(ctx, id, v)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
@@ -801,7 +810,12 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "position_seconds must be >= 0", false)
 		return
 	}
-	rec, err := a.deps.Store.PutProgress(r.Context(), itemID, *req.PositionSeconds)
+	// The write stamps the CALLER's ledger slot (per-user ledgers 5.1): the
+	// handler's own scope, resolved once — legacy principals keep the slot-0
+	// posture byte-identical. The OnProgress closure takes the stashed
+	// context, so its FromContext read sees the same viewer.
+	v, ctx := a.viewerFor(r)
+	rec, err := a.deps.Store.PutProgress(ctx, itemID, *req.PositionSeconds, v)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "item "+itemID+" not found", false)
@@ -811,7 +825,7 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.deps.OnProgress != nil {
-		a.deps.OnProgress(r.Context(), itemID, *req.PositionSeconds, req.Completed)
+		a.deps.OnProgress(ctx, itemID, *req.PositionSeconds, req.Completed)
 	}
 	writeJSON(w, http.StatusOK, toProgressDTO(rec))
 }
@@ -868,16 +882,19 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
 	}
+	// The caller's ledger scope (6.2): every read below — both branches — is
+	// the requesting viewer's own slot over its visible libraries.
+	v, ctx := a.viewerFor(r)
 	if recent {
 		// The opt-out keeps today's exact contract: the store's own recency
 		// window, unscored — plus the SAME withdrawal default (watched-states
 		// D2), off the batched ledger read the branch makes none of today.
-		recs, err := a.deps.Store.ListProgress(r.Context(), limit)
+		recs, err := a.deps.Store.ListProgress(ctx, limit, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
-		done, err := a.deps.Store.ListWatched(r.Context())
+		done, err := a.deps.Store.ListWatched(ctx, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -899,13 +916,13 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 	// read. The withdrawal (D2) trims the input set BEFORE the composition,
 	// so the page cut lands on the served rows. Score, order
 	// score-desc/recency, THEN cut the page.
-	facts, err := a.recsFactsFor(r.Context())
+	facts, err := a.recsFactsFor(ctx, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
 	rows := withdrawWatched(facts.rows, facts.watched, includeWatched)
-	scores, err := a.scoreProgress(r.Context(), rows, facts)
+	scores, err := a.scoreProgress(ctx, v, rows, facts)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -947,7 +964,10 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 // @Failure      500 {object} errorBody
 func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "item_id")
-	rec, err := a.deps.Store.GetProgress(r.Context(), itemID)
+	// The caller's scope (6.2): the record read, the item point read, and the
+	// scored composition's ledger facts all ride the requesting viewer.
+	v, ctx := a.viewerFor(r)
+	rec, err := a.deps.Store.GetProgress(ctx, itemID, v)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "progress for item "+itemID+" not found", false)
@@ -964,17 +984,17 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 	// else; an episode of a STARTED series still serves the new-episode bonus
 	// (the series-scoped seed below — D2/D3), the same score the grid
 	// composes for the same entity.
-	it, err := a.deps.Store.GetItem(r.Context(), itemID)
+	it, err := a.deps.Store.GetItem(ctx, itemID, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	n, err := a.namerFor(r.Context(), it.LibraryID)
+	n, err := a.namerFor(ctx, it.LibraryID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	facts, err := a.recsFactsFor(r.Context())
+	facts, err := a.recsFactsFor(ctx, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -986,7 +1006,7 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 	// does; the one-item slice derivation alone would serve tags-only.
 	startedSeed := (map[string]bool)(nil)
 	if path := seriesPathOf(it); path != "" {
-		started, err := a.seriesStartedFact(r.Context(), n, path, facts)
+		started, err := a.seriesStartedFact(ctx, v, n, path, facts)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -1115,6 +1135,9 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, offset := parsePagination(r)
+	// The caller's scope (6.2): the item set, the scored composition's ledger
+	// facts, and the watched stamps all ride the requesting viewer.
+	v, ctx := a.viewerFor(r)
 	// The display-naming namer is per-library: the naming options off the
 	// library row plus the whole-series map the composed names join against
 	// (and, under the scored default, the episode→series tags join). A
@@ -1122,7 +1145,7 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 	// floor every namerFor call site shares — so the browse contract for a
 	// nonexistent ?library= stays 200-with-empty-items. Any other read
 	// failure is a real failure → 500, like any other store read here.
-	n, err := a.namerFor(r.Context(), id)
+	n, err := a.namerFor(ctx, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1142,15 +1165,15 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 	if byPath {
 		// The opt-out keeps today's exact contract: the store's own
 		// id-ordered SQL window, unscored.
-		items, err = a.deps.Store.QueryItems(r.Context(), id, status, pathPrefix, topLevel, limit, offset)
+		items, err = a.deps.Store.QueryItems(ctx, id, status, pathPrefix, topLevel, limit, offset, v)
 	} else {
-		items, err = a.allFilteredItems(r.Context(), id, status, pathPrefix, topLevel)
+		items, err = a.allFilteredItems(ctx, v, id, status, pathPrefix, topLevel)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dtos, err := a.itemDTOs(r.Context(), items, n)
+	dtos, err := a.itemDTOs(ctx, items, n, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1159,7 +1182,7 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		// D7 score-then-window: score the full set (facts are two batched
 		// reads), order through recs.Order's comparator, THEN cut the page —
 		// never SQL-window order under the scored default.
-		facts, err := a.recsFactsFor(r.Context())
+		facts, err := a.recsFactsFor(ctx, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -1190,7 +1213,7 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		// store's id-ordered window is untouched (a field stamp never
 		// reorders). The photo carve-out rides this same branch and stamps
 		// identically.
-		done, err := a.deps.Store.ListWatched(r.Context())
+		done, err := a.deps.Store.ListWatched(ctx, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -1217,7 +1240,10 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 // @Success      200 {object} librariesResponse
 // @Failure      500 {object} errorBody
 func (a *app) listLibraries(w http.ResponseWriter, r *http.Request) {
-	libs, err := a.deps.Store.ListLibraries(r.Context())
+	// The caller's scope (6.2): the list shows only the requesting viewer's
+	// visible libraries; legacy principals keep today's full list.
+	v, ctx := a.viewerFor(r)
+	libs, err := a.deps.Store.ListLibraries(ctx, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1234,7 +1260,7 @@ func (a *app) listLibraries(w http.ResponseWriter, r *http.Request) {
 	// title chain, and its parsers render in module config order.
 	if a.deps.ModulePresentation != nil {
 		for i := range libs {
-			mp, err := a.deps.ModulePresentation(r.Context(), libs[i].ModuleID, libs[i].ID)
+			mp, err := a.deps.ModulePresentation(ctx, libs[i].ModuleID, libs[i].ID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 				return
@@ -1264,7 +1290,11 @@ func (a *app) listLibraries(w http.ResponseWriter, r *http.Request) {
 // @Failure      500 {object} errorBody
 func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	it, err := a.deps.Store.GetItem(r.Context(), id)
+	// The caller's scope (6.2): the row read, the parser attachments, and the
+	// scored composition's ledger facts all ride the requesting viewer — an
+	// item outside the visible set is an unknown item.
+	v, ctx := a.viewerFor(r)
+	it, err := a.deps.Store.GetItem(ctx, id, v)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "item "+id+" not found", false)
@@ -1276,12 +1306,12 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 	// Display-naming namer (display-naming 3.1): built off the item's own
 	// library so the detail view carries the same composed display_name the
 	// list serves. A read failure is a real failure → 500.
-	n, err := a.namerFor(r.Context(), it.LibraryID)
+	n, err := a.namerFor(ctx, it.LibraryID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	n, err = a.withSeriesOverride(r.Context(), n, it.Document)
+	n, err = a.withSeriesOverride(ctx, n, it.Document)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1290,7 +1320,7 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 	// so the detail view's display_name, artwork, and metadata compose
 	// EXACTLY what the grid served. The override read above feeds the namer;
 	// the conversion re-reads its own (the per-row posture itemDTOs owns).
-	dtos, err := a.itemDTOs(r.Context(), []store.Item{it}, n)
+	dtos, err := a.itemDTOs(ctx, []store.Item{it}, n, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1301,13 +1331,13 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 	// ledger read answers the one fact the route serves. The route never
 	// carries rec_score (the scored single-record route is getProgress);
 	// the stamp is unconditional on the wire even where the score is not.
-	facts, err := a.recsFactsFor(r.Context())
+	facts, err := a.recsFactsFor(ctx, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
 	dto.Watched = facts.completed(id)
-	extras, err := a.deps.Store.ListItemParsers(r.Context(), id)
+	extras, err := a.deps.Store.ListItemParsers(ctx, id, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1366,7 +1396,10 @@ func (a *app) itemMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	it, err := a.deps.Store.GetItem(r.Context(), id)
+	// The caller's scope (6.2): an item outside the requesting viewer's
+	// visible set is an unknown item — the same 404 shape as a missing row.
+	v, ctx := a.viewerFor(r)
+	it, err := a.deps.Store.GetItem(ctx, id, v)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "item "+id+" not found", false)
@@ -1533,7 +1566,10 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
 	}
-	series, err := a.deps.Store.QuerySeries(r.Context(), id, "")
+	// The caller's scope (6.2): the series set, the episode facts, and the
+	// watched stamps all ride the requesting viewer.
+	v, ctx := a.viewerFor(r)
+	series, err := a.deps.Store.QuerySeries(ctx, id, "", v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1541,12 +1577,12 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 	// The display-naming namer is per-library: the naming options off the
 	// library row plus the whole-series map the composed names join against.
 	// A read failure is a real failure → 500, like any other store read here.
-	n, err := a.namerFor(r.Context(), id)
+	n, err := a.namerFor(ctx, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dtos, err := a.seriesDTOs(r.Context(), series, n)
+	dtos, err := a.seriesDTOs(ctx, series, n, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1556,12 +1592,12 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		// library unpaged, so the full set scores directly — no window. The
 		// per-series context facts ride one batched episode read grouped by
 		// the parsed series anchor.
-		facts, err := a.recsFactsFor(r.Context())
+		facts, err := a.recsFactsFor(ctx, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
-		eps, err := a.libraryEpisodes(r.Context(), id)
+		eps, err := a.libraryEpisodes(ctx, v, id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -1589,13 +1625,13 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		// absent exactly as today) and the store's path order untouched (a
 		// field stamp never reorders). The same all-episodes law reads the
 		// set: a series stamps only when every backing episode is in it.
-		done, err := a.deps.Store.ListWatched(r.Context())
+		done, err := a.deps.Store.ListWatched(ctx, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
 		watched := watchedSet(done)
-		eps, err := a.libraryEpisodes(r.Context(), id)
+		eps, err := a.libraryEpisodes(ctx, v, id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -1613,8 +1649,8 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 // batched-read rule bars per-series episode queries) and groups the rows by
 // their parsed series anchor: the per-series started/new-episode facts the
 // series scoring composes from.
-func (a *app) libraryEpisodes(ctx context.Context, libraryID int64) (map[string][]store.Item, error) {
-	items, err := a.allFilteredItems(ctx, libraryID, "", "", false)
+func (a *app) libraryEpisodes(ctx context.Context, v access.Viewer, libraryID int64) (map[string][]store.Item, error) {
+	items, err := a.allFilteredItems(ctx, v, libraryID, "", "", false)
 	if err != nil {
 		return nil, err
 	}
@@ -1639,7 +1675,10 @@ func (a *app) libraryEpisodes(ctx context.Context, libraryID int64) (map[string]
 // @Failure      500 {object} errorBody
 func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	sr, err := a.deps.Store.GetSeries(r.Context(), id)
+	// The caller's scope (6.2): the row read and the backing-episode read ride
+	// the requesting viewer — a series outside the visible set is unknown.
+	v, ctx := a.viewerFor(r)
+	sr, err := a.deps.Store.GetSeries(ctx, id, v)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "series "+id+" not found", false)
@@ -1651,14 +1690,14 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 	// Display-naming namer (display-naming 3.1): built off the series' own
 	// library so the detail view carries the same display_name the list
 	// serves. A read failure is a real failure → 500.
-	n, err := a.namerFor(r.Context(), sr.LibraryID)
+	n, err := a.namerFor(ctx, sr.LibraryID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
 	// The same batched conversion the listing runs — one row through it —
 	// so the detail view composes exactly what the grid served.
-	dtos, err := a.seriesDTOs(r.Context(), []store.Series{sr}, n)
+	dtos, err := a.seriesDTOs(ctx, []store.Series{sr}, n, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1668,12 +1707,12 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 	// stamps the all-episodes law over the series' backing episodes (one
 	// batched store read). A partially-watched or episode-less series stamps
 	// nothing (true-only omitempty).
-	facts, err := a.recsFactsFor(r.Context())
+	facts, err := a.recsFactsFor(ctx, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	eps, err := a.deps.Store.QueryItemsBySeries(r.Context(), sr, seriesBacking(sr.Document))
+	eps, err := a.deps.Store.QueryItemsBySeries(ctx, sr, seriesBacking(sr.Document), v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1703,7 +1742,10 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 // @Failure      500 {object} errorBody
 func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	sr, err := a.deps.Store.GetSeries(r.Context(), id)
+	// The caller's scope (6.2): the series row, its episodes, and the ledger
+	// facts all ride the requesting viewer.
+	v, ctx := a.viewerFor(r)
+	sr, err := a.deps.Store.GetSeries(ctx, id, v)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "series "+id+" not found", false)
@@ -1712,7 +1754,7 @@ func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	items, err := a.deps.Store.QueryItemsBySeries(r.Context(), sr, seriesBacking(sr.Document))
+	items, err := a.deps.Store.QueryItemsBySeries(ctx, sr, seriesBacking(sr.Document), v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1720,12 +1762,12 @@ func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 	// Display-naming namer (display-naming 3.1), built off the series' own
 	// library — the episodes' composed names join against this library's
 	// naming options and series map. A read failure is a real failure → 500.
-	n, err := a.namerFor(r.Context(), sr.LibraryID)
+	n, err := a.namerFor(ctx, sr.LibraryID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	dtos, err := a.itemDTOs(r.Context(), items, n)
+	dtos, err := a.itemDTOs(ctx, items, n, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1734,7 +1776,7 @@ func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 	// same recsFactsFor composition the single-item route runs — each row
 	// stamps from the batched ledger facts. Narrative order stays (a field
 	// stamp never reorders) and the route serves no rec_score.
-	facts, err := a.recsFactsFor(r.Context())
+	facts, err := a.recsFactsFor(ctx, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1835,7 +1877,7 @@ func parsePathFilter(r *http.Request) (pathPrefix string, topLevel bool, bad str
 // the row's own, so a series rename reaches the composed name while the
 // item's own override still wins. A store failure on any override read
 // propagates (500 at the call site).
-func (a *app) itemDTOs(ctx context.Context, items []store.Item, n namer) ([]itemDTO, error) {
+func (a *app) itemDTOs(ctx context.Context, items []store.Item, n namer, mutes map[string]bool) ([]itemDTO, error) {
 	rows := make([]artRow, len(items))
 	for i, it := range items {
 		rows[i] = artRow{id: it.ID, path: it.RelativePath, doc: it.Document}
@@ -1850,9 +1892,12 @@ func (a *app) itemDTOs(ctx context.Context, items []store.Item, n namer) ([]item
 		libID = items[0].LibraryID
 	}
 	seriesOf := func(ctx context.Context) ([]store.Series, error) {
-		return a.deps.Store.QuerySeries(ctx, libID, "")
+		return a.deps.Store.QuerySeries(ctx, libID, "", access.System())
 	}
-	artwork, err := a.artworkFor(ctx, artKindItem, rows, n, seriesOf)
+	// The mute floor (10.3): mutes is the calling Viewer's ChainMutes,
+	// threaded in by the handler — a source muted for this viewer composes
+	// no artwork in this response; storage and other viewers are untouched.
+	artwork, err := a.artworkFor(ctx, artKindItem, rows, n, seriesOf, mutes)
 	if err != nil {
 		return nil, err
 	}
@@ -1926,12 +1971,12 @@ func toLibraryDTO(l store.Library) libraryDTO {
 // handler (display-naming 3.1 — the same seam stamps title_override per
 // row). A store failure on any override read propagates (500 at the call
 // site).
-func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n namer) ([]seriesDTO, error) {
+func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n namer, mutes map[string]bool) ([]seriesDTO, error) {
 	rows := make([]artRow, len(srs))
 	for i, sr := range srs {
 		rows[i] = artRow{id: sr.ID, doc: sr.Document}
 	}
-	artwork, err := a.artworkFor(ctx, artKindSeries, rows, n, nil) // the series leg owns no fallback — absence is honest
+	artwork, err := a.artworkFor(ctx, artKindSeries, rows, n, nil, mutes) // mutes floor per viewer (10.3); the series leg owns no fallback — absence is honest
 	if err != nil {
 		return nil, err
 	}

@@ -5,10 +5,15 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
+	"encoding/hex"
+	"errors"
 	"net/http"
 
-	"github.com/mellifera/mellifera/internal/pairing"
+	"github.com/mellifera/mellifera/internal/identity"
+	"github.com/mellifera/mellifera/internal/store"
 )
 
 // principalKey is the unexported context key for the resolved Principal. It is
@@ -24,19 +29,50 @@ func principalFromContext(ctx context.Context) (Principal, bool) {
 	return p, ok
 }
 
+// requestPrincipal is the raw-principal IDENTITY-FACTS seam for /profile
+// (task 8.1 — its sole consumer): the one read outside the auth chain that
+// needs the credential itself rather than a resolved authority scope. The
+// Viewer cannot serve the profile's facts — access.Admin() zeroes UserID,
+// so an admin-role session is indistinguishable there from the env admin —
+// and /profile derives NO authority from what this returns: viewerFor's
+// stashed Viewer stays the only authority translation, and profile.go's
+// kind switch decides only WHICH identity facts to serve. It forwards to
+// principalFromContext and exists so the raw-principal symbol stays inside
+// the auth seam files (the 6.4 placement rule) while its named consumer
+// reads the principal through this documented accessor.
+func requestPrincipal(r *http.Request) (Principal, bool) {
+	return principalFromContext(r.Context())
+}
+
+// sessionAdminRole is the users.role literal that projects a session principal
+// onto RoleAdmin (D11 — roles project, never fork; no new Role constant). The
+// CHECK-guarded pair lives in identity as unexported constants; api reads the
+// same literal without importing them (Session.Role is the documented
+// "user" | "admin" vocabulary).
+const sessionAdminRole = "admin"
+
 // authMiddleware returns a chi-style middleware that resolves a Principal from
-// an `Authorization: Bearer <credential>` header in two branches: the admin
-// token (constant-time compare) resolves Principal{Role: RoleAdmin}; on that
-// miss, devices.LookupToken (device pairing's SHA-256 store lookup) resolves
-// Principal{Role: RoleClient}. On a full miss (no header, wrong scheme, wrong
-// token, nil service) it writes a 401 canonical body and does NOT invoke next —
-// so no handler ever runs without a resolved Principal (authN; S-roles).
-// authMiddleware is the authN layer; per-route authZ lives in requireRole (run
-// after authMiddleware, inside the route group). A request that already
-// carries a Principal skips authN — the seam the role-gating test's
-// synthetic-principal injector rides (mounted ahead of this middleware on the
-// test router; no production chain sets a Principal before authN runs).
-func authMiddleware(token string, devices *pairing.Service) func(http.Handler) http.Handler {
+// an `Authorization: Bearer <credential>` header. The chain, in order:
+//
+//  1. the admin token (constant-time compare) → Principal{Role: RoleAdmin};
+//  2. a credentials kind='device' row (store lookup by the bearer's SHA-256,
+//     l6-accounts 7.1) → Principal{Role: RoleClient, UserID: bound user} —
+//     UserID 0 is the unbound device, today's see-all posture; a bound row
+//     carries its user so viewerFor resolves that user's grant scope;
+//  3. a credentials kind='session' row → identity.VerifySession (the owning
+//     user's facts, the disabled flag RE-CHECKED — fail closed) projected
+//     onto the existing roles: an admin-role user's session resolves
+//     RoleAdmin, every other session RoleClient; UserID always carried (D11).
+//
+// On a full miss (no header, wrong scheme, unknown token, disabled user,
+// nil store/service) it writes a 401 canonical body and does NOT invoke
+// next — so no handler ever runs without a resolved Principal (authN;
+// S-roles). authMiddleware is the authN layer; per-route authZ lives in
+// requireRole (run after authMiddleware, inside the route group). A request
+// that already carries a Principal skips authN — the seam the role-gating
+// test's synthetic-principal injector rides (mounted ahead of this middleware
+// on the test router; no production chain sets a Principal before authN runs).
+func authMiddleware(token string, st *store.Store, id *identity.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if _, ok := principalFromContext(r.Context()); ok {
@@ -45,18 +81,30 @@ func authMiddleware(token string, devices *pairing.Service) func(http.Handler) h
 			}
 			creds := bearerCredentials(r.Header.Get("Authorization"))
 			if creds == "" || subtle.ConstantTimeCompare([]byte(creds), []byte(token)) != 1 {
-				// Not the admin token: is it a minted device token?
-				if devices != nil {
-					ok, err := devices.LookupToken(r.Context(), creds)
-					if err != nil {
-						writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
-						return
-					}
-					if ok {
-						ctx := context.WithValue(r.Context(), principalKey{}, Principal{Role: RoleClient})
-						next.ServeHTTP(w, r.WithContext(ctx))
-						return
-					}
+				// Not the admin token: resolve against the credentials store.
+				// Device leg first (the older credential class; token_hash is
+				// UNIQUE across kinds, so at most one row can match either
+				// way — the order never double-resolves). A resolver error is
+				// a real failure, not a miss: 500, never 401.
+				p, ok, err := devicePrincipal(r.Context(), st, creds)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+					return
+				}
+				if ok {
+					ctx := context.WithValue(r.Context(), principalKey{}, p)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+				p, ok, err = sessionPrincipal(r.Context(), id, creds)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+					return
+				}
+				if ok {
+					ctx := context.WithValue(r.Context(), principalKey{}, p)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
 				}
 				writeError(w, http.StatusUnauthorized, "unauthenticated",
 					"missing or invalid admin token", false)
@@ -66,6 +114,66 @@ func authMiddleware(token string, devices *pairing.Service) func(http.Handler) h
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// devicePrincipal resolves the bearer against credentials kind='device'
+// (the SHA-256 discipline, re-derived here per the repo's rule that the
+// hash helpers are never imported across packages). A hit yields the
+// RoleClient principal with the row's bound user on UserID (0 = unbound —
+// the device keeps today's see-all posture downstream); a miss reports
+// ok=false so the chain falls through. A store outage is NOT a miss: it
+// reports the error and the middleware 500s (fail closed, mirroring the
+// old LookupToken error shape).
+func devicePrincipal(ctx context.Context, st *store.Store, creds string) (Principal, bool, error) {
+	if st == nil || creds == "" {
+		return Principal{}, false, nil
+	}
+	tok, err := st.LookupDeviceCredentialByHash(ctx, hashBearerToken(creds))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Principal{}, false, nil
+	}
+	if err != nil {
+		return Principal{}, false, err
+	}
+	return Principal{Role: RoleClient, UserID: tok.UserID}, true, nil
+}
+
+// sessionPrincipal resolves the bearer against identity's session store
+// (credentials kind='session' JOIN users — VerifySession re-checks the
+// disabled flag, so a disabled user's session fails closed here). The hit
+// projects the owning user's role onto the existing constants (D11): an
+// admin-role user's session is an admin-capable principal, everything else
+// stays RoleClient. UserID carries the owning user's row id as principal
+// facts either way — viewerFor's IsAdmin leg answers the admin-role session
+// with the all-seeing Admin scope (ResolveViewer's own isAdmin short-circuit
+// is the identical resolution), and the non-admin session resolves the
+// user's grant union from it. A miss (unknown, revoked, disabled —
+// VerifySession folds them into one sql.ErrNoRows shape) reports ok=false
+// and the chain 401s; any other error bubbles.
+func sessionPrincipal(ctx context.Context, id *identity.Service, creds string) (Principal, bool, error) {
+	if id == nil || creds == "" {
+		return Principal{}, false, nil
+	}
+	sess, err := id.VerifySession(ctx, creds)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Principal{}, false, nil
+	}
+	if err != nil {
+		return Principal{}, false, err
+	}
+	role := RoleClient
+	if sess.Role == sessionAdminRole {
+		role = RoleAdmin
+	}
+	return Principal{Role: role, UserID: sess.UserID}, true, nil
+}
+
+// hashBearerToken is the bearer credential's only form at rest: SHA-256 hex
+// — the pairing hashToken / identity hashSessionToken discipline re-derived
+// here, never imported (the repo's stated rule for the hash helpers).
+func hashBearerToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 // requireRole returns a chi-style middleware that enforces per-route authZ. It

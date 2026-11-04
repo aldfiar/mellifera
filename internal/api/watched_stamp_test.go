@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // The watched-states 1.1 duty: the additive watched stamp on every serving
@@ -29,7 +31,7 @@ func TestWatchedItemStamp(t *testing.T) {
 	// first, so a sort=path stamp cannot be an order accident.
 	plainFilm := seedRecsItem(t, st, lib, "wst_pf", "a-plain.mkv", map[string]any{}, time.Time{})
 	watchedFilm := seedRecsItem(t, st, lib, "wst_wf", "b-watched.mkv", map[string]any{}, time.Time{})
-	if err := st.InsertWatched(ctx, watchedFilm.ID, lib, "", time.Now().UTC()); err != nil {
+	if err := st.InsertWatched(ctx, watchedFilm.ID, lib, "", time.Now().UTC(), access.System()); err != nil {
 		t.Fatalf("InsertWatched film: %v", err)
 	}
 	// A series with one ledgered and one fresh episode — the episode table
@@ -37,17 +39,17 @@ func TestWatchedItemStamp(t *testing.T) {
 	show := seedRecsSeries(t, st, lib, "wshow", recsSeriesDoc("WShow"))
 	epWatched := seedRecsItem(t, st, lib, "wst_e1", "wshow/e1.mkv", recsEpisodeDoc("wshow", ""), time.Time{})
 	epFresh := seedRecsItem(t, st, lib, "wst_e2", "wshow/e2.mkv", recsEpisodeDoc("wshow", ""), time.Time{})
-	if err := st.InsertWatched(ctx, epWatched.ID, lib, "wshow", time.Now().UTC()); err != nil {
+	if err := st.InsertWatched(ctx, epWatched.ID, lib, "wshow", time.Now().UTC(), access.System()); err != nil {
 		t.Fatalf("InsertWatched episode: %v", err)
 	}
 	// The progress surface: the watched episode's row keeps its positive
 	// position beside the ledger row (the detector writes the ledger beside
 	// the position), and the plain film carries an unwatched row — so the
 	// scored default rail serves exactly one watched and one unwatched row.
-	if _, err := st.PutProgress(ctx, epWatched.ID, 300); err != nil {
+	if _, err := st.PutProgress(ctx, epWatched.ID, 300, access.System()); err != nil {
 		t.Fatalf("PutProgress episode: %v", err)
 	}
-	if _, err := st.PutProgress(ctx, plainFilm.ID, 120); err != nil {
+	if _, err := st.PutProgress(ctx, plainFilm.ID, 120, access.System()); err != nil {
 		t.Fatalf("PutProgress film: %v", err)
 	}
 
@@ -253,13 +255,13 @@ func TestWatchedSeriesStamp(t *testing.T) {
 	// part above the tag-less, score-zero empty series and sinks full last.
 	for _, id := range []string{"wst_sf1", "wst_sf2"} {
 		seedRecsItem(t, st, lib, id, "wshow-f/"+id+".mkv", recsEpisodeDoc("wshow-f", ""), time.Time{})
-		if err := st.InsertWatched(ctx, id, lib, "wshow-f", time.Now().UTC()); err != nil {
+		if err := st.InsertWatched(ctx, id, lib, "wshow-f", time.Now().UTC(), access.System()); err != nil {
 			t.Fatalf("InsertWatched %s: %v", id, err)
 		}
 	}
 	seedRecsItem(t, st, lib, "wst_sp1", "wshow-p/wst_sp1.mkv", recsEpisodeDoc("wshow-p", ""), time.Time{})
 	seedRecsItem(t, st, lib, "wst_sp2", "wshow-p/wst_sp2.mkv", recsEpisodeDoc("wshow-p", ""), time.Time{})
-	if err := st.InsertWatched(ctx, "wst_sp1", lib, "wshow-p", time.Now().UTC()); err != nil {
+	if err := st.InsertWatched(ctx, "wst_sp1", lib, "wshow-p", time.Now().UTC(), access.System()); err != nil {
 		t.Fatalf("InsertWatched wst_sp1: %v", err)
 	}
 
@@ -388,7 +390,7 @@ func TestProgressWatchedWithdrawal(t *testing.T) {
 	older := seedRecsItem(t, st, lib, "pww_o", "pww-o.mkv", map[string]any{}, time.Time{})
 	done := seedRecsItem(t, st, lib, "pww_d", "pww-d.mkv", map[string]any{}, time.Time{})
 	newer := seedRecsItem(t, st, lib, "pww_n", "pww-n.mkv", map[string]any{}, time.Time{})
-	if err := st.InsertWatched(ctx, done.ID, lib, "", time.Now().UTC()); err != nil {
+	if err := st.InsertWatched(ctx, done.ID, lib, "", time.Now().UTC(), access.System()); err != nil {
 		t.Fatalf("InsertWatched: %v", err)
 	}
 	for _, p := range []struct {
@@ -399,7 +401,7 @@ func TestProgressWatchedWithdrawal(t *testing.T) {
 		{done.ID, 100},
 		{newer.ID, 100},
 	} {
-		if _, err := st.PutProgress(ctx, p.id, p.pos); err != nil {
+		if _, err := st.PutProgress(ctx, p.id, p.pos, access.System()); err != nil {
 			t.Fatalf("PutProgress %s: %v", p.id, err)
 		}
 		time.Sleep(2 * time.Millisecond)

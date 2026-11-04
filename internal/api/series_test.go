@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -42,7 +43,7 @@ func seedSeries(t *testing.T, st *store.Store, libraryID int64, relPath, docJSON
 	}); err != nil {
 		t.Fatalf("PutSeries %s: %v", relPath, err)
 	}
-	got, err := st.GetSeriesByPath(context.Background(), libraryID, relPath)
+	got, err := st.GetSeriesByPath(context.Background(), libraryID, relPath, access.System())
 	if err != nil {
 		t.Fatalf("GetSeriesByPath %s: %v", relPath, err)
 	}

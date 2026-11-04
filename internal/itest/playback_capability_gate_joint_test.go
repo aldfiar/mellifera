@@ -58,6 +58,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/pack"
@@ -112,7 +113,7 @@ func gateNewServer(t *testing.T, w *pbWorld, enqueue func(string) error) string 
 		AdminToken: w.token,
 		Store:      w.st,
 		Playback: func(ctx context.Context, itemID string) (api.Playback, error) {
-			row, err := w.st.GetItem(ctx, itemID)
+			row, err := w.st.GetItem(ctx, itemID, access.System())
 			if err != nil {
 				return api.Playback{}, err
 			}
@@ -128,7 +129,7 @@ func gateNewServer(t *testing.T, w *pbWorld, enqueue func(string) error) string 
 			return api.Playback{Mode: mode, State: state, PlayURL: playURL, StateReason: stateReason, Codecs: codecs, Sections: sections, Voiceovers: voiceovers, Token: tok}, nil
 		},
 		Play: func(ctx context.Context, itemID string, retry bool, _ *float64) (bool, error) {
-			row, err := w.st.GetItem(ctx, itemID)
+			row, err := w.st.GetItem(ctx, itemID, access.System())
 			if err != nil {
 				return false, err // sql.ErrNoRows → 404 at the handler
 			}
@@ -204,7 +205,7 @@ func gateSeedItem(t *testing.T, w *pbWorld, libID int64, rel string) string {
 func gateFailItem(t *testing.T, w *pbWorld, itemID string) {
 	t.Helper()
 	ctx := context.Background()
-	row, err := w.st.GetItem(ctx, itemID)
+	row, err := w.st.GetItem(ctx, itemID, access.System())
 	if err != nil {
 		t.Fatalf("reload item %s: %v", itemID, err)
 	}
@@ -246,7 +247,7 @@ func gateGet(t *testing.T, w *pbWorld, baseURL, itemID string) ([]byte, gateDesc
 // store (disk/document truth, never the wire).
 func gateStreams(t *testing.T, w *pbWorld, itemID string) map[string]any {
 	t.Helper()
-	row, err := w.st.GetItem(context.Background(), itemID)
+	row, err := w.st.GetItem(context.Background(), itemID, access.System())
 	if err != nil {
 		t.Fatalf("re-read item %s: %v", itemID, err)
 	}

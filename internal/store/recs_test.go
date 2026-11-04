@@ -7,6 +7,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // recsStoreTests cover the recommendation-sorting store set: the idempotent
@@ -72,10 +74,10 @@ func TestInsertWatchedIdempotent(t *testing.T) {
 		first := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 		rewatch := first.Add(48 * time.Hour)
 
-		if err := s.InsertWatched(ctx, "it_1", 1, "serials/attack", first); err != nil {
+		if err := s.InsertWatched(ctx, "it_1", 1, "serials/attack", first, access.System()); err != nil {
 			t.Fatalf("first insert: %v", err)
 		}
-		if err := s.InsertWatched(ctx, "it_1", 1, "serials/attack", rewatch); err != nil {
+		if err := s.InsertWatched(ctx, "it_1", 1, "serials/attack", rewatch, access.System()); err != nil {
 			t.Fatalf("rewatch insert: %v", err)
 		}
 		if n := watchedRowCount(t, s, "it_1"); n != 1 {
@@ -94,7 +96,7 @@ func TestInsertWatchedIdempotent(t *testing.T) {
 		s := openStore(t)
 		ctx := context.Background()
 		at := time.Date(2026, 11, 1, 20, 0, 0, 0, time.UTC)
-		if err := s.InsertWatched(ctx, "film_1", 2, "", at); err != nil {
+		if err := s.InsertWatched(ctx, "film_1", 2, "", at, access.System()); err != nil {
 			t.Fatalf("insert film watch: %v", err)
 		}
 		_, _, series := watchedRow(t, s, "film_1")
@@ -107,10 +109,10 @@ func TestInsertWatchedIdempotent(t *testing.T) {
 		s := openStore(t)
 		ctx := context.Background()
 		at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
-		if err := s.InsertWatched(ctx, "it_a", 1, "serials/attack", at); err != nil {
+		if err := s.InsertWatched(ctx, "it_a", 1, "serials/attack", at, access.System()); err != nil {
 			t.Fatalf("insert it_a: %v", err)
 		}
-		if err := s.InsertWatched(ctx, "it_b", 1, "serials/attack", at.Add(time.Minute)); err != nil {
+		if err := s.InsertWatched(ctx, "it_b", 1, "serials/attack", at.Add(time.Minute), access.System()); err != nil {
 			t.Fatalf("insert it_b: %v", err)
 		}
 		if n := watchedRowCount(t, s, ""); n != 2 {
@@ -129,13 +131,13 @@ func TestListUnappliedWatched(t *testing.T) {
 		t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
 		t1 := t0.Add(time.Hour)
 		t2 := t0.Add(2 * time.Hour)
-		if err := s.InsertWatched(ctx, "ep_2", 1, "serials/attack", t1); err != nil {
+		if err := s.InsertWatched(ctx, "ep_2", 1, "serials/attack", t1, access.System()); err != nil {
 			t.Fatalf("insert ep_2: %v", err)
 		}
-		if err := s.InsertWatched(ctx, "film_1", 2, "", t0); err != nil {
+		if err := s.InsertWatched(ctx, "film_1", 2, "", t0, access.System()); err != nil {
 			t.Fatalf("insert film_1: %v", err)
 		}
-		if err := s.InsertWatched(ctx, "ep_1", 1, "serials/attack", t2); err != nil {
+		if err := s.InsertWatched(ctx, "ep_1", 1, "serials/attack", t2, access.System()); err != nil {
 			t.Fatalf("insert ep_1: %v", err)
 		}
 		// One pass with cutoff t0: consumes film_1 only — ep_2 (t1) and ep_1
@@ -169,7 +171,7 @@ func TestListUnappliedWatched(t *testing.T) {
 		s := openStore(t)
 		ctx := context.Background()
 		t0 := time.Date(2026, 11, 1, 20, 0, 0, 0, time.UTC)
-		if err := s.InsertWatched(ctx, "film_1", 2, "", t0); err != nil {
+		if err := s.InsertWatched(ctx, "film_1", 2, "", t0, access.System()); err != nil {
 			t.Fatalf("insert film_1: %v", err)
 		}
 		_, _, seriesPaths, _, err := s.ListUnappliedWatched(ctx)
@@ -188,7 +190,7 @@ func TestListUnappliedWatched(t *testing.T) {
 		// Inserted out of order: c_last gets the earliest completion.
 		for i, id := range []string{"c_last", "a_first", "b_mid"} {
 			at := base.Add(time.Duration(2-i) * time.Minute)
-			if err := s.InsertWatched(ctx, id, 1, "serials/x", at); err != nil {
+			if err := s.InsertWatched(ctx, id, 1, "serials/x", at, access.System()); err != nil {
 				t.Fatalf("insert %s: %v", id, err)
 			}
 		}
@@ -233,13 +235,13 @@ func TestApplyTagWeightsTransaction(t *testing.T) {
 		t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
 		t1 := t0.Add(time.Hour)
 		t2 := t0.Add(2 * time.Hour)
-		if err := s.InsertWatched(ctx, "w_1", 1, "serials/attack", t0); err != nil {
+		if err := s.InsertWatched(ctx, "w_1", 1, "serials/attack", t0, access.System()); err != nil {
 			t.Fatalf("insert w_1: %v", err)
 		}
-		if err := s.InsertWatched(ctx, "w_2", 1, "serials/attack", t1); err != nil {
+		if err := s.InsertWatched(ctx, "w_2", 1, "serials/attack", t1, access.System()); err != nil {
 			t.Fatalf("insert w_2: %v", err)
 		}
-		if err := s.InsertWatched(ctx, "w_3", 1, "serials/attack", t2); err != nil {
+		if err := s.InsertWatched(ctx, "w_3", 1, "serials/attack", t2, access.System()); err != nil {
 			t.Fatalf("insert w_3: %v", err)
 		}
 
@@ -308,7 +310,7 @@ func TestApplyTagWeightsTransaction(t *testing.T) {
 		s := openStore(t)
 		ctx := context.Background()
 		t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
-		if err := s.InsertWatched(ctx, "film_1", 2, "", t0); err != nil {
+		if err := s.InsertWatched(ctx, "film_1", 2, "", t0, access.System()); err != nil {
 			t.Fatalf("insert film_1: %v", err)
 		}
 		if err := s.ApplyTagWeights(ctx, nil, t0); err != nil {

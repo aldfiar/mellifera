@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // TestStore_ItemParsers covers the item_parsers attachment control table
@@ -42,7 +44,7 @@ func TestStore_ItemParsers(t *testing.T) {
 		if err := s.SetItemParsers(ctx, "itm_7_a", want); err != nil {
 			t.Fatalf("SetItemParsers: %v", err)
 		}
-		got, err := s.ListItemParsers(ctx, "itm_7_a")
+		got, err := s.ListItemParsers(ctx, "itm_7_a", access.System())
 		if err != nil {
 			t.Fatalf("ListItemParsers: %v", err)
 		}
@@ -61,7 +63,7 @@ func TestStore_ItemParsers(t *testing.T) {
 		if err := s.SetItemParsers(ctx, "itm_7_b", []string{"tmdb", "anitomy"}); err != nil {
 			t.Fatalf("SetItemParsers #2: %v", err)
 		}
-		got, err := s.ListItemParsers(ctx, "itm_7_b")
+		got, err := s.ListItemParsers(ctx, "itm_7_b", access.System())
 		if err != nil {
 			t.Fatalf("ListItemParsers: %v", err)
 		}
@@ -71,7 +73,7 @@ func TestStore_ItemParsers(t *testing.T) {
 		if err := s.SetItemParsers(ctx, "itm_7_b", nil); err != nil {
 			t.Fatalf("SetItemParsers clear: %v", err)
 		}
-		if got, err := s.ListItemParsers(ctx, "itm_7_b"); err != nil || len(got) != 0 {
+		if got, err := s.ListItemParsers(ctx, "itm_7_b", access.System()); err != nil || len(got) != 0 {
 			t.Fatalf("after clear: ListItemParsers = %v, err = %v, want empty", got, err)
 		}
 	})
@@ -94,7 +96,7 @@ func TestStore_ItemParsers(t *testing.T) {
 		// row's id — the attachment is keyed to the id, so it must survive
 		// with a refreshed document untouched by the attachment write.
 		putItem(t, s, "itm_7_c", "fc")
-		got, err := s.ListItemParsers(ctx, "itm_7_c")
+		got, err := s.ListItemParsers(ctx, "itm_7_c", access.System())
 		if err != nil {
 			t.Fatalf("ListItemParsers after re-scan: %v", err)
 		}
@@ -110,7 +112,7 @@ func TestStore_ItemParsers(t *testing.T) {
 		if err := s.SetItemParsers(ctx, "itm_7_d", []string{"anitomy"}); err != nil {
 			t.Fatalf("SetItemParsers: %v", err)
 		}
-		got, err := s.ListItemParsers(ctx, "itm_7_e")
+		got, err := s.ListItemParsers(ctx, "itm_7_e", access.System())
 		if err != nil {
 			t.Fatalf("ListItemParsers sibling: %v", err)
 		}
@@ -129,7 +131,7 @@ func TestStore_ItemParsers(t *testing.T) {
 		// identity. The new item starts with NO attachments (identity-keyed,
 		// nothing copied across identities).
 		putItem(t, s, "itm_7_new", "f_new")
-		got, err := s.ListItemParsers(ctx, "itm_7_new")
+		got, err := s.ListItemParsers(ctx, "itm_7_new", access.System())
 		if err != nil {
 			t.Fatalf("ListItemParsers re-identified: %v", err)
 		}
@@ -142,7 +144,7 @@ func TestStore_ItemParsers(t *testing.T) {
 		if _, err := s.db.ExecContext(ctx, "DELETE FROM items WHERE id = ?", "itm_7_old"); err != nil {
 			t.Fatalf("remove old item row: %v", err)
 		}
-		got, err = s.ListItemParsers(ctx, "itm_7_old")
+		got, err = s.ListItemParsers(ctx, "itm_7_old", access.System())
 		if err != nil {
 			t.Fatalf("ListItemParsers removed item: %v", err)
 		}

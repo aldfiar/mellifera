@@ -30,6 +30,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -59,7 +60,7 @@ func TestQA_SQLInjection(t *testing.T) {
 	qaRequireTable(t, s, "items")
 	qaRequireTable(t, s, "libraries")
 
-	got, err := s.GetLibrary(ctx, libID)
+	got, err := s.GetLibrary(ctx, libID, access.System())
 	if err != nil {
 		t.Fatalf("GetLibrary: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestQA_SQLInjection(t *testing.T) {
 	qaRequireTable(t, s, "items")
 	qaRequireTable(t, s, "libraries")
 
-	back, err := s.GetItem(ctx, it.ID)
+	back, err := s.GetItem(ctx, it.ID, access.System())
 	if err != nil {
 		t.Fatalf("GetItem: %v", err)
 	}
@@ -156,7 +157,7 @@ func TestQA_Store_WAL_ConcurrentReadersDuringWrite(t *testing.T) {
 					return
 				default:
 				}
-				items, qerr := s.QueryItems(ctx, libID, "", "", false, 100, 0)
+				items, qerr := s.QueryItems(ctx, libID, "", "", false, 100, 0, access.System())
 				if qerr != nil {
 					readerErr.Store(qerr.Error())
 					return

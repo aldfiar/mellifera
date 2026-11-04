@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -64,7 +65,7 @@ func TestLibraryCreateDescription(t *testing.T) {
 		if lr.Description != "Seasonal shows" {
 			t.Fatalf("DTO description = %q, want %q", lr.Description, "Seasonal shows")
 		}
-		lib, err := st.GetLibrary(ctx, lr.ID)
+		lib, err := st.GetLibrary(ctx, lr.ID, access.System())
 		if err != nil {
 			t.Fatalf("GetLibrary: %v", err)
 		}
@@ -87,7 +88,7 @@ func TestLibraryCreateDescription(t *testing.T) {
 		if lr.Description != "" {
 			t.Fatalf("DTO description = %q, want \"\"", lr.Description)
 		}
-		lib, err := st.GetLibrary(ctx, lr.ID)
+		lib, err := st.GetLibrary(ctx, lr.ID, access.System())
 		if err != nil {
 			t.Fatalf("GetLibrary: %v", err)
 		}
@@ -213,7 +214,7 @@ func TestLibraryPatchImmutable(t *testing.T) {
 				t.Fatalf("error body = %+v, want bad_request/non-retryable", eb.Error)
 			}
 			// The row is untouched.
-			lib, err := st.GetLibrary(context.Background(), id)
+			lib, err := st.GetLibrary(context.Background(), id, access.System())
 			if err != nil {
 				t.Fatalf("GetLibrary: %v", err)
 			}

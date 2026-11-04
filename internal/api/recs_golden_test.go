@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -34,7 +35,7 @@ func seedGoldenPhotoItem(t *testing.T, st *store.Store, libraryID int64, id, rel
 	}); err != nil {
 		t.Fatalf("PutItem %s: %v", id, err)
 	}
-	got, err := st.GetItem(context.Background(), id)
+	got, err := st.GetItem(context.Background(), id, access.System())
 	if err != nil {
 		t.Fatalf("GetItem %s: %v", id, err)
 	}
@@ -74,7 +75,7 @@ func TestGoldenStartedSerialTopsGrid(t *testing.T) {
 	cc := seedRecsSeries(t, st, lib, "cc-backlog", recsSeriesDoc("Backlog C"))
 	ongoing := seedRecsSeries(t, st, lib, "dd-ongoing", recsSeriesDoc("Ongoing"))
 	epStarted := seedRecsItem(t, st, lib, "gld_s1", "dd-ongoing/e1.mkv", recsEpisodeDoc("dd-ongoing", ""), time.Now().AddDate(0, 0, -40))
-	if _, err := st.PutProgress(ctx, epStarted.ID, 300); err != nil {
+	if _, err := st.PutProgress(ctx, epStarted.ID, 300, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 	// The fresh entry: discovered this week, unwatched — the 1500 stack
@@ -134,17 +135,17 @@ func TestGoldenCompletedSkipsResumeBonus(t *testing.T) {
 		"_view":   map[string]any{"title": map[string]any{"value": "Done"}},
 		"sources": map[string]any{recsMetaNS: map[string]any{"description": "d", "genres": []string{"action"}}},
 	}, time.Time{})
-	if _, err := st.PutProgress(ctx, done.ID, 5400); err != nil {
+	if _, err := st.PutProgress(ctx, done.ID, 5400, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
-	if err := st.InsertWatched(ctx, done.ID, lib, "", time.Now().UTC()); err != nil {
+	if err := st.InsertWatched(ctx, done.ID, lib, "", time.Now().UTC(), access.System()); err != nil {
 		t.Fatalf("InsertWatched: %v", err)
 	}
 	// The mid-media film: a positive position, never completed.
 	mid := seedRecsItem(t, st, lib, "gld_mid", "mid.mkv", map[string]any{
 		"_view": map[string]any{"title": map[string]any{"value": "Mid"}},
 	}, time.Time{})
-	if _, err := st.PutProgress(ctx, mid.ID, 300); err != nil {
+	if _, err := st.PutProgress(ctx, mid.ID, 300, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 	// A plain film: no facts, no tags — the floor the completed film's tag
@@ -198,14 +199,14 @@ func TestGoldenPhotoLibraryKeepsPathOrder(t *testing.T) {
 	seedGoldenPhotoItem(t, st, photoLib, "gld_p1", "IMG_0001.jpg", "Alpha")
 	seedGoldenPhotoItem(t, st, photoLib, "gld_p2", "IMG_0002.jpg", "Beta")
 	zulu := seedGoldenPhotoItem(t, st, photoLib, "gld_p3", "IMG_0003.jpg", "Zulu")
-	if _, err := st.PutProgress(ctx, zulu.ID, 42); err != nil {
+	if _, err := st.PutProgress(ctx, zulu.ID, 42, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 	// The scored sibling: the same shape in a serial-module library — its
 	// progress item MUST still top the grid (the carve-out is per-library).
 	scoredPlain := seedRecsItem(t, st, lib, "gld_g1", "gamma-a.mkv", map[string]any{}, time.Time{})
 	scoredTop := seedRecsItem(t, st, lib, "gld_g2", "gamma-b.mkv", map[string]any{}, time.Time{})
-	if _, err := st.PutProgress(ctx, scoredTop.ID, 700); err != nil {
+	if _, err := st.PutProgress(ctx, scoredTop.ID, 700, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 
@@ -256,7 +257,7 @@ func TestGoldenEpisodeTableNarrativeOrderUntouched(t *testing.T) {
 	// now-started series (500), e3 is plain.
 	seedRecsItem(t, st, lib, "gld_e1", "show/e1.mkv", recsEpisodeDoc("show", "Pilot"), time.Time{})
 	e2 := seedRecsItem(t, st, lib, "gld_e2", "show/e2.mkv", recsEpisodeDoc("show", "Second"), time.Now().AddDate(0, 0, -40))
-	if _, err := st.PutProgress(ctx, e2.ID, 100); err != nil {
+	if _, err := st.PutProgress(ctx, e2.ID, 100, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 	seedRecsItem(t, st, lib, "gld_e3", "show/e3.mkv", recsEpisodeDoc("show", "Third"), time.Time{})

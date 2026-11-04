@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -317,7 +318,7 @@ func TestEnrichFailures(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PutSeries: %v", err)
 	}
-	sr, err := st.GetSeriesByPath(ctx, libID, "Show.2022.S01")
+	sr, err := st.GetSeriesByPath(ctx, libID, "Show.2022.S01", access.System())
 	if err != nil {
 		t.Fatalf("GetSeriesByPath: %v", err)
 	}

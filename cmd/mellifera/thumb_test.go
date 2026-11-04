@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
@@ -37,7 +38,7 @@ type fakeThumbStore struct {
 	err  error
 }
 
-func (f *fakeThumbStore) GetItem(context.Context, string) (store.Item, error) {
+func (f *fakeThumbStore) GetItem(context.Context, string, access.Viewer) (store.Item, error) {
 	if f.err != nil {
 		return store.Item{}, f.err
 	}

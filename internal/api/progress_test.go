@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -134,7 +135,7 @@ func TestProgressListEndpoint(t *testing.T) {
 		ids[i] = "itm_list" + f
 	}
 	for _, id := range ids {
-		if _, err := st.PutProgress(ctx, id, 100); err != nil {
+		if _, err := st.PutProgress(ctx, id, 100, access.System()); err != nil {
 			t.Fatalf("PutProgress %s: %v", id, err)
 		}
 		time.Sleep(2 * time.Millisecond) // strictly later updated_at per write
@@ -212,7 +213,7 @@ func TestProgressOnProgress(t *testing.T) {
 			AdminToken: adminToken,
 			Store:      st,
 			OnProgress: func(ctx context.Context, id string, pos int64, completed bool) {
-				_, err := st.GetProgress(ctx, id)
+				_, err := st.GetProgress(ctx, id, access.System())
 				calls = append(calls, struct {
 					itemID   string
 					position int64
@@ -280,7 +281,7 @@ func TestListProgressLimit(t *testing.T) {
 	for i := 0; i < 105; i++ {
 		fileID := fmt.Sprintf("lim%03d", i)
 		seedItem(t, st, libID, fileID, fileID+".mkv")
-		if _, err := st.PutProgress(context.Background(), "itm_"+fileID, int64(i+1)); err != nil {
+		if _, err := st.PutProgress(context.Background(), "itm_"+fileID, int64(i+1), access.System()); err != nil {
 			t.Fatalf("PutProgress %s: %v", fileID, err)
 		}
 	}

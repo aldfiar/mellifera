@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
@@ -92,7 +93,7 @@ func TestNew_Routes(t *testing.T) {
 			t.Fatalf("libraryDTO = %+v", lr)
 		}
 		// The one domain call persisted: the library row is in the store.
-		lib, err := st.GetLibrary(context.Background(), lr.ID)
+		lib, err := st.GetLibrary(context.Background(), lr.ID, access.System())
 		if err != nil {
 			t.Fatalf("GetLibrary: %v", err)
 		}

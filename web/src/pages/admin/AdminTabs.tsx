@@ -4,12 +4,12 @@ import { NavLink } from "react-router-dom";
 
 import { cn } from "@/lib/utils";
 
-// AdminTabs — the tab row shared by the four admin surfaces (Collections
-// /admin, Sources /admin/sources, Plugins /admin/plugins, Pairing
-// /admin/pairing; device-pairing gains the fourth tab): one source of the
-// admin page list so the surfaces cannot drift apart. The active surface's
-// tab is highlighted; the Collections tab is exact (it would otherwise match
-// /admin/sources too).
+// AdminTabs — the tab row shared by the five admin surfaces (Collections
+// /admin, Accounts /admin/accounts, Sources /admin/sources, Plugins
+// /admin/plugins, Pairing /admin/pairing; accounts gains the fifth tab):
+// one source of the admin page list so the surfaces cannot drift apart. The
+// active surface's tab is highlighted; the Collections tab is exact (it
+// would otherwise match /admin/sources too).
 function AdminTab(props: { to: string; label: string }): ReactElement {
   return (
     <NavLink
@@ -33,6 +33,7 @@ export default function AdminTabs(): ReactElement {
   return (
     <nav className="flex gap-4" aria-label="Admin">
       <AdminTab to="/admin" label="Collections" />
+      <AdminTab to="/admin/accounts" label="Accounts" />
       <AdminTab to="/admin/sources" label="Sources" />
       <AdminTab to="/admin/plugins" label="Plugins" />
       <AdminTab to="/admin/pairing" label="Pairing" />

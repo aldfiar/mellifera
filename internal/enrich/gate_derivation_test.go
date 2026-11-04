@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -103,7 +104,7 @@ func TestGateDerivation(t *testing.T) {
 		if calls := atomic.LoadInt32(&tmdb.calls); calls != 0 {
 			t.Fatalf("gated tmdb drained %d Match calls before the enable, want 0", calls)
 		}
-		if it, err := s.GetItem(ctx, "i_wake"); err != nil || it.Status != statusEnriched {
+		if it, err := s.GetItem(ctx, "i_wake", access.System()); err != nil || it.Status != statusEnriched {
 			t.Fatalf("gated row disturbed pre-enable: status=%v err=%v", it.Status, err)
 		}
 
@@ -123,7 +124,7 @@ func TestGateDerivation(t *testing.T) {
 		if calls := atomic.LoadInt32(&parser.calls); calls != 0 {
 			t.Fatalf("tv-parser Match calls = %d, want 0 (namespace already carried)", calls)
 		}
-		it, err := s.GetItem(ctx, "i_wake")
+		it, err := s.GetItem(ctx, "i_wake", access.System())
 		if err != nil {
 			t.Fatalf("GetItem: %v", err)
 		}
@@ -173,7 +174,7 @@ func TestGateDerivation(t *testing.T) {
 		defer q.Stop()
 		q.Notify(ctx, libID)
 		assertNoMatch(t, tmdb, parser)
-		if it, err := s.GetItem(ctx, "i_done"); err != nil || it.Status != statusEnriched {
+		if it, err := s.GetItem(ctx, "i_done", access.System()); err != nil || it.Status != statusEnriched {
 			t.Fatalf("fully-enriched row disturbed by the wake: status=%v err=%v", it.Status, err)
 		}
 	})
@@ -214,7 +215,7 @@ func TestGateDerivation(t *testing.T) {
 		if calls := atomic.LoadInt32(&parser.calls); calls != 0 {
 			t.Fatalf("gated tv-parser ran %d Match calls on the wake, want 0", calls)
 		}
-		it, err := s.GetItem(ctx, "i_multi")
+		it, err := s.GetItem(ctx, "i_multi", access.System())
 		if err != nil {
 			t.Fatalf("GetItem: %v", err)
 		}

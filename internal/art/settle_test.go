@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -107,12 +108,12 @@ func TestSettleRepairStripsLegacyPlaceholderPoster(t *testing.T) {
 
 	// Pre-Settle state of both rows (identity timestamps + the stored doc).
 	var preSeries, preItem reloadedRow
-	sr, err := st.GetSeriesByPath(ctx, libID, "Fringe (2008)")
+	sr, err := st.GetSeriesByPath(ctx, libID, "Fringe (2008)", access.System())
 	if err != nil {
 		t.Fatalf("load stored series: %v", err)
 	}
 	preSeries = reloadedRow{sr.Document, sr.CreatedAt, sr.UpdatedAt}
-	it, err := st.GetItem(ctx, "itm_repair")
+	it, err := st.GetItem(ctx, "itm_repair", access.System())
 	if err != nil {
 		t.Fatalf("load stored item: %v", err)
 	}
@@ -128,11 +129,11 @@ func TestSettleRepairStripsLegacyPlaceholderPoster(t *testing.T) {
 		pre    reloadedRow
 	}{
 		{"series", func() (reloadedRow, error) {
-			sr, err := st.GetSeriesByPath(ctx, libID, "Fringe (2008)")
+			sr, err := st.GetSeriesByPath(ctx, libID, "Fringe (2008)", access.System())
 			return reloadedRow{sr.Document, sr.CreatedAt, sr.UpdatedAt}, err
 		}, preSeries},
 		{"item", func() (reloadedRow, error) {
-			it, err := st.GetItem(ctx, "itm_repair")
+			it, err := st.GetItem(ctx, "itm_repair", access.System())
 			return reloadedRow{it.Document, it.CreatedAt, it.UpdatedAt}, err
 		}, preItem},
 	}
@@ -243,7 +244,7 @@ func TestSettleRepairKeepsRealURLsByteIdentical(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("PutSeries %s: %v", tc.name, err)
 		}
-		sr, err := st.GetSeriesByPath(ctx, libID, tc.path)
+		sr, err := st.GetSeriesByPath(ctx, libID, tc.path, access.System())
 		if err != nil {
 			t.Fatalf("load stored %s: %v", tc.name, err)
 		}
@@ -267,7 +268,7 @@ func TestSettleRepairKeepsRealURLsByteIdentical(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PutSeries corrupt: %v", err)
 	}
-	srPre, err := st.GetSeriesByPath(ctx, libID, "corrupt/doc")
+	srPre, err := st.GetSeriesByPath(ctx, libID, "corrupt/doc", access.System())
 	if err != nil {
 		t.Fatalf("load stored corrupt series: %v", err)
 	}
@@ -279,7 +280,7 @@ func TestSettleRepairKeepsRealURLsByteIdentical(t *testing.T) {
 
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sr, err := st.GetSeriesByPath(ctx, libID, tc.path)
+			sr, err := st.GetSeriesByPath(ctx, libID, tc.path, access.System())
 			if err != nil {
 				t.Fatalf("reload: %v", err)
 			}
@@ -299,7 +300,7 @@ func TestSettleRepairKeepsRealURLsByteIdentical(t *testing.T) {
 		})
 	}
 
-	srGot, err := st.GetSeriesByPath(ctx, libID, "corrupt/doc")
+	srGot, err := st.GetSeriesByPath(ctx, libID, "corrupt/doc", access.System())
 	if err != nil {
 		t.Fatalf("reload corrupt series: %v", err)
 	}

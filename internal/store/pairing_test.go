@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -122,67 +124,270 @@ func TestPairingRequests(t *testing.T) {
 	})
 }
 
-// TestDeviceTokens covers the device_tokens credential table (device-pairing
-// D4/D6): insert + hash lookup round-trip, the UNIQUE token_hash, listing, and
-// delete = revoke (a deleted credential stops resolving; a second delete is
-// sql.ErrNoRows).
+// TestDeviceTokens covers the device-credential write/lookup path (accounts
+// 2.2/D6): InsertDeviceCredential lands a kind='device' row in credentials,
+// LookupDeviceCredentialByHash round-trips it (the credentials-backed lookup
+// the auth middleware's branch resolves through), and the UNIQUE token_hash
+// refuses a duplicate.
 func TestDeviceTokens(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
 	created := time.Date(2026, 10, 23, 13, 0, 0, 0, time.UTC)
-	tok := DeviceToken{ID: "dev_1", TokenHash: "hash-a", Code: "ABCD2345", CreatedAt: created}
 
 	t.Run("insert_lookup_roundtrip", func(t *testing.T) {
-		if err := s.InsertDeviceToken(ctx, tok); err != nil {
-			t.Fatalf("InsertDeviceToken: %v", err)
+		if err := s.InsertDeviceCredential(ctx, "hash-a", "ABCD2345", created); err != nil {
+			t.Fatalf("InsertDeviceCredential: %v", err)
 		}
-		got, err := s.LookupDeviceTokenByHash(ctx, "hash-a")
+		got, err := s.LookupDeviceCredentialByHash(ctx, "hash-a")
 		if err != nil {
-			t.Fatalf("LookupDeviceTokenByHash: %v", err)
+			t.Fatalf("LookupDeviceCredentialByHash: %v", err)
 		}
-		if got.ID != "dev_1" || got.TokenHash != "hash-a" || got.Code != "ABCD2345" || !got.CreatedAt.Equal(created) {
-			t.Fatalf("lookup = %+v, want dev_1/hash-a/ABCD2345 with stamp %v", got, created)
+		if got.TokenHash != "hash-a" || got.Code != "ABCD2345" || !got.CreatedAt.Equal(created) {
+			t.Fatalf("lookup = %+v, want hash-a/ABCD2345 with stamp %v", got, created)
+		}
+		// The id is the credentials rowid as a decimal string (the management
+		// key the admin device list shows and revoke deletes by).
+		if id, err := strconv.ParseInt(got.ID, 10, 64); err != nil || id <= 0 {
+			t.Fatalf("lookup id = %q, want a positive decimal rowid", got.ID)
 		}
 	})
 
 	t.Run("hash_unique", func(t *testing.T) {
-		dup := DeviceToken{ID: "dev_2", TokenHash: "hash-a", Code: "ABCD2345", CreatedAt: created}
-		if err := s.InsertDeviceToken(ctx, dup); err == nil {
-			t.Fatalf("InsertDeviceToken duplicate hash = nil, want UNIQUE violation")
-		}
-	})
-
-	t.Run("list_devices", func(t *testing.T) {
-		older := DeviceToken{ID: "dev_0", TokenHash: "hash-0", Code: "AAAA2222", CreatedAt: created.Add(-time.Minute)}
-		if err := s.InsertDeviceToken(ctx, older); err != nil {
-			t.Fatalf("InsertDeviceToken older: %v", err)
-		}
-		got, err := s.ListDevices(ctx)
-		if err != nil {
-			t.Fatalf("ListDevices: %v", err)
-		}
-		if len(got) != 2 || got[0].ID != "dev_0" || got[1].ID != "dev_1" {
-			t.Fatalf("ListDevices = %v, want [dev_0 dev_1] (oldest first)", deviceIDs(got))
-		}
-	})
-
-	t.Run("delete_revokes", func(t *testing.T) {
-		if err := s.DeleteDevice(ctx, "dev_1"); err != nil {
-			t.Fatalf("DeleteDevice: %v", err)
-		}
-		if _, err := s.LookupDeviceTokenByHash(ctx, "hash-a"); !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("lookup after delete = %v, want sql.ErrNoRows (revoked)", err)
-		}
-		if err := s.DeleteDevice(ctx, "dev_1"); !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("DeleteDevice repeat = %v, want sql.ErrNoRows (404 at api)", err)
+		if err := s.InsertDeviceCredential(ctx, "hash-a", "ABCD2345", created); err == nil {
+			t.Fatalf("InsertDeviceCredential duplicate hash = nil, want UNIQUE violation")
 		}
 	})
 
 	t.Run("unknown_hash_is_no_rows", func(t *testing.T) {
-		if _, err := s.LookupDeviceTokenByHash(ctx, "hash-none"); !errors.Is(err, sql.ErrNoRows) {
+		if _, err := s.LookupDeviceCredentialByHash(ctx, "hash-none"); !errors.Is(err, sql.ErrNoRows) {
 			t.Fatalf("lookup unknown hash = %v, want wrapped sql.ErrNoRows", err)
 		}
 	})
+
+	t.Run("empty_device_list_is_non_nil", func(t *testing.T) {
+		empty := openStore(t)
+		got, err := empty.ListDevices(ctx)
+		if err != nil {
+			t.Fatalf("ListDevices empty: %v", err)
+		}
+		if got == nil || len(got) != 0 {
+			t.Fatalf("ListDevices empty = %v, want non-nil empty slice", got)
+		}
+	})
+}
+
+// reopenStore opens a Store at a FIXED dsn (no cleanup — the caller closes it
+// to simulate a restart; the next call re-opens the same database file).
+func reopenStore(t *testing.T, dsn string) *Store {
+	t.Helper()
+	s, err := Open(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("Open %s: %v", dsn, err)
+	}
+	return s
+}
+
+// seedLegacyDeviceToken writes one device_tokens row the pre-accounts way,
+// simulating a database paired devices lived in before the credentials
+// migration ran.
+func seedLegacyDeviceToken(t *testing.T, ctx context.Context, s *Store, id, tokenHash, code string, createdAt time.Time) {
+	t.Helper()
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO device_tokens (id, token_hash, code, created_at)
+VALUES (?, ?, ?, ?)`,
+		id, tokenHash, code, formatTime(createdAt),
+	); err != nil {
+		t.Fatalf("seed device_tokens %s: %v", id, err)
+	}
+}
+
+// tableCount runs a COUNT(*) query and fails the test on error.
+func tableCount(t *testing.T, ctx context.Context, s *Store, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		t.Fatalf("count %q: %v", query, err)
+	}
+	return n
+}
+
+// TestDeviceTokenGuardedCopy covers the ONE-TIME GUARDED device_tokens →
+// credentials copy at Open (accounts 2.2/D6): the copy preserves the token
+// hashes verbatim (the SHA-256 discipline — the legacy token value still
+// authenticates), runs once (idempotent across boots — a rerun copies
+// nothing), and leaves the source table dormant (read by nothing, written by
+// nothing).
+func TestDeviceTokenGuardedCopy(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "legacy.db")
+	created := time.Date(2026, 10, 23, 13, 0, 0, 0, time.UTC)
+	legacy := []DeviceToken{
+		{ID: "dev_legacy_0", TokenHash: "hash-legacy-0", Code: "AAAA2222", CreatedAt: created.Add(-time.Minute)},
+		{ID: "dev_legacy_1", TokenHash: "hash-legacy-1", Code: "ABCD2345", CreatedAt: created},
+	}
+
+	// Phase 0 — a pre-migration database: Open once (the schema lands; the
+	// copy no-ops over an empty source), then write device_tokens rows the
+	// pre-accounts way. Credentials must still be empty.
+	s := reopenStore(t, dsn)
+	for _, tok := range legacy {
+		seedLegacyDeviceToken(t, ctx, s, tok.ID, tok.TokenHash, tok.Code, tok.CreatedAt)
+	}
+	if n := tableCount(t, ctx, s, "SELECT COUNT(*) FROM credentials WHERE kind = 'device'"); n != 0 {
+		t.Fatalf("pre-migration credentials device rows = %d, want 0", n)
+	}
+	s.Close()
+
+	// Boot 1 — the guarded copy runs: every legacy row becomes a
+	// kind='device' credential, hash-preserving.
+	s = reopenStore(t, dsn)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT token_hash, label, created_at, user_id, expires_at
+FROM credentials WHERE kind = 'device' ORDER BY created_at`)
+	if err != nil {
+		t.Fatalf("read copied credentials: %v", err)
+	}
+	defer rows.Close()
+	var copied []struct {
+		tokenHash, label, createdAt string
+		userID, expiresAt           sql.NullString
+	}
+	for rows.Next() {
+		var c struct {
+			tokenHash, label, createdAt string
+			userID, expiresAt           sql.NullString
+		}
+		if err := rows.Scan(&c.tokenHash, &c.label, &c.createdAt, &c.userID, &c.expiresAt); err != nil {
+			t.Fatalf("scan copied credential: %v", err)
+		}
+		copied = append(copied, c)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate copied credentials: %v", err)
+	}
+	if len(copied) != len(legacy) {
+		t.Fatalf("credentials device rows after copy = %d, want %d", len(copied), len(legacy))
+	}
+	for i, c := range copied {
+		want := legacy[i] // ORDER BY created_at matches the legacy order
+		if c.tokenHash != want.TokenHash {
+			t.Errorf("copied row %d token_hash = %q, want the verbatim legacy hash %q (never re-hashed)",
+				i, c.tokenHash, want.TokenHash)
+		}
+		if c.label != want.Code {
+			t.Errorf("copied row %d label = %q, want the approval code %q", i, c.label, want.Code)
+		}
+		gotStamp, err := parseTime(c.createdAt)
+		if err != nil || !gotStamp.Equal(want.CreatedAt) {
+			t.Errorf("copied row %d created_at = %v (%v), want the preserved stamp %v", i, c.createdAt, err, want.CreatedAt)
+		}
+		if c.userID.Valid {
+			t.Errorf("copied row %d user_id = %v, want NULL (unbound device)", i, c.userID.String)
+		}
+		if c.expiresAt.Valid {
+			t.Errorf("copied row %d expires_at = %v, want NULL (device tokens never expire)", i, c.expiresAt.String)
+		}
+	}
+
+	// The legacy token VALUE still authenticates: the credentials-backed
+	// lookup the middleware branch resolves through finds the copied hash.
+	if _, err := s.LookupDeviceCredentialByHash(ctx, "hash-legacy-1"); err != nil {
+		t.Fatalf("legacy token lookup after copy = %v, want it to resolve", err)
+	}
+
+	// The source table is dormant: untouched by the copy.
+	if n := tableCount(t, ctx, s, "SELECT COUNT(*) FROM device_tokens"); n != len(legacy) {
+		t.Fatalf("device_tokens rows after copy = %d, want %d (dormant, not swept)", n, len(legacy))
+	}
+	s.Close()
+
+	// Boot 2 — the rerun copies nothing: the guard is the hash itself.
+	s = reopenStore(t, dsn)
+	if n := tableCount(t, ctx, s, "SELECT COUNT(*) FROM credentials WHERE kind = 'device'"); n != len(legacy) {
+		t.Fatalf("credentials device rows after rerun = %d, want %d (idempotent — no duplicates)", n, len(legacy))
+	}
+	if n := tableCount(t, ctx, s, "SELECT COUNT(*) FROM device_tokens"); n != len(legacy) {
+		t.Fatalf("device_tokens rows after rerun = %d, want %d (still dormant)", n, len(legacy))
+	}
+	if _, err := s.LookupDeviceCredentialByHash(ctx, "hash-legacy-0"); err != nil {
+		t.Fatalf("legacy token lookup after rerun = %v, want it to resolve", err)
+	}
+	s.Close()
+}
+
+// TestDeviceManagementOnCredentials covers device MANAGEMENT over credentials
+// kind='device' (accounts 2.2/D6): the admin list shows migrated legacy rows
+// and post-migration mints alike (oldest first), both tokens resolve, revoke
+// deletes the credentials row so the token stops resolving (the middleware's
+// 401), a second revoke is sql.ErrNoRows (the api's 404) — and the dormant
+// device_tokens table is untouched by both the mint and the revoke.
+func TestDeviceManagementOnCredentials(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "mgmt.db")
+	created := time.Date(2026, 10, 23, 13, 0, 0, 0, time.UTC)
+
+	// A migrated device: seeded the pre-accounts way, copied at re-Open.
+	s := reopenStore(t, dsn)
+	seedLegacyDeviceToken(t, ctx, s, "dev_legacy", "hash-legacy", "AAAA2222", created)
+	s.Close()
+	s = reopenStore(t, dsn)
+	defer s.Close()
+
+	// A post-migration device: the pairing mint path writes credentials
+	// directly (InsertDeviceCredential).
+	if err := s.InsertDeviceCredential(ctx, "hash-new", "WXYZ6789", created.Add(time.Minute)); err != nil {
+		t.Fatalf("InsertDeviceCredential: %v", err)
+	}
+
+	// The list shows both — migrated and newly paired — oldest first.
+	toks, err := s.ListDevices(ctx)
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if len(toks) != 2 {
+		t.Fatalf("ListDevices = %v, want the migrated + the newly paired device", deviceIDs(toks))
+	}
+	if toks[0].Code != "AAAA2222" || !toks[0].CreatedAt.Equal(created) {
+		t.Fatalf("migrated device = %+v, want code AAAA2222 with the preserved stamp", toks[0])
+	}
+	if toks[1].Code != "WXYZ6789" {
+		t.Fatalf("newly paired device = %+v, want code WXYZ6789", toks[1])
+	}
+
+	// Both token values resolve at the data layer.
+	for _, hash := range []string{"hash-legacy", "hash-new"} {
+		if _, err := s.LookupDeviceCredentialByHash(ctx, hash); err != nil {
+			t.Fatalf("lookup %s = %v, want it to resolve", hash, err)
+		}
+	}
+
+	// Revoke the newly paired device: the credentials row is deleted, the
+	// token stops resolving (the middleware 401s it), the list shrinks.
+	newID := toks[1].ID
+	if err := s.DeleteDevice(ctx, newID); err != nil {
+		t.Fatalf("DeleteDevice: %v", err)
+	}
+	if _, err := s.LookupDeviceCredentialByHash(ctx, "hash-new"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("lookup after revoke = %v, want sql.ErrNoRows (token 401s)", err)
+	}
+	toks, err = s.ListDevices(ctx)
+	if err != nil || len(toks) != 1 || toks[0].Code != "AAAA2222" {
+		t.Fatalf("ListDevices after revoke = %v, %v; want only the migrated device", toks, err)
+	}
+
+	// The dormant source table: untouched by the mint AND the revoke.
+	if n := tableCount(t, ctx, s, "SELECT COUNT(*) FROM device_tokens"); n != 1 {
+		t.Fatalf("device_tokens rows = %d, want 1 (dormant — mint and revoke never touch it)", n)
+	}
+
+	// A twice-issued revoke and a malformed id both fail loudly (the api's
+	// 404), never silently.
+	if err := s.DeleteDevice(ctx, newID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("re-Revoke = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.DeleteDevice(ctx, "not-an-int"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DeleteDevice malformed id = %v, want sql.ErrNoRows", err)
+	}
 }
 
 // ids maps pairing rows to their ids for failure messages.

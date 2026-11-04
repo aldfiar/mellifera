@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -17,7 +18,7 @@ import (
 // store (the write-side truth the 400 shapes assert against).
 func namingColumns(t *testing.T, st *store.Store, id int64) (groupStyle, elementName string) {
 	t.Helper()
-	lib, err := st.GetLibrary(context.Background(), id)
+	lib, err := st.GetLibrary(context.Background(), id, access.System())
 	if err != nil {
 		t.Fatalf("GetLibrary: %v", err)
 	}

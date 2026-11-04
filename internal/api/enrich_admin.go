@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -128,7 +129,7 @@ func (a *app) libraryRefresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "refresh endpoint disabled", false)
 		return
 	}
-	if _, err := a.deps.Store.GetLibrary(r.Context(), id); err != nil {
+	if _, err := a.deps.Store.GetLibrary(r.Context(), id, access.System()); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
 			return
@@ -187,7 +188,7 @@ func (a *app) enrichPreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "preview endpoint disabled", false)
 		return
 	}
-	if _, err := a.deps.Store.GetLibrary(r.Context(), id); err != nil {
+	if _, err := a.deps.Store.GetLibrary(r.Context(), id, access.System()); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
 			return
@@ -297,14 +298,14 @@ func (a *app) writeFailureRows(w http.ResponseWriter, r *http.Request, rows []st
 // store failure (anything but sql.ErrNoRows) propagates: fail-fast, like
 // every other store read.
 func (a *app) resolveFailureRow(ctx context.Context, rowID string) (kind, title string, err error) {
-	it, err := a.deps.Store.GetItem(ctx, rowID)
+	it, err := a.deps.Store.GetItem(ctx, rowID, access.System())
 	switch {
 	case err == nil:
 		return "item", a.failureTitle(ctx, rowID, it.RelativePath), nil
 	case !errors.Is(err, sql.ErrNoRows):
 		return "", "", err
 	}
-	sr, err := a.deps.Store.GetSeries(ctx, rowID)
+	sr, err := a.deps.Store.GetSeries(ctx, rowID, access.System())
 	switch {
 	case err == nil:
 		return "series", a.failureTitle(ctx, rowID, sr.RelativePath), nil
@@ -337,7 +338,7 @@ func (a *app) notifyParsersChanged(r *http.Request, itemID string) {
 	if a.deps.OnParsersChanged == nil {
 		return
 	}
-	it, err := a.deps.Store.GetItem(r.Context(), itemID)
+	it, err := a.deps.Store.GetItem(r.Context(), itemID, access.System())
 	if err != nil {
 		return
 	}

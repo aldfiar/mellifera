@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -127,7 +128,7 @@ func TestParsersChanged(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 		}
-		parsers, err := st.ListItemParsers(ctx, "itm_wake")
+		parsers, err := st.ListItemParsers(ctx, "itm_wake", access.System())
 		if err != nil {
 			t.Fatalf("GetItemParsers: %v", err)
 		}

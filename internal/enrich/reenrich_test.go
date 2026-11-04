@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
@@ -224,7 +225,7 @@ func TestReenrichSource(t *testing.T) {
 		if stripped != 1 || deferred != 0 {
 			t.Fatalf("stripped=%d deferred=%d, want 1/0 (retry pass must reclaim the expired lease)", stripped, deferred)
 		}
-		it, err := s.GetItem(ctx, "i_hold")
+		it, err := s.GetItem(ctx, "i_hold", access.System())
 		if err != nil {
 			t.Fatalf("GetItem: %v", err)
 		}
@@ -252,7 +253,7 @@ func TestReenrichSource(t *testing.T) {
 		if stripped != 0 || deferred != 1 {
 			t.Fatalf("stripped=%d deferred=%d, want 0/1 (a held row is counted, never silently stripped)", stripped, deferred)
 		}
-		it, err := s.GetItem(ctx, "i_live")
+		it, err := s.GetItem(ctx, "i_live", access.System())
 		if err != nil {
 			t.Fatalf("GetItem: %v", err)
 		}

@@ -24,6 +24,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/recs"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -96,7 +97,11 @@ func (f recsFacts) completed(itemID string) bool {
 // recs.Score adds the base 1 itself — so the values pass straight into
 // recs.Weights. Keys re-fold on read through recs.NormalizeTag: the one tag
 // normalization (D1) guards the read side the way it guards the write.
-func (a *app) recsFactsFor(ctx context.Context) (recsFacts, error) {
+//
+// Both ledger reads are the CALLING VIEWER's (6.2): the caller's own slot
+// over its visible libraries — the tag weights stay the global learning
+// input (5.2's documented invariant), the ledger facts scope per viewer.
+func (a *app) recsFactsFor(ctx context.Context, v access.Viewer) (recsFacts, error) {
 	tags, weights, err := a.deps.Store.ListTagWeights(ctx)
 	if err != nil {
 		return recsFacts{}, err
@@ -105,7 +110,7 @@ func (a *app) recsFactsFor(ctx context.Context) (recsFacts, error) {
 	for i, tag := range tags {
 		w[recs.NormalizeTag(tag)] = float64(weights[i])
 	}
-	rows, err := a.deps.Store.ListProgress(ctx, progressScanBound)
+	rows, err := a.deps.Store.ListProgress(ctx, progressScanBound, v)
 	if err != nil {
 		return recsFacts{}, err
 	}
@@ -113,7 +118,7 @@ func (a *app) recsFactsFor(ctx context.Context) (recsFacts, error) {
 	for _, p := range rows {
 		progress[p.ItemID] = struct{}{}
 	}
-	doneIDs, err := a.deps.Store.ListWatched(ctx)
+	doneIDs, err := a.deps.Store.ListWatched(ctx, v)
 	if err != nil {
 		return recsFacts{}, err
 	}
@@ -188,10 +193,10 @@ func parseInclude(r *http.Request) (watched bool, bad string) {
 // input): a paging loop over QueryItems' id-ordered pages — the store has no
 // unwindowed read (limit <= 0 returns nil, items.go). The filters are exactly
 // listItems'; the RAM is one library's filtered rows.
-func (a *app) allFilteredItems(ctx context.Context, libraryID int64, status, pathPrefix string, topLevel bool) ([]store.Item, error) {
+func (a *app) allFilteredItems(ctx context.Context, v access.Viewer, libraryID int64, status, pathPrefix string, topLevel bool) ([]store.Item, error) {
 	var out []store.Item
 	for offset := 0; ; offset += itemsPage {
-		page, err := a.deps.Store.QueryItems(ctx, libraryID, status, pathPrefix, topLevel, itemsPage, offset)
+		page, err := a.deps.Store.QueryItems(ctx, libraryID, status, pathPrefix, topLevel, itemsPage, offset, v)
 		if err != nil {
 			return nil, err
 		}
@@ -472,11 +477,11 @@ func orderByScoreRecency(entries []progressScored) {
 // under its own item's library namer, built once per distinct library. The
 // item rows ride per-row point reads: the store has no batched items-by-id
 // read, and the one-row-per-item upsert contract bounds the walk.
-func (a *app) scoreProgress(ctx context.Context, rows []store.PlaybackProgress, f recsFacts) ([]float64, error) {
+func (a *app) scoreProgress(ctx context.Context, v access.Viewer, rows []store.PlaybackProgress, f recsFacts) ([]float64, error) {
 	items := make([]store.Item, len(rows))
 	byLib := make(map[int64][]int, len(rows))
 	for i, row := range rows {
-		it, err := a.deps.Store.GetItem(ctx, row.ItemID)
+		it, err := a.deps.Store.GetItem(ctx, row.ItemID, v)
 		if err != nil {
 			return nil, err
 		}
@@ -518,12 +523,12 @@ func (a *app) scoreProgress(ctx context.Context, rows []store.PlaybackProgress, 
 // carries the series row the store read needs; a series row that is gone
 // reports not-started — honest absence, the same floor itemTags serves for
 // the identical loss.
-func (a *app) seriesStartedFact(ctx context.Context, n namer, path string, f recsFacts) (bool, error) {
+func (a *app) seriesStartedFact(ctx context.Context, v access.Viewer, n namer, path string, f recsFacts) (bool, error) {
 	sr, ok := n.seriesByPath[path]
 	if !ok {
 		return false, nil
 	}
-	eps, err := a.deps.Store.QueryItemsBySeries(ctx, sr, seriesBacking(sr.Document))
+	eps, err := a.deps.Store.QueryItemsBySeries(ctx, sr, seriesBacking(sr.Document), v)
 	if err != nil {
 		return false, err
 	}

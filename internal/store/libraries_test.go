@@ -9,6 +9,8 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // TestLibraryDescriptionRoundtrip covers web-ui-phase-3 D8: the description
@@ -24,7 +26,7 @@ func TestLibraryDescriptionRoundtrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateLibrary: %v", err)
 		}
-		got, err := s.GetLibrary(ctx, id)
+		got, err := s.GetLibrary(ctx, id, access.System())
 		if err != nil {
 			t.Fatalf("GetLibrary: %v", err)
 		}
@@ -38,7 +40,7 @@ func TestLibraryDescriptionRoundtrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateLibrary: %v", err)
 		}
-		got, err := s.GetLibrary(ctx, id)
+		got, err := s.GetLibrary(ctx, id, access.System())
 		if err != nil {
 			t.Fatalf("GetLibrary: %v", err)
 		}
@@ -48,7 +50,7 @@ func TestLibraryDescriptionRoundtrip(t *testing.T) {
 	})
 
 	t.Run("list_roundtrips_description", func(t *testing.T) {
-		libs, err := s.ListLibraries(ctx)
+		libs, err := s.ListLibraries(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListLibraries: %v", err)
 		}
@@ -94,7 +96,7 @@ func TestLibraryDescriptionRoundtrip(t *testing.T) {
 		if err := again.Close(); err != nil {
 			t.Fatalf("Close after second re-Open: %v", err)
 		}
-		got, err := reopened.GetLibrary(ctx, id)
+		got, err := reopened.GetLibrary(ctx, id, access.System())
 		if err != nil {
 			t.Fatalf("GetLibrary after migration: %v", err)
 		}
@@ -118,7 +120,7 @@ func TestLibraryStreamsEnabledRoundtrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateLibrary: %v", err)
 		}
-		got, err := s.GetLibrary(ctx, id)
+		got, err := s.GetLibrary(ctx, id, access.System())
 		if err != nil {
 			t.Fatalf("GetLibrary: %v", err)
 		}
@@ -159,7 +161,7 @@ func TestLibraryStreamsEnabledRoundtrip(t *testing.T) {
 	})
 
 	t.Run("list_roundtrips_gate", func(t *testing.T) {
-		libs, err := s.ListLibraries(ctx)
+		libs, err := s.ListLibraries(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListLibraries: %v", err)
 		}
@@ -220,7 +222,7 @@ func TestLibraryNamingOptions(t *testing.T) {
 					got.NamingGroupStyle, got.NamingElementName, tc.groupStyle, tc.elementName)
 			}
 			// Read-back roundtrip through both readers.
-			roundtrip, err := s.GetLibrary(ctx, id)
+			roundtrip, err := s.GetLibrary(ctx, id, access.System())
 			if err != nil {
 				t.Fatalf("GetLibrary: %v", err)
 			}
@@ -228,7 +230,7 @@ func TestLibraryNamingOptions(t *testing.T) {
 				t.Fatalf("GetLibrary naming = (%q, %q), want (%q, %q)",
 					roundtrip.NamingGroupStyle, roundtrip.NamingElementName, tc.groupStyle, tc.elementName)
 			}
-			libs, err := s.ListLibraries(ctx)
+			libs, err := s.ListLibraries(ctx, access.System())
 			if err != nil {
 				t.Fatalf("ListLibraries: %v", err)
 			}
@@ -265,7 +267,7 @@ func TestLibraryNamingOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateLibrary: %v", err)
 		}
-		got, err := s.GetLibrary(ctx, id)
+		got, err := s.GetLibrary(ctx, id, access.System())
 		if err != nil {
 			t.Fatalf("GetLibrary: %v", err)
 		}
@@ -312,7 +314,7 @@ func TestLibraryNamingOptions(t *testing.T) {
 		if err := again.Close(); err != nil {
 			t.Fatalf("Close after second re-Open: %v", err)
 		}
-		got, err := reopened.GetLibrary(ctx, id)
+		got, err := reopened.GetLibrary(ctx, id, access.System())
 		if err != nil {
 			t.Fatalf("GetLibrary after migration: %v", err)
 		}

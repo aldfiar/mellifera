@@ -31,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/store"
@@ -79,7 +80,7 @@ func TestPairingJointFlow(t *testing.T) {
 		// main is unimportable — the established harness contract): GetItem →
 		// Describe + a fresh media token for the cookie delivery.
 		Playback: func(ctx context.Context, itemID string) (api.Playback, error) {
-			row, err := st.GetItem(ctx, itemID)
+			row, err := st.GetItem(ctx, itemID, access.System())
 			if err != nil {
 				return api.Playback{}, err
 			}

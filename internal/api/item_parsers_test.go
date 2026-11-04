@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -171,7 +172,7 @@ func TestItemParsersPut(t *testing.T) {
 				}
 			}
 			if tc.wantParsers != nil {
-				got, err := st.ListItemParsers(ctx, tc.itemID)
+				got, err := st.ListItemParsers(ctx, tc.itemID, access.System())
 				if err != nil {
 					t.Fatalf("ListItemParsers: %v", err)
 				}
@@ -186,7 +187,7 @@ func TestItemParsersPut(t *testing.T) {
 			}
 			// The 404 path must write nothing: the ghost item carries no rows.
 			if tc.name == "unknown_item_not_found" {
-				got, err := st.ListItemParsers(ctx, tc.itemID)
+				got, err := st.ListItemParsers(ctx, tc.itemID, access.System())
 				if err != nil || len(got) != 0 {
 					t.Fatalf("attachments for unknown item = %v, %v; want empty, nil", got, err)
 				}
@@ -217,7 +218,7 @@ func TestItemParsersDelete(t *testing.T) {
 		if len(pr.Parsers) != 0 {
 			t.Fatalf("response parsers = %v, want empty", pr.Parsers)
 		}
-		got, err := st.ListItemParsers(ctx, itemID)
+		got, err := st.ListItemParsers(ctx, itemID, access.System())
 		if err != nil || len(got) != 0 {
 			t.Fatalf("attachments after DELETE = %v, %v; want cleared", got, err)
 		}
@@ -302,7 +303,7 @@ func TestItemParsersValidationNeedsClosure(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d (nil closure degrades validation)", resp.StatusCode, http.StatusOK)
 	}
-	got, err := st.ListItemParsers(ctx, "itm_ser3")
+	got, err := st.ListItemParsers(ctx, "itm_ser3", access.System())
 	if err != nil || len(got) != 1 || got[0] != "ghost-parser" {
 		t.Fatalf("attachments = %v, %v; want the degraded write to land", got, err)
 	}

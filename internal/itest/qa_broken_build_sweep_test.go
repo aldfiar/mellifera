@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/orchestrator"
 	"github.com/mellifera/mellifera/internal/stream"
 )
@@ -141,7 +142,7 @@ func (w *pbWorld) pbIntegritySweep(t *testing.T, validate func(itemID, nonce str
 		if !idDir.IsDir() {
 			continue
 		}
-		row, err := w.st.GetItem(ctx, idDir.Name())
+		row, err := w.st.GetItem(ctx, idDir.Name(), access.System())
 		if err != nil {
 			continue // orphaned or unreadable: nothing live to heal
 		}

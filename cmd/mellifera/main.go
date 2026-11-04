@@ -39,9 +39,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/art"
 	"github.com/mellifera/mellifera/internal/enrich"
+	"github.com/mellifera/mellifera/internal/identity"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/pairing"
@@ -326,10 +328,20 @@ func main() {
 	// in-process cooldown/pending state.
 	artSvc := art.NewService(st, cfg.artRoot)
 
+	// Accounts domain service (l6-accounts D9 — the Pairing precedent): the
+	// api Deps.Identity seam — viewerFor consults it per request to map the
+	// context principal to its access.Viewer (the per-user grant resolution
+	// via identity.ResolveViewer and the HasUsers runtime-legacy collapse).
+	// The composition root MUST assign a real service: api tolerates a nil
+	// Identity, but a nil wiring would silently legacy-fall EVERY principal
+	// at runtime (TestDepsIdentityWired pins the assignment).
+	identitySvc := newIdentityService(st)
+
 	apiHandler := api.New(api.Deps{
 		AdminToken: cfg.adminToken,
 		Store:      st,
 		Pairing:    pairingSvc,
+		Identity:   identitySvc,
 		Art:        artSvc,
 		Scan: func(ctx context.Context, libraryID int64) (scan.Result, error) {
 			return scan.Run(ctx, scanDeps, libraryID)
@@ -348,7 +360,7 @@ func main() {
 		// reserved (a v1 no-op carried through). The failed check reads the
 		// item's stored streams namespace — the lane is its only writer.
 		Play: func(ctx context.Context, itemID string, retry bool, _ *float64) (bool, error) {
-			row, err := st.GetItem(ctx, itemID)
+			row, err := st.GetItem(ctx, itemID, access.System())
 			if err != nil {
 				return false, err // sql.ErrNoRows → 404 at the handler
 			}
@@ -377,85 +389,11 @@ func main() {
 		// never turn auto-next into an instant jump (autoNextCountdownSeconds).
 		WatchDefaults: autoNextCountdownSeconds(),
 		// Module presentation (element-pages 3.4/3.1; widened per
-		// plugin-title-enrichment D5): the library-surface block —
-		// identity_fields plus the ordered parser bindings (scanner slot, then
-		// the metadata_source chain in config order) with their capability ids
-		// and display_fields declarations, and the title-walk inputs: ONE
-		// batched prefs read for THIS library (module-scope rows + its own;
-		// store.ListMetadataSourcePrefs) resolved through enrich.ResolveGates
-		// (inherit-then-override; a muted source carries Enabled=false, which
-		// the composer skips) and projected in the config's
-		// title_source_priority order — plus language_preference verbatim.
-		// Built over the module registry and the store (INV2: api imports
-		// neither); slices are copied defensively so the handler can never
-		// alias cached registry state.
-		ModulePresentation: func(ctx context.Context, moduleID string, libraryID int64) (api.ModulePresentation, error) {
-			m, err := reg.Get(moduleID)
-			if err != nil {
-				return api.ModulePresentation{}, err
-			}
-			parsers := make([]api.ParserBinding, 0, 1+len(m.MetadataSources))
-			parsers = append(parsers, api.ParserBinding{
-				ID:            m.Scanner.PluginID,
-				Capability:    m.Scanner.CapabilityID,
-				DisplayFields: copyStrings(m.Scanner.DisplayFields),
-			})
-			for _, src := range m.MetadataSources {
-				parsers = append(parsers, api.ParserBinding{
-					ID:            src.PluginID,
-					Capability:    src.CapabilityID,
-					DisplayFields: copyStrings(src.DisplayFields),
-				})
-			}
-			prefs, err := st.ListMetadataSourcePrefs(ctx, moduleID, []int64{libraryID})
-			if err != nil {
-				return api.ModulePresentation{}, err
-			}
-			gated := enrich.ResolveGates(m, prefs, libraryID)
-			byID := make(map[string]module.MetadataSourceBinding, len(gated))
-			for _, src := range gated {
-				byID[src.PluginID] = src
-			}
-			pres := api.ModulePresentation{
-				IdentityFields: copyStrings(m.IdentityFields),
-				Parsers:        parsers,
-				// Module default element template (display-naming 3.3): the
-				// composition floor under a library's own naming_element_name
-				// option — namerFor layers the library option OVER this.
-				ItemName:           m.ItemName,
-				LanguagePreference: copyStrings(m.LanguagePreference),
-			}
-			for _, id := range m.TitleSourcePriority {
-				src, ok := byID[id]
-				if !ok {
-					continue // a priority id with no modeled binding is config drift — skip it silently
-				}
-				pres.AddTitleSource(id, src.Enabled)
-				// refresh_sources (plugin-admin-surfaces D1): the same walk,
-				// filtered to modeled bindings whose plugin is loaded
-				// (loadedCaps) and whose effective gate resolution is enabled
-				// — config order, the refresh pickers' option list. A muted
-				// source is never revived here: Enabled is the ResolveGates
-				// verdict (a gate mutes, never revives), so the served list
-				// carries only effectively-enabled entries.
-				if _, loaded := loadedCaps[id]; loaded && src.Enabled {
-					pres.AddRefreshSource(id, src.Enabled)
-				}
-			}
-			// source_chain (media-data-convention D6, additive): every bound
-			// metadata source in CHAIN order — m.MetadataSources order, which
-			// enrich.ResolveGates preserves — each carrying its gate-resolved
-			// enabled verdict. Unlike the filtered refresh list, a muted
-			// source is carried WITH enabled=false: the api convention
-			// projection walks this list as the served resolution order and
-			// must see the mute to skip the source. Deliberately not the
-			// title_source_priority walk above — that order is the title
-			// machine's, not the chain's.
-			for _, src := range gated {
-				pres.AddChainSource(src.PluginID, src.Enabled)
-			}
-			return pres, nil
-		},
+		// plugin-title-enrichment D5; viewer chain-mute AND-down per
+		// l6-accounts 10.1): extracted below — the one ResolveGates site that
+		// runs under the REQUEST's Viewer (read from the ctx carrier), with
+		// ModuleSources and every queue/scan/janitor site staying System.
+		ModulePresentation: newModulePresentationClosure(st, reg, loadedCaps),
 		// Admin sources aggregate (plugin-title-enrichment D6): the three
 		// primitive seams the api handler assembles its read-only inventory
 		// from — the boot-literal catalog above, the registry module list,
@@ -847,7 +785,7 @@ func copyStrings(src []string) []string {
 // any absent/unreadable stamp; the /media handler answers 404.
 func originalResolver(st *store.Store) func(ctx context.Context, itemID string) (string, bool) {
 	return func(ctx context.Context, itemID string) (string, bool) {
-		row, err := st.GetItem(ctx, itemID)
+		row, err := st.GetItem(ctx, itemID, access.System())
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return "", false
@@ -893,6 +831,126 @@ func (g *sweepGuard) finish(libraryID int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	delete(g.inFlight, libraryID)
+}
+
+// newIdentityService constructs the accounts domain service over the store
+// (l6-accounts D9 — the pairing.NewService precedent): the api Deps.Identity
+// seam's value. The composition root MUST assign it — api tolerates a nil
+// Identity, but a nil wiring would silently legacy-fall EVERY principal at
+// runtime (viewerFor would never consult identity.ResolveViewer), which
+// TestDepsIdentityWired pins.
+func newIdentityService(st *store.Store) *identity.Service {
+	return identity.NewService(st, time.Now)
+}
+
+// newModulePresentationClosure builds the api Deps.ModulePresentation seam
+// (element-pages 3.4/3.1; widened per plugin-title-enrichment D5; viewer
+// chain-mute AND-down per l6-accounts 10.1): the library-surface block —
+// identity_fields plus the ordered parser bindings (scanner slot, then the
+// metadata_source chain in config order) with their capability ids and
+// display_fields declarations, and the title-walk inputs: ONE batched prefs
+// read for THIS library (module-scope rows + its own;
+// store.ListMetadataSourcePrefs) resolved through enrich.ResolveGates
+// (inherit-then-override; a muted source carries Enabled=false, which the
+// composer skips) and projected in the config's title_source_priority order —
+// plus language_preference verbatim. Built over the module registry and the
+// store (INV2: api imports neither); slices are copied defensively so the
+// handler can never alias cached registry state.
+//
+// l6-accounts 10.1: this is the ONE ResolveGates site that runs under the
+// REQUEST's Viewer — read from the ctx carrier api's viewerFor stashed
+// (access.FromContext; no Deps signature widening, zero api changes). The
+// Viewer's ChainMutes (its groups' per-source mutes merged MUTE-WINS by
+// identity.ResolveViewer) are ANDed down POST-ResolveGates on COPIES —
+// ResolveGates already materializes per-call copies of the module's bindings,
+// so the module config slice is never aliased, and an AND-down can only mute,
+// never revive: an operator library-row enabling a source cannot lift a group
+// mute. A context with NO stashed viewer (a bare ctx) reads back the zero
+// Viewer, whose ChainMutes is empty — the loop is a no-op and the projection
+// is byte-identical to the pre-accounts behavior. ModuleSources and every
+// queue/scan/janitor ResolveGates site stay System on purpose: only this
+// client-facing projection is viewer-aware.
+func newModulePresentationClosure(
+	st *store.Store, reg *module.Registry, loadedCaps map[string][]string,
+) func(context.Context, string, int64) (api.ModulePresentation, error) {
+	return func(ctx context.Context, moduleID string, libraryID int64) (api.ModulePresentation, error) {
+		m, err := reg.Get(moduleID)
+		if err != nil {
+			return api.ModulePresentation{}, err
+		}
+		parsers := make([]api.ParserBinding, 0, 1+len(m.MetadataSources))
+		parsers = append(parsers, api.ParserBinding{
+			ID:            m.Scanner.PluginID,
+			Capability:    m.Scanner.CapabilityID,
+			DisplayFields: copyStrings(m.Scanner.DisplayFields),
+		})
+		for _, src := range m.MetadataSources {
+			parsers = append(parsers, api.ParserBinding{
+				ID:            src.PluginID,
+				Capability:    src.CapabilityID,
+				DisplayFields: copyStrings(src.DisplayFields),
+			})
+		}
+		prefs, err := st.ListMetadataSourcePrefs(ctx, moduleID, []int64{libraryID})
+		if err != nil {
+			return api.ModulePresentation{}, err
+		}
+		gated := enrich.ResolveGates(m, prefs, libraryID)
+		// Chain-mute AND-down (l6-accounts D8/10.1): post-ResolveGates, on the
+		// per-call copies ResolveGates returns. The zero Viewer's empty
+		// ChainMutes makes this loop a no-op — the bare-ctx degradation path
+		// is exactly today's behavior.
+		viewer := access.FromContext(ctx)
+		for i := range gated {
+			if viewer.ChainMutes[gated[i].PluginID] {
+				gated[i].Enabled = false
+			}
+		}
+		byID := make(map[string]module.MetadataSourceBinding, len(gated))
+		for _, src := range gated {
+			byID[src.PluginID] = src
+		}
+		pres := api.ModulePresentation{
+			IdentityFields: copyStrings(m.IdentityFields),
+			Parsers:        parsers,
+			// Module default element template (display-naming 3.3): the
+			// composition floor under a library's own naming_element_name
+			// option — namerFor layers the library option OVER this.
+			ItemName:           m.ItemName,
+			LanguagePreference: copyStrings(m.LanguagePreference),
+		}
+		for _, id := range m.TitleSourcePriority {
+			src, ok := byID[id]
+			if !ok {
+				continue // a priority id with no modeled binding is config drift — skip it silently
+			}
+			pres.AddTitleSource(id, src.Enabled)
+			// refresh_sources (plugin-admin-surfaces D1): the same walk,
+			// filtered to modeled bindings whose plugin is loaded
+			// (loadedCaps) and whose effective gate resolution is enabled
+			// — config order, the refresh pickers' option list. A muted
+			// source is never revived here: Enabled is the ResolveGates
+			// verdict ANDed with the viewer's chain mutes (a gate or a mute
+			// mutes, never revives), so the served list carries only
+			// effectively-enabled entries.
+			if _, loaded := loadedCaps[id]; loaded && src.Enabled {
+				pres.AddRefreshSource(id, src.Enabled)
+			}
+		}
+		// source_chain (media-data-convention D6, additive): every bound
+		// metadata source in CHAIN order — m.MetadataSources order, which
+		// enrich.ResolveGates preserves — each carrying its gate-resolved
+		// enabled verdict. Unlike the filtered refresh list, a muted
+		// source is carried WITH enabled=false: the api convention
+		// projection walks this list as the served resolution order and
+		// must see the mute to skip the source. Deliberately not the
+		// title_source_priority walk above — that order is the title
+		// machine's, not the chain's.
+		for _, src := range gated {
+			pres.AddChainSource(src.PluginID, src.Enabled)
+		}
+		return pres, nil
+	}
 }
 
 // newReenrichClosure builds the api Deps.Reenrich seam (enrichment design
@@ -955,14 +1013,14 @@ func newReenrichClosure(
 // strings, so the library binding is the identity check. Mirrors the api
 // package's resolveFailureRow lookup order (items, then series).
 func rowInLibrary(ctx context.Context, st *store.Store, libraryID int64, rowID string) (bool, error) {
-	it, err := st.GetItem(ctx, rowID)
+	it, err := st.GetItem(ctx, rowID, access.System())
 	switch {
 	case err == nil:
 		return it.LibraryID == libraryID, nil
 	case !errors.Is(err, sql.ErrNoRows):
 		return false, err
 	}
-	sr, err := st.GetSeries(ctx, rowID)
+	sr, err := st.GetSeries(ctx, rowID, access.System())
 	switch {
 	case err == nil:
 		return sr.LibraryID == libraryID, nil
@@ -1088,7 +1146,7 @@ func newEnrichPreviewClosure(st *store.Store, reg *module.Registry) func(context
 			}
 		}
 		for offset := 0; ; offset += previewBatch {
-			batch, err := st.QueryItems(ctx, libraryID, "", "", false, previewBatch, offset)
+			batch, err := st.QueryItems(ctx, libraryID, "", "", false, previewBatch, offset, access.System())
 			if err != nil {
 				return api.EnrichPreview{}, fmt.Errorf("preview: query items lib %d: %w", libraryID, err)
 			}
@@ -1099,7 +1157,7 @@ func newEnrichPreviewClosure(st *store.Store, reg *module.Registry) func(context
 				break
 			}
 		}
-		seriesRows, err := st.QuerySeries(ctx, libraryID, "")
+		seriesRows, err := st.QuerySeries(ctx, libraryID, "", access.System())
 		if err != nil {
 			return api.EnrichPreview{}, fmt.Errorf("preview: query series lib %d: %w", libraryID, err)
 		}

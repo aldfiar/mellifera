@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/plugin"
@@ -155,7 +156,7 @@ type recordingNotifier struct {
 func (n *recordingNotifier) notify(_ context.Context, libraryID int64) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	items, _ := n.store.QueryItems(context.Background(), libraryID, "", "", false, 10000, 0)
+	items, _ := n.store.QueryItems(context.Background(), libraryID, "", "", false, 10000, 0, access.System())
 	n.calls = append(n.calls, libraryID)
 	n.atCount = append(n.atCount, len(items))
 }
@@ -422,7 +423,7 @@ func TestRunScan_Orchestration(t *testing.T) {
 			}
 
 			if tc.expected.check != nil {
-				items, qerr := s.QueryItems(context.Background(), libID, "", "", false, 100, 0)
+				items, qerr := s.QueryItems(context.Background(), libID, "", "", false, 100, 0, access.System())
 				if qerr != nil {
 					t.Fatalf("QueryItems: %v", qerr)
 				}
@@ -516,7 +517,7 @@ func TestRunScan_ContextCancellation(t *testing.T) {
 	// the polling query.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if items, _ := s.QueryItems(context.Background(), libID, "", "", false, 100, 0); len(items) >= 1 {
+		if items, _ := s.QueryItems(context.Background(), libID, "", "", false, 100, 0, access.System()); len(items) >= 1 {
 			break
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -533,7 +534,7 @@ func TestRunScan_ContextCancellation(t *testing.T) {
 	}
 
 	// B6: the partial item remains; idempotent re-scan will resume. f2 never ran.
-	items, err := s.QueryItems(context.Background(), libID, "", "", false, 100, 0)
+	items, err := s.QueryItems(context.Background(), libID, "", "", false, 100, 0, access.System())
 	if err != nil {
 		t.Fatalf("QueryItems: %v", err)
 	}
@@ -588,7 +589,7 @@ func TestRunScan_AsyncEnqueue(t *testing.T) {
 		t.Errorf("inline enricher invoked %d times; scan must not enrich inline", enrichCalls)
 	}
 	// AC-1/AC-async: items persisted pending with the base doc (parsed present).
-	items, qerr := s.QueryItems(context.Background(), libID, "", "", false, 100, 0)
+	items, qerr := s.QueryItems(context.Background(), libID, "", "", false, 100, 0, access.System())
 	if qerr != nil {
 		t.Fatalf("QueryItems: %v", qerr)
 	}
@@ -748,7 +749,7 @@ func TestRunScan_StaleOnRescan(t *testing.T) {
 			if _, err := runScan(ctx, s, r, rr.resolve, passthroughEnricher(), nil, libID); err != nil {
 				t.Fatalf("runScan: %v", err)
 			}
-			items, err := s.QueryItems(ctx, libID, "", "", false, 100, 0)
+			items, err := s.QueryItems(ctx, libID, "", "", false, 100, 0, access.System())
 			if err != nil {
 				t.Fatalf("QueryItems: %v", err)
 			}

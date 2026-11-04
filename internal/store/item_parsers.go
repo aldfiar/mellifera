@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // SetItemParsers replaces itemID's element-only parser attachments with
@@ -64,14 +66,18 @@ ON CONFLICT(item_id, plugin_id) DO UPDATE SET
 // input). The read JOINs to the item's row, so attachments whose item no
 // longer exists read as absent — the orphan-tolerant read (the
 // playback_progress pattern): an empty slice, never an error. An item with no
-// attachments also lists empty.
-func (s *Store) ListItemParsers(ctx context.Context, itemID string) ([]string, error) {
+// attachments also lists empty. v rides the join's item/library row: the
+// parsers of an item whose library is outside the viewer's visible set read
+// as absent too — invisible even when handed the item id directly.
+func (s *Store) ListItemParsers(ctx context.Context, itemID string, v access.Viewer) ([]string, error) {
+	clause, visArgs := visibleWhere(v, "i.library_id")
+	args := append([]any{itemID}, visArgs...)
 	rows, err := s.db.QueryContext(ctx, `
 SELECT p.plugin_id
 FROM item_parsers p
 JOIN items i ON i.id = p.item_id AND i.status <> 'deleted'
-WHERE p.item_id = ?
-ORDER BY p.position, p.plugin_id`, itemID)
+WHERE `+andVisible("p.item_id = ?", clause)+`
+ORDER BY p.position, p.plugin_id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list item parsers %s: %w", itemID, err)
 	}

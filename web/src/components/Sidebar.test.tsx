@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import Sidebar, { SIDE_KEY } from "@/components/Sidebar";
+import { DEVICE_TOKEN_KEY, TOKEN_KEY } from "@/lib/auth";
 
 // Group-3 slice: the sidebar shell's OWN behavior, asserted at the fetch seam
 // (the S4-style joint). Open/close mechanics (hidden by default, FAB opens,
 // Escape closes), the mellifera.side persistence contract, the async count
-// rule (opening never waits on summaries) and the D7 role probe (admin on
-// 200, client on 403/failure) are the load-bearing logic — the CSS slide
-// itself is index.css's contract, asserted by the wf:probe greps.
+// rule (opening never waits on summaries) and the served-identity law
+// (l6-accounts 8.3: admin surfaces from the SERVED GET /profile role — the
+// D7 /admin/status role probe is REMOVED, never fetched) are the load-bearing
+// logic — the CSS slide itself is index.css's contract, asserted by the
+// wf:probe greps.
 // We avoid user-event (not a dep, like the admin tests) and click via
 // fireEvent; the async assertions use findBy* so React state updates settle.
 
@@ -55,6 +58,42 @@ const LIBRARIES_BODY = {
 const SUMMARY_1 = { library_id: 1, items: 37, updated_at: "" };
 const SUMMARY_2 = { library_id: 2, items: 214, updated_at: "" };
 
+// The served GET /profile shapes, VERBATIM per principal kind
+// (profile.go profileResponse — the same bodies TestProfileEndpoint pins).
+// user_id is present only on kind "user" (omitempty); prefs crosses
+// verbatim ("{}" for the env admin, null for a device) and is 8.4's
+// concern, never the sidebar's.
+const ADMIN_PROFILE = {
+  kind: "admin",
+  name: "admin",
+  role: "admin",
+  groups: [],
+  prefs: {},
+};
+const ADMIN_ROLE_SESSION_PROFILE = {
+  kind: "user",
+  user_id: 2,
+  name: "Root",
+  role: "admin",
+  groups: [{ id: 1, name: "household" }],
+  prefs: { tv_mode: "on" },
+};
+const USER_PROFILE = {
+  kind: "user",
+  user_id: 3,
+  name: "Alice",
+  role: "user",
+  groups: [{ id: 1, name: "household" }, { id: 2, name: "kids" }],
+  prefs: {},
+};
+const DEVICE_PROFILE = {
+  kind: "device",
+  name: "device",
+  role: "client",
+  groups: [],
+  prefs: null,
+};
+
 // fetchWith — a URL-dispatched fetch mock. handlers maps a substring of the
 // request URL to the response factory, so each test controls exactly which
 // endpoints answer (and how slowly).
@@ -90,15 +129,27 @@ function renderSidebar(initialPath: string = "/"): void {
   );
 }
 
-function freshLibraries(): Record<string, () => Promise<Response>> {
+function freshLibraries(
+  profile: unknown = ADMIN_PROFILE,
+): Record<string, () => Promise<Response>> {
   return {
     "/api/v1/libraries/1/summary": () =>
       Promise.resolve(jsonResponse(200, SUMMARY_1)),
     "/api/v1/libraries/2/summary": () =>
       Promise.resolve(jsonResponse(200, SUMMARY_2)),
     "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, LIBRARIES_BODY)),
-    "/api/v1/admin/status": () => Promise.resolve(jsonResponse(200, { plugins: [], enrich: {} })),
+    "/api/v1/profile": () => Promise.resolve(jsonResponse(200, profile)),
   };
+}
+
+// assertNoProbe — the probe-removal law (l6-accounts 8.3): the sidebar NEVER
+// fetches the operator /admin/status endpoint for identity. Asserted against
+// the recorded fetch URLs; note freshLibraries no longer stubs the endpoint
+// either, so a stray probe would hit the mock's unexpected-fetch rejection
+// and fail the very assertions below with an error state.
+function assertNoProbe(spy: { mock: { calls: unknown[][] } }): void {
+  const urls = spy.mock.calls.map((c) => String(c[0]));
+  expect(urls.some((u) => u.includes("/api/v1/admin/status"))).toBe(false);
 }
 
 describe("Sidebar — open/close mechanics + persistence", () => {
@@ -135,7 +186,9 @@ describe("Sidebar — open/close mechanics + persistence", () => {
     expect(localStorage.getItem(SIDE_KEY)).toBe("open");
     expect(screen.getByText("Mellifera")).toBeDefined();
     expect(screen.getByRole("link", { name: /Home/ })).toBeDefined();
-    expect(screen.getByRole("link", { name: /Admin/ })).toBeDefined();
+    // The admin rows gate on the SERVED profile — they arrive with the
+    // identity, asynchronously (l6-accounts 8.3).
+    expect(await screen.findByRole("link", { name: /Admin/ })).toBeDefined();
 
     // The collections list renders every library with its async count.
     expect(await screen.findByRole("link", { name: /serials/ })).toBeDefined();
@@ -275,8 +328,7 @@ describe("Sidebar — open/close mechanics + persistence", () => {
     // The summary endpoints NEVER resolve: opening must not wait on them.
     fetchWith({
       "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, LIBRARIES_BODY)),
-      "/api/v1/admin/status": () =>
-        Promise.resolve(jsonResponse(200, { plugins: [], enrich: {} })),
+      "/api/v1/profile": () => Promise.resolve(jsonResponse(200, ADMIN_PROFILE)),
     });
     
     renderSidebar();
@@ -290,7 +342,7 @@ describe("Sidebar — open/close mechanics + persistence", () => {
   });
 });
 
-describe("Sidebar — profile role probe (D7)", () => {
+describe("Sidebar — served identity (l6-accounts 8.3)", () => {
   beforeEach(() => {
     localStorage.clear();
     vi.restoreAllMocks();
@@ -300,44 +352,146 @@ describe("Sidebar — profile role probe (D7)", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows admin when GET /admin/status succeeds", async () => {
-    fetchWith({
+  it("env admin served: admin surfaces render, the identity block reads the served name and role", async () => {
+    const fetchSpy = fetchWith({
       "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, { items: [] })),
-      "/api/v1/admin/status": () => Promise.resolve(jsonResponse(200, { plugins: [], enrich: {} })),
+      "/api/v1/profile": () => Promise.resolve(jsonResponse(200, ADMIN_PROFILE)),
     });
-    
-    renderSidebar();
 
+    renderSidebar();
     fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
-    expect(await screen.findByText("admin")).toBeDefined();
+
+    expect(await screen.findByRole("link", { name: /Admin/ })).toBeDefined();
+    expect(screen.getByRole("link", { name: /Plugins/ })).toBeDefined();
+    // The served name AND role label are both the literal "admin" — the
+    // block's b and small, exactly two nodes.
+    expect((await screen.findAllByText("admin")).length).toBe(2);
+    // The avatar derives its initials from the served name.
+    expect(screen.getByText("AD")).toBeDefined();
+    assertNoProbe(fetchSpy);
   });
 
-  it("shows client on 403", async () => {
+  it("admin-role session served (kind user, role admin): admin surfaces render and the served groups list", async () => {
+    const fetchSpy = fetchWith({
+      "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, { items: [] })),
+      "/api/v1/profile": () =>
+        Promise.resolve(jsonResponse(200, ADMIN_ROLE_SESSION_PROFILE)),
+    });
+
+    renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+
+    expect(await screen.findByRole("link", { name: /Admin/ })).toBeDefined();
+    expect(screen.getByRole("link", { name: /Plugins/ })).toBeDefined();
+    expect(await screen.findByText("Root")).toBeDefined();
+    expect(screen.getByText("admin")).toBeDefined();
+    // The served groups, names joined on one line.
+    expect(screen.getByText("household")).toBeDefined();
+    assertNoProbe(fetchSpy);
+  });
+
+  it("user-role session served: admin surfaces are ABSENT, label degrades to client, groups listed", async () => {
+    const fetchSpy = fetchWith({
+      "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, { items: [] })),
+      "/api/v1/profile": () => Promise.resolve(jsonResponse(200, USER_PROFILE)),
+    });
+
+    renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+
+    expect(await screen.findByText("Alice")).toBeDefined();
+    expect(screen.queryByRole("link", { name: /Admin/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Plugins/ })).toBeNull();
+    expect(screen.getByText("client")).toBeDefined();
+    expect(screen.getByText("household, kids")).toBeDefined();
+    assertNoProbe(fetchSpy);
+  });
+
+  it("device served: minimal block, no admin surfaces", async () => {
+    const fetchSpy = fetchWith({
+      "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, { items: [] })),
+      "/api/v1/profile": () => Promise.resolve(jsonResponse(200, DEVICE_PROFILE)),
+    });
+
+    renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+
+    expect(await screen.findByText("device")).toBeDefined();
+    expect(screen.queryByRole("link", { name: /Admin/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Plugins/ })).toBeNull();
+    expect(screen.getByText("client")).toBeDefined();
+    assertNoProbe(fetchSpy);
+  });
+
+  it("fail closed while the identity is in flight: no admin surfaces, fallback block", async () => {
     fetchWith({
       "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, { items: [] })),
-      "/api/v1/admin/status": () =>
+      "/api/v1/profile": () => new Promise<Response>(() => undefined), // never resolves
+    });
+
+    renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+
+    // While the identity loads the gate is already closed, and the block
+    // shows the fallback name + the "…" posture (never blocks the panel).
+    expect(screen.getByRole("link", { name: /Home/ })).toBeDefined();
+    expect(screen.queryByRole("link", { name: /Admin/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Plugins/ })).toBeNull();
+    expect(screen.getByText("Operator")).toBeDefined();
+    expect(screen.getByText("…")).toBeDefined();
+  });
+
+  it("fail closed when the identity fetch fails: client label, fallback name, NO probe fallback", async () => {
+    const fetchSpy = fetchWith({
+      "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, { items: [] })),
+      "/api/v1/profile": () => Promise.reject(new Error("network down")),
+    });
+
+    renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+
+    // The identity never arrives — the fallback name + the least-privilege
+    // client label stand, admin rows stay absent, and no /admin/status
+    // fallback probe fires (the probe is REMOVED, not demoted to a fallback).
+    expect(await screen.findByText("client")).toBeDefined();
+    expect(screen.getByText("Operator")).toBeDefined();
+    expect(screen.queryByRole("link", { name: /Admin/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Plugins/ })).toBeNull();
+    assertNoProbe(fetchSpy);
+  });
+
+  it("a 401 on the profile fetch fires the rotation seam — never a silent empty sidebar", async () => {
+    // The session credential is in the slot (8.2's storage law); the served
+    // identity answers 401 — the standard wrapper rotation (handle401)
+    // clears BOTH credential slots and redirects to /login.
+    localStorage.setItem(TOKEN_KEY, "sess-token-1");
+    const assignSpy = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { assign: assignSpy },
+    });
+    const fetchSpy = fetchWith({
+      "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, { items: [] })),
+      "/api/v1/profile": () =>
         Promise.resolve(
-          jsonResponse(403, {
-            error: { code: "forbidden", message: "client role", retryable: false },
+          jsonResponse(401, {
+            error: {
+              code: "unauthorized",
+              message: "session expired",
+              retryable: false,
+            },
           }),
         ),
     });
-    
+
     renderSidebar();
-
     fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
-    expect(await screen.findByText("client")).toBeDefined();
-  });
 
-  it("shows client when the probe fails outright", async () => {
-    fetchWith({
-      "/api/v1/libraries": () => Promise.resolve(jsonResponse(200, { items: [] })),
-      "/api/v1/admin/status": () => Promise.reject(new Error("network down")),
+    await waitFor(() => {
+      expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+      expect(localStorage.getItem(DEVICE_TOKEN_KEY)).toBeNull();
+      expect(assignSpy).toHaveBeenCalledWith("/login");
     });
-    
-    renderSidebar();
-
-    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
-    expect(await screen.findByText("client")).toBeDefined();
+    assertNoProbe(fetchSpy);
   });
 });

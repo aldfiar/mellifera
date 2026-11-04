@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // The recommendation-sorting store set (recommendation-sorting D4/D5): the
@@ -21,39 +23,64 @@ import (
 // (D2) — INV-value-agnostic-store and INV3 apply verbatim.
 
 // InsertWatched records ONE completed watch: the item reached its completion
-// threshold. The item_id PRIMARY KEY makes the insert IDEMPOTENT — a repeat
-// write or a full rewatch is a no-op that keeps the FIRST completed_at, so a
-// rewatch never double-counts (the learning loop consumes each item's
-// completion exactly once). seriesPath "" (film/tv item — no series behind
+// threshold, stamped into THE VIEWER's ledger slot (l6-accounts D7) — the
+// insert targets (v.UserID, item_id), so each user's completion of an item is
+// an independent row. Legacy viewers (System, Admin, LegacyDevice and the
+// zero Viewer) carry UserID 0 and write the user_id=0 legacy slot (the
+// single-profile era's slot). The (user_id, item_id) PRIMARY KEY makes the
+// insert IDEMPOTENT per slot — a repeat write or a full rewatch by the SAME
+// user is a no-op that keeps the FIRST completed_at, so a rewatch never
+// double-counts (the learning loop consumes each item's completion exactly
+// once), while another user's completion inserts its own row. seriesPath ""
+// (film/tv item
+// — no series behind
 // the entity) persists as NULL. Callers stamp completedAt; the store does
 // not read a clock.
-func (s *Store) InsertWatched(ctx context.Context, itemID string, libraryID int64, seriesPath string, completedAt time.Time) error {
+func (s *Store) InsertWatched(ctx context.Context, itemID string, libraryID int64, seriesPath string, completedAt time.Time, v access.Viewer) error {
 	var seriesArg any
 	if seriesPath != "" {
 		seriesArg = seriesPath
 	}
 	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO watched_items (item_id, library_id, series_relative_path, completed_at)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(item_id) DO NOTHING`,
-		itemID, libraryID, seriesArg, formatTime(completedAt),
+INSERT INTO watched_items (user_id, item_id, library_id, series_relative_path, completed_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(user_id, item_id) DO NOTHING`,
+		v.UserID, itemID, libraryID, seriesArg, formatTime(completedAt),
 	); err != nil {
 		return fmt.Errorf("store: insert watched %s: %w", itemID, err)
 	}
 	return nil
 }
 
-// ListWatched returns every completed watch's item id — the completion
-// ledger in FULL, regardless of applied_at (the scorer's completedness fact
-// must survive the janitor's stamp, unlike the learning queue's
-// applied-only view). Rows come back ordered by completed_at then item_id
-// for deterministic input; a ledger with no rows yields an empty non-nil
-// slice (the ListLibraries convention). The served score is derived at
-// read time (D2), so this is a plain read: no caller mutates the ledger
-// through it.
-func (s *Store) ListWatched(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT item_id FROM watched_items ORDER BY completed_at, item_id")
+// ListWatched returns every completed watch's item id readable by the
+// viewer — the completion ledger per the ledger-read scoping law
+// (ledgerSlotWhere, D7), regardless of applied_at (the scorer's
+// completedness fact must survive the janitor's stamp, unlike the learning
+// queue's applied-only view). A USER-scope viewer reads ONLY its own slot
+// (user_id = v.UserID) AND only rows whose library_id sits in its visible
+// set (watched_items carries the library column directly — the one ledger
+// table that does): a revoked grant's rows never leak existence. A SEE-ALL
+// viewer (System/Admin/LegacyDevice) reads across every slot and library —
+// the per-request callers pass access.System() until api's viewer threading
+// (l6-accounts group 6) lands, and the learning reads stay global through
+// ListUnappliedWatched/ApplyTagWeights (System, deliberately unthreaded).
+// Rows come back ordered by completed_at then item_id for deterministic
+// input; a ledger with no readable rows yields an empty non-nil slice (the
+// ListLibraries convention). The served score is derived at read time (D2),
+// so this is a plain read: no caller mutates the ledger through it.
+func (s *Store) ListWatched(ctx context.Context, v access.Viewer) ([]string, error) {
+	slotClause, slotArgs := ledgerSlotWhere(v, "user_id")
+	clause, visArgs := visibleWhere(v, "library_id")
+	// The two fragments are both "" exactly for a see-all viewer, so the
+	// empty where keeps the SQL byte-identical to pre-accounts there.
+	where := andVisible(slotClause, clause)
+	q := "SELECT item_id FROM watched_items"
+	if where != "" {
+		q += " WHERE " + where
+	}
+	q += " ORDER BY completed_at, item_id"
+	args := append(slotArgs, visArgs...)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list watched: %w", err)
 	}
@@ -70,6 +97,44 @@ func (s *Store) ListWatched(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("store: list watched: %w", err)
 	}
 	return itemIDs, nil
+}
+
+// ListWatchedSlots returns the completion ledger's KEY STOCK: every
+// (user_id, item_id) pair across ALL slots, as ALIGNED parallel slices
+// (userIDs[i], itemIDs[i] describe ONE row) ordered by user_id then item_id
+// for deterministic input. This is a boot/learning read, not a viewer-scoped
+// one — it takes NO viewer (the ListUnappliedWatched convention): the recs
+// boot backfill reconciles every slot's stock, and its dedupe key is the
+// (user_id, item_id) pair, so the item-only shape ListWatched returns cannot
+// serve it (a slot-0 row must not suppress user 5's completion of the same
+// item). An empty ledger yields empty non-nil slices (the ListLibraries
+// convention). Plain read: no caller mutates the ledger through it.
+func (s *Store) ListWatchedSlots(ctx context.Context) (userIDs []int64, itemIDs []string, err error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT user_id, item_id
+FROM watched_items
+ORDER BY user_id, item_id`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: list watched slots: %w", err)
+	}
+	defer rows.Close()
+	userIDs = make([]int64, 0)
+	itemIDs = make([]string, 0)
+	for rows.Next() {
+		var (
+			userID int64
+			itemID string
+		)
+		if err := rows.Scan(&userID, &itemID); err != nil {
+			return nil, nil, fmt.Errorf("store: list watched slots scan: %w", err)
+		}
+		userIDs = append(userIDs, userID)
+		itemIDs = append(itemIDs, itemID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("store: list watched slots: %w", err)
+	}
+	return userIDs, itemIDs, nil
 }
 
 // ListUnappliedWatched returns the learning queue: every completed watch

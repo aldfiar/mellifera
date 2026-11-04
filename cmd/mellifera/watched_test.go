@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/orchestrator"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -288,10 +289,10 @@ func TestWatchedSemantics(t *testing.T) {
 		}
 		putItem("itm_started")
 		putItem("itm_midway")
-		if _, err := st.PutProgress(ctx, "itm_started", 60); err != nil {
+		if _, err := st.PutProgress(ctx, "itm_started", 60, access.System()); err != nil {
 			t.Fatalf("PutProgress started: %v", err)
 		}
-		if _, err := st.PutProgress(ctx, "itm_midway", 900); err != nil {
+		if _, err := st.PutProgress(ctx, "itm_midway", 900, access.System()); err != nil {
 			t.Fatalf("PutProgress midway: %v", err)
 		}
 

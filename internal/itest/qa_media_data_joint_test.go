@@ -85,6 +85,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -714,7 +715,7 @@ func TestQAMediaDataJoint(t *testing.T) {
 
 	t.Run("episode_fixture_serves_episode_block", func(t *testing.T) {
 		host := j.itemByPath(t, qaMediaEp2Rel)
-		row, err := j.st.GetItem(ctx, host.ID)
+		row, err := j.st.GetItem(ctx, host.ID, access.System())
 		if err != nil {
 			t.Fatalf("get item %s via the store seam: %v", host.ID, err)
 		}

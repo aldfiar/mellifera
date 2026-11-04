@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -77,10 +78,10 @@ func TestRecsJanitorLearnsTags(t *testing.T) {
 		t.Fatalf("PutItem film: %v", err)
 	}
 	now := time.Now()
-	if err := st.InsertWatched(ctx, "it_ep1", 1, "Code Geass", now); err != nil {
+	if err := st.InsertWatched(ctx, "it_ep1", 1, "Code Geass", now, access.System()); err != nil {
 		t.Fatalf("InsertWatched episode: %v", err)
 	}
-	if err := st.InsertWatched(ctx, "it_film", 2, "", now); err != nil {
+	if err := st.InsertWatched(ctx, "it_film", 2, "", now, access.System()); err != nil {
 		t.Fatalf("InsertWatched film: %v", err)
 	}
 
@@ -111,14 +112,14 @@ func TestRecsJanitorHonestAbsence(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PutItem plain: %v", err)
 	}
-	if err := st.InsertWatched(ctx, "it_plain", 1, "", time.Now()); err != nil {
+	if err := st.InsertWatched(ctx, "it_plain", 1, "", time.Now(), access.System()); err != nil {
 		t.Fatalf("InsertWatched plain: %v", err)
 	}
 	// A vanished entity and an unresolvable module: consumed with absence.
-	if err := st.InsertWatched(ctx, "it_ghost", 1, "", time.Now()); err != nil {
+	if err := st.InsertWatched(ctx, "it_ghost", 1, "", time.Now(), access.System()); err != nil {
 		t.Fatalf("InsertWatched ghost: %v", err)
 	}
-	if err := st.InsertWatched(ctx, "it_orphan", 1, "", time.Now()); err != nil {
+	if err := st.InsertWatched(ctx, "it_orphan", 1, "", time.Now(), access.System()); err != nil {
 		t.Fatalf("InsertWatched orphan: %v", err)
 	}
 	if err := st.PutItem(ctx, store.Item{

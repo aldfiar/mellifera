@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/store"
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
@@ -81,7 +82,7 @@ func scanSerial(t *testing.T, s *store.Store, r *module.Registry, libID int64, s
 // seriesRow fetches one series row by identity (test helper).
 func seriesRow(t *testing.T, s *store.Store, libID int64, rel string) store.Series {
 	t.Helper()
-	sr, err := s.GetSeriesByPath(context.Background(), libID, rel)
+	sr, err := s.GetSeriesByPath(context.Background(), libID, rel, access.System())
 	if err != nil {
 		t.Fatalf("GetSeriesByPath(%q): %v", rel, err)
 	}
@@ -154,7 +155,7 @@ func TestSeriesRescanIdempotent(t *testing.T) {
 	}
 
 	// Episode items carry the §2 stamping verbatim.
-	items, err := s.QueryItems(ctx, libID, "", "", false, 100, 0)
+	items, err := s.QueryItems(ctx, libID, "", "", false, 100, 0, access.System())
 	if err != nil {
 		t.Fatalf("QueryItems: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestSeriesRescanIdempotent(t *testing.T) {
 	if !after.CreatedAt.Equal(prior.CreatedAt) {
 		t.Errorf("CreatedAt = %v, want %v (preserved on re-scan)", after.CreatedAt, prior.CreatedAt)
 	}
-	ids, err := s.ListSeriesIDs(ctx, libID)
+	ids, err := s.ListSeriesIDs(ctx, libID, access.System())
 	if err != nil {
 		t.Fatalf("ListSeriesIDs: %v", err)
 	}
@@ -523,7 +524,7 @@ func TestCancelledScanDoesNotSweep(t *testing.T) {
 	}()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := s.GetSeriesByPath(context.Background(), libID, "Show"); err == nil {
+		if _, err := s.GetSeriesByPath(context.Background(), libID, "Show", access.System()); err == nil {
 			break // the partial pass re-persisted Show
 		}
 		time.Sleep(2 * time.Millisecond)

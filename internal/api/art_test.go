@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/art"
 	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/store"
@@ -231,7 +232,7 @@ func artworkOf(t *testing.T, items []seriesDTO, relPath string) string {
 // seriesIDOf loads the minted series id for (lib, relPath).
 func seriesIDOf(t *testing.T, st *store.Store, lib int64, relPath string) string {
 	t.Helper()
-	sr, err := st.GetSeriesByPath(context.Background(), lib, relPath)
+	sr, err := st.GetSeriesByPath(context.Background(), lib, relPath, access.System())
 	if err != nil {
 		t.Fatalf("GetSeriesByPath: %v", err)
 	}
@@ -1033,5 +1034,170 @@ func TestPostersNoUpstreamArtReason(t *testing.T) {
 				t.Fatalf("candidates = %+v, want %d", got.Candidates, tc.wantCands)
 			}
 		})
+	}
+}
+
+// TestArtworkMuteFloorsPerViewer is the 10.3 mute-floor contract (accounts
+// D8, artwork spec "A muted source composes nothing for that viewer"): two
+// viewers of ONE collection, a group muting source A for one of them. The
+// muted viewer's composition floors past A everywhere the walk reaches —
+// the own chain poster, a pinned src: selection on the muted namespace, and
+// the series-fallback leg — while the clean viewer's composition is provably
+// UNCHANGED (byte-equal to the env-admin serve, the pre-accounts shape).
+// Nothing persists differently: the same request tomorrow, or from the other
+// viewer, composes from the same stored namespaces.
+func TestArtworkMuteFloorsPerViewer(t *testing.T) {
+	ctx := context.Background()
+	st := openAPIStore(t)
+	svc := art.NewService(st, t.TempDir())
+
+	const srcA = "shikimori"
+	const srcB = "anidb"
+	aBody := artJPEG(t, 0xD0)
+	bBody := artJPEG(t, 0xD1)
+	onlyBody := artJPEG(t, 0xD2)
+	up := newArtUpstream(t, map[string][]byte{
+		"/a.jpg":    aBody,
+		"/b.jpg":    bBody,
+		"/only.jpg": onlyBody,
+	})
+	aProxy := artObjectPath + "art_" + sha256HexOf(aBody)
+	bProxy := artObjectPath + "art_" + sha256HexOf(bBody)
+	onlyProxy := artObjectPath + "art_" + sha256HexOf(onlyBody)
+	// ALL winners staged in setup: the composition's staged/unstaged wire
+	// forms are TestArtComposition's contract — here every expectation is
+	// the proxy URL, so no background handoff can flip a URL mid-test (the
+	// fetch-once economics make an unstaged winner's raw→proxy flip
+	// sequence-dependent).
+	for _, p := range []string{"/a.jpg", "/b.jpg", "/only.jpg"} {
+		if _, err := svc.Acquire(ctx, up.server.URL+p, art.KindPoster); err != nil {
+			t.Fatalf("stage %s: %v", p, err)
+		}
+	}
+
+	lib, err := st.CreateLibrary(ctx, "serial", "/media/mutes", "Mutes")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	// Two sources in the document; the chain walks A first, so the clean
+	// viewer composes A and the A-muted viewer floors to B.
+	twoSourceDoc := func(aURL, bURL string) json.RawMessage {
+		return json.RawMessage(`{"sources":{` + jsonQuote(srcA) + `:{"poster":` + jsonQuote(aURL) + `},` + jsonQuote(srcB) + `:{"poster":` + jsonQuote(bURL) + `}}}`)
+	}
+	putArtSeries(t, st, lib, "TwoSources", twoSourceDoc(up.server.URL+"/a.jpg", up.server.URL+"/b.jpg"))
+	putArtSeries(t, st, lib, "OnlyA", artSeriesDoc(srcA, up.server.URL+"/only.jpg"))
+	// The fallback leg's fixture: an episode with no own poster under an
+	// A-only series — the muted viewer inherits NOTHING, the clean viewer
+	// inherits A's raw URL (unstaged winners serve raw).
+	putArtSeries(t, st, lib, "Inherit", artSeriesDoc(srcA, up.server.URL+"/only.jpg"))
+	if err := st.PutItem(ctx, store.Item{
+		ID: "itm_mute_ep", ModuleID: "serial", LibraryID: lib, FileID: "fid_ep",
+		RelativePath: "Inherit/s1e1.mkv", MediaType: "tv",
+		Document: json.RawMessage(`{}`), SchemaVersion: 1,
+	}); err != nil {
+		t.Fatalf("PutItem episode: %v", err)
+	}
+	// A pin on the MUTED namespace, stored before any viewer arrives: the
+	// muted viewer's response must floor past it (to B's poster here is
+	// impossible — the row is A-only — so to absence) while the stored row
+	// itself stays exactly as written.
+	twoID := seriesIDOf(t, st, lib, "TwoSources")
+	if _, err := st.UpsertArtOverride(ctx, twoID, "series", artSelectionSrcPrefix+srcA); err != nil {
+		t.Fatalf("UpsertArtOverride: %v", err)
+	}
+
+	app := newArtTestApp(t, st, svc, []titleSourceBinding{
+		{ID: srcA, Enabled: true},
+		{ID: srcB, Enabled: true},
+	})
+
+	// The two viewers of the same collection, constructed directly and
+	// injected through the role-test seam (the carrier viewerFor memoizes):
+	// the muted one carries a group's mute of srcA, the clean one nil mutes.
+	muted := access.User(42, []int64{lib}, map[string]bool{srcA: true})
+	clean := access.User(7, []int64{lib}, nil)
+	asViewer := func(v access.Viewer) http.Handler {
+		return principalInjector(RoleClient)(principalViewerInjector(v)(app.handler))
+	}
+
+	type row struct {
+		artwork string // "" = the field omitted (honest absence)
+	}
+	serve := func(t *testing.T, h http.Handler, path string) map[string]row {
+		t.Helper()
+		resp := doRequest(t, h, http.MethodGet, path, "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", path, resp.StatusCode)
+		}
+		var sr struct {
+			Items []struct {
+				RelativePath string `json:"relative_path"`
+				Artwork      string `json:"artwork"`
+			} `json:"items"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+			t.Fatalf("%s: decode list: %v", path, err)
+		}
+		out := make(map[string]row, len(sr.Items))
+		for _, it := range sr.Items {
+			out[it.RelativePath] = row{artwork: it.Artwork}
+		}
+		return out
+	}
+
+	seriesWant := map[string]row{
+		"TwoSources": {artwork: aProxy}, // first usable chain poster, staged → proxy URL
+		"OnlyA":      {artwork: onlyProxy},
+		"Inherit":    {artwork: onlyProxy},
+	}
+	wantByPath := func(t *testing.T, m map[string]row, path string) {
+		t.Helper()
+		for relPath, want := range seriesWant {
+			got, ok := m[relPath]
+			if !ok {
+				t.Fatalf("%s: %q missing from the served list", path, relPath)
+			}
+			if got.artwork != want.artwork {
+				t.Fatalf("%s: %s artwork = %q, want %q", path, relPath, got.artwork, want.artwork)
+			}
+		}
+	}
+
+	// The CLEAN viewer is provably unchanged: its composition equals the
+	// env-admin serve (nil ChainMutes — the pre-accounts shape) on both
+	// surfaces.
+	adminSeries := serve(t, app.handler, "/api/v1/series?library="+strconv.FormatInt(lib, 10))
+	cleanSeries := serve(t, asViewer(clean), "/api/v1/series?library="+strconv.FormatInt(lib, 10))
+	wantByPath(t, adminSeries, "admin/series")
+	wantByPath(t, cleanSeries, "clean/series")
+	if len(adminSeries) != len(cleanSeries) {
+		t.Fatalf("clean viewer served %d rows, admin %d", len(cleanSeries), len(adminSeries))
+	}
+	for relPath, ar := range adminSeries {
+		if cr := cleanSeries[relPath]; cr.artwork != ar.artwork {
+			t.Fatalf("clean viewer %s artwork = %q, admin served %q — the clean composition must be byte-identical", relPath, cr.artwork, ar.artwork)
+		}
+	}
+
+	// The MUTED viewer floors past srcA in every leg of this response:
+	// the own-chain walk (TwoSources → B's poster; OnlyA → absence), the
+	// muted-namespace pin (TwoSources' stored src:shikimori floors to the
+	// next usable source — B — in this response alone), and the series
+	// fallback (Inherit/s1e1.mkv → absence).
+	mutedSeries := serve(t, asViewer(muted), "/api/v1/series?library="+strconv.FormatInt(lib, 10))
+	if got := mutedSeries["TwoSources"].artwork; got != bProxy {
+		t.Fatalf("muted TwoSources artwork = %q, want B's proxy %q (the pin on the muted namespace floors to the next usable source)", got, bProxy)
+	}
+	if got := mutedSeries["OnlyA"].artwork; got != "" {
+		t.Fatalf("muted OnlyA artwork = %q, want the field omitted (the only source is muted)", got)
+	}
+	mutedItems := serve(t, asViewer(muted), "/api/v1/items?library="+strconv.FormatInt(lib, 10))
+	if got := mutedItems["Inherit/s1e1.mkv"].artwork; got != "" {
+		t.Fatalf("muted fallback episode artwork = %q, want the field omitted (the series fallback floors past the muted source too)", got)
+	}
+	cleanItems := serve(t, asViewer(clean), "/api/v1/items?library="+strconv.FormatInt(lib, 10))
+	if got := cleanItems["Inherit/s1e1.mkv"].artwork; got != onlyProxy {
+		t.Fatalf("clean fallback episode artwork = %q, want the inherited proxy URL %q", got, onlyProxy)
 	}
 }

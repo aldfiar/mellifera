@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/mellifera/mellifera/internal/art"
+	"github.com/mellifera/mellifera/internal/identity"
 	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/scan"
@@ -200,14 +201,29 @@ type Deps struct {
 	// second-guessed handler-side.
 	RelayMaxBody int64
 	// Pairing is the device-pairing minting service (device-pairing D1/D3):
-	// the pairing handlers delegate to it and the auth middleware's
-	// RoleClient branch consults its LookupToken. Not a closure but the
+	// the pairing handlers delegate to it. (Until l6-accounts 7.1 the auth
+	// middleware's RoleClient branch consulted its LookupToken; the branch
+	// now resolves the credentials store directly — the row's bound user_id
+	// rides the principal — so Pairing is mint/management-only.) Not a closure but the
 	// service value itself — pairing is plain domain logic over the store
 	// (api already imports store), so the anti-corruption closure indirection
 	// buys nothing here. Nil-safe (the pairing routes 503 when nil and no
 	// device token ever resolves), mirroring Status/Playback. Built in
 	// cmd/mellifera over pairing.NewService.
 	Pairing *pairing.Service
+	// Identity is the accounts domain service (l6-accounts D9, the Pairing
+	// precedent): viewerFor consults it to map the request principal to its
+	// access.Viewer scope — the per-user grant resolution
+	// (identity.ResolveViewer) and the HasUsers runtime-legacy collapse
+	// (D1). Not a closure but the service value itself — identity is plain
+	// domain logic over the store (the pairing precedent; api already
+	// imports store). Nil-safe (nil = runtime-legacy behavior: every
+	// principal keeps today's scope and ResolveViewer is never consulted),
+	// mirroring Pairing. Built in cmd/mellifera over identity.NewService —
+	// the composition root MUST assign a real service (task 10.1,
+	// TestDepsIdentityWired): nil wiring would silently legacy-fall EVERY
+	// principal at runtime.
+	Identity *identity.Service
 	// Art is the artwork facade (artwork): the composition's staged lookups
 	// and non-blocking acquisition handoffs, the object route's path
 	// resolution, and the upload ingest all delegate to it. Not a closure
@@ -240,9 +256,10 @@ const (
 	// admin and the browse panels work for it).
 	RoleAdmin Role = "admin"
 	// RoleClient is the client-panel role, minted by device pairing: the auth
-	// middleware resolves it from a valid device token (Deps.Pairing's
-	// LookupToken), giving a paired TV read-only browse access behind the
-	// same middleware (INV3).
+	// middleware resolves it from a valid device credential (the credentials
+	// kind='device' row), giving a paired TV read-only browse access behind the
+	// same middleware (INV3). Since l6-accounts 7.1 it is also the projected
+	// role of a non-admin user's session.
 	RoleClient Role = "client"
 )
 
@@ -254,6 +271,13 @@ const (
 // helper, never by branching on the role.
 type Principal struct {
 	Role Role
+	// UserID is the credential's owning user (l6-accounts 7.1): the bound
+	// user of a device credential, or the session's user — 0 means
+	// not-user-backed (the env admin token, an unbound device). viewerFor
+	// resolves the user's grant scope from it; handlers never read it.
+	// No new Role constant exists for sessions: the user's role PROJECTS
+	// onto RoleAdmin/RoleClient at the middleware (D11).
+	UserID int64
 }
 
 // IsAdmin reports whether the principal carries RoleAdmin — the canonical
@@ -272,7 +296,7 @@ func (p Principal) IsAdmin() bool { return p.Role == RoleAdmin }
 // (INV-authn-precedes-authz). Handlers never fork on Role — the group is the
 // only gate (arch §11.5).
 func New(deps Deps) http.Handler {
-	h := &app{deps: deps, beacons: newBeaconLimiter()}
+	h := &app{deps: deps, beacons: newBeaconLimiter(), logins: newLoginLimiter()}
 	r := chi.NewRouter()
 	r.Route("/api/v1", func(r chi.Router) { mountV1Routes(r, h) })
 	return r
@@ -292,13 +316,17 @@ func New(deps Deps) http.Handler {
 func mountV1Routes(r chi.Router, h *app) {
 	// Pair group (device-pairing D2): NO authN — an unpaired device has no
 	// credential yet, so the bootstrap must be open. The pairing_id (128-bit
-	// capability) is the route's protection, not a bearer token.
+	// capability) is the route's protection, not a bearer token. Login is
+	// mounted in the same bare group (l6-accounts 7.2): it is HOW a caller
+	// obtains a session credential, so it must run without one (its own
+	// defense is the (IP, username) rate limiter + the uniform 401).
 	r.Group(func(r chi.Router) {
 		r.Post("/pair", h.createPairing)
 		r.Get("/pair/{id}/wait", h.waitPairing)
+		r.Post("/auth/login", h.login)
 	})
 	r.Group(func(r chi.Router) {
-		r.Use(authMiddleware(h.deps.AdminToken, h.deps.Pairing))
+		r.Use(authMiddleware(h.deps.AdminToken, h.deps.Store, h.deps.Identity))
 		r.Use(requireRole(RoleAdmin, RoleClient))
 		r.Get("/libraries", h.listLibraries)
 		// Library detail (element-pages 3.4): the row plus the additive module
@@ -363,9 +391,22 @@ func mountV1Routes(r chi.Router, h *app) {
 		// the group is the only gate). 204 accepted / 409 lost, expired, or
 		// foreign claim / 413 over the RelayMaxBody cap / 400 malformed body.
 		r.Post("/relay/{id}/result", h.relayResult)
+		// Logout (l6-accounts 7.2): the bearer IS the capability — deletes
+		// ONLY the presented session row, so any authenticated principal may
+		// call it, but a non-session credential (device bearer, admin token)
+		// finds no session row and 401s (the kind guard, documented on the
+		// handler). A viewer action beside the other session verbs, so the
+		// browse group.
+		r.Post("/auth/logout", h.logout)
+		// Profile (l6-accounts 8.1): the caller's own identity facts and the
+		// caller's own preference document — every principal kind has a
+		// profile and writes only its own, so the browse group (admin+client)
+		// is the only gate; zero viewer/visibility logic behind either route.
+		r.Get("/profile", h.profile)
+		r.Put("/profile/prefs", h.putProfilePrefs)
 	})
 	r.Group(func(r chi.Router) {
-		r.Use(authMiddleware(h.deps.AdminToken, h.deps.Pairing))
+		r.Use(authMiddleware(h.deps.AdminToken, h.deps.Store, h.deps.Identity))
 		r.Use(requireRole(RoleAdmin))
 		r.Post("/libraries", h.createLibrary)
 		// Library mutation: present display_name/description/streams_enabled
@@ -467,5 +508,56 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Post("/admin/pairings/{id}/deny", h.denyPairing)
 		r.Get("/admin/devices", h.listDevices)
 		r.Delete("/admin/devices/{id}", h.revokeDevice)
+		// Device-to-user bind (l6-accounts 9.3): PUT {"user_id": n|null}
+		// binds the device credential (the next request from it rides the
+		// bound user's resolved Viewer — the 7.1 chain) and null unbinds back
+		// to the legacy see-all device viewer. The {id} is the credentials
+		// rowid the device list surfaces; the list's user_id posture field is
+		// the read-back. Operator mutation, so the admin group beside the
+		// device surface it completes.
+		r.Put("/admin/devices/{id}/user", h.adminDeviceBind)
+		// User accounts admin surface (l6-accounts 9.1): the users CRUD —
+		// create (the FIRST-user one-way-door notice), list (hashes never
+		// served), role/disable patch, password reset (the session cascade),
+		// delete (the last-user guard + the state cascade). Pure delegation
+		// to identity; operator mutations, so the admin group beside the
+		// device surface it complements.
+		r.Post("/admin/users", h.adminUserCreate)
+		r.Get("/admin/users", h.adminUsersList)
+		r.Patch("/admin/users/{id}", h.adminUserPatch)
+		r.Put("/admin/users/{id}/password", h.adminUserPassword)
+		r.Delete("/admin/users/{id}", h.adminUserDelete)
+		// One-shot legacy-ledger adoption (l6-accounts 9.3): merges the
+		// user_id=0 slot into the user's slots newer-wins (progress by
+		// updated_at, watched by completed_at) in ONE identity transaction;
+		// rerun is a no-op. Explicit by design (D7 — never seed-on-login).
+		// Pure delegation, so the admin group beside the users CRUD.
+		r.Post("/admin/users/{id}/adopt-legacy", h.adminUserAdopt)
+		// Visibility-explain diagnostic (l6-accounts 9.3): the resolved
+		// grant for an ARBITRARY named user over one library — the same
+		// identity.ResolveViewer a request from that user rides, never the
+		// caller's scope and never a second derivation (the design's
+		// one-resolution law). Operator observability, so the admin group.
+		r.Get("/admin/visibility-explain", h.adminVisibilityExplainGet)
+		// Groups admin surface (l6-accounts 9.2): the groups CRUD
+		// (id-addressed — rename-proof, the 9.1 convention; duplicate names
+		// 409), the member-users and member-Collections sub-resources (+
+		// display positions — overlap allowed, re-add re-positions,
+		// orphan-tolerant library ids), and the schema-versioned mute
+		// document PUT (object-checked, stored verbatim). Pure delegation
+		// to identity; operator mutations, so the admin group beside the
+		// users surface it complements.
+		r.Post("/admin/groups", h.adminGroupCreate)
+		r.Get("/admin/groups", h.adminGroupsList)
+		r.Get("/admin/groups/{id}", h.adminGroupGet)
+		r.Patch("/admin/groups/{id}", h.adminGroupPatch)
+		r.Delete("/admin/groups/{id}", h.adminGroupDelete)
+		r.Get("/admin/groups/{id}/users", h.adminGroupMembersList)
+		r.Post("/admin/groups/{id}/users", h.adminGroupMemberAdd)
+		r.Delete("/admin/groups/{id}/users/{username}", h.adminGroupMemberRemove)
+		r.Get("/admin/groups/{id}/collections", h.adminGroupCollectionsList)
+		r.Post("/admin/groups/{id}/collections", h.adminGroupCollectionAdd)
+		r.Delete("/admin/groups/{id}/collections/{library_id}", h.adminGroupCollectionRemove)
+		r.Put("/admin/groups/{id}/doc", h.adminGroupDocPut)
 	})
 }

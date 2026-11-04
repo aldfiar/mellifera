@@ -51,7 +51,9 @@ func TestPlaybackVerbs(t *testing.T) {
 	}
 
 	newHandler := func(pb func(context.Context, string) (Playback, error), ps *playStub) http.Handler {
-		deps := Deps{AdminToken: adminToken, Store: openAPIStore(t), Playback: pb}
+		st := openAPIStore(t)
+		seedPlaybackItem(t, st, "it1")
+		deps := Deps{AdminToken: adminToken, Store: st, Playback: pb}
 		if ps != nil {
 			deps.Play = ps.play()
 		}
@@ -312,7 +314,9 @@ func TestPlayGateRefusal(t *testing.T) {
 		for _, tok := range []string{"codec_not_opted_in", "codec_unsupported"} {
 			t.Run(tok, func(t *testing.T) {
 				ps := &playStub{err: refusal.PlayRefusal{Reason: tok}}
-				h := New(Deps{AdminToken: adminToken, Store: openAPIStore(t), Play: ps.play()})
+				st := openAPIStore(t)
+				seedPlaybackItem(t, st, "it1")
+				h := New(Deps{AdminToken: adminToken, Store: st, Play: ps.play()})
 				resp := doRequest(t, h, http.MethodPost, "/api/v1/items/it1/play", `{"retry":true}`, adminToken)
 				if resp.StatusCode != http.StatusBadRequest {
 					t.Fatalf("status = %d, want 400", resp.StatusCode)
@@ -335,7 +339,9 @@ func TestPlayGateRefusal(t *testing.T) {
 
 	t.Run("nothing_failed_still_answers", func(t *testing.T) {
 		ps := &playStub{queued: false}
-		h := New(Deps{AdminToken: adminToken, Store: openAPIStore(t), Play: ps.play()})
+		st := openAPIStore(t)
+		seedPlaybackItem(t, st, "it1")
+		h := New(Deps{AdminToken: adminToken, Store: st, Play: ps.play()})
 		resp := doRequest(t, h, http.MethodPost, "/api/v1/items/it1/play", `{"retry":true}`, adminToken)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400", resp.StatusCode)

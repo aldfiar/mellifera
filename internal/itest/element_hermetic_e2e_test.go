@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/plugin"
@@ -173,7 +174,7 @@ func TestElement_Parsers_HermeticE2E(t *testing.T) {
 	// scan-shaped upsert lands on the SAME item identity — the attachment
 	// must survive the re-scan untouched.
 	attached = scanPut(t, "file-1", "Show/S01E01.mkv")
-	got, err := st.ListItemParsers(ctx, attached)
+	got, err := st.ListItemParsers(ctx, attached, access.System())
 	if err != nil {
 		t.Fatalf("ListItemParsers after re-scan: %v", err)
 	}
@@ -188,13 +189,13 @@ func awaitItemReady(t *testing.T, st *store.Store, id string, timeout time.Durat
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		it, err := st.GetItem(context.Background(), id)
+		it, err := st.GetItem(context.Background(), id, access.System())
 		if err == nil && it.Status == "ready" {
 			return it
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	it, _ := st.GetItem(context.Background(), id)
+	it, _ := st.GetItem(context.Background(), id, access.System())
 	t.Fatalf("item %s status = %q, want ready (timeout %v)", id, it.Status, timeout)
 	return it
 }

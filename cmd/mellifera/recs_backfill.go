@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -24,7 +25,11 @@ import (
 // own completion predicate (≥ watchedDurationFloor of the STORED ffprobe
 // duration; no stored duration ⇒ never backfills — the honest absence)
 // inserts its idempotent ledger row and pokes the recs wake, so the tags
-// learn through the SAME apply path a live completion takes. Boot-only by
+// learn through the SAME apply path a live completion takes. The pass is
+// slot-aware (l6-accounts 5.3): the dedupe key is the (user_id, item_id)
+// pair — slots are independent rows — and every reconciled row is stamped
+// into its OWN progress row's slot (slot-0 stock stays the legacy slot, a
+// user's stock lands in that user's slot; see backfillViewer). Boot-only by
 // construction — main runs it before the janitor's boot pass, never per
 // tick: a per-tick walk would turn the stock read into a permanent N+1 for
 // a set that only shrinks. Every failure is log-and-skip: backfill is never
@@ -32,26 +37,34 @@ import (
 // retries the remainder.
 func newRecsBackfill(st *store.Store) func(context.Context) {
 	return func(ctx context.Context) {
-		ledgered, err := st.ListWatched(ctx)
+		// The dedupe key is the (user_id, item_id) PAIR (l6-accounts 5.3):
+		// slots are independent rows, so a slot-0 ledger row must never
+		// suppress user N's reconciliation of the same item. The stock read
+		// below rides System (all slots — the learning invariant, 5.2).
+		ledgeredUserIDs, ledgeredItems, err := st.ListWatchedSlots(ctx)
 		if err != nil {
 			slog.Warn("recs backfill: list watched failed", "error", err)
 			return
 		}
-		done := make(map[string]struct{}, len(ledgered))
-		for _, id := range ledgered {
-			done[id] = struct{}{}
+		type watchedSlot struct {
+			userID int64
+			itemID string
 		}
-		rows, err := st.ListProgressAll(ctx)
+		done := make(map[watchedSlot]struct{}, len(ledgeredItems))
+		for i, id := range ledgeredItems {
+			done[watchedSlot{ledgeredUserIDs[i], id}] = struct{}{}
+		}
+		rows, err := st.ListProgressAll(ctx, access.System())
 		if err != nil {
 			slog.Warn("recs backfill: list progress failed", "error", err)
 			return
 		}
 		backfilled := 0
 		for _, p := range rows {
-			if _, ok := done[p.ItemID]; ok {
-				continue // already in the ledger — the PK dedupe stays upstream
+			if _, ok := done[watchedSlot{p.UserID, p.ItemID}]; ok {
+				continue // already in the ledger in THIS slot — the PK dedupe stays upstream
 			}
-			it, err := st.GetItem(ctx, p.ItemID)
+			it, err := st.GetItem(ctx, p.ItemID, access.System())
 			if err != nil {
 				if !errors.Is(err, sql.ErrNoRows) {
 					slog.Warn("recs backfill: item lookup failed", "item", p.ItemID, "error", err)
@@ -70,7 +83,7 @@ func newRecsBackfill(st *store.Store) func(context.Context) {
 			if float64(p.PositionSeconds) < watchedDurationFloor*dur {
 				continue // still mid-watch — the resume bonus is CORRECT here
 			}
-			if err := st.InsertWatched(ctx, p.ItemID, it.LibraryID, watchSeriesPath(doc), backfillStamp(p.UpdatedAt)); err != nil {
+			if err := st.InsertWatched(ctx, p.ItemID, it.LibraryID, watchSeriesPath(doc), backfillStamp(p.UpdatedAt), backfillViewer(p.UserID)); err != nil {
 				slog.Warn("recs backfill: insert watched failed", "item", p.ItemID, "error", err)
 				continue
 			}
@@ -81,6 +94,24 @@ func newRecsBackfill(st *store.Store) func(context.Context) {
 			notifyRecs()
 		}
 	}
+}
+
+// backfillViewer shapes the stamp viewer for ONE reconciled progress row
+// (l6-accounts 5.3): a row in the user_id=0 slot reconciles into that slot
+// via access.System() (the documented boot-backfill scope — UserID 0, the
+// legacy slot); a row in user N's slot stamps N's slot via
+// access.User(n, nil, nil). The nil grants are the POINT: this viewer is a
+// STAMP CARRIER ONLY — it never reads (the reconciliation's reads ride
+// System, the learning invariant), and a stamp confers no visibility (the
+// row's visibility was settled when its progress write passed PutProgress's
+// own item check). The insert targets (v.UserID, item_id), so a foreign slot
+// is unreachable by construction: each reconciled row lands in the slot its
+// OWN progress row already lived in.
+func backfillViewer(userID int64) access.Viewer {
+	if userID == 0 {
+		return access.System()
+	}
+	return access.User(userID, nil, nil)
 }
 
 // backfillStamp derives a backfilled row's completed_at from the progress

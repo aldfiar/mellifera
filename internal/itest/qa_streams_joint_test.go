@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -49,7 +50,7 @@ func TestStreamsJoint(t *testing.T) {
 		if itemID == "" {
 			t.Fatalf("corrupt fixture not persisted")
 		}
-		before, err := w.st.GetItem(context.Background(), itemID)
+		before, err := w.st.GetItem(context.Background(), itemID, access.System())
 		if err != nil {
 			t.Fatalf("GetItem before pack: %v", err)
 		}
@@ -73,7 +74,7 @@ func TestStreamsJoint(t *testing.T) {
 		}
 		// Metadata completion is untouched: lifecycle status exactly as scan
 		// left it, and the only document change is the streams namespace.
-		after, err := w.st.GetItem(context.Background(), itemID)
+		after, err := w.st.GetItem(context.Background(), itemID, access.System())
 		if err != nil {
 			t.Fatalf("GetItem after pack: %v", err)
 		}
@@ -188,7 +189,7 @@ func TestStreamsJoint(t *testing.T) {
 		deadline = time.Now().Add(60 * time.Second)
 		var nonce2 string
 		for {
-			it, err := w.st.GetItem(context.Background(), itemID)
+			it, err := w.st.GetItem(context.Background(), itemID, access.System())
 			if err != nil {
 				t.Fatalf("GetItem after re-dispatch: %v", err)
 			}
@@ -261,7 +262,7 @@ func TestStreamsJoint(t *testing.T) {
 		if dropped.Mode != "direct" || dropped.State != "preparing" {
 			t.Fatalf("descriptor after changed rescan = mode %q state %q, want direct/preparing (changed base drops streams; the packable MKV floor answers the honesty projection)", dropped.Mode, dropped.State)
 		}
-		it, err := w.st.GetItem(context.Background(), itemID)
+		it, err := w.st.GetItem(context.Background(), itemID, access.System())
 		if err != nil {
 			t.Fatalf("GetItem after changed rescan: %v", err)
 		}

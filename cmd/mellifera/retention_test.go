@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -353,7 +354,7 @@ func TestSweepBudget(t *testing.T) {
 		if _, err := os.Stat(cur); err != nil {
 			t.Fatalf("document-named build was evicted: %v", err)
 		}
-		row, err := st.GetItem(ctx, "itm_a")
+		row, err := st.GetItem(ctx, "itm_a", access.System())
 		if err != nil {
 			t.Fatalf("GetItem after sweep: %v", err)
 		}
@@ -398,7 +399,7 @@ func TestSweepBudget(t *testing.T) {
 			"itm_del": {doc: budgetDoc("complete", "dcur1"), status: "deleted"},
 			"itm_cur": {doc: budgetDoc("complete", "aaa1")},
 		})
-		if _, err := st.PutProgress(ctx, "itm_del", 30); err != nil {
+		if _, err := st.PutProgress(ctx, "itm_del", 30, access.System()); err != nil {
 			t.Fatalf("PutProgress for deleted item: %v", err)
 		}
 		cur := budgetBuild(t, root, "itm_cur", "aaa1")

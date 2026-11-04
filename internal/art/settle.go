@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -142,7 +143,9 @@ func (r settleRow) putBack(ctx context.Context, st *store.Store, doc json.RawMes
 // document still yields its ROW (the strip's tolerant floor leaves it
 // untouched); a store-level failure aborts the pass.
 func (s *Service) walkPosterRows(ctx context.Context) ([]settleRow, error) {
-	libs, err := s.st.ListLibraries(ctx)
+	// MUST-be-true read (access.System): this walk IS the GC's safety union —
+	// every library must be seen or artwork for unseen libraries is collected.
+	libs, err := s.st.ListLibraries(ctx, access.System())
 	if err != nil {
 		return nil, fmt.Errorf("art: list libraries: %w", err)
 	}
@@ -151,7 +154,9 @@ func (s *Service) walkPosterRows(ctx context.Context) ([]settleRow, error) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		series, err := s.st.QuerySeries(ctx, lib.ID, "")
+		// MUST-be-true read (access.System): a false-empty shrinks the GC union —
+		// artwork referenced by unseen series rows is treated as garbage.
+		series, err := s.st.QuerySeries(ctx, lib.ID, "", access.System())
 		if err != nil {
 			return nil, fmt.Errorf("art: query series %d: %w", lib.ID, err)
 		}
@@ -162,7 +167,9 @@ func (s *Service) walkPosterRows(ctx context.Context) ([]settleRow, error) {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			page, err := s.st.QueryItems(ctx, lib.ID, "", "", false, settlePageSize, offset)
+			// MUST-be-true read (access.System): a false-empty drops unseen items'
+			// kind-field URLs from the GC union — their live artwork is deleted.
+			page, err := s.st.QueryItems(ctx, lib.ID, "", "", false, settlePageSize, offset, access.System())
 			if err != nil {
 				return nil, fmt.Errorf("art: query items %d: %w", lib.ID, err)
 			}

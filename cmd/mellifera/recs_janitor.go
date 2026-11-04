@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/recs"
@@ -113,7 +114,7 @@ func resolveWatchTags(ctx context.Context, st *store.Store, reg *module.Registry
 // absence; every other read failure returns as an error.
 func watchEntityDoc(ctx context.Context, st *store.Store, itemID string, libraryID int64, seriesPath string) (string, json.RawMessage, error) {
 	if seriesPath == "" {
-		it, err := st.GetItem(ctx, itemID)
+		it, err := st.GetItem(ctx, itemID, access.System())
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return "", nil, nil
@@ -122,7 +123,7 @@ func watchEntityDoc(ctx context.Context, st *store.Store, itemID string, library
 		}
 		return it.ModuleID, it.Document, nil
 	}
-	sr, err := st.GetSeriesByPath(ctx, libraryID, seriesPath)
+	sr, err := st.GetSeriesByPath(ctx, libraryID, seriesPath, access.System())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", nil, nil

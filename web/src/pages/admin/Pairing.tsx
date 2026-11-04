@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { ReactElement } from "react";
 
-import type { AdminDevice, AdminPairing, ApiError } from "@/lib/api";
+import type { AdminDevice, AdminPairing, AdminUser, ApiError } from "@/lib/api";
 import {
   useApprovePairing,
+  useBindAdminDeviceUser,
   useDenyPairing,
+  useAdminUsers,
   useDevices,
   usePairings,
   useRevokeDevice,
@@ -28,9 +30,10 @@ import {
 //  (a) PENDING PAIRINGS — one row per still-pending request, the code rendered
 //      PROMINENTLY (the admin matches it against the code on the TV screen)
 //      with one-tap Approve / Deny;
-//  (b) DEVICES — the paired-device registry: device id, approval code, created
-//      stamp, and a Revoke action. No device-management UI beyond list +
-//      revoke (out of scope).
+//  (b) DEVICES — the paired-device registry: device id, approval code, bind
+//      posture (l6-accounts 9.4 — the row's user_id: the bound user, or
+//      unbound = the legacy see-all viewer), created stamp, the bind
+//      affordance (a user select; unbind rides null), and a Revoke action.
 //
 // Every write is an adjudication/revoke mutation (retry:0 — INV-no-mutation-
 // retry); success invalidates the section's list INSIDE the hook, so rows
@@ -39,6 +42,10 @@ import {
 export default function Pairing(): ReactElement {
   const pairings = usePairings();
   const devices = useDevices();
+  // The bind affordance's user vocabulary — the SAME ["admin-users"] cache
+  // entry the Accounts page reads (one fetch; the two surfaces cannot
+  // disagree about the user list).
+  const users = useAdminUsers();
 
   const pairingsErr: ApiError | null =
     pairings.error instanceof Error ? (pairings.error as ApiError) : null;
@@ -73,7 +80,10 @@ export default function Pairing(): ReactElement {
             <AlertDescription>{devicesErr.message}</AlertDescription>
           </Alert>
         ) : (
-          <DevicesTable devices={devices.data?.devices ?? []} />
+          <DevicesTable
+            devices={devices.data?.devices ?? []}
+            users={users.data?.users ?? []}
+          />
         )}
       </section>
     </div>
@@ -163,14 +173,19 @@ function PairingRow(props: { pairing: AdminPairing }): ReactElement {
 }
 
 // DevicesTable — the paired-device registry; empty state for the zero-device
-// server.
-function DevicesTable(props: { devices: AdminDevice[] }): ReactElement {
+// server. The bound-user column rides the served user_id posture (9.3's
+// deviceDTO field).
+function DevicesTable(props: {
+  devices: AdminDevice[];
+  users: AdminUser[];
+}): ReactElement {
   return (
     <Table>
       <TableHeader>
         <TableRow>
           <TableHead>Device</TableHead>
           <TableHead>Approval code</TableHead>
+          <TableHead>Bound user</TableHead>
           <TableHead>Paired</TableHead>
           <TableHead className="w-32">Actions</TableHead>
         </TableRow>
@@ -178,24 +193,35 @@ function DevicesTable(props: { devices: AdminDevice[] }): ReactElement {
       <TableBody>
         {props.devices.length === 0 ? (
           <TableRow>
-            <TableCell colSpan={4} className="text-muted-foreground">
+            <TableCell colSpan={5} className="text-muted-foreground">
               No paired devices
             </TableCell>
           </TableRow>
         ) : (
-          props.devices.map((d) => <DeviceRow key={d.device_id} device={d} />)
+          props.devices.map((d) => (
+            <DeviceRow key={d.device_id} device={d} users={props.users} />
+          ))
         )}
       </TableBody>
     </Table>
   );
 }
 
-// DeviceRow — one paired device: identity + approval code + created stamp,
-// Revoke as the single action (no device-management UI beyond list + revoke).
-function DeviceRow(props: { device: AdminDevice }): ReactElement {
+// DeviceRow — one paired device: identity + approval code + the BIND
+// POSTURE (l6-accounts 9.4): the served user_id renders both states — a
+// bound device shows its user, 0 shows the legacy (unbound) viewer — and
+// the affordance binds via a user select, unbinds via null (PUT
+// /admin/devices/{id}/user; 204; the list invalidates and re-reads).
+function DeviceRow(props: { device: AdminDevice; users: AdminUser[] }): ReactElement {
   const revoke = useRevokeDevice();
+  const bind = useBindAdminDeviceUser();
   const err: ApiError | null =
-    revoke.error instanceof Error ? (revoke.error as ApiError) : null;
+    revoke.error instanceof Error
+      ? (revoke.error as ApiError)
+      : bind.error instanceof Error
+        ? (bind.error as ApiError)
+        : null;
+  const boundUser = props.users.find((u) => u.id === props.device.user_id);
 
   return (
     <TableRow data-device-id={props.device.device_id}>
@@ -203,6 +229,48 @@ function DeviceRow(props: { device: AdminDevice }): ReactElement {
         {props.device.device_id}
       </TableCell>
       <TableCell className="font-mono text-xs">{props.device.code}</TableCell>
+      <TableCell data-testid={`device-posture-${props.device.device_id}`}>
+        <span className="flex items-center gap-2">
+          <select
+            aria-label={`Bound user for device ${props.device.device_id}`}
+            data-testid={`device-bind-select-${props.device.device_id}`}
+            className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+            value={props.device.user_id === 0 ? "" : String(props.device.user_id)}
+            disabled={bind.isPending}
+            onChange={(e) => {
+              if (e.target.value !== "") {
+                bind.mutate({
+                  deviceId: props.device.device_id,
+                  userId: Number(e.target.value),
+                });
+              }
+            }}
+          >
+            <option value="">Unbound (legacy viewer)</option>
+            {props.users.map((u) => (
+              <option key={u.id} value={String(u.id)}>
+                {u.username}
+              </option>
+            ))}
+          </select>
+          {props.device.user_id !== 0 ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-xs"
+              disabled={bind.isPending}
+              onClick={() =>
+                bind.mutate({ deviceId: props.device.device_id, userId: null })
+              }
+            >
+              Unbind
+            </Button>
+          ) : null}
+        </span>
+        {boundUser ? (
+          <span className="text-xs text-muted-foreground">{boundUser.username}</span>
+        ) : null}
+      </TableCell>
       <TableCell className="text-xs text-muted-foreground">
         {props.device.created_at}
       </TableCell>

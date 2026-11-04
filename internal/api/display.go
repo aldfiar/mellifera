@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -80,14 +81,14 @@ type namer struct {
 // contract for a nonexistent ?library=. Any OTHER store error propagates to
 // the caller (the handlers map it → 500, like any other read).
 func (a *app) namerFor(ctx context.Context, libraryID int64) (namer, error) {
-	lib, err := a.deps.Store.GetLibrary(ctx, libraryID)
+	lib, err := a.deps.Store.GetLibrary(ctx, libraryID, access.System())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return namer{}, nil
 		}
 		return namer{}, err
 	}
-	rows, err := a.deps.Store.QuerySeries(ctx, libraryID, "")
+	rows, err := a.deps.Store.QuerySeries(ctx, libraryID, "", access.System())
 	if err != nil {
 		return namer{}, err
 	}

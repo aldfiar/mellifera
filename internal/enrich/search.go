@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
@@ -281,7 +282,7 @@ func (q *Queue) IdentifySeries(ctx context.Context, seriesID, pluginID, external
 	if !q.leases.acquire(seriesID, identifyOwner, q.cfg.LeaseTTL) {
 		return false, 0, 1, nil // a worker owns the row: nothing written, retry later
 	}
-	sr, err := q.deps.Store.GetSeries(ctx, seriesID)
+	sr, err := q.deps.Store.GetSeries(ctx, seriesID, access.System())
 	if err != nil {
 		q.leases.release(seriesID)
 		return false, 0, 0, fmt.Errorf("enrich: identify: load series: %w", err)
