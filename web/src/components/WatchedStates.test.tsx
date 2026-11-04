@@ -28,9 +28,10 @@ import type { ItemDocument } from "@/lib/document";
 // progress bar even when a served position exists; an in-progress sibling
 // keeps today's bar; a new element renders clean; wire absence (the
 // omitempty field gone) behaves as not-watched. On the three mounted toggle
-// surfaces (episode rows, item-grid cards, heading) the ✓ is the
-// WatchedToggle BUTTON — series cards keep the passive mark (the bulk toggle
-// is v1.1). The mark's layout/cost is CSS's contract (index.css, outside the
+// surfaces (episode rows, item-grid cards, heading) the slot is the
+// WatchedToggle BUTTON — the always-visible `watched` text chip — series
+// cards keep the passive ✓ mark (the bulk toggle is v1.1). The mark's
+// layout/cost is CSS's contract (index.css, outside the
 // tv shell block, so the state survives the html.tv layer unchanged;
 // tvCssContract pins that block by text).
 
@@ -187,16 +188,18 @@ describe("WatchedStates — pure leaves", () => {
   });
 });
 
-// ---- WatchedToggle (collections-ux 2.2) ------------------------------------
-// The ✓ slot as a real <button> on the three mounted surfaces. jsdom sees no
-// media queries and no layout, so the disclosure law is asserted at its two
-// observable seams: (a) the button composes the law's class carrier
-// (cardact-trigger) and the state split rides the inline style — the watched
-// fill pins opacity inline (visible at rest everywhere, beating the reveal
-// cascade), the unwatched outline pins NO opacity (the reveal/coarse/tv
-// persistence rides the stylesheet verbatim); (b) the law's stylesheet half
-// is pinned by text (the clampCssContract readFileSync idiom) so the
-// composition can't silently lose its coarse-pointer and html.tv persistence.
+// ---- WatchedToggle (collections-ux 2.2, reworked by watched-toggle-label 1.1)
+// The watched slot as a real <button> on the three mounted surfaces: a quiet
+// `watched` text chip, TOP-RIGHT (inline right:40px, no left override — one
+// stylesheet gutter past the ⋯ trigger's own slot), ALWAYS visible. jsdom
+// sees no media queries and no layout, so the control's contract is asserted
+// at its two observable seams: (a) the button composes the class carrier
+// (cardact-trigger) and the state split rides the inline style — BOTH states
+// pin opacity 1 (the disclosure law is retired for this control) and the
+// chip's auto width/height + padding beat the fixed 28px/40px trigger sizes;
+// (b) the ⋯ trigger's own law — base reveal + coarse-pointer and html.tv
+// persistence — is pinned by text (the clampCssContract readFileSync idiom)
+// so the stylesheet composition can't silently lose it.
 
 // ruleBody — the declaration body of the rule introduced by the given
 // selector text (the clampCssContract.test.ts helper, inlined: this suite
@@ -242,40 +245,51 @@ function renderToggle(watched: boolean, onCardClick?: () => void) {
 }
 
 describe("WatchedToggle — the three-state renders", () => {
-  it("watched: the filled accent ✓ at rest — a pressed button pinned visible inline (it beats the reveal cascade), top-left slot", () => {
+  it("watched: the accent text chip at rest — a pressed button pinned visible inline, top-right slot past the ⋯ trigger", () => {
     renderToggle(true);
 
     const toggle = screen.getByRole("button", { name: "Watched" });
-    expect(toggle.textContent).toBe("✓");
+    expect(toggle.textContent).toBe("watched");
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    // The law's class carrier — the composition, no new CSS.
+    // The class carrier — the composition, no new CSS.
     expect(toggle.classList.contains("cardact-trigger")).toBe(true);
-    // At-rest fill: the inline opacity beats the base opacity 0 AND the
-    // hover/focus reveal rules — visible without hover on fine pointers too.
+    // Always visible: the disclosure law is retired for this control — the
+    // inline opacity beats the base opacity 0 AND the hover/focus reveal
+    // rules (visible without hover on fine pointers too).
     expect((toggle as HTMLElement).style.opacity).toBe("1");
-    // The mark's top-left slot (⋯ keeps the top-right): corner placement
-    // overrides the base class's right:6px inline.
-    expect((toggle as HTMLElement).style.left).toBe("6px");
-    expect((toggle as HTMLElement).style.right).toBe("auto");
-    // Filled, not outlined: the accent color (jsdom normalizes the hex —
-    // #a4c8f4); no inline ring — the class carrier's own border:none holds
-    // (pinned in the stylesheet sweep below).
+    // The chip sizing: inline auto width/height + chip padding beat the
+    // base 28px box and the coarse-pointer/html.tv 40px twins.
+    expect((toggle as HTMLElement).style.width).toBe("auto");
+    expect((toggle as HTMLElement).style.height).toBe("auto");
+    expect((toggle as HTMLElement).style.padding).toBe("2px 8px");
+    // Top-right slot, one stylesheet gutter past the ⋯ trigger's 28px box
+    // (right:40px clears its 34px left edge) — and NO left override.
+    expect((toggle as HTMLElement).style.right).toBe("40px");
+    expect((toggle as HTMLElement).style.left).toBe("");
+    // Filled accent text (jsdom normalizes the hex — #a4c8f4); no inline
+    // ring — the class carrier's own border:none holds (pinned in the
+    // stylesheet sweep below).
     expect((toggle as HTMLElement).style.color).toBe("rgb(164, 200, 244)");
     expect((toggle as HTMLElement).style.border).toBe("");
   });
 
-  it("unwatched: the quiet outline ✓ — aria-pressed false, NO inline opacity (the reveal law rides the stylesheet)", () => {
+  it("unwatched: the quiet ghost chip with the 1px border ring — aria-pressed false, pinned visible inline like the watched state", () => {
     renderToggle(false);
 
     const toggle = screen.getByRole("button", { name: "Unwatched" });
     expect(toggle.getAttribute("aria-pressed")).toBe("false");
-    // The outline ring; the glyph color stays the base class's quiet muted
-    // foreground (no inline color override).
+    expect(toggle.textContent).toBe("watched");
+    // The outline ring + the muted ghost text (the accent is watched-only).
     expect((toggle as HTMLElement).style.border).toContain("solid");
-    expect((toggle as HTMLElement).style.color).toBe("");
-    // The disclosure law's fine-pointer half is the stylesheet's job — no
-    // inline opacity, so hover/focus reveal + coarse/tv persistence apply.
-    expect((toggle as HTMLElement).style.opacity).toBe("");
+    expect((toggle as HTMLElement).style.color).toBe(
+      "hsl(var(--muted-foreground))",
+    );
+    // The disclosure law is retired for this control too — always visible,
+    // same corner slot and chip sizing as the watched state.
+    expect((toggle as HTMLElement).style.opacity).toBe("1");
+    expect((toggle as HTMLElement).style.right).toBe("40px");
+    expect((toggle as HTMLElement).style.left).toBe("");
+    expect((toggle as HTMLElement).style.width).toBe("auto");
   });
 
   it("in-progress: the bar stays with the outline toggle beside it", () => {
@@ -354,17 +368,20 @@ describe("WatchedToggle — the click contract", () => {
   });
 });
 
-describe("WatchedToggle — the disclosure-law stylesheet pin", () => {
-  // The composition's half of the law: the cardact rules the toggle rides
-  // must stay put in index.css — base reveal + the coarse-pointer and html.tv
-  // persistence twins (readFileSync, the clampCssContract idiom — jsdom
-  // evaluates no media queries).
+describe("WatchedToggle — the cardact stylesheet pin", () => {
+  // The ⋯ trigger's half of the composition: the cardact rules the chip rides
+  // (its class carrier, its 8px radius, its border:none) must stay put in
+  // index.css — base reveal + the coarse-pointer and html.tv persistence
+  // twins, untouched by the toggle's inline retirement of the law for itself
+  // (readFileSync, the clampCssContract idiom — jsdom evaluates no media
+  // queries).
   const css = readFileSync(resolve(process.cwd(), "src/styles/index.css"), "utf8");
 
   it("the base law: opacity 0 at rest, revealed on host hover/focus-within", () => {
     const base = ruleBody(css, ".cardact-trigger {");
     expect(base).toContain("opacity: 0");
-    // The filled ✓ reads as filled because the class carrier has no ring.
+    // The filled accent chip reads as filled because the class carrier has
+    // no ring (the unwatched ring is inline-only).
     expect(base).toContain("border: none");
     const reveal = [
       ".cardact-host:hover .cardact-trigger",
@@ -417,10 +434,10 @@ describe("WatchedStates — episode rows (EpisodesView)", () => {
     renderCollection("/collections/1?series=sr_1");
     await screen.findByText("Pilot");
 
-    // Watched: the ✓ TOGGLE (a real button, corner placement) + dimmed title…
+    // Watched: the `watched` chip TOGGLE (a real button, corner placement)…
     const pilot = cardOf("Pilot");
     const toggle = within(pilot).getByRole("button", { name: "Watched" });
-    expect(toggle.textContent).toBe("✓");
+    expect(toggle.textContent).toBe("watched");
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Pilot").classList.contains("watched-dim")).toBe(
       true,
@@ -581,7 +598,7 @@ describe("WatchedStates — the element page heading", () => {
     );
   }
 
-  it("a watched element's heading gains the ✓ toggle beside the served display name", async () => {
+  it("a watched element's heading gains the `watched` chip toggle beside the served display name", async () => {
     detailSeam(detailItem(true));
     renderDetail();
 
@@ -591,7 +608,7 @@ describe("WatchedStates — the element page heading", () => {
         within(h1.parentElement as HTMLElement).getByRole("button", {
           name: "Watched",
         }).textContent,
-      ).toBe("✓"),
+      ).toBe("watched"),
     );
     // The toggle is the law's inline variant (always visible — the heading
     // is no hover-card) and it sits OUTSIDE the h1, so the heading's
@@ -618,7 +635,7 @@ describe("WatchedStates — the element page heading", () => {
       within(h1).getByText("Hot Show S01E01").classList.contains("watched-dim"),
     ).toBe(false);
     // The toggle surface is ALWAYS mounted — an unwatched element renders
-    // the quiet outline ✓ (the unwatched write path), inline placement.
+    // the quiet ghost chip (the unwatched write path), inline placement.
     const toggle = within(h1.parentElement as HTMLElement).getByRole("button", {
       name: "Unwatched",
     });

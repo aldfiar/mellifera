@@ -5,8 +5,8 @@ import type { ItemState } from "@/lib/api";
 import { useSetItemState } from "@/lib/queries";
 
 // The library's pastel accent — the .watched-mark token (index.css), kept as
-// a literal here because the toggle's at-rest fill must ride the inline
-// style (see WatchedToggle below for why inline beats the disclosure law).
+// a literal here because the toggle's watched fill rides the inline style
+// (the chip's whole state split is inline — see WatchedToggle below).
 const WATCHED_ACCENT = "#a4c8f4";
 
 // The watched element state's shared leaves (watched-states D5, task 2.3).
@@ -74,24 +74,26 @@ export function InProgressBar(props: { percent: number }): ReactElement {
   );
 }
 
-// WatchedToggle — the ✓ slot as a REAL <button> (collections-ux 2.2, the
-// amended three-surface mandate): hence a D-pad addressable walker target
-// (focusWalker's a[href]/button set) in tv mode. The state split:
-// - watched: the FILLED accent ✓, clickable at rest everywhere — the inline
-//   `opacity: 1` is load-bearing, not styling: the button reuses the
-//   cardact-trigger disclosure law (class `cardact-trigger`, base
-//   opacity 0 + reveal on host hover/focus-within), and an inline style is
-//   the only way to win that cascade without authoring new CSS.
-// - unwatched: the QUIET OUTLINE ✓ (a 1px ring in the --border token, the
-//   base class's muted-foreground glyph) with NO inline opacity — the
-//   reveal rides the existing law verbatim: hover/focus-revealed on fine
-//   pointers, persistently visible under `pointer: coarse` AND the html.tv
-//   layer (index.css, the ⋯ trigger's rules — composed, never duplicated).
-// Placement composes the same law: "corner" (default) is the mark's
-// top-left slot (the ⋯ trigger keeps the top-right — inline right:auto /
-// left:6px beats the base class's right:6px); "inline" reuses the existing
-// `cardact-trigger--inline` variant (the element page heading's flow
-// context, the law's own always-visible carve-out).
+// WatchedToggle — the watched slot as a REAL <button> (collections-ux 2.2,
+// reworked by watched-toggle-label 1.1): hence a D-pad addressable walker
+// target (focusWalker's a[href]/button set) in tv mode. The slot flips to
+// the TOP-RIGHT corner — inline right:40px, NO left override — sitting one
+// stylesheet gutter (6px) left of the ⋯ cardact trigger (its own top:6px /
+// right:6px 28px slot is untouched; 40px clears the ⋯'s 34px left edge).
+// The ✓ glyph becomes a quiet `watched` TEXT CHIP (inline padding 2px 8px on
+// the class carrier's rounded 28px-ish box idiom):
+// - watched: the pastel accent text (WATCHED_ACCENT);
+// - unwatched: muted ghost text + a 1px ring in the --border token.
+// The disclosure law (opacity 0 at rest, hover/focus reveal) is RETIRED for
+// this control: BOTH states pin inline `opacity: 1` — always visible. The
+// coarse-pointer 40px hit block and the html.tv twin are beaten the same
+// way: inline width/height auto + the chip padding override their fixed
+// sizes (the established inline-override idiom, no new CSS class); the ⋯
+// trigger's own law in index.css is untouched (pinned by the stylesheet
+// sweep). Placement: "corner" (default) is the card slot; "inline" reuses
+// the existing `cardact-trigger--inline` variant (the element page heading's
+// flow context, its own always-visible carve-out) and carries no corner
+// offsets — corner-scoped overrides stay corner-scoped.
 // Click: stopPropagation FIRST (the card click navigates — the toggle's
 // never does), then the target state is picked from the SERVED watched flag
 // only (watched → "unwatched", else → "watched") and fired through
@@ -106,10 +108,20 @@ export function WatchedToggle(props: {
   const corner = (props.placement ?? "corner") === "corner";
   const target: ItemState = props.watched ? "unwatched" : "watched";
   const style: CSSProperties = {
-    ...(corner ? { right: "auto", left: "6px" } : {}),
+    // Always visible — the disclosure law is retired for this control.
+    opacity: 1,
+    // Beat the class carrier's fixed 28px box AND the coarse-pointer/html.tv
+    // 40px twins: the chip sizes itself from the padding.
+    width: "auto",
+    height: "auto",
+    padding: "2px 8px",
+    ...(corner ? { right: "40px" } : {}),
     ...(props.watched
-      ? { color: WATCHED_ACCENT, opacity: 1 }
-      : { border: "1px solid hsl(var(--border))" }),
+      ? { color: WATCHED_ACCENT }
+      : {
+          color: "hsl(var(--muted-foreground))",
+          border: "1px solid hsl(var(--border))",
+        }),
   };
   return (
     <button
@@ -123,7 +135,7 @@ export function WatchedToggle(props: {
         setItemState.mutate({ itemId: props.itemId, state: target });
       }}
     >
-      <span aria-hidden="true">✓</span>
+      <span aria-hidden="true">watched</span>
     </button>
   );
 }
