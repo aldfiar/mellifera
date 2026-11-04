@@ -1227,11 +1227,13 @@ function MovieCard(props: {
 
   return (
     <div className="cardact-host relative flex h-full flex-col gap-2">
-      {/* The ✓ toggle (watched-states 2.3): a real <button> at the mark's
-          top-left slot — it lives OUTSIDE the Link (a button never nests
-          inside an anchor) as the ⋯ trigger's sibling, stopPropagation keeps
-          the click off the card's navigation. Watched: filled ✓ clickable at
-          rest; unwatched: the quiet outline under the disclosure law. */}
+      {/* The watched toggle (watched-states 2.3): a real <button> at the
+          card's top-right slot — the `watched` text chip sits LEFT of the ⋯
+          trigger as its sibling, and it lives OUTSIDE the Link (a button
+          never nests inside an anchor); stopPropagation keeps the click off
+          the card's navigation. Always visible in BOTH states — the
+          disclosure law is retired for this control: watched = the pastel
+          accent chip text; unwatched = quiet ghost text + a 1px ring. */}
       <WatchedToggle itemId={item.id} watched={watch.watched} />
       <Link
         to={`/items/${item.id}`}
@@ -1864,11 +1866,12 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
           );
           const title = itemTitle(item).title;
           return (
-            // The li hosts the card (watched-states 2.3): cardact-relative so
-            // the ✓ toggle positions at the mark's top-left slot, and the
-            // cardact-host so the toggle rides the ⋯ trigger's disclosure
-            // law. The button sits OUTSIDE the Link — a click on it never
-            // reaches the card's navigation.
+            // The li hosts the card (watched-states 2.3): cardact-host +
+            // relative so the watched text chip anchors at the card's
+            // top-right slot, LEFT of the ⋯ trigger (the host class also
+            // anchors the ⋯'s own corner slot; the chip is always visible in
+            // both states — no disclosure reveal). The button sits OUTSIDE
+            // the Link — a click on it never reaches the card's navigation.
             <li key={item.id} className="cardact-host relative">
               <WatchedToggle itemId={item.id} watched={watch.watched} />
               <Link

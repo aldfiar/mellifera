@@ -1233,8 +1233,8 @@ function IdentityBlock(props: {
   );
 
   // The element state (watched-states 2.3): a watched element's heading
-  // gains the ✓ beside the served display name, the name dimmed to the
-  // watched opacity. The SERVED item flag only — never derived.
+  // gains the watched chip beside the served display name, the name dimmed
+  // to the watched opacity. The SERVED item flag only — never derived.
   const watched = isWatchedElement(item.watched);
 
   return (
@@ -1253,11 +1253,11 @@ function IdentityBlock(props: {
                 {heading}
               </span>
             </h1>
-            {/* The ✓ toggle (watched-states 2.3): beside the served display
-                name, the law's always-visible inline variant (the heading is
-                no hover-card — the affordance must be visible at rest). The
-                button stays OUTSIDE the h1 so the heading's accessible name
-                remains the display name alone. */}
+            {/* The watched toggle (watched-states 2.3): beside the served
+                display name — the `watched` text chip as the always-visible
+                inline variant (no disclosure reveal; the affordance must be
+                visible at rest). The button stays OUTSIDE the h1 so the
+                heading's accessible name remains the display name alone. */}
             <WatchedToggle
               itemId={item.id}
               watched={watched}
