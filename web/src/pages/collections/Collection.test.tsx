@@ -1147,7 +1147,7 @@ describe("Collection — watched toggle (collections-ux 2.3)", () => {
     ]);
     renderCollection("1");
 
-    // The unwatched card's outline ✓ writes {"state": "watched"}…
+    // The unwatched card's ghost chip writes {"state": "watched"}…
     const unwatchedToggle = await screen.findByRole("button", { name: "Unwatched" });
     fireEvent.click(unwatchedToggle);
     await waitFor(() => expect(puts.length).toBe(1));
@@ -1158,7 +1158,7 @@ describe("Collection — watched toggle (collections-ux 2.3)", () => {
     // collection grid, both cards still mounted.
     expect(screen.getByText("No Duration")).toBeDefined();
 
-    // The watched card's filled ✓ writes the flip: {"state": "unwatched"}.
+    // The watched card's accent chip writes the flip: {"state": "unwatched"}.
     fireEvent.click(screen.getByRole("button", { name: "Watched" }));
     await waitFor(() => expect(puts.length).toBe(2));
     expect(puts[1].url).toContain("/api/v1/items/itm_1_ws/state");

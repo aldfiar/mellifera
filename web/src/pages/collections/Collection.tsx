@@ -1122,8 +1122,9 @@ function MoviesBody(props: {
 
 // itemWatchState — one item card's tri-state read (watched-states 2.3): the
 // SERVED watched flag plus, for an UNwatched item, the served position over
-// the item's duration as the in-progress bar percent (D5: watched → ✓ +
-// dimmed title, NO bar; in progress → today's bar; new → clean). Rows come
+// the item's duration as the in-progress bar percent (D5: watched → the
+// `watched` chip + dimmed title, NO bar; in progress → today's bar; new →
+// clean). Rows come
 // from the shared ["progress"] cache (one fetch feeding every grid — the
 // include=watched query 2.1 wired), never a per-surface fetch. Pure: the
 // hook form below is the component-facing half.
@@ -1196,9 +1197,10 @@ function MovieCard(props: {
   // WRITE no longer rides it (the Mark-watched menu row is retired — the
   // WatchedToggle owns the state write through PUT /items/{id}/state).
   const duration = durationSeconds(item.document);
-  // The element state (watched-states 2.3): ✓ corner mark + dimmed title on
-  // a watched card (the ⋯ trigger owns the top-right corner, so the mark
-  // takes the top-left), today's in-progress bar on a started unwatched one.
+  // The element state (watched-states 2.3, amended by watched-toggle-label):
+  // the `watched` text chip at the card's top-right (LEFT of the ⋯ trigger,
+  // always visible) + dimmed title on a watched card, today's in-progress
+  // bar on a started unwatched one.
   const watch = useItemWatchState(item, duration);
   const chain = props.chain ?? [];
   const identify =
