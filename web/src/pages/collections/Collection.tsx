@@ -1197,10 +1197,10 @@ function MovieCard(props: {
   // WRITE no longer rides it (the Mark-watched menu row is retired — the
   // WatchedToggle owns the state write through PUT /items/{id}/state).
   const duration = durationSeconds(item.document);
-  // The element state (watched-states 2.3, amended by watched-toggle-label):
-  // the `watched` text chip at the card's top-right (LEFT of the ⋯ trigger,
-  // always visible) + dimmed title on a watched card, today's in-progress
-  // bar on a started unwatched one.
+  // The element state (watched-states 2.3, amended by watched-signal-
+  // refinement): the ✓ glyph toggle in the card's meta row (below the Link,
+  // inside the border box — D2) + dimmed title on a watched card, the
+  // in-progress bar on a started one.
   const watch = useItemWatchState(item, duration);
   const chain = props.chain ?? [];
   const identify =
@@ -1228,19 +1228,21 @@ function MovieCard(props: {
       : undefined;
 
   return (
-    <div className="cardact-host relative flex h-full flex-col gap-2">
-      {/* The watched toggle (watched-states 2.3): a real <button> at the
-          card's top-right slot — the `watched` text chip sits LEFT of the ⋯
-          trigger as its sibling, and it lives OUTSIDE the Link (a button
-          never nests inside an anchor); stopPropagation keeps the click off
-          the card's navigation. Always visible in BOTH states — the
-          disclosure law is retired for this control: watched = the pastel
-          accent chip text; unwatched = quiet ghost text + a 1px ring. */}
-      <WatchedToggle itemId={item.id} watched={watch.watched} />
+    <div className="cardact-host relative flex h-full flex-col gap-2 rounded-md border hover:bg-accent">
+      {/* The card chrome (border/rounded/hover) moved to the host (D2) — the
+          Link is now chrome-free padding + the stretchable column, and the
+          card-meta-row below carries the meta line, the in-progress bar and
+          the watched toggle as flow children. The row ALWAYS renders — it is
+          the toggle's anchor (empty meta → the toggle alone at the same
+          slot). The button lives OUTSIDE the Link (a button never nests
+          inside an anchor); stopPropagation keeps its click off the card's
+          navigation. Visibility is CSS law (3.1): the unwatched glyph hides
+          at rest and reveals on host hover/focus — scoped to this row only,
+          never the page heading. */}
       <Link
         to={`/items/${item.id}`}
         state={handoff}
-        className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
+        className="flex flex-1 min-h-0 flex-col gap-2 px-3 pt-3"
       >
         {hasThumb ? (
           <span
@@ -1262,11 +1264,14 @@ function MovieCard(props: {
         {unidentified ? (
           <span className="text-xs text-muted-foreground">Not identified</span>
         ) : null}
+      </Link>
+      <div className="card-meta-row">
         {meta !== "" ? (
           <span className="text-xs text-muted-foreground">{meta}</span>
         ) : null}
         {watch.percent !== null ? <InProgressBar percent={watch.percent} /> : null}
-      </Link>
+        <WatchedToggle itemId={item.id} watched={watch.watched} />
+      </div>
       <CardActions
         triggerLabel={`Actions for ${title}`}
         pending={pending}
@@ -1868,14 +1873,18 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
           );
           const title = itemTitle(item).title;
           return (
-            // The li hosts the card (watched-states 2.3): cardact-host +
-            // relative so the watched text chip anchors at the card's
-            // top-right slot, LEFT of the ⋯ trigger (the host class also
-            // anchors the ⋯'s own corner slot; the chip is always visible in
-            // both states — no disclosure reveal). The button sits OUTSIDE
-            // the Link — a click on it never reaches the card's navigation.
-            <li key={item.id} className="cardact-host relative">
-              <WatchedToggle itemId={item.id} watched={watch.watched} />
+            // The li hosts the card (watched-signal-refinement, D2):
+            // cardact-host + the card chrome (border/rounded/hover) + the
+            // flex column that lets the Link's flex-1 min-h-0 stretch. The
+            // card-meta-row below the Link carries the in-progress bar and
+            // the watched ✓ glyph as flow children — the row ALWAYS renders
+            // (it is the toggle's anchor; this grid has no meta line). The
+            // button sits OUTSIDE the Link — a click on it never reaches the
+            // card's navigation.
+            <li
+              key={item.id}
+              className="cardact-host relative flex flex-col rounded-md border hover:bg-accent"
+            >
               <Link
                 to={`/items/${item.id}`}
                 state={browseState(
@@ -1883,7 +1892,7 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
                   index,
                   props.libraryId,
                 )}
-                className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
+                className="flex flex-1 min-h-0 flex-col gap-2 px-3 pt-3"
               >
                 <span
                   className={cn(
@@ -1898,10 +1907,13 @@ function ItemGrid(props: { libraryId: number }): ReactElement {
                   <span className="chip">{item.media_type}</span>
                   <span className="chip">{item.status}</span>
                 </span>
+              </Link>
+              <div className="card-meta-row">
                 {watch.percent !== null ? (
                   <InProgressBar percent={watch.percent} />
                 ) : null}
-              </Link>
+                <WatchedToggle itemId={item.id} watched={watch.watched} />
+              </div>
             </li>
           );
         })}
