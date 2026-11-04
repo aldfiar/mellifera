@@ -42,23 +42,32 @@ func principalHash(credential string) string {
 }
 
 // relayClaim hands the oldest claimable relay job (pending, or a claim whose
-// lease lapsed) to the calling principal — ANY authenticated one, admin or
-// paired device: the browse group is the only gate and the handler never
-// forks on Role (ruled OQ-1). Pure delegation (INV1): the credential hash
-// comes from the middleware-validated Authorization header (the same
-// credential authN resolved), the nil-safe Deps.RelayClaim closure owns the
-// claim mechanics and lease stamping cmd-side, and the returned relay.RelayJob
-// is projected verbatim into the descriptor. Nothing claimable is found=false
-// with a nil error — the loser of a race and the empty queue read identically
-// → 204, the caller never spins; a closure error is a real failure → 500;
-// nil closure → 503.
+// lease lapsed) to the calling principal — ANY authenticated one, admin,
+// paired device, or user session: the browse group is the only gate and the
+// handler never forks on Role (ruled OQ-1). The pool IS visibility-scoped
+// (l6-accounts 11.1): the handler resolves the claimant's Viewer (viewerFor —
+// the same one-resolve-per-request seam every content handler uses) and hands
+// it to the closure, whose store-side conjunct is
+// `(library_id = 0 OR library_id IN (claimant's visible set))` — the
+// title-free 0-jobs (search) stay claimable by everyone, a library-backed job
+// only crosses for a claimant whose grant union carries it, and an invisible
+// library's job reads as nothing claimable (204 — invisible ≡ absent, no
+// descriptor and no title ever surfaces). See-all viewers (env admin,
+// legacy/unbound device) keep the unfiltered pool. Pure delegation (INV1):
+// the credential hash comes from the middleware-validated Authorization
+// header (the same credential authN resolved), the nil-safe Deps.RelayClaim
+// closure owns the claim mechanics and lease stamping cmd-side, and the
+// returned relay.RelayJob is projected verbatim into the descriptor. Nothing
+// claimable is found=false with a nil error — the loser of a race, the empty
+// queue, and the scoped-out pool read identically → 204, the caller never
+// spins; a closure error is a real failure → 500; nil closure → 503.
 //
 // @Summary      Claim a relay fetch job
 // @Tags         relay
 // @ID           relay-claim
 // @Router       /relay/claim [post]
-// @Success      200 {object} relayClaimResponse "descriptor for the claimed job"
-// @Success      204 "nothing claimable"
+// @Success      200 {object} relayClaimResponse "descriptor for the claimed job (within the caller's visible libraries)"
+// @Success      204 "nothing claimable (including nothing within the caller's visible libraries)"
 // @Failure      401 {object} errorBody
 // @Failure      500 {object} errorBody
 // @Failure      503 {object} errorBody
@@ -67,7 +76,12 @@ func (a *app) relayClaim(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "relay endpoint disabled", false)
 		return
 	}
-	job, found, err := a.deps.RelayClaim(r.Context(), principalHash(bearerCredentials(r.Header.Get("Authorization"))))
+	// The claimant's Viewer rides the carrier: viewerFor resolves once and
+	// stashes (or memoizes an earlier resolution), and the returned context
+	// carries the stash downstream — the closure gets THAT context, the
+	// calling pattern every content handler follows.
+	v, ctx := a.viewerFor(r)
+	job, found, err := a.deps.RelayClaim(ctx, principalHash(bearerCredentials(r.Header.Get("Authorization"))), v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return

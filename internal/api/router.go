@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/art"
 	"github.com/mellifera/mellifera/internal/identity"
 	"github.com/mellifera/mellifera/internal/pairing"
@@ -167,14 +168,19 @@ type Deps struct {
 	// to the requesting principal — any authenticated one, admin+client (ruled
 	// OQ-1); the browse group is the only gate. principalHash is the SHA-256
 	// hex of the caller's bearer credential (the pairing hashToken recipe —
-	// the SAME identity the result route's guard re-derives); the claim and
-	// lease stamping happen inside the closure cmd-side. found=false with a
-	// nil error (empty queue or lost race) is not an error → the handler
-	// answers 204. Returns the raw relay.RelayJob — the descriptor source the
-	// handler projects to the wire verbatim. Nil-safe (503 when nil),
+	// the SAME identity the result route's guard re-derives); v is the
+	// claimant's resolved Viewer (the handler passes viewerFor's resolution —
+	// l6-accounts 11.1): the store scopes the claim pool to its visible set
+	// (`(library_id = 0 OR library_id IN (…))`), so a job from an invisible
+	// library is never handed out. The claim and lease stamping happen inside
+	// the closure cmd-side. found=false with a nil error (empty queue, lost
+	// race, or a pool empty under v's conjunct) is not an error → the handler
+	// answers 204 — an invisible job leaks neither descriptor nor title.
+	// Returns the raw relay.RelayJob — the descriptor source the handler
+	// projects to the wire verbatim. Nil-safe (503 when nil),
 	// mirroring Reenrich/SearchSource; built in cmd/mellifera over
 	// enrich.Relay.Claim (INV2 — api never imports enrich).
-	RelayClaim func(ctx context.Context, principalHash string) (relay.RelayJob, bool, error)
+	RelayClaim func(ctx context.Context, principalHash string, v access.Viewer) (relay.RelayJob, bool, error)
 	// RelayResult is the client-relayed-fetch result closure (D7): accepts ONE
 	// claimed relay job's reported outcome from the principal that claimed it
 	// — built in cmd/mellifera over enrich.Relay.Ingest (INV2 — api never

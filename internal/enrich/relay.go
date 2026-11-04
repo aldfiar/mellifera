@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -159,15 +160,19 @@ func (r *Relay) Enqueue(ctx context.Context, plan []relay.PlanSpec, purpose, row
 
 // Claim hands the oldest claimable relay job to one client principal: pending,
 // or claimed with an expired lease (lazy expiry — the store's ONE conditional
-// UPDATE does the exclusive pick, D3; Relay adds no locking of its own). The
-// claim is stamped with the principal's hash and a lease_until of now plus the
-// configured TTL; the returned RelayJob IS the descriptor the api layer
-// projects to the wire (id, purpose, plan — 4.1). Nothing claimable is
-// not-found (false, nil error) — the loser of a race and the empty queue read
-// identically, and the caller never spins.
-func (r *Relay) Claim(ctx context.Context, principalHash string) (relay.RelayJob, bool, error) {
+// UPDATE does the exclusive pick, D3; Relay adds no locking of its own). v is
+// the claimant's resolved Viewer (l6-accounts 11.1): the store scopes the
+// claim pool to its visible set — `(library_id = 0 OR library_id IN (…))` —
+// so an invisible library's job is never handed out, while the title-free
+// 0-jobs stay claimable by any principal. The claim is stamped with the
+// principal's hash and a lease_until of now plus the configured TTL; the
+// returned RelayJob IS the descriptor the api layer projects to the wire
+// (id, purpose, plan — 4.1). Nothing claimable — an empty queue, a lost
+// race, or a pool empty UNDER v's conjunct — is not-found (false, nil
+// error), and the caller never spins.
+func (r *Relay) Claim(ctx context.Context, principalHash string, v access.Viewer) (relay.RelayJob, bool, error) {
 	t := now()
-	job, found, err := r.Store.ClaimOldestRelayJob(ctx, principalHash, t, t.Add(r.lease()))
+	job, found, err := r.Store.ClaimOldestRelayJob(ctx, principalHash, v, t, t.Add(r.lease()))
 	if err != nil {
 		return relay.RelayJob{}, false, fmt.Errorf("enrich: relay claim: %w", err)
 	}

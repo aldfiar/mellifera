@@ -17,6 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
@@ -67,15 +70,15 @@ func seedRelayJob(t *testing.T, st *store.Store) int64 {
 var relayClaimCalls []string
 
 // relayClaimClosure is the cmd/mellifera closure's exact delegation shape
-// (task 4.3): the enrich Relay.Claim forwards to the store's ONE conditional
-// UPDATE with the clock and lease the composition root owns — the test builds
-// it straight over the store seam, one hop down, and records every principal
-// hash it is called with.
-func relayClaimClosure(st *store.Store) func(context.Context, string) (relay.RelayJob, bool, error) {
-	return func(ctx context.Context, principalHash string) (relay.RelayJob, bool, error) {
+// (task 4.3): the enrich Relay.Claim forwards the claimant's Viewer to the
+// store's ONE conditional UPDATE alongside the clock and lease the
+// composition root owns — the test builds it straight over the store seam,
+// one hop down, and records every principal hash it is called with.
+func relayClaimClosure(st *store.Store) func(context.Context, string, access.Viewer) (relay.RelayJob, bool, error) {
+	return func(ctx context.Context, principalHash string, v access.Viewer) (relay.RelayJob, bool, error) {
 		relayClaimCalls = append(relayClaimCalls, principalHash)
 		now := time.Now()
-		return st.ClaimOldestRelayJob(ctx, principalHash, now, now.Add(2*time.Minute))
+		return st.ClaimOldestRelayJob(ctx, principalHash, v, now, now.Add(2*time.Minute))
 	}
 }
 
@@ -223,7 +226,7 @@ func TestRelayClaim(t *testing.T) {
 
 	t.Run("closure_error_is_500_internal", func(t *testing.T) {
 		st := openAPIStore(t)
-		h := New(Deps{AdminToken: adminToken, Store: st, RelayClaim: func(context.Context, string) (relay.RelayJob, bool, error) {
+		h := New(Deps{AdminToken: adminToken, Store: st, RelayClaim: func(context.Context, string, access.Viewer) (relay.RelayJob, bool, error) {
 			return relay.RelayJob{}, false, context.DeadlineExceeded
 		}})
 		resp := doRequest(t, h, http.MethodPost, path, "", adminToken)
@@ -307,6 +310,141 @@ func TestRelayClaim(t *testing.T) {
 	})
 }
 
+// seedRelayJobInLibrary inserts one pending enrich job bound to libraryID
+// with relaySeededPlan and returns its minted id — seedRelayJob's
+// library-carrying generalization for the visibility tests (the store row's
+// library_id is what the claim conjunct gates on; the plan is irrelevant).
+func seedRelayJobInLibrary(t *testing.T, st *store.Store, libraryID int64) int64 {
+	t.Helper()
+	id, err := st.CreateRelayJob(context.Background(), relay.RelayJob{
+		Purpose:   "enrich",
+		RowID:     "itm_relay_lib",
+		LibraryID: libraryID,
+		PluginID:  "tmdb",
+		Plan:      relaySeededPlan,
+	})
+	if err != nil {
+		t.Fatalf("CreateRelayJob lib %d: %v", libraryID, err)
+	}
+	return id
+}
+
+// TestRelayClaimVisibility pins the claim surface's visibility scoping
+// end-to-end (l6-accounts 11.1): the handler resolves the claimant's Viewer
+// (the carrier seam — principalViewerInjector seeds it the way the auth chain
+// produces it) and the closure's store conjunct
+// `(library_id = 0 OR library_id IN (…))` scopes the pool to it. A scoped
+// principal never receives an invisible library's job — the second claim is
+// 204, invisible ≡ absent on the wire — yet the job stays parked and
+// claimable; a title-free 0-job crosses for a grant-less principal; and the
+// env-admin's see-all pass reaches everything through the REAL authN mapping.
+// The two-eligible-claimants race is pinned store-side
+// (store.TestRelayClaimVisibility/single_claimant_race_intact) — the atomic
+// UPDATE is the store's mechanism, the handler only threads the Viewer in.
+func TestRelayClaimVisibility(t *testing.T) {
+	path := "/api/v1/relay/claim"
+
+	// scopedRouter mounts the REAL /api/v1 routes behind the seam's two
+	// injectors (the handlers_viewer_test posture): the CLIENT principal for
+	// authZ, the caller's Viewer on the carrier for viewerFor's memo.
+	scopedRouter := func(st *store.Store, scope access.Viewer) http.Handler {
+		h := &app{deps: Deps{AdminToken: adminToken, Store: st, RelayClaim: relayClaimClosure(st)}}
+		r := chi.NewRouter()
+		r.Use(principalInjector(RoleClient), principalViewerInjector(scope))
+		r.Route("/api/v1", func(r chi.Router) { mountV1Routes(r, h) })
+		return r
+	}
+	claimID := func(t *testing.T, h http.Handler, token string) (int, int64, string) {
+		t.Helper()
+		resp := doRequest(t, h, http.MethodPost, path, "", token)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return resp.StatusCode, 0, ""
+		}
+		var desc struct {
+			ID      int64  `json:"id"`
+			Purpose string `json:"purpose"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&desc); err != nil {
+			t.Fatalf("decode descriptor: %v", err)
+		}
+		return resp.StatusCode, desc.ID, desc.Purpose
+	}
+
+	t.Run("scoped_principal_never_receives_an_invisible_librarys_job", func(t *testing.T) {
+		st := openAPIStore(t)
+		hidden := seedRelayJobInLibrary(t, st, 7) // seeded first — the OLDEST job
+		visible := seedRelayJob(t, st)            // lib 3, inside the set
+		h := scopedRouter(st, access.User(42, []int64{3}, nil))
+
+		// The first claim skips the hidden oldest job and hands the in-set one.
+		status, id, purpose := claimID(t, h, "device-cred")
+		if status != http.StatusOK {
+			t.Fatalf("first claim status = %d, want %d", status, http.StatusOK)
+		}
+		if id != visible || purpose != "enrich" {
+			t.Fatalf("descriptor id/purpose = %d/%q, want the in-set job %d (hidden %d skipped)", id, purpose, visible, hidden)
+		}
+
+		// The second claim finds nothing FOR THIS PRINCIPAL: the visible job
+		// is leased, the hidden one is scoped out — 204 with no descriptor and
+		// no title (invisible ≡ absent).
+		second := doRequest(t, h, http.MethodPost, path, "", "device-cred")
+		defer second.Body.Close()
+		if second.StatusCode != http.StatusNoContent {
+			t.Fatalf("second claim status = %d, want %d", second.StatusCode, http.StatusNoContent)
+		}
+
+		// The hidden job is PARKED, not dropped: past the lease, the admin's
+		// unfiltered pass (store-level see-all) claims exactly it.
+		now := time.Now()
+		job, found, err := st.ClaimOldestRelayJob(context.Background(), "admin-hash", access.Admin(),
+			now.Add(3*time.Minute), now.Add(5*time.Minute))
+		if err != nil || !found || job.ID != hidden {
+			t.Fatalf("parked hidden job = found=%v id=%d err=%v, want %d", found, job.ID, err, hidden)
+		}
+	})
+
+	t.Run("zero_job_crosses_for_a_grantless_principal", func(t *testing.T) {
+		st := openAPIStore(t)
+		// A search job — library_id 0, carries no titles. Provably safe for
+		// every authenticated principal, INCLUDING the fail-closed shapes.
+		plan := []relay.PlanSpec{{Method: "GET", URL: "https://api.example.org/3/search/tv?query=x", TimeoutSeconds: 5}}
+		id, err := st.CreateRelayJob(context.Background(), relay.RelayJob{
+			Purpose: "search", PluginID: "shiki", Plan: plan,
+		})
+		if err != nil {
+			t.Fatalf("CreateRelayJob search: %v", err)
+		}
+		h := scopedRouter(st, access.User(42, nil, nil)) // the nil grant set
+
+		status, gotID, purpose := claimID(t, h, "device-cred")
+		if status != http.StatusOK {
+			t.Fatalf("claim status = %d, want %d", status, http.StatusOK)
+		}
+		if gotID != id || purpose != "search" {
+			t.Fatalf("descriptor id/purpose = %d/%q, want the 0-job %d/search", gotID, purpose, id)
+		}
+	})
+
+	t.Run("admin_sees_all_through_the_real_auth_mapping", func(t *testing.T) {
+		st := openAPIStore(t)
+		hidden := seedRelayJobInLibrary(t, st, 7)
+		// The REAL New wiring (authMiddleware mounted, nil Identity → the
+		// runtime-legacy posture): the env-admin resolves the see-all viewer
+		// through viewerFor and the conjunct is empty — the oldest job,
+		// library-backed or not, is handed out.
+		h := New(Deps{AdminToken: adminToken, Store: st, RelayClaim: relayClaimClosure(st)})
+		status, id, _ := claimID(t, h, adminToken)
+		if status != http.StatusOK {
+			t.Fatalf("admin claim status = %d, want %d", status, http.StatusOK)
+		}
+		if id != hidden {
+			t.Fatalf("admin claim id = %d, want the library-backed job %d", id, hidden)
+		}
+	})
+}
+
 // TestRelayClaimEmptyQueue pins the 204 half of the claim contract: nothing
 // claimable — a truly empty queue, or a queue whose only row is claimed under
 // a live lease — answers 204 with an EMPTY body, and no error envelope is
@@ -326,7 +464,7 @@ func TestRelayClaimEmptyQueue(t *testing.T) {
 			if tc.seed {
 				seedRelayJob(t, st)
 				now := time.Now()
-				if _, found, err := st.ClaimOldestRelayJob(context.Background(), relayHashToken("someone-else"), now, now.Add(2*time.Minute)); err != nil || !found {
+				if _, found, err := st.ClaimOldestRelayJob(context.Background(), relayHashToken("someone-else"), access.System(), now, now.Add(2*time.Minute)); err != nil || !found {
 					t.Fatalf("pre-claim: found=%v err=%v", found, err)
 				}
 			}
@@ -384,7 +522,7 @@ func relayResultClosure(st *store.Store) func(context.Context, int64, string, re
 func claimRelayFor(t *testing.T, st *store.Store, credential string, leaseUntil time.Time) int64 {
 	t.Helper()
 	now := time.Now()
-	job, found, err := st.ClaimOldestRelayJob(context.Background(), relayHashToken(credential), now, leaseUntil)
+	job, found, err := st.ClaimOldestRelayJob(context.Background(), relayHashToken(credential), access.System(), now, leaseUntil)
 	if err != nil || !found {
 		t.Fatalf("pre-claim: found=%v err=%v", found, err)
 	}

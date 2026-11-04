@@ -8,8 +8,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
 )
 
@@ -28,6 +30,18 @@ import (
 // exists anywhere on this path. The lease comparison is RFC3339Nano TEXT
 // ordering; its only skew is sub-second trailing-zero truncation — immaterial
 // at the minute-scale leases the caller hands out.
+//
+// The %s slot takes the claimant's visibility conjunct (relayClaimWhere): the
+// empty string for a see-all viewer — the predicate is then the pre-accounts
+// claim SQL byte-for-byte — or "(library_id = 0 OR library_id IN (?,?,…))"
+// for a scoped principal. The slot rides INSIDE the claimability subselect,
+// so a job outside the claimant's visible set is never picked: no descriptor
+// and no title can cross the conjunct, and an invisible library's job reads
+// as nothing-to-claim (invisible ≡ absent — the caller answers 204, learning
+// nothing about the parked row). When a conjunct is appended the claimability
+// OR is parenthesized first — AND binds tighter than OR, and the conjunct
+// must gate the WHOLE claimability, not just its pending half (a claimed row
+// whose lease lapses re-enters the pool under the same visibility law).
 const relayJobClaimSQL = `
 UPDATE relay_jobs SET
   state                = 'claimed',
@@ -36,13 +50,68 @@ UPDATE relay_jobs SET
   lease_until          = ?
 WHERE id = (
   SELECT id FROM relay_jobs
-  WHERE state = 'pending' OR (state = 'claimed' AND lease_until < ?)
+  WHERE %s
   ORDER BY id
   LIMIT 1
 )
 RETURNING id, purpose, row_id, library_id, plugin_id, plan, state,
   claim_principal_hash, claimed_at, lease_until, result, result_bytes,
   created_at, completed_at, consumed`
+
+// relayClaimableSQL is the claimability predicate every claimant shares: a
+// pending row, or a claimed row whose lease lapsed (lazy expiry — decided
+// inside the claim predicate, the pairing precedent).
+const relayClaimableSQL = "state = 'pending' OR (state = 'claimed' AND lease_until < ?)"
+
+// relayClaimWhere is the relay claim's visibility conjunct over relay_jobs
+// (l6-accounts 11.1 — the same scoping law the content reads apply through
+// visibleWhere, plus the 0-job disjunct). It returns the WHERE fragment to
+// splice into relayJobClaimSQL's %s slot plus the bound args to append after
+// the claim's own stamps.
+//
+// The conjunct is `(library_id = 0 OR library_id IN (claimant's visible
+// set))`: a 0-job (search — library_id 0) carries NO titles, so it is
+// provably safe to hand to any authenticated principal, while a
+// library-backed job must sit inside the claimant's grant union.
+//
+// Shapes, keyed on the SAME see-all discriminator as visibleWhere:
+//
+//   - see-all (Admin true: System, Admin, LegacyDevice) → ("", nil): the
+//     all-seeing pass is the DISTINCT empty-clause form, reachable only
+//     through v.Admin — never through a visible set's shape. The spliced SQL
+//     is byte-identical to pre-accounts.
+//   - scoped principal with a nil OR empty visible set → ("library_id = 0",
+//     nil): nil and empty are the SAME case — both mean "no grants". Fail
+//     closed: such a claimant sees only the title-free 0-jobs, never a
+//     library-backed row. The widening is structurally impossible — the
+//     empty grant set produces a NARROWER conjunct, never the empty clause.
+//   - scoped principal with a non-empty visible set → ("(library_id = 0 OR
+//     library_id IN (?,?,…))", args): the ids ride as BOUND int64 args,
+//     never interpolated SQL text (injection-safe, the visibleWhere law).
+//
+// Never exported — the claim path is its only consumer.
+func relayClaimWhere(v access.Viewer) (clause string, args []any) {
+	if v.Admin {
+		return "", nil
+	}
+	if len(v.VisibleLibraryIDs) == 0 {
+		return "library_id = 0", nil
+	}
+	var b strings.Builder
+	b.WriteString("(library_id = 0 OR library_id IN (")
+	for i := range v.VisibleLibraryIDs {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('?')
+	}
+	b.WriteString("))")
+	args = make([]any, len(v.VisibleLibraryIDs))
+	for i, id := range v.VisibleLibraryIDs {
+		args[i] = id
+	}
+	return b.String(), args
+}
 
 // CreateRelayJob inserts one pending job row and returns its minted id. The
 // plan is marshaled to the JSON blob column; state/consumed/result ride the
@@ -75,15 +144,28 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 }
 
 // ClaimOldestRelayJob claims the oldest claimable job for principalHash: the
-// single conditional UPDATE in relayJobClaimSQL picks and flips the row
-// atomically, so exactly one concurrent claimant wins and every loser reads
-// not-found (found=false, nil error) — the caller never spins. now is the
-// caller's clock (stamps claimed_at, bounds lease expiry); leaseUntil is the
-// handout the caller computes from its TTL.
-func (s *Store) ClaimOldestRelayJob(ctx context.Context, principalHash string, now, leaseUntil time.Time) (relay.RelayJob, bool, error) {
-	rows, err := s.db.QueryContext(ctx, relayJobClaimSQL,
+// single conditional UPDATE (relayJobClaimSQL, its %s slot spliced with
+// v's relayClaimWhere conjunct) picks and flips the row atomically, so
+// exactly one concurrent claimant wins and every loser reads not-found
+// (found=false, nil error) — the caller never spins. The claim pool is
+// scoped to v's visible set (l6-accounts 11.1): a job from a library outside
+// it is never handed out — it reads as nothing claimable, and stays parked
+// for principals whose set carries it. See-all viewers (v.Admin) claim the
+// unfiltered pool, byte-identical to pre-accounts. now is the caller's clock
+// (stamps claimed_at, bounds lease expiry); leaseUntil is the handout the
+// caller computes from its TTL.
+func (s *Store) ClaimOldestRelayJob(ctx context.Context, principalHash string, v access.Viewer, now, leaseUntil time.Time) (relay.RelayJob, bool, error) {
+	clause, visArgs := relayClaimWhere(v)
+	claimable := relayClaimableSQL
+	if clause != "" {
+		// Parenthesize the claimability OR before ANDing the conjunct: the
+		// visibility gate must cover both halves (pending AND lapsed-lease).
+		claimable = "(" + claimable + ") AND " + clause
+	}
+	args := append([]any{
 		principalHash, formatTime(now), formatTime(leaseUntil), formatTime(now),
-	)
+	}, visArgs...)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(relayJobClaimSQL, claimable), args...)
 	if err != nil {
 		return relay.RelayJob{}, false, fmt.Errorf("store: claim relay job: %w", err)
 	}

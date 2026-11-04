@@ -417,7 +417,7 @@ func claimAndIngest(t *testing.T, r *Relay, result relay.RelayResult, stop <-cha
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		job, found, err := r.Claim(context.Background(), "test-principal")
+		job, found, err := r.Claim(context.Background(), "test-principal", access.System())
 		if err != nil {
 			t.Errorf("relay claim: %v", err)
 			return
@@ -666,7 +666,7 @@ func TestSearchRelayExpiresToUpstreamError(t *testing.T) {
 		go func() {
 			deadline := time.Now().Add(2 * time.Second)
 			for {
-				_, found, err := r.Claim(context.Background(), "test-principal")
+				_, found, err := r.Claim(context.Background(), "test-principal", access.System())
 				if err != nil {
 					t.Errorf("relay claim: %v", err)
 					return

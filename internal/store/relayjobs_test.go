@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
 	"reflect"
 	"sync"
@@ -78,7 +79,7 @@ func TestRelayJobCreate_ClaimRoundTrip(t *testing.T) {
 			t.Fatalf("CreateRelayJob id = %d, want > 0", id)
 		}
 
-		job, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", relayTestBase, relayTestBase.Add(relayTestLease))
+		job, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", access.System(), relayTestBase, relayTestBase.Add(relayTestLease))
 		if err != nil {
 			t.Fatalf("ClaimOldestRelayJob: %v", err)
 		}
@@ -108,7 +109,7 @@ func TestRelayJobCreate_ClaimRoundTrip(t *testing.T) {
 		}
 
 		// A still-live lease is NOT re-claimable: a second principal finds nothing.
-		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-b",
+		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-b", access.System(),
 			relayTestBase.Add(time.Minute), relayTestBase.Add(time.Minute).Add(relayTestLease)); err != nil || found {
 			t.Fatalf("claim on live lease = found=%v err=%v, want false/nil", found, err)
 		}
@@ -118,7 +119,7 @@ func TestRelayJobCreate_ClaimRoundTrip(t *testing.T) {
 		fresh := openStore(t)
 		first := seedRelayJob(t, fresh, "itm_old", "tmdb")
 		seedRelayJob(t, fresh, "itm_new", "tmdb")
-		job, found, err := fresh.ClaimOldestRelayJob(ctx, "hash-a", relayTestBase, relayTestBase.Add(relayTestLease))
+		job, found, err := fresh.ClaimOldestRelayJob(ctx, "hash-a", access.System(), relayTestBase, relayTestBase.Add(relayTestLease))
 		if err != nil || !found {
 			t.Fatalf("claim oldest = found=%v err=%v, want the first-seeded job", found, err)
 		}
@@ -135,7 +136,7 @@ func TestRelayJobCreate_ClaimRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateRelayJob search: %v", err)
 		}
-		job, found, err := s.ClaimOldestRelayJob(ctx, "hash-s",
+		job, found, err := s.ClaimOldestRelayJob(ctx, "hash-s", access.System(),
 			relayTestBase.Add(2*time.Minute), relayTestBase.Add(2*time.Minute).Add(relayTestLease))
 		if err != nil || !found {
 			t.Fatalf("claim search job = found=%v err=%v", found, err)
@@ -184,7 +185,7 @@ func TestRelayJobClaimRace(t *testing.T) {
 					defer wg.Done()
 					<-start
 					job, found, err := s.ClaimOldestRelayJob(ctx,
-						fmt.Sprintf("hash-%d", principal),
+						fmt.Sprintf("hash-%d", principal), access.System(),
 						relayTestBase, relayTestBase.Add(relayTestLease))
 					if err != nil {
 						t.Errorf("claimant %d: %v", principal, err)
@@ -225,7 +226,7 @@ func TestRelayJobLeaseReclaim(t *testing.T) {
 	s := openStore(t)
 	id := seedRelayJob(t, s, "itm_re", "tmdb")
 
-	if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", relayTestBase, relayTestBase.Add(relayTestLease)); err != nil || !found {
+	if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", access.System(), relayTestBase, relayTestBase.Add(relayTestLease)); err != nil || !found {
 		t.Fatalf("first claim = found=%v err=%v", found, err)
 	}
 
@@ -240,7 +241,7 @@ func TestRelayJobLeaseReclaim(t *testing.T) {
 	}
 	for _, tc := range steps {
 		t.Run(tc.name, func(t *testing.T) {
-			job, found, err := s.ClaimOldestRelayJob(ctx, "hash-b", tc.now, tc.now.Add(relayTestLease))
+			job, found, err := s.ClaimOldestRelayJob(ctx, "hash-b", access.System(), tc.now, tc.now.Add(relayTestLease))
 			if err != nil {
 				t.Fatalf("claim at %v: %v", tc.now, err)
 			}
@@ -292,7 +293,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := openStore(t)
 			id := seedRelayJob(t, s, "itm_g", "tmdb")
-			if _, found, err := s.ClaimOldestRelayJob(ctx, tc.claimHash, t0, leaseUntil); err != nil || !found {
+			if _, found, err := s.ClaimOldestRelayJob(ctx, tc.claimHash, access.System(), t0, leaseUntil); err != nil || !found {
 				t.Fatalf("setup claim = found=%v err=%v", found, err)
 			}
 
@@ -303,7 +304,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 				}
 				// The refused complete left the row claimed and untouched: past the
 				// lease it is claimable again — by the (different) next principal.
-				job, found, err := s.ClaimOldestRelayJob(ctx, "hash-c",
+				job, found, err := s.ClaimOldestRelayJob(ctx, "hash-c", access.System(),
 					leaseUntil.Add(time.Minute), leaseUntil.Add(3*time.Minute))
 				if err != nil || !found || job.ID != id {
 					t.Fatalf("refused complete must leave the job reclaimable: found=%v id=%d err=%v", found, job.ID, err)
@@ -315,7 +316,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 			}
 
 			// A done job left the claimable set.
-			if _, found, _ := s.ClaimOldestRelayJob(ctx, "hash-c",
+			if _, found, _ := s.ClaimOldestRelayJob(ctx, "hash-c", access.System(),
 				leaseUntil.Add(time.Minute), leaseUntil.Add(3*time.Minute)); found {
 				t.Fatalf("done job was re-claimable")
 			}
@@ -356,7 +357,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 	t.Run("failed_state_roundtrip", func(t *testing.T) {
 		s := openStore(t)
 		id := seedRelayJob(t, s, "itm_f", "tmdb")
-		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", t0, leaseUntil); err != nil || !found {
+		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", access.System(), t0, leaseUntil); err != nil || !found {
 			t.Fatalf("setup claim = found=%v err=%v", found, err)
 		}
 		failed := relay.RelayResult{HTTPStatus: 502, Error: "dial tcp: connection refused"}
@@ -435,7 +436,7 @@ func TestRelayJobCountRounds(t *testing.T) {
 	failRound := func(rowID, pluginID string) {
 		t.Helper()
 		id := seedRelayJob(t, s, rowID, pluginID)
-		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", t0, t0.Add(relayTestLease)); err != nil || !found {
+		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", access.System(), t0, t0.Add(relayTestLease)); err != nil || !found {
 			t.Fatalf("setup claim %s/%s = found=%v err=%v", rowID, pluginID, found, err)
 		}
 		if err := s.CompleteRelayJob(ctx, id, "hash-a", "failed",
@@ -454,7 +455,7 @@ func TestRelayJobCountRounds(t *testing.T) {
 	failRound("itm_k", "shiki")    // ...another plugin's failure never counts
 	failRound("itm_other", "tmdb") // ...another row's failure never counts
 	doneID := seedRelayJob(t, s, "itm_k", "tmdb")
-	if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", t0.Add(relayTestLease), t0.Add(3*relayTestLease)); err != nil || !found {
+	if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", access.System(), t0.Add(relayTestLease), t0.Add(3*relayTestLease)); err != nil || !found {
 		t.Fatalf("setup claim done = found=%v err=%v", found, err)
 	}
 	if err := s.CompleteRelayJob(ctx, doneID, "hash-a", "done",
@@ -466,4 +467,178 @@ func TestRelayJobCountRounds(t *testing.T) {
 	if err != nil || n != 2 {
 		t.Fatalf("CountRelayRounds(itm_k, tmdb) = %d, %v; want 2 failed rounds only", n, err)
 	}
+}
+
+// seedRelayJobInLibrary inserts one enrich-purpose job bound to libraryID
+// (0 = the title-free search-style job) and returns its minted id — the
+// visibility tests' seeder (seedRelayJob's library-carrying generalization).
+func seedRelayJobInLibrary(t *testing.T, s *Store, rowID string, libraryID int64) int64 {
+	t.Helper()
+	id, err := s.CreateRelayJob(context.Background(), relay.RelayJob{
+		Purpose:   "enrich",
+		RowID:     rowID,
+		LibraryID: libraryID,
+		PluginID:  "tmdb",
+		Plan:      []relay.PlanSpec{{Method: "GET", URL: "https://upstream.example/" + rowID, TimeoutSeconds: 10}},
+		CreatedAt: relayTestBase,
+	})
+	if err != nil {
+		t.Fatalf("CreateRelayJob %s lib %d: %v", rowID, libraryID, err)
+	}
+	return id
+}
+
+// TestRelayClaimVisibility pins the claim conjunct's visibility law
+// (l6-accounts 11.1 — the store's ONE conditional UPDATE scoped by the
+// claimant's Viewer): a job from a library outside the claimant's visible set
+// is never handed out (it reads as nothing claimable — invisible ≡ absent),
+// a title-free 0-job stays claimable by EVERY authenticated principal
+// including grant-less ones (nil and empty sets fail closed to 0-jobs only),
+// a visible-set claim hands out the in-set job oldest-first, and the
+// single-claimant race survives the conjunct — two eligible claimants, one
+// winner.
+func TestRelayClaimVisibility(t *testing.T) {
+	ctx := context.Background()
+	leaseUntil := relayTestBase.Add(relayTestLease)
+
+	t.Run("invisible_librarys_job_never_handed_out", func(t *testing.T) {
+		s := openStore(t)
+		hidden := seedRelayJobInLibrary(t, s, "itm_hidden", 7)   // oldest (lowest id)
+		visible := seedRelayJobInLibrary(t, s, "itm_visible", 3) // newer, IN the set
+		scoped := access.User(42, []int64{3}, nil)
+
+		// The scoped claimant's first claim skips the hidden oldest job and
+		// hands out the in-set one: oldest-first holds WITHIN the visible set.
+		job, found, err := s.ClaimOldestRelayJob(ctx, "hash-u", scoped, relayTestBase, leaseUntil)
+		if err != nil || !found {
+			t.Fatalf("scoped claim = found=%v err=%v, want the visible-set job", found, err)
+		}
+		if job.ID != visible {
+			t.Fatalf("scoped claim handed id %d, want the in-set job %d (hidden %d skipped)", job.ID, visible, hidden)
+		}
+
+		// With the in-set job claimed, the pool is EMPTY for this claimant:
+		// the hidden job is never handed out — no descriptor, no title leak.
+		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-u", scoped, relayTestBase.Add(time.Minute), relayTestBase.Add(time.Minute).Add(relayTestLease)); err != nil || found {
+			t.Fatalf("invisible job handed to a principal outside its set: found=%v err=%v", found, err)
+		}
+
+		// ...yet the hidden job is PARKED, not dropped: a principal whose
+		// visible set carries it (the admin's unfiltered pass) claims it.
+		job, found, err = s.ClaimOldestRelayJob(ctx, "hash-a", access.Admin(), relayTestBase.Add(2*time.Minute), relayTestBase.Add(2*time.Minute).Add(relayTestLease))
+		if err != nil || !found || job.ID != hidden {
+			t.Fatalf("admin claim = found=%v id=%d err=%v, want the parked hidden job %d", found, job.ID, err, hidden)
+		}
+	})
+
+	t.Run("zero_job_claimable_by_every_authenticated_principal", func(t *testing.T) {
+		// A 0-job (library_id 0 — a search) carries no titles, so the conjunct
+		// admits it for every scope: granted, grant-less (empty AND nil — the
+		// explicit fail-closed shapes), and see-all.
+		scopes := []struct {
+			name string
+			v    access.Viewer
+		}{
+			{"granted_user", access.User(42, []int64{3}, nil)},
+			{"empty_grant_user", access.User(42, []int64{}, nil)},
+			{"nil_grant_user", access.User(42, nil, nil)},
+			{"admin", access.Admin()},
+		}
+		for _, tc := range scopes {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				s := openStore(t)
+				zero := seedRelayJobInLibrary(t, s, "srch_zero", 0)
+				job, found, err := s.ClaimOldestRelayJob(ctx, "hash-u", tc.v, relayTestBase, leaseUntil)
+				if err != nil || !found {
+					t.Fatalf("%s claim of the 0-job = found=%v err=%v, want it handed out", tc.name, found, err)
+				}
+				if job.ID != zero || job.LibraryID != 0 {
+					t.Fatalf("%s claim = id %d lib %d, want the 0-job %d", tc.name, job.ID, job.LibraryID, zero)
+				}
+			})
+		}
+	})
+
+	t.Run("grantless_principal_sees_only_zero_jobs", func(t *testing.T) {
+		s := openStore(t)
+		seedRelayJobInLibrary(t, s, "itm_hidden_a", 7)
+		seedRelayJobInLibrary(t, s, "itm_hidden_b", 3)
+		// Nil AND empty grant sets are the SAME fail-closed shape: only the
+		// 0-jobs — here, nothing at all, reading exactly like an empty queue.
+		for _, set := range [][]int64{nil, {}} {
+			if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-u", access.User(42, set, nil), relayTestBase, leaseUntil); err != nil || found {
+				t.Fatalf("grant-less claim (set %v) = found=%v err=%v, want false/nil", set, found, err)
+			}
+		}
+		// The library-backed jobs stayed parked and unclaimed: the admin
+		// claims the oldest one right after — no grant-less widening happened.
+		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", access.Admin(), relayTestBase.Add(time.Minute), relayTestBase.Add(time.Minute).Add(relayTestLease)); err != nil || !found {
+			t.Fatalf("admin claim after grant-less misses = found=%v err=%v, want the parked job", found, err)
+		}
+	})
+
+	t.Run("visible_set_claim_works", func(t *testing.T) {
+		s := openStore(t)
+		id := seedRelayJobInLibrary(t, s, "itm_vis", 3)
+		// The claim round-trips the in-set job verbatim — stamps, state, plan
+		// — exactly as an unfiltered claim would (the conjunct gates the pool,
+		// never the handout shape).
+		job, found, err := s.ClaimOldestRelayJob(ctx, "hash-u", access.User(42, []int64{3, 9}, nil), relayTestBase, leaseUntil)
+		if err != nil || !found {
+			t.Fatalf("visible-set claim = found=%v err=%v", found, err)
+		}
+		if job.ID != id || job.LibraryID != 3 || job.State != "claimed" || job.ClaimPrincipalHash != "hash-u" {
+			t.Fatalf("claimed job = %+v, want id=%d lib=3 claimed/hash-u", job, id)
+		}
+		if !job.ClaimedAt.Equal(relayTestBase) || !job.LeaseUntil.Equal(leaseUntil) {
+			t.Fatalf("claim stamps = %v/%v, want %v/%v", job.ClaimedAt, job.LeaseUntil, relayTestBase, leaseUntil)
+		}
+	})
+
+	t.Run("single_claimant_race_intact", func(t *testing.T) {
+		s := openStore(t)
+		seedRelayJobInLibrary(t, s, "itm_race_vis", 3)
+
+		// Two ELIGIBLE claimants (same visible set, distinct principal
+		// hashes) race on one in-set job: exactly one wins, the loser's
+		// 0-row update reads as not-found — the conjunct adds a WHERE term,
+		// never a second statement.
+		const claimants = 2
+		type outcome struct {
+			jobID int64
+			found bool
+		}
+		results := make(chan outcome, claimants)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for n := 0; n < claimants; n++ {
+			wg.Add(1)
+			go func(principal int) {
+				defer wg.Done()
+				<-start
+				job, found, err := s.ClaimOldestRelayJob(ctx,
+					fmt.Sprintf("hash-%d", principal), access.User(42, []int64{3}, nil),
+					relayTestBase, relayTestBase.Add(relayTestLease))
+				if err != nil {
+					t.Errorf("claimant %d: %v", principal, err)
+					return
+				}
+				results <- outcome{jobID: job.ID, found: found}
+			}(n)
+		}
+		close(start)
+		wg.Wait()
+		close(results)
+
+		winners := 0
+		for r := range results {
+			if r.found {
+				winners++
+			}
+		}
+		if winners != 1 {
+			t.Fatalf("concurrent eligible claims = %d winners, want exactly 1", winners)
+		}
+	})
 }

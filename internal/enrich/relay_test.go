@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -47,7 +48,7 @@ func relaySeedPlan() []relay.PlanSpec {
 // exposes) so the tests can assert the inserted row verbatim.
 func relayClaim(t *testing.T, s *store.Store) (relay.RelayJob, bool) {
 	t.Helper()
-	job, found, err := s.ClaimOldestRelayJob(context.Background(), "test-principal", time.Now(), time.Now().Add(time.Minute))
+	job, found, err := s.ClaimOldestRelayJob(context.Background(), "test-principal", access.System(), time.Now(), time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimOldestRelayJob: %v", err)
 	}
@@ -321,7 +322,7 @@ func relayHandoff(t *testing.T, r *Relay, purpose, rowID string, libraryID int64
 	if err := r.Enqueue(context.Background(), relaySeedPlan(), purpose, rowID, libraryID, pluginID, "network", "dial tcp: i/o timeout"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	job, found, err := r.Claim(context.Background(), principal)
+	job, found, err := r.Claim(context.Background(), principal, access.System())
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -355,7 +356,7 @@ func TestRelayClaim(t *testing.T) {
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_1", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
-		job, found, err := r.Claim(ctx, "principal-a")
+		job, found, err := r.Claim(ctx, "principal-a", access.System())
 		if err != nil || !found {
 			t.Fatalf("Claim: found=%v err=%v", found, err)
 		}
@@ -381,7 +382,7 @@ func TestRelayClaim(t *testing.T) {
 	t.Run("empty_queue_not_found", func(t *testing.T) {
 		s := relayTestStore(t)
 		r := &Relay{Store: s}
-		job, found, err := r.Claim(ctx, "principal-a")
+		job, found, err := r.Claim(ctx, "principal-a", access.System())
 		if err != nil || found {
 			t.Fatalf("Claim on empty queue: found=%v err=%v", found, err)
 		}
@@ -399,11 +400,11 @@ func TestRelayClaim(t *testing.T) {
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_2", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue #2: %v", err)
 		}
-		first, found, err := r.Claim(ctx, "principal-a")
+		first, found, err := r.Claim(ctx, "principal-a", access.System())
 		if err != nil || !found {
 			t.Fatalf("Claim #1: found=%v err=%v", found, err)
 		}
-		second, found, err := r.Claim(ctx, "principal-b")
+		second, found, err := r.Claim(ctx, "principal-b", access.System())
 		if err != nil || !found {
 			t.Fatalf("Claim #2: found=%v err=%v", found, err)
 		}
@@ -413,7 +414,7 @@ func TestRelayClaim(t *testing.T) {
 		if first.ClaimPrincipalHash != "principal-a" || second.ClaimPrincipalHash != "principal-b" {
 			t.Fatalf("each claim stamped its own principal: %q / %q", first.ClaimPrincipalHash, second.ClaimPrincipalHash)
 		}
-		if _, found, err := r.Claim(ctx, "principal-a"); err != nil || found {
+		if _, found, err := r.Claim(ctx, "principal-a", access.System()); err != nil || found {
 			t.Fatalf("drained queue must read not-found: found=%v err=%v", found, err)
 		}
 	})
@@ -424,12 +425,12 @@ func TestRelayClaim(t *testing.T) {
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_1", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
-		abandoned, found, err := r.Claim(ctx, "principal-a")
+		abandoned, found, err := r.Claim(ctx, "principal-a", access.System())
 		if err != nil || !found {
 			t.Fatalf("first Claim: found=%v err=%v", found, err)
 		}
 		time.Sleep(60 * time.Millisecond) // past the 25ms lease: the claim is now stale
-		retaken, found, err := r.Claim(ctx, "principal-b")
+		retaken, found, err := r.Claim(ctx, "principal-b", access.System())
 		if err != nil || !found {
 			t.Fatalf("re-claim after expiry: found=%v err=%v", found, err)
 		}
@@ -584,7 +585,7 @@ func TestRelayIngest(t *testing.T) {
 			t.Fatalf("expired claim must be refused with the 409 shape (wrapped ErrNoRows), got %v", err)
 		}
 		// Nothing was ingested: the expired row is back in the claimable pool.
-		retaken, found, err := r.Claim(ctx, "principal-b")
+		retaken, found, err := r.Claim(ctx, "principal-b", access.System())
 		if err != nil || !found || retaken.ID != job.ID {
 			t.Fatalf("expired job must be re-claimable: found=%v id=%d/%d err=%v", found, retaken.ID, job.ID, err)
 		}
