@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -496,11 +497,14 @@ var relayResultCalls []relayResultCall
 
 // relayResultClosure is the cmd/mellifera closure's exact delegation shape
 // (task 4.3): the enrich Relay.Ingest completes the claimed job through the
-// store's guard — SAME principal hash, LIVE lease, one conditional UPDATE —
-// picking done vs failed by the wire rule (error set → failed), and re-wraps
-// the store's refusal ("enrich: relay ingest %d: %w" over the store's wrapped
-// sql.ErrNoRows). The test builds it straight over the store seam, one hop
-// down (the relayClaimClosure posture), and records every (id, hash, result).
+// store's guard — SAME principal hash, LIVE lease, one conditional UPDATE
+// whose WHERE carries the claimant's CURRENT viewer's visibility conjunct
+// (the 11.2 re-check: the viewer rides the context carrier, read the same
+// access.FromContext way Ingest reads it) — picking done vs failed by the
+// wire rule (error set → failed), and re-wraps the store's refusal
+// ("enrich: relay ingest %d: %w" over the store's wrapped sql.ErrNoRows).
+// The test builds it straight over the store seam, one hop down (the
+// relayClaimClosure posture), and records every (id, hash, result).
 func relayResultClosure(st *store.Store) func(context.Context, int64, string, relay.RelayResult) error {
 	return func(ctx context.Context, id int64, principalHash string, result relay.RelayResult) error {
 		relayResultCalls = append(relayResultCalls, relayResultCall{id: id, hash: principalHash, result: result})
@@ -508,7 +512,7 @@ func relayResultClosure(st *store.Store) func(context.Context, int64, string, re
 		if result.Error != "" {
 			state = "failed"
 		}
-		if err := st.CompleteRelayJob(ctx, id, principalHash, state, result, time.Now()); err != nil {
+		if err := st.CompleteRelayJob(ctx, id, principalHash, state, access.FromContext(ctx), result, time.Now()); err != nil {
 			return fmt.Errorf("enrich: relay ingest %d: %w", id, err)
 		}
 		return nil
@@ -629,7 +633,7 @@ func TestRelayResult(t *testing.T) {
 		// The refusal left the claimed row untouched: the rightful principal
 		// still completes it under its live lease.
 		if err := st.CompleteRelayJob(context.Background(), wantID, relayHashToken("device-cred"), "done",
-			relay.RelayResult{HTTPStatus: 200}, time.Now()); err != nil {
+			access.System(), relay.RelayResult{HTTPStatus: 200}, time.Now()); err != nil {
 			t.Fatalf("refused attempt mutated the row: %v", err)
 		}
 	})
@@ -837,4 +841,186 @@ func TestRelayResultBodyCap(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRelayResultViewerRecheck pins the RESULT-time viewer re-check at the
+// wire (l6-accounts 11.2): the handler resolves the claimant's CURRENT viewer
+// (the seam's carrier injection — the way the auth chain produces it) and the
+// closure's store guard re-verifies the job's library against it at
+// ingestion. A principal whose grant was REVOKED through the real identity
+// surface between claim and result (identity.RemoveCollection →
+// ResolveViewer) is refused 409 with a body that names nothing of the job,
+// the store holds nothing ingested, and the released job re-claims for an
+// eligible principal; the unchanged viewer's post ingests with the response
+// stored; and the fail-closed empty-grant viewer posts the title-free 0-job
+// through while the library-backed job stays out of its pool entirely.
+func TestRelayResultViewerRecheck(t *testing.T) {
+	ctx := context.Background()
+
+	// resultRouter mounts the REAL /api/v1 routes behind the seam's two
+	// injectors — the TestRelayClaimVisibility posture: the CLIENT principal
+	// for authZ, the caller's Viewer on the carrier for viewerFor's memo.
+	resultRouter := func(st *store.Store, scope access.Viewer) http.Handler {
+		h := &app{deps: Deps{AdminToken: adminToken, Store: st, RelayClaim: relayClaimClosure(st), RelayResult: relayResultClosure(st), RelayMaxBody: 1 << 20}}
+		r := chi.NewRouter()
+		r.Use(principalInjector(RoleClient), principalViewerInjector(scope))
+		r.Route("/api/v1", func(r chi.Router) { mountV1Routes(r, h) })
+		return r
+	}
+	// claimThrough claims through the endpoint for hashToken(credential) and
+	// returns the descriptor id.
+	claimThrough := func(t *testing.T, h http.Handler, credential string) int64 {
+		t.Helper()
+		resp := doRequest(t, h, http.MethodPost, "/api/v1/relay/claim", "", credential)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("claim status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		var desc struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&desc); err != nil {
+			t.Fatalf("decode descriptor: %v", err)
+		}
+		return desc.ID
+	}
+	// relayRow reads a row's state + result blob straight over the store —
+	// the nothing-ingested / titles-landed proofs.
+	relayRow := func(t *testing.T, st *store.Store, id int64) (string, []byte) {
+		t.Helper()
+		var (
+			state string
+			blob  []byte
+		)
+		if err := st.DB().QueryRowContext(ctx,
+			"SELECT state, result FROM relay_jobs WHERE id = ?", id).Scan(&state, &blob); err != nil {
+			t.Fatalf("select relay row %d: %v", id, err)
+		}
+		return state, blob
+	}
+
+	t.Run("revoked_grant_narrowed_is_409_releases_and_reclaims", func(t *testing.T) {
+		st := openAPIStore(t)
+		ident, uid := seedViewerIdentity(t, st, "recheck")
+		lib := seedLibrary(t, st, "/media/recheck")
+		if _, err := ident.CreateGroup(ctx, "Recheck"); err != nil {
+			t.Fatalf("CreateGroup: %v", err)
+		}
+		if err := ident.AddCollection(ctx, "Recheck", lib, 0); err != nil {
+			t.Fatalf("AddCollection: %v", err)
+		}
+		if err := ident.AddUser(ctx, "Recheck", "recheck"); err != nil {
+			t.Fatalf("AddUser: %v", err)
+		}
+		granted, err := ident.ResolveViewer(ctx, uid, false)
+		if err != nil {
+			t.Fatalf("ResolveViewer granted: %v", err)
+		}
+		wantID := seedRelayJobInLibrary(t, st, lib)
+
+		// The claim is minted THROUGH the endpoint under the granted viewer,
+		// stamped with the credential's hash.
+		if id := claimThrough(t, resultRouter(st, granted), "device-cred"); id != wantID {
+			t.Fatalf("claim id = %d, want the seeded job %d", id, wantID)
+		}
+
+		// The grant is revoked through the identity surface: the SAME live
+		// credential's viewer narrows between claim and result (the session
+		// never expired — the narrow is purely the visible set).
+		if err := ident.RemoveCollection(ctx, "Recheck", lib); err != nil {
+			t.Fatalf("RemoveCollection: %v", err)
+		}
+		narrowed, err := ident.ResolveViewer(ctx, uid, false)
+		if err != nil {
+			t.Fatalf("ResolveViewer narrowed: %v", err)
+		}
+		if len(narrowed.VisibleLibraryIDs) != 0 {
+			t.Fatalf("narrowed viewer still carries %v, want the emptied grant set", narrowed.VisibleLibraryIDs)
+		}
+
+		resp := doRequest(t, resultRouter(st, narrowed), http.MethodPost, resultPath(wantID), relayDoneBody(t), "device-cred")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusConflict)
+		}
+		// The rejection body names nothing of the job: no plan URL, no
+		// credential header, no title marker ever crosses the 409.
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read 409 body: %v", err)
+		}
+		for _, marker := range []string{"api.example.org", "relay-secret", "aria"} {
+			if strings.Contains(string(body), marker) {
+				t.Fatalf("409 body leaked the plan marker %q: %s", marker, body)
+			}
+		}
+		var eb errorBody
+		if err := json.Unmarshal(body, &eb); err != nil {
+			t.Fatalf("decode 409 body: %v", err)
+		}
+		if eb.Error.Code != "conflict" {
+			t.Fatalf("error code = %q, want conflict", eb.Error.Code)
+		}
+
+		// Nothing ingested, and the claim was RELEASED: the row is pending
+		// with no stored result — the pool re-entry the release promises.
+		if state, blob := relayRow(t, st, wantID); state != "pending" || len(blob) != 0 {
+			t.Fatalf("post-refusal row = state %q result %q, want pending with nothing ingested", state, blob)
+		}
+		job, found, err := st.ClaimOldestRelayJob(ctx, "hash-eligible", access.User(99, []int64{lib}, nil),
+			time.Now(), time.Now().Add(2*time.Minute))
+		if err != nil || !found || job.ID != wantID {
+			t.Fatalf("eligible re-claim = found=%v id=%d/%d err=%v, want the released job %d", found, job.ID, wantID, err, wantID)
+		}
+	})
+
+	t.Run("unchanged_viewer_ingests_titles_land", func(t *testing.T) {
+		st := openAPIStore(t)
+		wantID := seedRelayJob(t, st) // library 3
+		granted := access.User(42, []int64{3}, nil)
+		h := resultRouter(st, granted)
+
+		if id := claimThrough(t, h, "device-cred"); id != wantID {
+			t.Fatalf("claim id = %d, want the seeded job %d", id, wantID)
+		}
+		// The same viewer posts its result: 204, and the stored response is
+		// on the row — the consuming run's consult cache.
+		resp := doRequest(t, h, http.MethodPost, resultPath(wantID), relayDoneBody(t), "device-cred")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+		}
+		if state, blob := relayRow(t, st, wantID); state != "done" || len(blob) == 0 {
+			t.Fatalf("ingested row = state %q result %q, want done with the response stored", state, blob)
+		}
+	})
+
+	t.Run("fail_closed_viewer_409less_path_ingests_only_the_0job", func(t *testing.T) {
+		st := openAPIStore(t)
+		// The fail-closed empty-grant viewer's pool carries ONLY the
+		// title-free 0-job: the library-backed job is scoped out of the claim
+		// (the 11.1 law) and never reaches this principal at all.
+		zeroID, err := st.CreateRelayJob(ctx, relay.RelayJob{
+			Purpose: "search", PluginID: "shiki",
+			Plan: []relay.PlanSpec{{Method: "GET", URL: "https://api.example.org/3/search/tv?query=x", TimeoutSeconds: 5}},
+		})
+		if err != nil {
+			t.Fatalf("CreateRelayJob search: %v", err)
+		}
+		seedRelayJobInLibrary(t, st, 7) // parked — outside the empty grant set
+		h := resultRouter(st, access.User(42, nil, nil))
+
+		if id := claimThrough(t, h, "device-cred"); id != zeroID {
+			t.Fatalf("claim id = %d, want the 0-job %d only", id, zeroID)
+		}
+		// The 0-job ingests for the fail-closed viewer: provably title-free.
+		resp := doRequest(t, h, http.MethodPost, resultPath(zeroID), relayDoneBody(t), "device-cred")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+		}
+		if state, blob := relayRow(t, st, zeroID); state != "done" || len(blob) == 0 {
+			t.Fatalf("0-job row = state %q result %q, want done with the response stored", state, blob)
+		}
+	})
 }

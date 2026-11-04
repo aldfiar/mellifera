@@ -297,7 +297,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 				t.Fatalf("setup claim = found=%v err=%v", found, err)
 			}
 
-			err := s.CompleteRelayJob(ctx, id, tc.completeHash, "done", result, tc.completeNow)
+			err := s.CompleteRelayJob(ctx, id, tc.completeHash, "done", access.System(), result, tc.completeNow)
 			if tc.wantErr {
 				if !errors.Is(err, sql.ErrNoRows) {
 					t.Fatalf("complete = %v, want wrapped sql.ErrNoRows", err)
@@ -361,7 +361,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 			t.Fatalf("setup claim = found=%v err=%v", found, err)
 		}
 		failed := relay.RelayResult{HTTPStatus: 502, Error: "dial tcp: connection refused"}
-		if err := s.CompleteRelayJob(ctx, id, "hash-a", "failed", failed, t0.Add(time.Minute)); err != nil {
+		if err := s.CompleteRelayJob(ctx, id, "hash-a", "failed", access.System(), failed, t0.Add(time.Minute)); err != nil {
 			t.Fatalf("complete failed: %v", err)
 		}
 		var (
@@ -391,7 +391,7 @@ func TestRelayJobCompleteGuard(t *testing.T) {
 
 	t.Run("unknown_id", func(t *testing.T) {
 		s := openStore(t)
-		if err := s.CompleteRelayJob(ctx, 424242, "hash-a", "done", result, t0.Add(time.Minute)); !errors.Is(err, sql.ErrNoRows) {
+		if err := s.CompleteRelayJob(ctx, 424242, "hash-a", "done", access.System(), result, t0.Add(time.Minute)); !errors.Is(err, sql.ErrNoRows) {
 			t.Fatalf("complete unknown = %v, want wrapped sql.ErrNoRows", err)
 		}
 	})
@@ -439,7 +439,7 @@ func TestRelayJobCountRounds(t *testing.T) {
 		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", access.System(), t0, t0.Add(relayTestLease)); err != nil || !found {
 			t.Fatalf("setup claim %s/%s = found=%v err=%v", rowID, pluginID, found, err)
 		}
-		if err := s.CompleteRelayJob(ctx, id, "hash-a", "failed",
+		if err := s.CompleteRelayJob(ctx, id, "hash-a", "failed", access.System(),
 			relay.RelayResult{HTTPStatus: 502, Error: "boom"}, t0.Add(time.Minute)); err != nil {
 			t.Fatalf("complete failed %s/%s: %v", rowID, pluginID, err)
 		}
@@ -458,7 +458,7 @@ func TestRelayJobCountRounds(t *testing.T) {
 	if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-a", access.System(), t0.Add(relayTestLease), t0.Add(3*relayTestLease)); err != nil || !found {
 		t.Fatalf("setup claim done = found=%v err=%v", found, err)
 	}
-	if err := s.CompleteRelayJob(ctx, doneID, "hash-a", "done",
+	if err := s.CompleteRelayJob(ctx, doneID, "hash-a", "done", access.System(),
 		relay.RelayResult{HTTPStatus: 200, Body: []byte(`{}`)}, t0.Add(2*relayTestLease)); err != nil {
 		t.Fatalf("complete done: %v", err)
 	}
@@ -467,6 +467,114 @@ func TestRelayJobCountRounds(t *testing.T) {
 	if err != nil || n != 2 {
 		t.Fatalf("CountRelayRounds(itm_k, tmdb) = %d, %v; want 2 failed rounds only", n, err)
 	}
+}
+
+// TestRelayCompleteViewerRecheck pins the RESULT-time completion re-check's
+// store mechanics (l6-accounts 11.2): the claimant's Viewer conjunct rides
+// INSIDE the atomic completion guard, so a narrowed principal's completion
+// refuses with the wrapped sql.ErrNoRows AND releases the live claim back to
+// the pool (state pending, claim stamps cleared, nothing ingested) — while a
+// stale or foreign refusal never frees the row, and a 0-job ingests under the
+// fail-closed empty-grant viewer.
+func TestRelayCompleteViewerRecheck(t *testing.T) {
+	ctx := context.Background()
+	t0 := relayTestBase
+	leaseUntil := t0.Add(relayTestLease)
+	result := relay.RelayResult{HTTPStatus: 200, Body: []byte(`{"ok":true}`)}
+
+	// relayRow reads a row's state + claim stamps + result straight back —
+	// the release and nothing-ingested proofs.
+	relayRow := func(t *testing.T, s *Store, id int64) (state, hash string, claimedAt, leaseUntil sql.NullString, resultBlob []byte) {
+		t.Helper()
+		if err := s.db.QueryRowContext(ctx,
+			"SELECT state, claim_principal_hash, claimed_at, lease_until, result FROM relay_jobs WHERE id = ?", id,
+		).Scan(&state, &hash, &claimedAt, &leaseUntil, &resultBlob); err != nil {
+			t.Fatalf("select relay row %d: %v", id, err)
+		}
+		return
+	}
+
+	t.Run("narrowed_completion_releases_the_claim_to_the_pool", func(t *testing.T) {
+		s := openStore(t)
+		id := seedRelayJobInLibrary(t, s, "itm_narrow", 7)
+		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-u", access.User(42, []int64{7}, nil), t0, leaseUntil); err != nil || !found {
+			t.Fatalf("setup claim = found=%v err=%v", found, err)
+		}
+
+		// The claimant narrowed since the claim (the grant set emptied): the
+		// completion is refused with the 409 family AND the claim is released.
+		err := s.CompleteRelayJob(ctx, id, "hash-u", "done", access.User(42, nil, nil), result, t0.Add(time.Minute))
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("narrowed complete = %v, want wrapped sql.ErrNoRows", err)
+		}
+		state, hash, claimedAt, lease, resultBlob := relayRow(t, s, id)
+		if state != "pending" || hash != "" || claimedAt.Valid || lease.Valid {
+			t.Fatalf("released row = state %q hash %q claimed %v lease %v, want pending with cleared stamps",
+				state, hash, claimedAt.Valid, lease.Valid)
+		}
+		if len(resultBlob) != 0 {
+			t.Fatalf("released row carries a result blob (%q) — nothing may ingest", resultBlob)
+		}
+
+		// The released job is claimable by an ELIGIBLE principal (the visible
+		// set carries library 7) — the pool re-entry the release promises.
+		job, found, err := s.ClaimOldestRelayJob(ctx, "hash-v", access.User(99, []int64{7}, nil),
+			t0.Add(2*time.Minute), t0.Add(2*time.Minute).Add(relayTestLease))
+		if err != nil || !found || job.ID != id {
+			t.Fatalf("eligible re-claim = found=%v id=%d err=%v, want the released job %d", found, job.ID, err, id)
+		}
+	})
+
+	t.Run("stale_refusal_never_frees_the_row", func(t *testing.T) {
+		// A narrowed completion whose claim is NOT live under the poster —
+		// expired here — refuses without releasing: the row keeps its (lapsed)
+		// claim, and lazy expiry stays the only path back to the pool.
+		s := openStore(t)
+		id := seedRelayJobInLibrary(t, s, "itm_stale", 7)
+		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-u", access.User(42, []int64{7}, nil), t0, leaseUntil); err != nil || !found {
+			t.Fatalf("setup claim = found=%v err=%v", found, err)
+		}
+		err := s.CompleteRelayJob(ctx, id, "hash-u", "done", access.User(42, nil, nil), result, leaseUntil.Add(time.Second))
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("stale narrowed complete = %v, want wrapped sql.ErrNoRows", err)
+		}
+		state, _, _, lease, _ := relayRow(t, s, id)
+		if state != "claimed" || !lease.Valid {
+			t.Fatalf("stale refusal mutated the row: state %q lease %v, want claimed with the stamp intact", state, lease.Valid)
+		}
+	})
+
+	t.Run("foreign_narrowed_refusal_leaves_the_live_claim_intact", func(t *testing.T) {
+		s := openStore(t)
+		id := seedRelayJobInLibrary(t, s, "itm_foreign", 7)
+		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-u", access.User(42, []int64{7}, nil), t0, leaseUntil); err != nil || !found {
+			t.Fatalf("setup claim = found=%v err=%v", found, err)
+		}
+		// A different narrowed principal posts: refused, and the rightful
+		// claimant's live claim is untouched.
+		err := s.CompleteRelayJob(ctx, id, "hash-x", "done", access.User(42, nil, nil), result, t0.Add(time.Minute))
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("foreign narrowed complete = %v, want wrapped sql.ErrNoRows", err)
+		}
+		state, hash, _, _, _ := relayRow(t, s, id)
+		if state != "claimed" || hash != "hash-u" {
+			t.Fatalf("foreign refusal mutated the row: state %q hash %q, want claimed by hash-u", state, hash)
+		}
+	})
+
+	t.Run("empty_grant_viewer_ingests_the_0job", func(t *testing.T) {
+		s := openStore(t)
+		id := seedRelayJobInLibrary(t, s, "srch_narrow", 0) // the title-free 0-job
+		if _, found, err := s.ClaimOldestRelayJob(ctx, "hash-u", access.User(42, nil, nil), t0, leaseUntil); err != nil || !found {
+			t.Fatalf("setup claim = found=%v err=%v", found, err)
+		}
+		if err := s.CompleteRelayJob(ctx, id, "hash-u", "done", access.User(42, nil, nil), result, t0.Add(time.Minute)); err != nil {
+			t.Fatalf("0-job complete under the fail-closed viewer: %v", err)
+		}
+		if state, _, _, _, _ := relayRow(t, s, id); state != "done" {
+			t.Fatalf("0-job state = %q, want done", state)
+		}
+	})
 }
 
 // seedRelayJobInLibrary inserts one enrich-purpose job bound to libraryID

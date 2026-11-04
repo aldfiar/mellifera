@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
@@ -245,7 +246,10 @@ func TestDeferredHandoff(t *testing.T) {
 // consumed, and the consuming run's _stages fetch entry is stamped
 // executor:"client"; a plan mismatch misses the cache and fetches normally.
 func TestDeferredConsultFeedsConvert(t *testing.T) {
-	ctx := context.Background()
+	// See-all viewer on the carrier (the 4.5 fixture convention): the seed
+	// Ingests below complete library-backed jobs, and the 11.2 re-check
+	// reads the carrier — a bare context would fail them closed.
+	ctx := access.WithViewer(context.Background(), access.System())
 
 	t.Run("consult hit feeds Convert exactly as a server fetch, stamped executor client", func(t *testing.T) {
 		s := relayTestStore(t)

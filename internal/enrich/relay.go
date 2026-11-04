@@ -239,6 +239,19 @@ ORDER BY completed_at DESC, id DESC`,
 // a wrong principal, an expired claim, or an unknown id refuses with a wrapped
 // sql.ErrNoRows — the 409 shape upstream — and leaves the row untouched.
 //
+// The RESULT-time viewer RE-CHECK (l6-accounts 11.2): the claimant's CURRENT
+// viewer rides the request context (the group-1 carrier — the api result
+// handler's viewerFor stashed it one resolve ago), and the store's guard ANDs
+// the claim-side visibility conjunct (relayClaimWhere) into its WHERE, so the
+// job's library is re-verified against that viewer at ingestion. A principal
+// narrowed since the claim (revoked grant, unbind-to-scoped, an Identity read
+// failure → the zero Viewer) refuses: the wrapped sql.ErrNoRows is the 409
+// shape upstream AND the store releases the claim back to the pool — the plan
+// blob's titles never reach the narrowed principal's document. A 0-job
+// (library_id 0 — search) ingests for every authenticated principal, the
+// zero Viewer included; a see-all viewer completes byte-identically to
+// pre-accounts.
+//
 // A done enrich job is a completion (D5): the pair's ledger row clears
 // (reset-on-success) and the library wakes so derivation re-runs the pair into
 // the consult. A failed enrich round increments the ledger's attempts column
@@ -252,7 +265,8 @@ func (r *Relay) Ingest(ctx context.Context, jobID int64, principalHash string, r
 	if result.Error != "" {
 		state = relayStateFailed
 	}
-	if err := r.Store.CompleteRelayJob(ctx, jobID, principalHash, state, result, now()); err != nil {
+	v := access.FromContext(ctx) // the claimant's CURRENT viewer — the 11.2 re-check input
+	if err := r.Store.CompleteRelayJob(ctx, jobID, principalHash, state, v, result, now()); err != nil {
 		return fmt.Errorf("enrich: relay ingest %d: %w", jobID, err)
 	}
 	meta, err := r.relayJobMeta(ctx, jobID)

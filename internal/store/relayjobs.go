@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -183,16 +184,52 @@ func (s *Store) ClaimOldestRelayJob(ctx context.Context, principalHash string, v
 	return job, true, nil
 }
 
+// relayJobCompleteGuardSQL is the completion's claim guard (the pre-accounts
+// law): the SAME principal's row, still claimed, lease still live.
+const relayJobCompleteGuardSQL = `id = ? AND state = 'claimed' AND claim_principal_hash = ? AND lease_until > ?`
+
+// relayClaimLiveSQL classifies a refused completion: does a LIVE claim under
+// this principal exist for the id at all (NO visibility conjunct — the
+// conjunct's refusal is exactly what is being detected)?
+const relayClaimLiveSQL = `SELECT 1 FROM relay_jobs
+WHERE id = ? AND state = 'claimed' AND claim_principal_hash = ? AND lease_until > ?`
+
+// relayClaimReleaseSQL returns a released claim to the pool: state back to
+// pending, the claim stamps cleared (the hash to its ” insert default — the
+// column is NOT NULL; the nullable stamps to NULL). Result and consumed are
+// untouched: a claimed row never carries a result and is never consumed, so
+// the released row is byte-identical to a fresh pending insert minus id.
+const relayClaimReleaseSQL = `UPDATE relay_jobs SET
+  state = 'pending', claim_principal_hash = '', claimed_at = NULL, lease_until = NULL
+WHERE id = ? AND state = 'claimed' AND claim_principal_hash = ?`
+
 // CompleteRelayJob moves a claimed job to the caller's terminal state (the
 // done|failed vocabulary is the caller's) and stores its result. The guard is
 // the SAME principal hash and a LIVE lease — a lost or expired claim is a
 // wrapped sql.ErrNoRows and the row is left untouched (the api layer maps it
 // to 409). completed_at is stamped with the caller's now; result_bytes is
 // derived from the stored body length — the caller never passes it.
-func (s *Store) CompleteRelayJob(ctx context.Context, id int64, principalHash, state string, result relay.RelayResult, now time.Time) error {
+//
+// v is the claimant's CURRENT viewer (l6-accounts 11.2 — the RESULT-time
+// re-check): relayClaimWhere(v)'s conjunct ANDs INTO the guard, so the row's
+// library_id is tested at statement time inside the same atomic UPDATE — a
+// principal narrowed since the claim can never ingest, not even in a race
+// with a concurrent grant change. A see-all viewer (v.Admin) splices the
+// empty clause: the guard is the pre-accounts SQL byte-for-byte. When the
+// conjunct refuses a live claim, the claim is RELEASED back to the pool
+// (refuseRelayCompletion) and the same wrapped sql.ErrNoRows carries a
+// narrowed note — the one 409 family upstream, and an eligible claimant can
+// take the job from pending.
+func (s *Store) CompleteRelayJob(ctx context.Context, id int64, principalHash, state string, v access.Viewer, result relay.RelayResult, now time.Time) error {
 	blob, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("store: complete relay job %d (result): %w", id, err)
+	}
+	guard := relayJobCompleteGuardSQL
+	args := []any{state, string(blob), len(result.Body), formatTime(now), id, principalHash, formatTime(now)}
+	if clause, visArgs := relayClaimWhere(v); clause != "" {
+		guard += " AND " + clause
+		args = append(args, visArgs...)
 	}
 	res, err := s.db.ExecContext(ctx, `
 UPDATE relay_jobs SET
@@ -200,9 +237,8 @@ UPDATE relay_jobs SET
   result       = ?,
   result_bytes = ?,
   completed_at = ?
-WHERE id = ? AND state = 'claimed' AND claim_principal_hash = ? AND lease_until > ?`,
-		state, string(blob), len(result.Body), formatTime(now),
-		id, principalHash, formatTime(now),
+WHERE `+guard,
+		args...,
 	)
 	if err != nil {
 		return fmt.Errorf("store: complete relay job %d: %w", id, err)
@@ -210,9 +246,41 @@ WHERE id = ? AND state = 'claimed' AND claim_principal_hash = ? AND lease_until 
 	if n, err := res.RowsAffected(); err != nil {
 		return fmt.Errorf("store: complete relay job %d (affected): %w", id, err)
 	} else if n == 0 {
-		return fmt.Errorf("store: complete relay job %d: %w", id, sql.ErrNoRows)
+		return s.refuseRelayCompletion(ctx, id, principalHash, v, now)
 	}
 	return nil
+}
+
+// refuseRelayCompletion classifies a 0-row completion (uncounted — the
+// l6-accounts 11.2 release is the flow that demanded it). A stale, foreign,
+// or unknown claim is refused with the wrapped sql.ErrNoRows and the row left
+// untouched (the pre-accounts law — a foreign post must never free another
+// principal's live claim). A claim LIVE under this principal whose visibility
+// conjunct refused — the claimant narrowed since the claim — is RELEASED to
+// the claim pool: state back to pending, the claim stamps cleared
+// (relayClaimReleaseSQL), so a principal whose visible set still carries the
+// library can claim it. The release re-checks state+hash in its WHERE: a row
+// re-claimed meanwhile (the lease lapsed in the classify window) is left to
+// its new holder. Both shapes return the wrapped sql.ErrNoRows — the one 409
+// family upstream; which of the two fired is never observable there. A
+// see-all viewer (v.Admin) is never narrowed relative to a library: straight
+// refusal, no classification read.
+func (s *Store) refuseRelayCompletion(ctx context.Context, id int64, principalHash string, v access.Viewer, now time.Time) error {
+	if v.Admin {
+		return fmt.Errorf("store: complete relay job %d: %w", id, sql.ErrNoRows)
+	}
+	var one int
+	err := s.db.QueryRowContext(ctx, relayClaimLiveSQL, id, principalHash, formatTime(now)).Scan(&one)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: complete relay job %d: %w", id, sql.ErrNoRows)
+		}
+		return fmt.Errorf("store: complete relay job %d (classify): %w", id, err)
+	}
+	if _, err := s.db.ExecContext(ctx, relayClaimReleaseSQL, id, principalHash); err != nil {
+		return fmt.Errorf("store: complete relay job %d (release): %w", id, err)
+	}
+	return fmt.Errorf("store: complete relay job %d: viewer narrowed since the claim, released to the pool: %w", id, sql.ErrNoRows)
 }
 
 // MarkRelayConsumed flags a job's stored result as consumed (the consult read

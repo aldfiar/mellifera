@@ -104,12 +104,23 @@ func (a *app) relayClaim(w http.ResponseWriter, r *http.Request) {
 // (INV1): the principal hash is re-derived from the SAME middleware-validated
 // credential the claim stamped, and Deps.RelayResult (built cmd-side over
 // enrich.Relay.Ingest) owns the mechanics — a done and a failed outcome ride
-// the same route (error set, response fields absent, for failed). The
-// closure's wrapped sql.ErrNoRows is the store guard's refusal — a lost,
-// expired, foreign, or unknown claim with the row left untouched — → 409; any
-// other closure error is a real failure → 500; acceptance → 204. A nil
-// closure → 503; an unparseable or EMPTY body → 400 (the outcome payload is
-// not optional — an accepted zero result would be a done row storing nothing).
+// the same route (error set, response fields absent, for failed).
+//
+// The RESULT-time viewer RE-CHECK (l6-accounts 11.2): the handler resolves the
+// claimant's CURRENT viewer (viewerFor — the stash IS the memo, one resolve
+// per request) and threads the returned context downstream, so the enrich hop
+// reads the carrier and the store's completion guard re-verifies the job's
+// library against it at ingestion. A principal narrowed since the claim
+// (revoked grant, unbind-to-scoped, an Identity read failure → the zero
+// Viewer, which still ingests the title-free 0-jobs) refuses: the refusal
+// surfaces as the same wrapped sql.ErrNoRows → 409 AND the store releases the
+// claim back to the pool — the response body carries nothing of the job (no
+// descriptor, no title, no plan blob). The closure's wrapped sql.ErrNoRows is
+// the guard's refusal — a lost, expired, foreign, unknown, or narrowed-out
+// claim — → 409; any other closure error is a real failure → 500; acceptance
+// → 204. A nil closure → 503; an unparseable or EMPTY body → 400 (the outcome
+// payload is not optional — an accepted zero result would be a done row
+// storing nothing).
 //
 // @Summary      Submit the result of a claimed relay fetch job
 // @Tags         relay
@@ -119,7 +130,7 @@ func (a *app) relayClaim(w http.ResponseWriter, r *http.Request) {
 // @Param        request body relay.RelayResult true "the client's fetch outcome"
 // @Success      204 "result accepted"
 // @Failure      400 {object} errorBody
-// @Failure      409 {object} errorBody
+// @Failure      409 {object} errorBody "no live relay claim under the calling principal, or the claimant's viewer no longer sees the job's library (nothing ingested, the job returns to the pool)"
 // @Failure      413 {object} errorBody
 // @Failure      500 {object} errorBody
 // @Failure      503 {object} errorBody
@@ -148,11 +159,19 @@ func (a *app) relayResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON body", false)
 		return
 	}
-	ingestErr := a.deps.RelayResult(r.Context(), id, principalHash(bearerCredentials(r.Header.Get("Authorization"))), result)
+	// The claimant's CURRENT viewer rides the carrier (the 11.2 re-check
+	// input): viewerFor resolves once — the stash IS the memo — and the
+	// returned context carries the stash downstream; the enrich hop reads
+	// access.FromContext(ctx) and the store's guard re-checks against it.
+	_, ctx := a.viewerFor(r)
+	ingestErr := a.deps.RelayResult(ctx, id, principalHash(bearerCredentials(r.Header.Get("Authorization"))), result)
 	if ingestErr != nil {
-		// The store guard refuses a lost, expired, foreign, or unknown claim
-		// with a wrapped sql.ErrNoRows and leaves the row untouched — the one
-		// 409 shape; the enrich hop re-wraps it, so match through the chain.
+		// The store guard refuses a lost, expired, foreign, unknown, or
+		// narrowed-out claim with a wrapped sql.ErrNoRows — the one 409
+		// shape (a narrowed refusal additionally released the claim back to
+		// the pool, store-side); the enrich hop re-wraps it, so match through
+		// the chain. The body names neither which fired nor anything about
+		// the job.
 		if errors.Is(ingestErr, sql.ErrNoRows) {
 			writeError(w, http.StatusConflict, "conflict", "no live relay claim for this job under the calling principal", false)
 			return
