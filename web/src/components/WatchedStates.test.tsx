@@ -1,28 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import Collection from "@/pages/collections/Collection";
 import ItemDetail from "@/pages/browse/ItemDetail";
-import { isWatchedElement, watchedPercent } from "@/components/WatchedStates";
+import {
+  InProgressBar,
+  isWatchedElement,
+  watchedPercent,
+  WatchedToggle,
+} from "@/components/WatchedStates";
 import * as apiModule from "@/lib/api";
 import type { ItemDTO, ItemResponse, LibraryDTO, SeriesDTO } from "@/lib/api";
 import type { ItemDocument } from "@/lib/document";
 
-// Task 2.3 (watched-states): the element states on the browsable surfaces —
-// episode rows (EpisodesView), series cards (SeriesGrid), item-grid cards
-// (ItemGrid — the film/tv grid under the html.tv CSS layer too), and the
-// element page heading. The tri-state law is asserted AT the real components
-// through the same seams the pages' own suites use (Collection.test.tsx's
-// fetchWith idiom, ItemDetail.test.tsx's api-seam spies): a watched element
-// renders the ✓ pastel mark + dimmed title + NO progress bar even when a
-// served position exists; an in-progress sibling keeps today's bar; a new
-// element renders clean; wire absence (the omitempty field gone) behaves as
-// not-watched. The ✓ mark is a color-change span — its layout/cost is CSS's
-// contract (index.css, outside the tv shell block, so the state survives the
-// html.tv layer unchanged; tvCssContract pins that block by text).
+// Task 2.3 (watched-states, as amended by collections-ux 2.3): the element
+// states on the browsable surfaces — episode rows (EpisodesView), series
+// cards (SeriesGrid), item-grid cards (ItemGrid — the film/tv grid under the
+// html.tv CSS layer too), and the element page heading. The tri-state law is
+// asserted AT the real components through the same seams the pages' own
+// suites use (Collection.test.tsx's fetchWith idiom, ItemDetail.test.tsx's
+// api-seam spies): a watched element renders the ✓ + dimmed title + NO
+// progress bar even when a served position exists; an in-progress sibling
+// keeps today's bar; a new element renders clean; wire absence (the
+// omitempty field gone) behaves as not-watched. On the three mounted toggle
+// surfaces (episode rows, item-grid cards, heading) the ✓ is the
+// WatchedToggle BUTTON — series cards keep the passive mark (the bulk toggle
+// is v1.1). The mark's layout/cost is CSS's contract (index.css, outside the
+// tv shell block, so the state survives the html.tv layer unchanged;
+// tvCssContract pins that block by text).
 
 // fetchWith — a URL-dispatched fetch mock (verbatim from Collection.test.tsx):
 // handlers maps a URL substring to the response factory; earlier entries win.
@@ -177,6 +187,202 @@ describe("WatchedStates — pure leaves", () => {
   });
 });
 
+// ---- WatchedToggle (collections-ux 2.2) ------------------------------------
+// The ✓ slot as a real <button> on the three mounted surfaces. jsdom sees no
+// media queries and no layout, so the disclosure law is asserted at its two
+// observable seams: (a) the button composes the law's class carrier
+// (cardact-trigger) and the state split rides the inline style — the watched
+// fill pins opacity inline (visible at rest everywhere, beating the reveal
+// cascade), the unwatched outline pins NO opacity (the reveal/coarse/tv
+// persistence rides the stylesheet verbatim); (b) the law's stylesheet half
+// is pinned by text (the clampCssContract readFileSync idiom) so the
+// composition can't silently lose its coarse-pointer and html.tv persistence.
+
+// ruleBody — the declaration body of the rule introduced by the given
+// selector text (the clampCssContract.test.ts helper, inlined: this suite
+// pins only the disclosure-law rules the toggle composes).
+function ruleBody(css: string, selector: string): string {
+  const at = css.indexOf(selector);
+  expect(at, `selector ${selector} missing from index.css`).toBeGreaterThanOrEqual(0);
+  const open = css.indexOf("{", at);
+  const close = css.indexOf("}", open);
+  expect(close, `rule ${selector} never closes`).toBeGreaterThan(open);
+  return css.slice(open + 1, close);
+}
+
+// mockStateWrite — the PUT /items/{id}/state capture: records every fetch
+// call and answers the itemStateDTO echo (collections-ux 1.2's shape).
+function mockStateWrite(itemId: string) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+    Promise.resolve(
+      jsonResponse(200, {
+        item_id: itemId,
+        state: "watched",
+        position_seconds: 0,
+      }),
+    ),
+  );
+}
+
+// renderToggle — WatchedToggle inside a clickable cardact-host div (the law
+// needs a hover/focus host; the div's onClick plays the card navigation the
+// toggle must never trigger). Returns the client's invalidateQueries spy so
+// a click's invalidation sweep is asserted on the real mutation.
+function renderToggle(watched: boolean, onCardClick?: () => void) {
+  const client = freshClient();
+  const invalidate = vi.spyOn(client, "invalidateQueries");
+  render(
+    <QueryClientProvider client={client}>
+      <div className="cardact-host" onClick={onCardClick}>
+        <WatchedToggle itemId="itm_1" watched={watched} />
+      </div>
+    </QueryClientProvider>,
+  );
+  return { invalidate };
+}
+
+describe("WatchedToggle — the three-state renders", () => {
+  it("watched: the filled accent ✓ at rest — a pressed button pinned visible inline (it beats the reveal cascade), top-left slot", () => {
+    renderToggle(true);
+
+    const toggle = screen.getByRole("button", { name: "Watched" });
+    expect(toggle.textContent).toBe("✓");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    // The law's class carrier — the composition, no new CSS.
+    expect(toggle.classList.contains("cardact-trigger")).toBe(true);
+    // At-rest fill: the inline opacity beats the base opacity 0 AND the
+    // hover/focus reveal rules — visible without hover on fine pointers too.
+    expect((toggle as HTMLElement).style.opacity).toBe("1");
+    // The mark's top-left slot (⋯ keeps the top-right): corner placement
+    // overrides the base class's right:6px inline.
+    expect((toggle as HTMLElement).style.left).toBe("6px");
+    expect((toggle as HTMLElement).style.right).toBe("auto");
+    // Filled, not outlined: the accent color (jsdom normalizes the hex —
+    // #a4c8f4); no inline ring — the class carrier's own border:none holds
+    // (pinned in the stylesheet sweep below).
+    expect((toggle as HTMLElement).style.color).toBe("rgb(164, 200, 244)");
+    expect((toggle as HTMLElement).style.border).toBe("");
+  });
+
+  it("unwatched: the quiet outline ✓ — aria-pressed false, NO inline opacity (the reveal law rides the stylesheet)", () => {
+    renderToggle(false);
+
+    const toggle = screen.getByRole("button", { name: "Unwatched" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    // The outline ring; the glyph color stays the base class's quiet muted
+    // foreground (no inline color override).
+    expect((toggle as HTMLElement).style.border).toContain("solid");
+    expect((toggle as HTMLElement).style.color).toBe("");
+    // The disclosure law's fine-pointer half is the stylesheet's job — no
+    // inline opacity, so hover/focus reveal + coarse/tv persistence apply.
+    expect((toggle as HTMLElement).style.opacity).toBe("");
+  });
+
+  it("in-progress: the bar stays with the outline toggle beside it", () => {
+    render(
+      <QueryClientProvider client={freshClient()}>
+        <div className="cardact-host">
+          <InProgressBar percent={33} />
+          <WatchedToggle itemId="itm_s" watched={false} />
+        </div>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("img", { name: "33% watched" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Unwatched" })).toBeDefined();
+  });
+});
+
+describe("WatchedToggle — the click contract", () => {
+  it("watched click writes {state: unwatched}; unwatched click writes {state: watched} — the target picked from the SERVED flag", async () => {
+    const put = mockStateWrite("itm_1");
+
+    const { unmount } = render(
+      <QueryClientProvider client={freshClient()}>
+        <div className="cardact-host">
+          <WatchedToggle itemId="itm_1" watched={true} />
+        </div>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Watched" }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const [url, init] = put.mock.calls[0];
+    expect(String(url)).toContain("/api/v1/items/itm_1/state");
+    expect(init?.method).toBe("PUT");
+    expect(JSON.parse(String(init?.body))).toEqual({ state: "unwatched" });
+
+    // The unwatched sibling flips the other way.
+    unmount();
+    const put2 = mockStateWrite("itm_2");
+    render(
+      <QueryClientProvider client={freshClient()}>
+        <div className="cardact-host">
+          <WatchedToggle itemId="itm_2" watched={false} />
+        </div>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Unwatched" }));
+    await waitFor(() => expect(put2).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(put2.mock.calls[0][1]?.body))).toEqual({
+      state: "watched",
+    });
+  });
+
+  it("the click never navigates the card — stopPropagation keeps the host handler silent", () => {
+    mockStateWrite("itm_1");
+    let navigated = false;
+    renderToggle(false, () => {
+      navigated = true;
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Unwatched" }));
+    expect(navigated).toBe(false);
+  });
+
+  it("the write invalidates the watched-flag readers — the five-family sweep on the real mutation", async () => {
+    mockStateWrite("itm_1");
+    const { invalidate } = renderToggle(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Unwatched" }));
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["items"] }),
+    );
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["series"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["series-episodes"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["item"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["progress"] });
+  });
+});
+
+describe("WatchedToggle — the disclosure-law stylesheet pin", () => {
+  // The composition's half of the law: the cardact rules the toggle rides
+  // must stay put in index.css — base reveal + the coarse-pointer and html.tv
+  // persistence twins (readFileSync, the clampCssContract idiom — jsdom
+  // evaluates no media queries).
+  const css = readFileSync(resolve(process.cwd(), "src/styles/index.css"), "utf8");
+
+  it("the base law: opacity 0 at rest, revealed on host hover/focus-within", () => {
+    const base = ruleBody(css, ".cardact-trigger {");
+    expect(base).toContain("opacity: 0");
+    // The filled ✓ reads as filled because the class carrier has no ring.
+    expect(base).toContain("border: none");
+    const reveal = [
+      ".cardact-host:hover .cardact-trigger",
+      ".cardact-host:focus-within .cardact-trigger",
+    ];
+    for (const selector of reveal) {
+      expect(css).toContain(selector);
+    }
+    expect(ruleBody(css, ".cardact-host:hover .cardact-trigger,")).toContain("opacity: 1");
+  });
+
+  it("the persistence twins: pointer coarse AND html.tv keep the trigger visible at rest", () => {
+    const coarse = css.slice(css.indexOf("@media (pointer: coarse)"));
+    expect(ruleBody(coarse, ".cardact-trigger {")).toContain("opacity: 1");
+    expect(ruleBody(css, "html.tv .cardact-trigger {")).toContain("opacity: 1");
+  });
+});
+
 describe("WatchedStates — episode rows (EpisodesView)", () => {
   it("a watched episode renders the mark + dimmed title + NO bar even with a served position; the in-progress sibling keeps its bar; a new sibling renders clean", async () => {
     fetchWith({
@@ -211,10 +417,11 @@ describe("WatchedStates — episode rows (EpisodesView)", () => {
     renderCollection("/collections/1?series=sr_1");
     await screen.findByText("Pilot");
 
-    // Watched: ✓ mark + dimmed title…
+    // Watched: the ✓ TOGGLE (a real button, corner placement) + dimmed title…
     const pilot = cardOf("Pilot");
-    const mark = within(pilot).getByRole("img", { name: "Watched" });
-    expect(mark.textContent).toBe("✓");
+    const toggle = within(pilot).getByRole("button", { name: "Watched" });
+    expect(toggle.textContent).toBe("✓");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Pilot").classList.contains("watched-dim")).toBe(
       true,
     );
@@ -229,13 +436,17 @@ describe("WatchedStates — episode rows (EpisodesView)", () => {
       screen.getByText("Second Wind").classList.contains("watched-dim"),
     ).toBe(false);
     expect(within(second).queryByRole("img", { name: "Watched" })).toBeNull();
+    // The bar stays WITH the outline toggle beside it (the unwatched write
+    // path is live on an in-progress card too).
+    expect(within(second).getByRole("button", { name: "Unwatched" })).toBeDefined();
 
-    // New sibling: clean — no mark, no bar, no dim.
+    // New sibling: clean — no bar, no dim, outline toggle only.
     const cold = cardOf("Cold Open");
     expect(within(cold).queryByRole("img")).toBeNull();
     expect(
       screen.getByText("Cold Open").classList.contains("watched-dim"),
     ).toBe(false);
+    expect(within(cold).getByRole("button", { name: "Unwatched" })).toBeDefined();
   });
 });
 
@@ -305,7 +516,9 @@ describe("WatchedStates — item-grid cards (ItemGrid, the film/tv grid)", () =>
     await screen.findByText("Done Film");
 
     const done = cardOf("Done Film");
-    within(done).getByRole("img", { name: "Watched" });
+    // The toggle surface: the watched ✓ is the button, corner placement.
+    const watchedToggle = within(done).getByRole("button", { name: "Watched" });
+    expect(watchedToggle.getAttribute("aria-pressed")).toBe("true");
     expect(
       screen.getByText("Done Film").classList.contains("watched-dim"),
     ).toBe(true);
@@ -324,6 +537,9 @@ describe("WatchedStates — item-grid cards (ItemGrid, the film/tv grid)", () =>
     expect(
       screen.getByText("New Film").classList.contains("watched-dim"),
     ).toBe(false);
+    // Both unwatched cards carry the outline toggle (the write path).
+    expect(within(started).getByRole("button", { name: "Unwatched" })).toBeDefined();
+    expect(within(fresh).getByRole("button", { name: "Unwatched" })).toBeDefined();
   });
 });
 
@@ -365,31 +581,48 @@ describe("WatchedStates — the element page heading", () => {
     );
   }
 
-  it("a watched element's heading gains the ✓ beside the served display name", async () => {
+  it("a watched element's heading gains the ✓ toggle beside the served display name", async () => {
     detailSeam(detailItem(true));
     renderDetail();
 
     const h1 = await screen.findByRole("heading", { level: 1 });
     await waitFor(() =>
-      expect(within(h1).getByRole("img", { name: "Watched" }).textContent).toBe(
-        "✓",
-      ),
+      expect(
+        within(h1.parentElement as HTMLElement).getByRole("button", {
+          name: "Watched",
+        }).textContent,
+      ).toBe("✓"),
     );
-    // The served display name is dimmed; the mark itself carries the accent.
+    // The toggle is the law's inline variant (always visible — the heading
+    // is no hover-card) and it sits OUTSIDE the h1, so the heading's
+    // accessible name stays the display name alone.
+    const toggle = within(h1.parentElement as HTMLElement).getByRole("button", {
+      name: "Watched",
+    });
+    expect(toggle.classList.contains("cardact-trigger--inline")).toBe(true);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(h1.textContent).toBe("Hot Show S01E01");
+    // The served display name is dimmed; the fill carries the accent.
     expect(
       within(h1).getByText("Hot Show S01E01").classList.contains("watched-dim"),
     ).toBe(true);
   });
 
-  it("wire absence (no served watched flag) leaves the heading clean", async () => {
+  it("wire absence (no served watched flag): the heading renders clean, with the outline toggle beside it", async () => {
     detailSeam(detailItem());
     renderDetail();
 
     const h1 = await screen.findByRole("heading", { level: 1 });
     await waitFor(() => expect(within(h1).getByText("Hot Show S01E01")).toBeDefined());
-    expect(within(h1).queryByRole("img", { name: "Watched" })).toBeNull();
     expect(
       within(h1).getByText("Hot Show S01E01").classList.contains("watched-dim"),
     ).toBe(false);
+    // The toggle surface is ALWAYS mounted — an unwatched element renders
+    // the quiet outline ✓ (the unwatched write path), inline placement.
+    const toggle = within(h1.parentElement as HTMLElement).getByRole("button", {
+      name: "Unwatched",
+    });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(toggle.classList.contains("cardact-trigger--inline")).toBe(true);
   });
 });

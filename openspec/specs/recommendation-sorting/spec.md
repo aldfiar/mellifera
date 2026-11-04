@@ -100,7 +100,15 @@ with the progress write's own `updated_at`, never restamping an existing
 ledger row — and pokes the wake, so the stock learns through the same
 janitor pass a live completion takes. The backfill SHALL run boot-only
 before the janitor's boot pass (never per tick) and SHALL stay
-log-and-skip.
+log-and-skip. The item state write endpoint's `unwatched` state (the
+playback-progress capability) SHALL delete the ledger row and zero the
+item's playback position in ONE store transaction; because the backfill
+scans positive positions only, the unwatched state can never re-ledger
+across a boot, and a later genuine completion (detector floor or explicit
+intent) inserts a fresh row with its own lifecycle. Unlearning SHALL NOT
+roll back tag weights the janitor already applied — a completion is consumed
+exactly once; a still-unapplied (never-stamped) row that is deleted simply
+never learns.
 
 #### Scenario: Crossing 90% records the completion once
 
@@ -131,6 +139,25 @@ log-and-skip.
 - **WHEN** the watch detector fails (store error, malformed probe blob)
 - **THEN** the triggering PUT still returns its normal 200 and the failure
   is logged and skipped
+
+#### Scenario: An unwatched item never re-ledgers across a boot
+
+- **WHEN** an item is unwatched (its ledger row deleted and its position
+  zeroed in one transaction) and the server later boots and runs the recs
+  backfill over the progress stock
+- **THEN** the backfill inserts no row for that item — the zero position
+  never meets the positive-only scan — and the item's tags carry no
+  re-learning from the deleted row
+
+#### Scenario: A completion after unwatch learns fresh, exactly once
+
+- **WHEN** the operator unwatched an item whose tags were already learned,
+  then genuinely completes it again (re-mark watched or a rewatch past the
+  floor)
+- **THEN** a fresh unstamped ledger row is inserted (the previous row's
+  applied weights stay untouched), the next janitor pass raises the tags
+  exactly once from the new row, and repeat writes on the new row are PK
+  no-ops
 
 ### Requirement: Tag-weight learning as a janitor task
 

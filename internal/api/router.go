@@ -341,6 +341,11 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Get("/progress", h.listProgress)
 		r.Get("/progress/{item_id}", h.getProgress)
 		r.Put("/progress/{item_id}", h.putProgress)
+		// Item state (collections-ux): the watched-toggle write — a
+		// playback-STATE endpoint named for state so the closed set can grow,
+		// a viewer action exactly like progress, so the browse group beside
+		// it.
+		r.Put("/items/{id}/state", h.putItemState)
 		// Watch defaults (watch-flow-polish D1): the auto-next countdown the
 		// SPA reads before offering the next episode — the wired Deps int
 		// served verbatim (never env-read here). Read-only viewer data, so

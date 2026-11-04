@@ -1334,14 +1334,9 @@ Item-card menu rows: Rename… (the rename view), Identify… and Refresh
 metadata… (offered when the library's module block is present AND its parser
 chain is non-empty — the gate signals module wiring, not authorization; today
 every minted token is admin so the two coincide — and Identify is promoted to
-the first row when the card is unidentified), and Mark watched — offered only
-when the item's duration is known (`durationSeconds ≠ null`; never a guessed
-duration): it PUTs `PUT /api/v1/progress/{item_id}` with
-`position=durationSeconds`, keeps the menu open, and surfaces a row-local
-transient error line on failure. The server has no watched concept —
-`position=duration` does not leave an item on the Continue rail (for series
-it genuinely advances Next up); "watched flag / Continue-rail filtering" is a
-named Go backlog line.
+the first row when the card is unidentified). The watched state is NOT a
+menu row: the card's WatchedToggle ✓ owns it (see Watched element states) —
+the manual `position=duration` mark path is retired.
 
 Series-card menu rows: Identify… (the three-step series identify overlay,
 offered under the same module-wired gate as the item rows — the row is
@@ -1394,14 +1389,12 @@ cd web && npx vitest run src/pages/collections/Collection.test.tsx
 
 #### Scenario: Mark watched is gated on a known duration
 
-- **WHEN** the card menu opens for an item whose duration is known and for one whose duration is unknown, and the operator activates Mark watched on the first
-- **THEN** the row is absent for the unknown-duration item, the activation PUTs `/api/v1/progress/{item_id}` with `position=durationSeconds`, the menu stays open, and a failed PUT renders a row-local error line
-<!-- wf:probe id=917fd52941b38d07 -->
-```bash
-set -e
-cd web && npx vitest run src/pages/collections/Collection.test.tsx
-```
-<!-- /wf:probe -->
+- **WHEN** the manual watched path is sought in any item card's menu — the
+  item's duration known or unknown
+- **THEN** no Mark watched row exists at any duration: the retired
+  `position=duration` gate no longer applies because the row is gone — the
+  state route needs no duration and the card's WatchedToggle ✓ is the only
+  manual path
 
 #### Scenario: Series cards manage from the menu with the file-backed footer
 
@@ -2328,8 +2321,30 @@ today's clean state. The SPA SHALL NOT derive watched client-side (a zero
 pill or badge chrome. Sites: per-series episode table rows, series cards in
 the collection series grid (SeriesCard; the series DTO's `watched`), cards
 in the collection item grid (ItemGrid — TV mode is the same grids under the
-html.tv CSS layer), the element page heading beside the served display
-name, and Continue rail rows.
+html.tv CSS layer), and the element page heading beside the served display
+name. Continue-rail rows render no mark — watched rows are withdrawn from
+the rail by default.
+
+On exactly three mounted surfaces — the collection item-grid episode cards
+(ItemGrid; tv mode is the same grids under the html.tv CSS layer), the
+per-series episode table rows (the series flow), and the element page
+heading beside the served display name — the video element's ✓ SHALL be a
+`WatchedToggle` button — a real `<button>`, hence a focus-walker target in
+tv mode — occupying the mark's top-left slot (the ⋯ trigger keeps the
+top-right): a watched element renders the filled accent ✓ clickable at rest
+and one click writes `{"state": "unwatched"}`; an unwatched element renders
+a quiet outline ✓ and one click writes `{"state": "watched"}`. The
+unwatched outline SHALL follow the card-action disclosure law — revealed on
+hover/focus only on fine pointers, persistently visible under
+`pointer: coarse` and tv mode (the ⋯ trigger's law) — while the watched
+fill SHALL stay visible at rest everywhere. The toggle SHALL NOT trigger
+the card's navigation (the click never reaches the card) and SHALL refresh
+the served state by invalidating the items/series/progress queries. The
+in-progress presentation is unchanged: the progress bar stays, with the
+outline toggle beside it. Series cards keep the PASSIVE filled mark — the
+one-press all-episodes bulk toggle is deferred (v1.1). The player's own
+completion signal (PUT /progress with `completed: true` at the
+ended/credits edges) is untouched by the toggle.
 
 #### Scenario: A finished episode renders watched
 
@@ -2344,6 +2359,22 @@ name, and Continue rail rows.
 - **THEN** the Continue rail renders only the unwatched rows, and the
   Next-up derivation still anchors from every served row (a fully-watched
   series still surfaces its next unwatched episode)
+
+#### Scenario: One click toggles the state without navigating
+
+- **WHEN** the operator clicks the ✓ on a watched episode card and then on
+  an unwatched sibling
+- **THEN** the first click fires the item state write with `unwatched`, the
+  second with `watched`, neither click navigates the card or row, and both
+  surfaces re-render from the invalidated items/series/progress queries
+
+#### Scenario: The unwatched affordance is persistent without hover on TV
+
+- **WHEN** tv mode (or any `pointer: coarse` device) renders an unwatched
+  card — bare or carrying an in-progress bar
+- **THEN** the quiet outline ✓ is visible at rest before any hover or
+  focus, and on a fine-pointer desktop it stays hover/focus-revealed as
+  shipped for the ⋯ trigger
 
 ### Requirement: Completion intent writes
 
@@ -2363,3 +2394,39 @@ the episode). No other write path sets the flag.
 - **WHEN** the credits SkipChip is activated and the playhead jumps past the
   classified credits range to the end
 - **THEN** the fired progress write carries `completed: true`
+
+### Requirement: Title clamp law
+
+Titles on user surfaces SHALL clamp at 2 lines with an ellipsis; the full
+name SHALL ride the native `title` attribute on the same element; chrome
+(size, layout, hit targets) SHALL never shrink to fit a title — a long name
+consumes at most its clamped box and never pushes content down. The law
+applies to: the series flow header heading, card titles (the poster-card
+`.scard-title` rule in CSS — one point for every card carrying it — and the
+inline Tailwind title spans on item cards and episode rows), the element
+page heading, and the series flow header's Synopsis description (capped at
+2 lines the same way so the header can never tower regardless). Text
+smaller than 2 lines renders unchanged; the clamp is pure CSS
+(`line-clamp`) with no JS measurement and no font step-down.
+
+#### Scenario: A long series name clamps in the flow header
+
+- **WHEN** a series whose served display name wraps more than two lines is
+  opened in the series flow
+- **THEN** the header heading renders exactly the clamped 2-line box with an
+  ellipsis, the full name sits on the element's native `title` attribute,
+  and the episode table below keeps its position
+
+#### Scenario: Card titles never break the card budget
+
+- **WHEN** a grid card's display name is long enough to wrap past two lines
+- **THEN** the title clamps at 2 lines with an ellipsis inside the card's
+  fixed body box — the card grows no taller and the grid's row rhythm holds
+
+#### Scenario: The flow-header Synopsis caps at the same box
+
+- **WHEN** a series carries a long scraped synopsis in the series flow
+  header
+- **THEN** the description clamps at 2 lines with an ellipsis and the full
+  text rides the native `title` attribute, whatever the header's other
+  content does

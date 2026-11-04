@@ -321,6 +321,22 @@ definitions:
       item:
         $ref: '#/definitions/api.itemDTO'
     type: object
+  api.itemStateDTO:
+    properties:
+      completed_at:
+        type: string
+      item_id:
+        type: string
+      position_seconds:
+        type: integer
+      state:
+        type: string
+    type: object
+  api.itemStateRequest:
+    properties:
+      state:
+        type: string
+    type: object
   api.itemsResponse:
     properties:
       items:
@@ -1650,6 +1666,42 @@ paths:
       summary: List an element's poster candidates
       tags:
       - items
+  /items/{id}/state:
+    put:
+      operationId: put-item-state
+      parameters:
+      - description: item id (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'the target state: watched (ledger the completion) or unwatched
+          (clear the ledger and the resume point)'
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.itemStateRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.itemStateDTO'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Set an item's playback state (watched toggle)
+      tags:
+      - progress
   /items/{id}/title:
     delete:
       operationId: delete-item-title

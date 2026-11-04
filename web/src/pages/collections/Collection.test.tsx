@@ -1068,7 +1068,7 @@ describe("Collection — CardActions shell (ui-management pass 1)", () => {
   });
 });
 
-describe("Collection — Mark watched row (ui-management pass 1)", () => {
+describe("Collection — watched toggle (collections-ux 2.3)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -1076,25 +1076,30 @@ describe("Collection — Mark watched row (ui-management pass 1)", () => {
     vi.restoreAllMocks();
   });
 
-  // tvSeam — a tv library over the given rows; progress PUTs are recorded.
-  function tvSeam(rows: ItemDTO[]): { puts: { url: string; body: unknown }[] } {
+  // stateSeam — a tv library over the given rows; item-state PUTs are
+  // recorded and echoed (collections-ux 1.2's itemStateDTO). The shared
+  // ["progress"] cache the cards read is served empty.
+  function stateSeam(rows: ItemDTO[]): { puts: { url: string; body: unknown }[] } {
     const puts: { url: string; body: unknown }[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? "GET";
-      if (url.includes("/api/v1/progress/") && method === "PUT") {
+      if (url.includes("/api/v1/items/") && url.endsWith("/state") && method === "PUT") {
         puts.push({ url, body: JSON.parse(String(init?.body)) });
-        const itemId = url.split("/").pop() ?? "";
+        const itemId = url.split("/").slice(-2)[0] ?? "";
         return Promise.resolve(
           jsonResponse(200, {
             item_id: itemId,
-            position_seconds: 1,
-            updated_at: "2026-10-16T00:00:00Z",
+            state: "watched",
+            position_seconds: 0,
           }),
         );
       }
       if (url.includes("/api/v1/items?library=1")) {
         return Promise.resolve(jsonResponse(200, { items: rows }));
+      }
+      if (url.includes("/api/v1/progress")) {
+        return Promise.resolve(jsonResponse(200, { items: [] }));
       }
       if (url.includes("/api/v1/libraries/1/summary")) {
         return Promise.resolve(jsonResponse(200, { library_id: 1, items: rows.length, updated_at: "" }));
@@ -1107,74 +1112,58 @@ describe("Collection — Mark watched row (ui-management pass 1)", () => {
     return { puts };
   }
 
-  it("shows Mark watched only on a known duration, PUTs position_seconds=durationSeconds, and keeps the menu open on success", async () => {
+  it("the ⋯ menu carries NO Mark watched row in any state — known duration or not, the toggle owns the write", async () => {
     const withDuration = doc({ year: 2019 });
     withDuration.ffprobe = { format: { duration: "1430.4" } };
-    const { puts } = tvSeam([
+    stateSeam([
       item("itm_1_wd", "tv", "Movies/wd.mkv", withDuration, "With Duration"),
       item("itm_1_nd", "tv", "Movies/nd.mkv", doc({}), "No Duration"),
     ]);
     renderCollection("1");
 
+    // A known duration: no watched row in the menu.
     fireEvent.click(await screen.findByRole("button", { name: "Actions for With Duration" }));
     const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Mark watched" }));
-
-    // The PUT carries the item's full whole-second duration (1430.4 → 1430).
-    await waitFor(() => expect(puts.length).toBe(1));
-    expect(puts[0].url).toContain("/api/v1/progress/itm_1_wd");
-    expect(puts[0].body).toEqual({ position_seconds: 1430 });
-
-    // Success keeps the menu open — the row is an action, not a view.
-    expect(screen.getByRole("dialog")).toBeDefined();
-    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Mark watched" })).toBeDefined();
-
-    // The unprobed row never sees the row — never a guessed duration.
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(within(dialog).queryByRole("button", { name: "Mark watched" })).toBeNull();
+    fireEvent.keyDown(dialog, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // An unprobed row: the same — no watched row on ANY state.
     fireEvent.click(screen.getByRole("button", { name: "Actions for No Duration" }));
     const dialogB = await screen.findByRole("dialog");
     expect(within(dialogB).queryByRole("button", { name: "Mark watched" })).toBeNull();
   });
 
-  it("renders a row-local transient error on failure and keeps the menu open", async () => {
-    const withDuration = doc({});
-    withDuration.ffprobe = { format: { duration: "600" } };
-    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
-      const url = String(input);
-      if (url.includes("/api/v1/progress/") && (init?.method ?? "GET") === "PUT") {
-        return Promise.resolve(
-          jsonResponse(500, {
-            error: { code: "internal", message: "progress write failed", retryable: false },
-          }),
-        );
-      }
-      if (url.includes("/api/v1/items?library=1")) {
-        return Promise.resolve(
-          jsonResponse(200, {
-            items: [item("itm_1_wd", "tv", "Movies/wd.mkv", withDuration, "With Duration")],
-          }),
-        );
-      }
-      if (url.includes("/api/v1/libraries/1/summary")) {
-        return Promise.resolve(jsonResponse(200, { library_id: 1, items: 1, updated_at: "" }));
-      }
-      if (url.includes("/api/v1/libraries")) {
-        return Promise.resolve(jsonResponse(200, { items: [lib(1, "tv", "films")] }));
-      }
-      return Promise.reject(new Error(`unexpected fetch: ${url}`));
-    });
+  it("the card's toggle toggles through the state route, and the click never navigates the card", async () => {
+    const withDuration = doc({ year: 2019 });
+    withDuration.ffprobe = { format: { duration: "1430.4" } };
+    const { puts } = stateSeam([
+      item("itm_1_nd", "tv", "Movies/nd.mkv", withDuration, "No Duration"),
+      // A served-watched sibling (the wire flag, true-only omitempty).
+      {
+        ...item("itm_1_ws", "tv", "Movies/ws.mkv", doc({}), "Already Seen"),
+        watched: true,
+      },
+    ]);
     renderCollection("1");
 
-    fireEvent.click(await screen.findByRole("button", { name: "Actions for With Duration" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Mark watched" }));
+    // The unwatched card's outline ✓ writes {"state": "watched"}…
+    const unwatchedToggle = await screen.findByRole("button", { name: "Unwatched" });
+    fireEvent.click(unwatchedToggle);
+    await waitFor(() => expect(puts.length).toBe(1));
+    expect(puts[0].url).toContain("/api/v1/items/itm_1_nd/state");
+    expect(puts[0].body).toEqual({ state: "watched" });
 
-    // The canonical error renders row-locally; the menu stays open.
-    expect(await screen.findByRole("alert")).toBeDefined();
-    expect(screen.getByText(/internal: progress write failed/)).toBeDefined();
-    expect(screen.getByRole("dialog")).toBeDefined();
-    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Mark watched" })).toBeDefined();
+    // …and the click never reached the card's Link — the page is still the
+    // collection grid, both cards still mounted.
+    expect(screen.getByText("No Duration")).toBeDefined();
+
+    // The watched card's filled ✓ writes the flip: {"state": "unwatched"}.
+    fireEvent.click(screen.getByRole("button", { name: "Watched" }));
+    await waitFor(() => expect(puts.length).toBe(2));
+    expect(puts[1].url).toContain("/api/v1/items/itm_1_ws/state");
+    expect(puts[1].body).toEqual({ state: "unwatched" });
+    expect(screen.getByText("Already Seen")).toBeDefined();
   });
 });
 
@@ -2892,5 +2881,157 @@ describe("Collection — series artwork (artwork 3.3)", () => {
     expect(link.querySelector("img")).toBeNull(); // never a broken-image glyph
     expect(fetchSpy.mock.calls.filter((c) => String(c[0]).includes("/art/"))).toHaveLength(0);
     expect(revoke).not.toHaveBeenCalled(); // nothing was created, nothing revoked
+  });
+});
+
+describe("Collection — title clamp law (collections-ux 3.2)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // seriesRow — the serial-body idiom's /series wire row, reduced to the
+  // facts the clamp law pins: the SERVED display_name and the scraped About
+  // block the flow header's Synopsis consumes.
+  function seriesRow(parts: {
+    id: string;
+    displayName: string;
+    about?: MetadataAbout;
+  }): SeriesDTO {
+    const d: ItemDocument = { parsed: { dir_name_raw: parts.displayName } };
+    return {
+      id: parts.id,
+      module_id: "serial",
+      library_id: 1,
+      relative_path: parts.displayName,
+      document: d,
+      schema_version: 1,
+      status: "ready",
+      display_name: parts.displayName,
+      ...(parts.about !== undefined ? { metadata: { about: parts.about } } : {}),
+    };
+  }
+
+  it("clamps the flow header heading at two lines with the full name on the title attribute", async () => {
+    fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              seriesRow({
+                id: "ser_1_clamp",
+                displayName: "Очень Длинное Название Сериала",
+              }),
+            ],
+          }),
+        ),
+      "/api/v1/series/ser_1_clamp/episodes": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+    });
+    renderCollection("1");
+
+    fireEvent.click(
+      await screen.findByRole("link", { name: /Очень Длинное Название Сериала/ }),
+    );
+
+    const heading = await screen.findByRole("heading", {
+      name: "Очень Длинное Название Сериала",
+    });
+    expect(heading.className).toContain("line-clamp-2");
+    expect(heading.getAttribute("title")).toBe("Очень Длинное Название Сериала");
+  });
+
+  it("caps the flow header Synopsis at two lines (the watch view keeps its full paragraph)", async () => {
+    const description =
+      "Очень длинный синопсис, который в заголовке потока сериала обязан " +
+      "упереться в двухстрочный потолок, чтобы шапка не вырастала — а на " +
+      "странице просмотра остаётся полным абзацем.";
+    fetchWith({
+      ...headerSeam("serial", 1),
+      "/api/v1/series?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              seriesRow({
+                id: "ser_1_syn",
+                displayName: "Show 2019",
+                about: {
+                  source: "shikimori",
+                  description,
+                  genres: ["Драма"],
+                },
+              }),
+            ],
+          }),
+        ),
+      "/api/v1/series/ser_1_syn/episodes": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+    });
+    renderCollection("1");
+
+    fireEvent.click(await screen.findByRole("link", { name: /Show 2019/ }));
+
+    const panel = await screen.findByRole("region", { name: "About" });
+    const para = within(panel).getByText(description);
+    expect(para.className).toContain("line-clamp-2");
+    // The FULL text rides the native title attribute on the clamped box.
+    expect(para.getAttribute("title")).toBe(description);
+  });
+
+  it("clamps the tv card title at two lines with the full name on the title attribute", async () => {
+    fetchWith({
+      ...headerSeam("tv", 1),
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              item(
+                "itm_1_clamp",
+                "tv",
+                "Movies/Очень Длинное Название Фильма 2019.mkv",
+                doc({ year: 2019 }),
+                "Очень Длинное Название Фильма",
+              ),
+            ],
+          }),
+        ),
+    });
+    renderCollection("1");
+
+    const card = await screen.findByRole("link", {
+      name: /Очень Длинное Название Фильма/,
+    });
+    const span = within(card).getByText("Очень Длинное Название Фильма");
+    expect(span.className).toContain("line-clamp-2");
+    expect(span.getAttribute("title")).toBe("Очень Длинное Название Фильма");
+  });
+
+  it("clamps the default-grid row title at two lines with the title attribute", async () => {
+    fetchWith({
+      ...headerSeam("other", 1),
+      "/api/v1/items?library=1": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            items: [
+              item(
+                "itm_1_row",
+                "other",
+                "Misc/Очень Длинное Имя Ряда.mkv",
+                doc({}),
+                "Очень Длинное Имя Ряда",
+              ),
+            ],
+          }),
+        ),
+    });
+    renderCollection("1");
+
+    const row = await screen.findByRole("link", { name: /Очень Длинное Имя Ряда/ });
+    const span = within(row).getByText("Очень Длинное Имя Ряда");
+    expect(span.className).toContain("line-clamp-2");
+    expect(span.getAttribute("title")).toBe("Очень Длинное Имя Ряда");
   });
 });
