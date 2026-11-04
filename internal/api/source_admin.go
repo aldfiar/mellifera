@@ -454,7 +454,11 @@ func (a *app) adminSourcePreview(w http.ResponseWriter, r *http.Request) {
 	// namerFor builds for serving (so before == served display_names), and
 	// the after namer is a copy whose title-walk bindings carry the
 	// hypothetical vector — every other composition input is shared.
-	live, err := a.namerFor(r.Context(), lib.ID)
+	// Mute-blind namer (10.4, per-site): an ADMIN route (empty ChainMutes in
+	// production) whose before/after compare GATE vectors for the operator —
+	// the per-viewer mute floor is the client composition contract, not the
+	// preview's inventory.
+	live, err := a.namerFor(r.Context(), lib.ID, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return

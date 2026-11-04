@@ -541,7 +541,11 @@ func (a *app) posters(w http.ResponseWriter, r *http.Request, kind string) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	n, err := a.namerFor(r.Context(), row.libraryID)
+	// Mute-blind namer (10.4, per-site): the candidates picker is an ADMIN
+	// route (router.go admin group — empty ChainMutes in production), and its
+	// namer feeds only the picker's chain walk below (nil there too), never a
+	// served display name.
+	n, err := a.namerFor(r.Context(), row.libraryID, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -650,7 +654,10 @@ func (a *app) putPoster(w http.ResponseWriter, r *http.Request, kind string) {
 	// nothing and floors silently at composition).
 	var handoff []string
 	if ns, ok := strings.CutPrefix(stored, artSelectionSrcPrefix); ok {
-		n, err := a.namerFor(r.Context(), row.libraryID)
+		// Mute-blind namer (10.4, per-site): the PUT is a write path behind
+		// the admin group — the stored selection record is viewer-independent
+		// (10.3's per-site posture, mirrored for the title walk).
+		n, err := a.namerFor(r.Context(), row.libraryID, nil)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return

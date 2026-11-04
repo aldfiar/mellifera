@@ -989,7 +989,8 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	n, err := a.namerFor(ctx, it.LibraryID)
+	// 10.4: the walk floors past this viewer's muted sources.
+	n, err := a.namerFor(ctx, it.LibraryID, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1145,7 +1146,8 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 	// floor every namerFor call site shares — so the browse contract for a
 	// nonexistent ?library= stays 200-with-empty-items. Any other read
 	// failure is a real failure → 500, like any other store read here.
-	n, err := a.namerFor(ctx, id)
+	// 10.4: the walk floors past this viewer's muted sources.
+	n, err := a.namerFor(ctx, id, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1306,7 +1308,8 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 	// Display-naming namer (display-naming 3.1): built off the item's own
 	// library so the detail view carries the same composed display_name the
 	// list serves. A read failure is a real failure → 500.
-	n, err := a.namerFor(ctx, it.LibraryID)
+	// 10.4: the walk floors past this viewer's muted sources.
+	n, err := a.namerFor(ctx, it.LibraryID, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1577,7 +1580,8 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 	// The display-naming namer is per-library: the naming options off the
 	// library row plus the whole-series map the composed names join against.
 	// A read failure is a real failure → 500, like any other store read here.
-	n, err := a.namerFor(ctx, id)
+	// 10.4: the walk floors past this viewer's muted sources.
+	n, err := a.namerFor(ctx, id, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1690,7 +1694,8 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 	// Display-naming namer (display-naming 3.1): built off the series' own
 	// library so the detail view carries the same display_name the list
 	// serves. A read failure is a real failure → 500.
-	n, err := a.namerFor(ctx, sr.LibraryID)
+	// 10.4: the walk floors past this viewer's muted sources.
+	n, err := a.namerFor(ctx, sr.LibraryID, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -1762,7 +1767,8 @@ func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 	// Display-naming namer (display-naming 3.1), built off the series' own
 	// library — the episodes' composed names join against this library's
 	// naming options and series map. A read failure is a real failure → 500.
-	n, err := a.namerFor(ctx, sr.LibraryID)
+	// 10.4: the walk floors past this viewer's muted sources.
+	n, err := a.namerFor(ctx, sr.LibraryID, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return

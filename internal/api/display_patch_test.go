@@ -189,7 +189,7 @@ func TestLibraryPatchNaming(t *testing.T) {
 			}
 		}
 		patchTmpl("{title} · S{season}E{episode}")
-		n, err := a.namerFor(ctx, id)
+		n, err := a.namerFor(ctx, id, nil)
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
@@ -198,7 +198,7 @@ func TestLibraryPatchNaming(t *testing.T) {
 		}
 		// A DIFFERENT option re-composes the same document on the next read.
 		patchTmpl("{season}x{episode} — {title}")
-		n, err = a.namerFor(ctx, id)
+		n, err = a.namerFor(ctx, id, nil)
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
@@ -236,7 +236,7 @@ func TestModuleDefaultItemName(t *testing.T) {
 
 	t.Run("module_default_composes_when_no_library_option", func(t *testing.T) {
 		a := newApp(ModulePresentation{ItemName: "{title} · S{season}E{episode}"}, nil)
-		n, err := a.namerFor(ctx, libID)
+		n, err := a.namerFor(ctx, libID, nil)
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
@@ -253,7 +253,7 @@ func TestModuleDefaultItemName(t *testing.T) {
 			t.Fatalf("UpdateLibrary option: %v", err)
 		}
 		a := newApp(ModulePresentation{ItemName: "{title} · S{season}E{episode}"}, nil)
-		n, err := a.namerFor(ctx, libID)
+		n, err := a.namerFor(ctx, libID, nil)
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
@@ -272,7 +272,7 @@ func TestModuleDefaultItemName(t *testing.T) {
 		a := &app{deps: Deps{AdminToken: adminToken, Store: st, Scan: func(context.Context, int64) (scan.Result, error) {
 			return scan.Result{}, nil
 		}}}
-		n, err := a.namerFor(ctx, libID)
+		n, err := a.namerFor(ctx, libID, nil)
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
@@ -286,7 +286,7 @@ func TestModuleDefaultItemName(t *testing.T) {
 
 	t.Run("empty_module_default_no_composition", func(t *testing.T) {
 		a := newApp(ModulePresentation{}, nil)
-		n, err := a.namerFor(ctx, libID)
+		n, err := a.namerFor(ctx, libID, nil)
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
@@ -297,7 +297,7 @@ func TestModuleDefaultItemName(t *testing.T) {
 
 	t.Run("closure_error_propagates", func(t *testing.T) {
 		a := newApp(ModulePresentation{}, context.DeadlineExceeded)
-		if _, err := a.namerFor(ctx, libID); err == nil {
+		if _, err := a.namerFor(ctx, libID, nil); err == nil {
 			t.Fatalf("namerFor = nil error, want the closure error propagated")
 		}
 	})

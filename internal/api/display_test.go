@@ -8,8 +8,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"strconv"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -273,7 +276,7 @@ func TestSeriesDisplayNameNamerFor(t *testing.T) {
 	a := &app{deps: Deps{AdminToken: adminToken, Store: st, Scan: func(context.Context, int64) (scan.Result, error) {
 		return scan.Result{}, nil
 	}}}
-	n, err := a.namerFor(ctx, libID)
+	n, err := a.namerFor(ctx, libID, nil)
 	if err != nil {
 		t.Fatalf("namerFor: %v", err)
 	}
@@ -606,7 +609,7 @@ func TestNamerForFloorAndErrors(t *testing.T) {
 	}}}
 
 	t.Run("missing_library_row_floors_to_empty_namer", func(t *testing.T) {
-		n, err := a.namerFor(ctx, libID+999)
+		n, err := a.namerFor(ctx, libID+999, nil)
 		if err != nil {
 			t.Fatalf("namerFor(missing library) = %v, want the nil-error floor", err)
 		}
@@ -619,7 +622,7 @@ func TestNamerForFloorAndErrors(t *testing.T) {
 		if err := st.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-		_, err := a.namerFor(ctx, libID)
+		_, err := a.namerFor(ctx, libID, nil)
 		if err == nil {
 			t.Fatal("namerFor(closed store) = nil error, want the store failure")
 		}
@@ -627,4 +630,152 @@ func TestNamerForFloorAndErrors(t *testing.T) {
 			t.Fatalf("namerFor(closed store) = %v, must NOT read as the NoRows floor", err)
 		}
 	})
+}
+
+// TestDisplayWalkMuteFloor is the 10.4 mute-floor contract (accounts D8,
+// display spec "names resolve from the first UNMUTED source per viewer"):
+// two viewers of ONE collection, a group muting source A for one of them.
+// The muted viewer's title walk floors past A everywhere it reaches — the
+// series chain (floors to B's title) and the item chain (same walk over the
+// item's own namespaces) — and an A-ONLY row floors the whole walk away, to
+// the honest floor legs (here the last path segment), so the muted source's
+// title NEVER surfaces for that viewer. The clean viewer is provably
+// UNCHANGED: its names are byte-equal to the env-admin serve (nil ChainMutes
+// — the pre-accounts shape). Nothing persists differently: the floor is
+// per-response composition exactly like 10.3's artwork floor — the stored
+// documents, the module bindings, and the other viewers' responses stay
+// byte-identical (asserted by the admin serve re-read at the end).
+func TestDisplayWalkMuteFloor(t *testing.T) {
+	ctx := context.Background()
+	st := openAPIStore(t)
+
+	const srcA = "shikimori"
+	const srcB = "anidb"
+
+	lib, err := st.CreateLibrary(ctx, "serial", "/media/name-mutes", "NameMutes")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	// Two sources in each document; the walk reads A first, so the clean
+	// viewer resolves A's title and the A-muted viewer floors to B's.
+	putArtSeries(t, st, lib, "TwoSources", json.RawMessage(
+		`{"sources":{`+jsonQuote(srcA)+`:{"title":`+jsonQuote("MutedSeriesTitle")+`},`+
+			jsonQuote(srcB)+`:{"title":`+jsonQuote("CleanSeriesTitle")+`}}}`))
+	// The A-only row: the muted viewer's walk floors PAST A with nothing
+	// left — no parser title, no dir_name_raw — so the name lands on the
+	// honest last-segment floor, never on A's title.
+	putArtSeries(t, st, lib, "OnlyMuted", json.RawMessage(
+		`{"sources":{`+jsonQuote(srcA)+`:{"title":`+jsonQuote("OnlyMutedTitle")+`}}}`))
+	// The item-chain leg: a film-shaped item (no series join facts, no
+	// _view floor) so itemName reaches the SAME walk over its own
+	// namespaces.
+	if err := st.PutItem(ctx, store.Item{
+		ID: "itm_mute_walk", ModuleID: "serial", LibraryID: lib, FileID: "fid_mute_walk",
+		RelativePath: "TwoSources/ep1.mkv", MediaType: "tv",
+		Document: json.RawMessage(`{"sources":{` + jsonQuote(srcA) + `:{"title":` + jsonQuote("MutedItemTitle") + `},` +
+			jsonQuote(srcB) + `:{"title":` + jsonQuote("CleanItemTitle") + `}}}`), SchemaVersion: 1,
+	}); err != nil {
+		t.Fatalf("PutItem: %v", err)
+	}
+
+	// The mute-blind stub closure (the pre-10.1 shape): TitleSources ride in
+	// ENABLED for both sources, so any floored name here is THIS composer's
+	// mute floor, not the closure's AND-down. (The production cmd closure
+	// also rides muted bindings disabled — 10.4 makes the floor hold even
+	// when the inputs arrive unfloored.)
+	h := New(Deps{
+		AdminToken: adminToken,
+		Store:      st,
+		ModulePresentation: func(_ context.Context, _ string, _ int64) (ModulePresentation, error) {
+			return ModulePresentation{
+				TitleSources: []titleSourceBinding{{ID: srcA, Enabled: true}, {ID: srcB, Enabled: true}},
+			}, nil
+		},
+	})
+
+	// The two viewers of the same collection, constructed directly and
+	// injected through the role-test seam (the carrier viewerFor memoizes):
+	// the muted one carries a group's mute of srcA, the clean one nil mutes.
+	muted := access.User(42, []int64{lib}, map[string]bool{srcA: true})
+	clean := access.User(7, []int64{lib}, nil)
+	asViewer := func(v access.Viewer) http.Handler {
+		return principalInjector(RoleClient)(principalViewerInjector(v)(h))
+	}
+
+	serveSeries := func(t *testing.T, handler http.Handler) map[string]string {
+		t.Helper()
+		resp := doRequest(t, handler, http.MethodGet, "/api/v1/series?library="+strconv.FormatInt(lib, 10), "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("series list: status = %d, want 200", resp.StatusCode)
+		}
+		sr := decodeSeriesList(t, resp)
+		out := make(map[string]string, len(sr))
+		for _, it := range sr {
+			out[it.RelativePath] = it.Display
+		}
+		return out
+	}
+	serveItems := func(t *testing.T, handler http.Handler) map[string]string {
+		t.Helper()
+		resp := doRequest(t, handler, http.MethodGet, "/api/v1/items?library="+strconv.FormatInt(lib, 10), "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("items list: status = %d, want 200", resp.StatusCode)
+		}
+		lr := decodeItems(t, resp)
+		out := make(map[string]string, len(lr.Items))
+		for _, it := range lr.Items {
+			out[it.RelativePath] = it.Display
+		}
+		return out
+	}
+
+	// The CLEAN viewer is provably unchanged: its names are byte-equal to
+	// the env-admin serve (nil ChainMutes — the pre-accounts shape) on both
+	// surfaces, and both resolve from the FIRST walk source (A).
+	adminSeries := serveSeries(t, h)
+	adminWant := map[string]string{
+		"TwoSources": "MutedSeriesTitle",
+		"OnlyMuted":  "OnlyMutedTitle",
+	}
+	for relPath, want := range adminWant {
+		if got := adminSeries[relPath]; got != want {
+			t.Fatalf("admin series %s display_name = %q, want %q (walk resolves A first)", relPath, got, want)
+		}
+	}
+	cleanSeries := serveSeries(t, asViewer(clean))
+	for relPath, want := range adminWant {
+		if got := cleanSeries[relPath]; got != want {
+			t.Fatalf("clean viewer series %s display_name = %q, admin served %q — the clean naming must be byte-identical", relPath, got, want)
+		}
+	}
+	cleanItems := serveItems(t, asViewer(clean))
+	if got := cleanItems["TwoSources/ep1.mkv"]; got != "MutedItemTitle" {
+		t.Fatalf("clean viewer item display_name = %q, want %q (the item walk resolves A first too)", got, "MutedItemTitle")
+	}
+
+	// The MUTED viewer floors past srcA in every leg of this response: the
+	// series chain resolves B's title, the A-only row floors the whole walk
+	// away to the last path segment, and the item chain resolves B's title.
+	mutedSeries := serveSeries(t, asViewer(muted))
+	if got := mutedSeries["TwoSources"]; got != "CleanSeriesTitle" {
+		t.Fatalf("muted series TwoSources display_name = %q, want %q (the walk floors to the first UNMUTED source)", got, "CleanSeriesTitle")
+	}
+	if got := mutedSeries["OnlyMuted"]; got != "OnlyMuted" {
+		t.Fatalf("muted series OnlyMuted display_name = %q, want %q (the muted source's title never surfaces; the walk floors to the last segment)", got, "OnlyMuted")
+	}
+	mutedItems := serveItems(t, asViewer(muted))
+	if got := mutedItems["TwoSources/ep1.mkv"]; got != "CleanItemTitle" {
+		t.Fatalf("muted item display_name = %q, want %q (the item walk floors past the muted source too)", got, "CleanItemTitle")
+	}
+
+	// Nothing persisted differently: the env-admin serve AFTER the muted
+	// responses still resolves A first, byte-equal to the pre-floor serve.
+	afterSeries := serveSeries(t, h)
+	for relPath, want := range adminWant {
+		if got := afterSeries[relPath]; got != want {
+			t.Fatalf("post-muted admin series %s display_name = %q, want %q — the mute floor is per-response, storage untouched", relPath, got, want)
+		}
+	}
 }

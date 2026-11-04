@@ -494,7 +494,9 @@ func (a *app) scoreProgress(ctx context.Context, v access.Viewer, rows []store.P
 		n, ok := namers[libID]
 		if !ok {
 			var err error
-			if n, err = a.namerFor(ctx, libID); err != nil {
+			// 10.4: the scored composition's title walk floors past this
+			// viewer's muted sources (v is scoreProgress's caller viewer).
+			if n, err = a.namerFor(ctx, libID, v.ChainMutes); err != nil {
 				return nil, err
 			}
 			namers[libID] = n
