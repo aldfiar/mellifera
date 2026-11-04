@@ -37,6 +37,27 @@
   duration pin) and confirm they are scope-only, content-identical.
 - Not yet committed (session commits per batch) — commit lands with 3.1.
 
+## Apply batch 2 (2026-11-04) — 3.1 green (4/6); commits landed
+
+- 3.1 rc 0 (33/33: WatchedStates 23 + tvCssContract 10, both untouched-file duties
+  green); the D9 visibility block authored in ONE appended block (+102/-0 on
+  index.css, zero existing-rule edits); own reveals at 0,4,0 outright (N1
+  satisfied); restore-shape + watched-no-hide + reveals-restore-BOTH pins landed
+  (incl. a guard-the-guard pin so the watched-no-hide sweep can't go vacuous).
+- Batch 1+2 committed on `feature/watched-signal-refinement`: 09d8ea6 (1.1+2.1+2.2
+  component/pages), 7403228 (test re-pins incl. the three 2.2/D2 widenings),
+  9b08bfd (3.1 CSS block), 2059375 (change folder). Tree clean.
+- Note: commits are file-grouped (the shared test file evolved across 1.1/2.2/3.1
+  without per-task commits) — the close-out table cites receipts per task and
+  these commits per group.
+
+## Apply batch 3 (2026-11-04) — 4.1 green (5/6); git-check prepared
+
+- 4.1 rc 0 first-try (15.8s: swag no-op, dist rebuilt — index-BJZlibrD.js /
+  index-BUa-YM5R.css, tsc clean, residual chip-text sweep zero matches). All
+  five authored tasks green; only the built-in git-check remains, closed by
+  this batch's commit + push (clean tree incl. untracked, upstream set).
+
 ## Next
 
 The first task in the DAG: **1.1** (WatchedStates.tsx glyph rewrite + test
