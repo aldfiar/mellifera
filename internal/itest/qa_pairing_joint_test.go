@@ -217,11 +217,15 @@ func TestPairingJointFlow(t *testing.T) {
 		t.Fatalf("devices = %+v, want exactly the one approved device", devices.Devices)
 	}
 	dev := devices.Devices[0]
-	// The registry renders id + code + created_at and NEVER a token (INV3:
-	// the raw credential crossed the wire once, at pickup — never from an
-	// admin surface).
-	if len(dev) != 3 || dev["device_id"] == nil || dev["code"] != code {
-		t.Fatalf("device row = %v, want exactly {device_id, code, created_at} with the pairing code %s", dev, code)
+	// The registry renders id + code + user_id + created_at and NEVER a token
+	// (INV3: the raw credential crossed the wire once, at pickup — never from
+	// an admin surface). user_id is the bind posture (accounts 9.3): this
+	// flow never binds, so the row must carry the unbound 0.
+	if len(dev) != 4 || dev["device_id"] == nil || dev["code"] != code {
+		t.Fatalf("device row = %v, want exactly {device_id, code, user_id, created_at} with the pairing code %s", dev, code)
+	}
+	if got, _ := dev["user_id"].(float64); got != 0 {
+		t.Fatalf("device row user_id = %v, want 0 (this flow never binds the device)", dev["user_id"])
 	}
 	deviceID, _ := dev["device_id"].(string)
 	if status := doRequest(t, client, http.MethodDelete, srv.URL+"/api/v1/admin/devices/"+deviceID, adminToken, nil, nil); status != http.StatusNoContent {
