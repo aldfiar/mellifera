@@ -260,16 +260,18 @@ the document carries no override for a knob.
 
 The API SHALL expose `GET /api/v1/profile` (authenticated) returning the
 caller's resolved identity: `{kind: admin|user|device, user_id?, name, role,
-groups: [{id, name}], prefs}` — the env admin token answering `kind:
-admin`, a session answering its user's shape, a device answering `kind:
-device` (with the bound user's groups when bound). The SPA SHALL derive
+groups: [{id, name}], prefs}` — kinds key on USER-BACKEDNESS, never on the
+credential kind: the env admin token answering `kind: admin`; any
+user-backed principal — a session OR a bound device — answering its user's
+shape (`kind: user`, carrying the bound user's groups and prefs); only an
+unbound device answering `kind: device`. The SPA SHALL derive
 identity from this endpoint only — it SHALL NOT probe operator endpoints
 (e.g. `/admin/status`) to infer its role.
 
 #### Scenario: Each principal kind reads its own served shape
 
 - **WHEN** the env admin token, a user session, and a bound device each call `GET /api/v1/profile`
-- **THEN** the answers carry `kind` admin / user / device respectively, the session and bound device carrying their user's groups and prefs — no endpoint probing required
+- **THEN** the answers key on user-backedness — `kind: admin` for the env token, `kind: user` for BOTH the session and the bound device (each carrying their user's groups and prefs), `kind: device` only for an unbound device — no endpoint probing required
 
 ### Requirement: Admin accounts surfaces
 

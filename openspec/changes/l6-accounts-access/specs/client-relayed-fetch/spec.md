@@ -48,9 +48,15 @@ stolen claim SHALL receive `409` and drop the work.
 principal's claim is still live, transitioning the job atomically. At
 ingestion the server SHALL RE-CHECK the job's library against the CLAIMANT's
 CURRENT Viewer — a claim minted under a principal whose visibility has since
-narrowed (logout, login-as-restricted, unbind) SHALL NOT ingest: the answer
-is `409` and the job re-enters the claim pool, so titles riding the plan
-blob never leak through a stale see-all claim. The request body SHALL be
+NARROWED (a revoked grant: the claimant's viewer no longer sees the job's
+library) SHALL NOT ingest: the answer is `409` and the job re-enters the
+claim pool, so titles riding the plan blob never leak through a stale
+see-all claim. A revoked SESSION cannot reach this endpoint at all — the
+auth chain answers `401` and the job re-enters by lazy lease expiry; a
+logged-in-as-restricted principal narrows the same way (409 + release).
+UNBINDING a device is a WIDENING, never a narrowing — the device returns to
+the legacy see-all device viewer (the accounts "Legacy principals keep
+see-all" law), so a claim minted while bound still ingests after unbind. The request body SHALL be
 size-capped (default 2 MiB, `MELLIFERA_RELAY_MAX_BODY`); an over-cap body is
 rejected. A completed response SHALL be treated exactly like a
 server-fetched body — it goes to the trusted plugin's Convert as the raw

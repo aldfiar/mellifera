@@ -213,3 +213,17 @@ no archive authority; the human decides after reading the escalated list.
 Gate: **Pending Fixes** — no code fixes; the pending items are the two
 archive-time spec-text amendments ((j), (o)) and the close-order
 commit/re-verify. Code, tests, and budgets hold as-is.
+
+## Human archive approval (2026-11-05)
+
+Approved by the human with all three recommendations accepted:
+1. **Archive approved** — l6-accounts-access may archive (spec deltas merge
+   into the living specs; docs pass, close-out notes, clean, and PR follow).
+2. **Flag (j): AMEND DELTA TEXT** — the accounts Served-identity requirement
+   now states the user-backedness law (applied before archive; see the delta).
+3. **Flag (o): AMEND DELTA TEXT** — the client-relayed-fetch narrowing list
+   now states the realized law (revoked grant 409+release; logout 401+lazy
+   lease; unbind removed as a widening per D1; applied before archive).
+
+Recorded by the session per the loop's gate step 3 — the approval line and
+the two rulings land together with the amended deltas in the close commit.
