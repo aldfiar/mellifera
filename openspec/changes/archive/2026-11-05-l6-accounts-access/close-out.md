@@ -81,4 +81,21 @@ file is the durable record).
 ## Close order after this file
 
 archived handoffs/ deleted (belief records) → `wf pipeline clean` (machine
-home) → merge-back dry-run → `--apply` (push + PR; the human merges).
+home) → merge-back dry-run → `--apply` (push + PR #31; the human merges).
+
+## Post-archive integration (merge of main / collections-ux)
+
+Main moved past this branch's base (collections-ux, PR #28) mid-loop; the
+merge-back PR required an integration merge. The one semantic decision it
+carries: collections-ux's `DeleteWatched` (the unwatch path) predated the
+per-user ledger — its item-wide delete and `ON CONFLICT(item_id)` reset no
+longer exist under the rebuilt keys. It now takes the viewer, deletes ONLY
+the caller's `(user_id, item_id)` ledger row, and zeroes THAT slot's
+position; slot isolation is pinned by a new store subtest, and the state
+endpoint threads `viewerFor` (hidden ≡ 404 precheck rides along). The
+living specs merged by union (per-user law + unwatch law, slot-scoped), and
+the stale "roles change owns that migration" tag_weights parenthetical was
+actualized (the living-spec analog of flag (d)). Post-merge verification:
+full `go test ./...` rc 0 (25 packages), web 696/696 ×3 consecutive runs
+(one unnamed first-run failure — the disclosed load-flake class), tsc
+clean. PR: aldfiar/mellifera#31.
