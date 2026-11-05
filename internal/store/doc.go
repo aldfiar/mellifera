@@ -93,9 +93,9 @@
 //     budget; primitive signatures, no new exported types, the art.go
 //     precedent). watched_items is the completion ledger whose applied_at
 //     IS NULL rows ARE the learning queue (the derived-work posture, no
-//     jobs table); tag_weights holds the learned affinity. NO user/profile
-//     column — the single implicit profile; the roles change owns that
-//     migration.
+//     jobs table); tag_weights holds the learned affinity. The l6-accounts
+//     ledger rebuild (2.3) gave watched_items a user_id column — per-user
+//     slots, the legacy rows collapsing to user_id 0 until adopted.
 //
 // # Invariants
 //

@@ -13,7 +13,6 @@ import { setToken, TOKEN_KEY } from "@/lib/auth";
 import {
   artLru,
   queryClient,
-  useAdminStatus,
   useArtworkObjectUrl,
   usePosterCandidates,
   usePosterMutations,
@@ -127,18 +126,6 @@ describe("query hooks — S5 joint (hooks -> Go endpoints via apiRequest)", () =
     });
     // INV-no-mutation-retry is asserted at the source level (refactoring
     // checklist grep: queries.ts carries retry:0 on this mutation).
-  });
-
-  it("useAdminStatus calls apiRequest with /api/v1/admin/status", async () => {
-    const spy = vi.spyOn(apiModule, "apiRequest").mockResolvedValue({
-      plugins: [],
-      enrich: { pending: 0, in_flight: 0, done: 0, failed: 0 },
-    });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-    const { result } = renderHook(() => useAdminStatus(), { wrapper: wrapper(client) });
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(spy).toHaveBeenCalledWith("/api/v1/admin/status");
   });
 
   it("useItems delegates to listItems with the given params", async () => {

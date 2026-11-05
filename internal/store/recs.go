@@ -61,9 +61,10 @@ ON CONFLICT(user_id, item_id) DO NOTHING`,
 // set (watched_items carries the library column directly — the one ledger
 // table that does): a revoked grant's rows never leak existence. A SEE-ALL
 // viewer (System/Admin/LegacyDevice) reads across every slot and library —
-// the per-request callers pass access.System() until api's viewer threading
-// (l6-accounts group 6) lands, and the learning reads stay global through
-// ListUnappliedWatched/ApplyTagWeights (System, deliberately unthreaded).
+// since api's viewer threading (l6-accounts group 6) the per-request callers
+// pass the request's resolved Viewer, and the learning reads stay global
+// through ListUnappliedWatched/ApplyTagWeights (System, deliberately
+// unthreaded).
 // Rows come back ordered by completed_at then item_id for deterministic
 // input; a ledger with no readable rows yields an empty non-nil slice (the
 // ListLibraries convention). The served score is derived at read time (D2),

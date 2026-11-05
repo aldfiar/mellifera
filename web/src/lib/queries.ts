@@ -62,7 +62,6 @@ import {
   type AdminGroupsResponse,
   type AdminPairingsResponse,
   type AdminUserCreated,
-  type AdminStatus,
   type AdminUser,
   type AdminUserCreateRequest,
   type AdminUserPatch,
@@ -267,20 +266,6 @@ export function useLibraryFolders(
     queryKey: ["library-folders", id],
     queryFn: () => getLibraryFolders(id),
     enabled: Number.isFinite(id),
-  });
-}
-
-// useAdminStatus — GET /api/v1/admin/status, polled on a refetch interval so
-// the Status page (T10) reflects current plugin/enricher health (AC-4). GET
-// queries keep the default retry; a 503 (status disabled) propagates as an
-// error state — the hook does NOT special-case it (T10 renders the
-// "unavailable" edge). The query key reserves a slot for the id-shape
-// convention even though admin-status takes no arg.
-export function useAdminStatus(): UseQueryResult<AdminStatus> {
-  return useQuery({
-    queryKey: ["admin-status"],
-    queryFn: () => apiRequest<AdminStatus>("/api/v1/admin/status"),
-    refetchInterval: 5000,
   });
 }
 
