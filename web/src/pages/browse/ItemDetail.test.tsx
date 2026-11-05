@@ -1849,9 +1849,10 @@ describe("ItemDetail — display name heading + on-page rename", () => {
     expect(screen.queryByText("S01E02")).toBeNull();
   });
 
-  // collections-ux 2.3: the element page heading is one of the three mounted
-  // toggle surfaces — the ✓ is a real <button> beside the display name (the
-  // law's inline variant: always visible at rest), the served flag drives the
+  // collections-ux 2.3 (amended by watched-toggle-label): the element page
+  // heading is one of the three mounted toggle surfaces — the watched chip
+  // is a real <button> beside the display name (the law's inline variant:
+  // always visible at rest), the served flag drives the
   // pressed state, and a click writes PUT /items/{id}/state with the flip.
   it("mounts the watched toggle beside the heading and writes the state flip on click", async () => {
     vi.spyOn(apiModule, "getItem").mockResolvedValue({

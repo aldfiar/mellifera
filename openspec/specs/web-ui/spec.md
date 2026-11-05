@@ -1382,7 +1382,8 @@ chain is non-empty — the gate signals module wiring, not authorization; today
 every minted token is admin so the two coincide — and Identify is promoted to
 the first row when the card is unidentified). The watched state is NOT a
 menu row: the card's WatchedToggle ✓ owns it (see Watched element states) —
-the manual `position=duration` mark path is retired.
+the ✓ rides the card's meta row, no longer the top-right corner — and the
+manual `position=duration` mark path is retired.
 
 Series-card menu rows: Identify… (the three-step series identify overlay,
 offered under the same module-wired gate as the item rows — the row is
@@ -2366,39 +2367,60 @@ today; a new element renders today's clean state. Each viewer's served rows
 carry that viewer's own state — another user's watch never marks an element.
 The SPA SHALL NOT derive watched client-side (a zero `rec_score` is not a
 watched signal). The ✓ is a color-change mark — no pill or badge chrome.
-Sites: per-series episode table rows, series cards in the collection series
-grid (SeriesCard; the series DTO's `watched`), cards in the collection item
-grid (ItemGrid — TV mode is the same grids under the html.tv CSS layer), and
-the element page heading beside the served display name. Continue-rail rows
-render no mark — watched rows are withdrawn from EACH viewer's rail by that
-viewer's own state (another user's watch never removes a row from a viewer's
-rail).
+Sites: the per-series episode cards and the collection item-flow cards
+(MovieCard-hosted), series cards in the collection series grid (SeriesCard;
+the series DTO's `watched`), the film/tv item grid's cards (ItemGrid — TV
+mode is the same grids under the html.tv CSS layer), and the element page
+heading beside the served display name. Continue-rail rows render no mark —
+watched rows are withdrawn from EACH viewer's rail by that viewer's own
+state (another user's watch never removes a row from a viewer's rail).
 
-On exactly three mounted surfaces — the collection item-grid episode cards
-(ItemGrid; tv mode is the same grids under the html.tv CSS layer), the
-per-series episode table rows (the series flow), and the element page
-heading beside the served display name — the video element's ✓ SHALL be a
+On exactly three mounted surfaces — the collection's item cards
+(MovieCard-hosted movie and episode cards in the item flow and the
+per-series flow), the film/tv item grid's cards (ItemGrid; TV mode is the
+same grids under the html.tv CSS layer), and the element page heading beside
+the served display name — the video element's watched affordance SHALL be a
 `WatchedToggle` button — a real `<button>`, hence a focus-walker target in
-tv mode — occupying the mark's top-left slot (the ⋯ trigger keeps the
-top-right): a watched element renders the filled accent ✓ clickable at rest
-and one click writes `{"state": "unwatched"}`; an unwatched element renders
-a quiet outline ✓ and one click writes `{"state": "watched"}`. The
-unwatched outline SHALL follow the card-action disclosure law — revealed on
-hover/focus only on fine pointers, persistently visible under
-`pointer: coarse` and tv mode (the ⋯ trigger's law) — while the watched
-fill SHALL stay visible at rest everywhere. The toggle SHALL NOT trigger
-the card's navigation (the click never reaches the card) and SHALL refresh
-the served state by invalidating the items/series/progress queries. The
-in-progress presentation is unchanged: the progress bar stays, with the
-outline toggle beside it. Series cards keep the PASSIVE filled mark — the
-one-press all-episodes bulk toggle is deferred (v1.1). The player's own
-completion signal (PUT /progress with `completed: true` at the
-ended/credits edges) is untouched by the toggle.
+tv mode — rendering a single ✓ glyph. One glyph, never a word: the string
+`watched` never renders on a user surface; the state-distinct aria names
+"Watched"/"Unwatched" and the progress bar's "<n>% watched" announcement are
+the pinned accessibility seam and are untouched. On the two card surfaces
+the toggle is a flow child of the card's meta row — a flex row BELOW the
+link, inside the card's border box, carrying the meta text and the
+in-progress bar with the toggle right-aligned at the row's end (an empty
+meta renders the toggle alone at the same slot) — and it sits OUTSIDE the
+link (a button never nests inside an anchor); the ⋯ trigger keeps the
+top-right corner, its own slot, and its card-action disclosure law
+untouched. On the element page heading the toggle stays the inline flow
+variant beside the display name. The watched ✓ SHALL be visible at rest on
+every pointer class; the unwatched ✓ SHALL be hidden at rest on fine
+pointers — revealed by the card's hover/focus-within and by its own keyboard
+focus, with pointer events disabled at rest so the invisible slot never
+swallows a click — and persistently visible on coarse pointers and in tv
+mode; the element page heading is exempt from the hide-at-rest: its ✓ stays
+visible at rest in BOTH states — the pastel accent when watched, the muted
+ghost when unwatched (today's heading behavior; the `.watched-mark`
+precedent). A watched element renders the ✓ in the library's pastel accent,
+clickable at rest, and one click writes `{"state": "unwatched"}`; an
+unwatched element renders the ✓ as a muted ghost with no pill, badge, or
+ring chrome and one click writes `{"state": "watched"}`. The hit twins the
+label chip's inline sizing defeated are restored: the toggle measures at
+least 28px on fine pointers, at least 40px on coarse pointers, and the tv
+clamp twin governs in tv mode. The toggle SHALL NOT trigger the card's
+navigation (the click never reaches the card) and SHALL refresh the served
+state by invalidating the items/series/progress queries. The in-progress
+presentation is unchanged: the progress bar stays, now seated on the card's
+meta row beside the toggle. Series cards keep the PASSIVE filled ✓ mark —
+the one-press all-episodes bulk toggle is deferred (v1.1). The player's own
+completion signal (PUT /progress with `completed: true` at the ended/credits
+edges) is untouched by the toggle.
 
 #### Scenario: A finished episode renders watched
 
-- **WHEN** an episode row's served DTO carries `watched: true`
-- **THEN** the row renders the ✓ pastel mark, the dimmed title, and no progress bar, while an in-progress sibling keeps its bar
+- **WHEN** an episode card's served DTO carries `watched: true`
+- **THEN** the card renders the pastel-accent ✓ right-aligned on its meta
+  row outside the link, the dimmed title, and no progress bar, while an
+  in-progress sibling keeps its bar
 
 #### Scenario: The Continue rail hides served-watched rows
 
@@ -2412,19 +2434,24 @@ ended/credits edges) is untouched by the toggle.
 
 #### Scenario: One click toggles the state without navigating
 
-- **WHEN** the operator clicks the ✓ on a watched episode card and then on
-  an unwatched sibling
+- **WHEN** the operator clicks the ✓ toggle on a watched episode card and
+  then on an unwatched sibling
 - **THEN** the first click fires the item state write with `unwatched`, the
-  second with `watched`, neither click navigates the card or row, and both
-  surfaces re-render from the invalidated items/series/progress queries
+  second with `watched`, neither click navigates the card, and both surfaces
+  re-render from the invalidated items/series/progress queries
 
 #### Scenario: The unwatched affordance is persistent without hover on TV
 
 - **WHEN** tv mode (or any `pointer: coarse` device) renders an unwatched
-  card — bare or carrying an in-progress bar
-- **THEN** the quiet outline ✓ is visible at rest before any hover or
-  focus, and on a fine-pointer desktop it stays hover/focus-revealed as
-  shipped for the ⋯ trigger
+  card — bare or carrying an in-progress bar — and equally on a fine-pointer
+  desktop before any hover or focus
+- **THEN** on coarse pointers and in tv mode the ghost ✓ is persistently
+  visible with its restored hit twin (at least 40px coarse, the tv clamp in
+  tv mode), no hover and no learned gesture required, while on a
+  fine-pointer desktop the same card hides the ✓ at rest and reveals it on
+  card hover/focus-within or keyboard focus — the disclosure law governs the
+  unwatched affordance on fine pointers only, and the ⋯ trigger keeps that
+  law for itself on every pointer class
 
 ### Requirement: Completion intent writes
 

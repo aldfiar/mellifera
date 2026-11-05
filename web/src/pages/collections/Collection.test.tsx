@@ -202,8 +202,11 @@ describe("Collection — tv body (box 5.2)", () => {
     });
     renderCollection("1");
 
-    const card = await screen.findByRole("link", { name: /The Thing/ });
-    expect(card.getAttribute("href")).toBe("/items/itm_1_a");
+    const cardLink = await screen.findByRole("link", { name: /The Thing/ });
+    expect(cardLink.getAttribute("href")).toBe("/items/itm_1_a");
+    // The card box, not the Link alone: the meta line moved into the
+    // card-meta-row OUTSIDE the Link (watched-signal-refinement 2.2, D2).
+    const card = cardLink.parentElement as HTMLElement;
     // The meta line: the parsed facts, dot-separated — no pill chips.
     expect(within(card).getByText("2019 · 1080p")).toBeDefined();
     // The SxxExx token is gone (it duplicated the served name's own suffix).
@@ -1147,7 +1150,7 @@ describe("Collection — watched toggle (collections-ux 2.3)", () => {
     ]);
     renderCollection("1");
 
-    // The unwatched card's outline ✓ writes {"state": "watched"}…
+    // The unwatched card's ghost chip writes {"state": "watched"}…
     const unwatchedToggle = await screen.findByRole("button", { name: "Unwatched" });
     fireEvent.click(unwatchedToggle);
     await waitFor(() => expect(puts.length).toBe(1));
@@ -1158,7 +1161,7 @@ describe("Collection — watched toggle (collections-ux 2.3)", () => {
     // collection grid, both cards still mounted.
     expect(screen.getByText("No Duration")).toBeDefined();
 
-    // The watched card's filled ✓ writes the flip: {"state": "unwatched"}.
+    // The watched card's accent chip writes the flip: {"state": "unwatched"}.
     fireEvent.click(screen.getByRole("button", { name: "Watched" }));
     await waitFor(() => expect(puts.length).toBe(2));
     expect(puts[1].url).toContain("/api/v1/items/itm_1_ws/state");
@@ -1197,8 +1200,14 @@ describe("Collection — INV-no-filenames title floors (ui-management pass 1)", 
     });
     renderCollection("1");
 
-    const f1 = await screen.findByRole("link", { name: /Totide 2019 1080p/ });
-    expect(within(f1).getByText("Not identified")).toBeDefined();
+    // The Link carries title + marker; the meta line lives in the
+    // card-meta-row outside it (watched-signal-refinement 2.2, D2) — meta
+    // pins scope to the card box.
+    const f1Link = await screen.findByRole("link", {
+      name: /Totide 2019 1080p/,
+    });
+    const f1 = f1Link.parentElement as HTMLElement;
+    expect(within(f1Link).getByText("Not identified")).toBeDefined();
     expect(within(f1).getByText("2019 · 1080p")).toBeDefined();
     const f2 = screen.getByRole("link", { name: /Untitled Part\.2/ });
     expect(within(f2).getByText("Not identified")).toBeDefined();
@@ -1206,7 +1215,9 @@ describe("Collection — INV-no-filenames title floors (ui-management pass 1)", 
     // The anchored 2–4-char extension regex strips only the real extension.
     const f3 = screen.getByRole("link", { name: /Show Part\.2/ });
     expect(within(f3).queryByText("Not identified")).toBeNull();
-    expect(within(f3).getByText("23:50")).toBeDefined();
+    expect(
+      within(f3.parentElement as HTMLElement).getByText("23:50"),
+    ).toBeDefined();
     // Exactly two flagged cards — the identified one is untouched.
     expect(screen.getAllByText("Not identified").length).toBe(2);
   });
