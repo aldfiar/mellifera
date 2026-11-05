@@ -619,6 +619,108 @@ body.side-open .app-content {
   overflow-y: auto;
 }
 
+/* ---- Watched toggle + card meta row (watched-signal-refinement 3.1) --------
+   The watched toggle (`.cardact-trigger cardact-trigger--inline
+   wtoggle--watched|unwatched`) lives in each collection card's flow meta
+   row. ALL new rules for that composition live in THIS one block, appended
+   after the cardact section (the authored-together law, D4) — zero edits to
+   the ⋯ trigger's rules above: the base/reveal pair, the coarse block and
+   the html.tv clamp twin keep serving the ⋯ trigger byte-identically.
+
+   (a) The row: flex, the toggle child pushed right (the uniform rail — the
+       row ALWAYS renders, empty meta → the toggle alone at the same slot),
+       and the glyph scale: the ✓ rides the meta line's text-xs context at
+       the `.watched-mark` em idiom (0.85em ≈ 12px), never the ⋯ trigger's
+       16px. The heading toggle (never in a row) keeps the base scale.
+   (b) The state colors — accent when watched, muted ghost when not, and no
+       border in either state (D5: the ring stays retired).
+   (c) The D3 hover pair — equal specificity with `.cardact-trigger:hover`
+       above, so these MUST sit after it: watched holds the accent hue;
+       unwatched only clears the hover fill and lets the color lift to the
+       base hover's foreground (that lift IS the feedback).
+   (d) The visibility law, STATE-scoped per D9: on fine pointers only the
+       UNWATCHED glyph hides at rest inside the meta row — the watched ✓ is
+       always visible (the original complaint was the watched mark), and the
+       element page heading is exempt structurally (D1: it never sits in a
+       `.card-meta-row`, so the hide can never reach it). The hide is 0,3,0
+       and beats `--inline`'s opacity:1 (0,1,0), and it carries
+       pointer-events:none — the accident protection: an invisible button in
+       reserved space would otherwise swallow the click and fire a real
+       state WRITE (keyboard unaffected: tab reaches the button and
+       :focus-visible reveals it). The block authors its OWN reveal
+       selectors (host :hover/:focus-within at 0,4,0, own :focus-visible at
+       0,4,0) because the base reveal sets opacity ONLY — a hover-revealed
+       toggle would stay visible but unclickable — so each reveal restores
+       BOTH opacity and pointer-events. The coarse/tv restores repeat the
+       hide's selector shape because the EXISTING restores (coarse 0,1,0,
+       tv 0,1,1) lose to the 0,3,0 hide regardless of media queries — equal
+       specificity, later in this block (coarse), or the html.tv-prefixed
+       0,4,1 beating outright (tv) is what keeps both states visible there;
+       the ≥40px / clamp hit sizes keep riding the untouched existing
+       blocks.
+
+   MANUAL TEST NOTE (unprobeable in jsdom — the cardact coarse-block
+   precedent): jsdom cannot see media queries, so this block's pointer-class
+   behavior is accepted by inspection at the gate. To verify by hand: open a
+   collection page as a 4×4 grid and eyeball BOTH themes for ghost noise
+   (unwatched ✓s invisible at rest on fine pointers, revealed on card
+   hover/focus, watched ✓s always on); then force tv mode (`mellifera.tv=on`)
+   and confirm both states show at rest and the 16:9 ItemGrid rows absorb
+   the meta-row delta without clipping. */
+.card-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+.card-meta-row > .cardact-trigger {
+  margin-left: auto;
+}
+.card-meta-row .cardact-trigger {
+  font-size: 0.85em;
+}
+
+.wtoggle--watched {
+  color: #a4c8f4;
+}
+.wtoggle--unwatched {
+  color: hsl(var(--muted-foreground));
+}
+
+.wtoggle--watched:hover {
+  background: transparent;
+  color: #a4c8f4;
+}
+.wtoggle--unwatched:hover {
+  background: transparent;
+}
+
+.card-meta-row .cardact-trigger.wtoggle--unwatched {
+  opacity: 0;
+  pointer-events: none;
+}
+.cardact-host:hover .cardact-trigger.wtoggle--unwatched,
+.cardact-host:focus-within .cardact-trigger.wtoggle--unwatched {
+  opacity: 1;
+  pointer-events: auto;
+}
+.card-meta-row .cardact-trigger.wtoggle--unwatched:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (pointer: coarse) {
+  .card-meta-row .cardact-trigger.wtoggle--unwatched {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+html.tv .card-meta-row .cardact-trigger.wtoggle--unwatched {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* ---- Admin collections table + edit overlay (web-ui-phase-3 group 6) ------ */
 
 /* Scroll panel for the collections table: 20+ collections scroll INSIDE the

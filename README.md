@@ -74,9 +74,11 @@ degrades enrichment but never blocks a scan.
 - **Watched states** — episodes watched to ≥ 90 %, to the credits, or flagged
   `completed` are ledgered as watched; finished elements show a
   ✓ state, leave the Continue rail, and sink to the bottom of scored grids;
-  `?include=watched` restores rail rows. The ✓ is a one-click toggle
-  (`PUT /items/{id}/state`): un-watching removes the ledger row and resets
-  the resume position.
+  `?include=watched` restores rail rows. A ✓ toggle in each card's meta row
+  is a one-click watch toggle (`PUT /items/{id}/state`): watched shows the
+  pastel accent ✓, always visible; unwatched shows a quiet ✓ revealed on
+  hover/focus (persistent on touch and TV) — un-watching removes the
+  ledger row and resets the resume position.
 - **Media serving** — originals and thumbnails served straight from the
   stored document paths, with strong ETags, 304s, and `Range` support.
 - **Web UI** — an embedded React SPA (no separate web server at serve time):
