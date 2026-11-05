@@ -1079,6 +1079,11 @@ export const ENDPOINTS = {
   // progressItem — PUT /api/v1/progress/{item_id} (the player's position
   // reporting channel; same browse bearer posture as every other call).
   progressItem: (id: string): string => `/api/v1/progress/${id}`,
+  // itemState — PUT /api/v1/items/{id}/state (handlers.go putItemState,
+  // collections-ux 1.2): the watched-toggle write — {"state": "watched" |
+  // "unwatched"}. Browse group, registered beside the progress write. Only
+  // putItemState should call it.
+  itemState: (id: string): string => `/api/v1/items/${id}/state`,
   // watchDefaults — GET /api/v1/watch-defaults (watch_defaults.go,
   // watch-flow-polish D1): the served auto-next countdown seconds — the
   // layer's one env-wired shape (MELLIFERA_AUTO_NEXT_COUNTDOWN_SECONDS,
@@ -1446,6 +1451,50 @@ export async function putProgress(
     body.completed = true;
   }
   return apiRequest<ProgressDTO>(ENDPOINTS.progressItem(itemId), {
+    method: "PUT",
+    body: body as unknown as BodyInit,
+  });
+}
+
+// ItemState — the closed vocabulary PUT /items/{id}/state accepts
+// (collections-ux spec, playback-progress "Item state write endpoint"). The
+// server strict-parses the wire string against this set — an unknown string
+// is 400 bad_request (the sort/include grammar posture) — so the client
+// types it as a union and an illegal value is unrepresentable at compile
+// time (the PlaybackEventMode precedent). The set is named for state so it
+// can grow.
+export type ItemState = "watched" | "unwatched";
+
+// ItemStateDTO — handlers.go itemStateDTO (collections-ux 1.2): the
+// response echo — the settled state plus the derived facts the SPA needs to
+// seed its caches. position_seconds comes from the post-write progress
+// read: a watched write leaves the stored position untouched, and an item
+// holding NO progress record (a never-started item marked watched directly)
+// reads 0 — the missing row maps to zero, never an error. completed_at is
+// present only when watched (omitempty): an absent field on an unwatched
+// echo is the shape, never a type hole.
+export interface ItemStateDTO {
+  item_id: string;
+  state: ItemState;
+  position_seconds: number;
+  completed_at?: string;
+}
+
+// putItemState — PUT /api/v1/items/{id}/state (handlers.go putItemState,
+// collections-ux 1.2): the watched-toggle write channel, the putProgress
+// idiom. A watched write inserts the completion-ledger row exactly like the
+// detector path (idempotent item_id PK) and does NOT touch the playback
+// position; an unwatched write deletes the ledger row AND zeroes the
+// position in one store transaction. 404 not_found for an unknown item;
+// 400 bad_request for an unknown state string or an image-module (photo)
+// item. Callers surface errors inline — no auto-retry (a retry of a 400
+// re-asks a question the server already answered).
+export async function putItemState(
+  itemId: string,
+  state: ItemState,
+): Promise<ItemStateDTO> {
+  const body: Record<string, unknown> = { state };
+  return apiRequest<ItemStateDTO>(ENDPOINTS.itemState(itemId), {
     method: "PUT",
     body: body as unknown as BodyInit,
   });

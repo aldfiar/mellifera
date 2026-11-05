@@ -121,6 +121,166 @@ func TestInsertWatchedIdempotent(t *testing.T) {
 	})
 }
 
+// TestDeleteWatchedResetsPosition pins the unwatch contract (collections-ux):
+// ONE transaction removes the watched_items row AND resets the stored
+// position to 0, so the positive-positions-only reads (ListProgress /
+// ListProgressAll WHERE > 0) can never re-ledger the item through the boot
+// backfill and a rewatch inserts fresh against the freed PRIMARY KEY.
+// Deleting an absent row must not error — unwatch is a settled state, not an
+// event.
+func TestDeleteWatchedResetsPosition(t *testing.T) {
+	t.Run("row_gone_position_reset_rewatch_fresh", func(t *testing.T) {
+		for _, tc := range []struct {
+			name         string
+			seedPosition int64 // < 0: no playback_progress row before the watch
+		}{
+			{"in_progress_position_zeroed", 300},
+			{"no_prior_row_position_created_at_zero", -1},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				s := openStore(t)
+				ctx := context.Background()
+				itemID := seedProgressItem(t, s, "del")
+				doneAt := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+				if tc.seedPosition >= 0 {
+					if _, err := s.PutProgress(ctx, itemID, tc.seedPosition, access.System()); err != nil {
+						t.Fatalf("PutProgress %d: %v", tc.seedPosition, err)
+					}
+				}
+				if err := s.InsertWatched(ctx, itemID, 1, "serials/attack", doneAt, access.System()); err != nil {
+					t.Fatalf("InsertWatched: %v", err)
+				}
+
+				// Preconditions so the post-delete assertions can fail: the
+				// ledger row is in, and (with a seeded position) the backfill
+				// scan surfaces the item.
+				watched, err := s.ListWatched(ctx, access.System())
+				if err != nil {
+					t.Fatalf("ListWatched (pre): %v", err)
+				}
+				if len(watched) != 1 || watched[0] != itemID {
+					t.Fatalf("ListWatched (pre) = %v, want [%s]", watched, itemID)
+				}
+				if tc.seedPosition >= 0 {
+					all, err := s.ListProgressAll(ctx, access.System())
+					if err != nil {
+						t.Fatalf("ListProgressAll (pre): %v", err)
+					}
+					if len(all) != 1 || all[0].ItemID != itemID {
+						t.Fatalf("ListProgressAll (pre) = %v, want [%s]", all, itemID)
+					}
+				}
+
+				if err := s.DeleteWatched(ctx, itemID, access.System()); err != nil {
+					t.Fatalf("DeleteWatched: %v", err)
+				}
+
+				// The ledger row is gone.
+				watched, err = s.ListWatched(ctx, access.System())
+				if err != nil {
+					t.Fatalf("ListWatched: %v", err)
+				}
+				if len(watched) != 0 {
+					t.Fatalf("ListWatched after delete = %v, want empty", watched)
+				}
+
+				// The position reads 0 (the CHECK holds; the reset is durable).
+				p, err := s.GetProgress(ctx, itemID, access.System())
+				if err != nil {
+					t.Fatalf("GetProgress after delete: %v", err)
+				}
+				if p.PositionSeconds != 0 {
+					t.Fatalf("position after delete = %d, want 0 (positive positions re-ledger via the boot backfill)", p.PositionSeconds)
+				}
+
+				// The backfill scan omits the zeroed item.
+				all, err := s.ListProgressAll(ctx, access.System())
+				if err != nil {
+					t.Fatalf("ListProgressAll after delete: %v", err)
+				}
+				for _, row := range all {
+					if row.ItemID == itemID {
+						t.Fatalf("ListProgressAll after delete contains %s — the item would re-ledger on boot", itemID)
+					}
+				}
+
+				// A rewatch inserts fresh against the freed PK.
+				if err := s.InsertWatched(ctx, itemID, 1, "serials/attack", doneAt.Add(time.Hour), access.System()); err != nil {
+					t.Fatalf("InsertWatched after delete: %v", err)
+				}
+				watched, err = s.ListWatched(ctx, access.System())
+				if err != nil {
+					t.Fatalf("ListWatched (rewatch): %v", err)
+				}
+				if len(watched) != 1 || watched[0] != itemID {
+					t.Fatalf("ListWatched (rewatch) = %v, want [%s]", watched, itemID)
+				}
+			})
+		}
+	})
+
+	t.Run("absent_row_no_error", func(t *testing.T) {
+		s := openStore(t)
+		ctx := context.Background()
+		itemID := seedProgressItem(t, s, "absent")
+		if err := s.DeleteWatched(ctx, itemID, access.System()); err != nil {
+			t.Fatalf("DeleteWatched on an absent row: %v (unwatch is a settled state, not an event)", err)
+		}
+		// A repeat delete is equally quiet.
+		if err := s.DeleteWatched(ctx, itemID, access.System()); err != nil {
+			t.Fatalf("repeat DeleteWatched: %v", err)
+		}
+		if n := watchedRowCount(t, s, ""); n != 0 {
+			t.Fatalf("watched_items rows = %d, want 0", n)
+		}
+	})
+
+	// Slot isolation (the per-user ledger law over the collections-ux unwatch):
+	// one viewer's unwatch removes ONLY its own slot — another user's
+	// completion of the same item survives untouched.
+	t.Run("unwatch_is_slot_isolated", func(t *testing.T) {
+		s := openStore(t)
+		ctx := context.Background()
+		itemID := seedProgressItem(t, s, "iso")
+		doneAt := time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC)
+		alice := access.User(7, []int64{1}, nil)
+		bob := access.User(9, []int64{1}, nil)
+		if err := s.InsertWatched(ctx, itemID, 1, "", doneAt, alice); err != nil {
+			t.Fatalf("InsertWatched (alice): %v", err)
+		}
+		if err := s.InsertWatched(ctx, itemID, 1, "", doneAt, bob); err != nil {
+			t.Fatalf("InsertWatched (bob): %v", err)
+		}
+		if n := watchedRowCount(t, s, itemID); n != 2 {
+			t.Fatalf("watched_items rows for %s = %d, want 2 (one per slot)", itemID, n)
+		}
+
+		if err := s.DeleteWatched(ctx, itemID, alice); err != nil {
+			t.Fatalf("DeleteWatched (alice): %v", err)
+		}
+
+		// Bob's row survives; alice's slot is empty. The raw count settles it
+		// (visibility plays no part in a slot-targeted delete).
+		if n := watchedRowCount(t, s, itemID); n != 1 {
+			t.Fatalf("watched_items rows after alice's unwatch = %d, want 1 (bob's slot survives)", n)
+		}
+		bobWatched, err := s.ListWatched(ctx, bob)
+		if err != nil {
+			t.Fatalf("ListWatched (bob): %v", err)
+		}
+		if len(bobWatched) != 1 || bobWatched[0] != itemID {
+			t.Fatalf("ListWatched (bob) = %v, want [%s]", bobWatched, itemID)
+		}
+		aliceWatched, err := s.ListWatched(ctx, alice)
+		if err != nil {
+			t.Fatalf("ListWatched (alice): %v", err)
+		}
+		if len(aliceWatched) != 0 {
+			t.Fatalf("ListWatched (alice) = %v, want empty", aliceWatched)
+		}
+	})
+}
+
 // TestListUnappliedWatched pins the derived-queue read: only applied_at IS
 // NULL rows surface, aligned parallel slices in completed_at order, empty
 // series path for film rows, empty non-nil when the queue is empty.

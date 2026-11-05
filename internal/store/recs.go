@@ -52,6 +52,45 @@ ON CONFLICT(user_id, item_id) DO NOTHING`,
 	return nil
 }
 
+// DeleteWatched un-watches itemID in the CALLER's ledger slot (collections-ux
+// unwatch, threaded onto the per-user ledger): ONE transaction removes the
+// viewer's OWN watched_items row AND resets the playback_progress position
+// to 0 in the SAME (user_id, item_id) slot (the PutProgress upsert statement
+// shape — 0 satisfies the CHECK position_seconds >= 0). The reset is what
+// makes the unwatch STICK: the positive-positions-only reads (ListProgress /
+// ListProgressAll WHERE > 0) feed the recs janitor's boot backfill, so a
+// still-positive position would re-ledger the item on the next boot; a
+// rewatch then inserts fresh against the freed key. Legacy viewers (UserID 0)
+// target the slot-0 legacy row. Idempotent: deleting an already-absent row
+// touches nothing and errors on nothing — unwatch is a settled state, not an
+// event.
+func (s *Store) DeleteWatched(ctx context.Context, itemID string, v access.Viewer) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: delete watched %s (begin): %w", itemID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM watched_items WHERE user_id = ? AND item_id = ?", v.UserID, itemID,
+	); err != nil {
+		return fmt.Errorf("store: delete watched %s: %w", itemID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO playback_progress (user_id, item_id, position_seconds, updated_at)
+VALUES (?, ?, 0, ?)
+ON CONFLICT(user_id, item_id) DO UPDATE SET
+  position_seconds = excluded.position_seconds,
+  updated_at       = excluded.updated_at`,
+		v.UserID, itemID, formatTime(time.Now().UTC()),
+	); err != nil {
+		return fmt.Errorf("store: delete watched %s (reset position): %w", itemID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: delete watched %s (commit): %w", itemID, err)
+	}
+	return nil
+}
+
 // ListWatched returns every completed watch's item id readable by the
 // viewer — the completion ledger per the ledger-read scoping law
 // (ledgerSlotWhere, D7), regardless of applied_at (the scorer's

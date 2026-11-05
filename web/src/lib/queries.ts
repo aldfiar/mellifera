@@ -44,6 +44,7 @@ import {
   posterCandidates,
   listProgress,
   putAdminGroupDoc,
+  putItemState,
   putPoster,
   putProfilePrefs,
   removeAdminGroupCollection,
@@ -82,6 +83,8 @@ import {
   type ProfilePrefs,
   type PairingRequest,
   type PairingWait,
+  type ItemState,
+  type ItemStateDTO,
   type ProgressListResponse,
   type ScanResponse,
   type SourcesResponse,
@@ -295,6 +298,34 @@ export function useProgressList(): UseQueryResult<ProgressListResponse> {
   return useQuery({
     queryKey: ["progress"],
     queryFn: () => listProgress({ includeWatched: true }),
+  });
+}
+
+// useSetItemState — PUT /api/v1/items/{id}/state via putItemState
+// (collections-ux 2.1): the watched-toggle write. retry:0
+// (INV-no-mutation-retry — a 400 bad_request / 404 not_found surfaces
+// inline, never auto-retried). On success it invalidates the UNION of the
+// watched-flag readers — the five query families whose served rows carry
+// the watched flag: the items list, the series rail, a series' episode
+// list, the single item read, and the progress listing. Prefix keys, so
+// each invalidation sweeps the family's per-param/per-id entries.
+export function useSetItemState(): UseMutationResult<
+  ItemStateDTO,
+  ApiError,
+  { itemId: string; state: ItemState }
+> {
+  const qc = useQueryClient();
+  return useMutation<ItemStateDTO, ApiError, { itemId: string; state: ItemState }>({
+    mutationFn: ({ itemId, state }: { itemId: string; state: ItemState }) =>
+      putItemState(itemId, state),
+    retry: 0,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["items"] });
+      void qc.invalidateQueries({ queryKey: ["series"] });
+      void qc.invalidateQueries({ queryKey: ["series-episodes"] });
+      void qc.invalidateQueries({ queryKey: ["item"] });
+      void qc.invalidateQueries({ queryKey: ["progress"] });
+    },
   });
 }
 

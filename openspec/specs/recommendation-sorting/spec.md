@@ -107,7 +107,17 @@ write's own `updated_at`, never restamping an existing ledger row — and
 pokes the wake, so the stock learns through the same janitor pass a live
 completion takes. The backfill SHALL run boot-only before the janitor's
 boot pass (never per tick), SHALL stay log-and-skip, and SHALL read as
-System (all slots — backfill reconciles every viewer's stock).
+System (all slots — backfill reconciles every viewer's stock). The item
+state write endpoint's `unwatched` state (the playback-progress capability)
+SHALL delete the CALLING VIEWER's ledger row and zero the position in the
+viewer's OWN `(user_id, item_id)` progress slot in ONE store transaction —
+another viewer's slot is never touched; because the backfill scans positive
+positions only, the unwatched state can never re-ledger across a boot, and
+a later genuine completion (detector floor or explicit intent) inserts a
+fresh row with its own lifecycle. Unlearning SHALL NOT roll back tag
+weights the janitor already applied — a completion is consumed exactly
+once; a still-unapplied (never-stamped) row that is deleted simply never
+learns.
 
 #### Scenario: Crossing 90% records the completion once
 
@@ -144,6 +154,25 @@ System (all slots — backfill reconciles every viewer's stock).
 - **WHEN** user A and user B both complete the same item
 - **THEN** the ledger holds exactly two rows — one per (user_id, item_id) — and the migrated legacy rows still read from the `user_id=0` slot
 
+#### Scenario: An unwatched item never re-ledgers across a boot
+
+- **WHEN** a viewer unwatched an item (their ledger row deleted and their
+  slot's position zeroed in one transaction) and the server later boots and
+  runs the recs backfill over the progress stock
+- **THEN** the backfill inserts no row for that item — the zero position
+  never meets the positive-only scan — and the item's tags carry no
+  re-learning from the deleted row
+
+#### Scenario: A completion after unwatch learns fresh, exactly once
+
+- **WHEN** the viewer unwatched an item whose tags were already learned,
+  then genuinely completes it again (re-mark watched or a rewatch past the
+  floor)
+- **THEN** a fresh unstamped ledger row is inserted in that viewer's slot
+  (the previous row's applied weights stay untouched), the next janitor pass
+  raises the tags exactly once from the new row, and repeat writes on the
+  new row are PK no-ops
+
 ### Requirement: Tag-weight learning as a janitor task
 
 A janitor task `recs` (the named registry beside `streams` and `art`) SHALL
@@ -154,8 +183,9 @@ tags, increment each tag's weight by 1 in one transaction, and stamp
 `applied_at` — the derived-queue posture (no jobs table: unstamped rows ARE
 the pending work). Weights SHALL persist in a `tag_weights` table (tag
 PRIMARY KEY normalized per the tag rule, weight, updated_at) with no user or
-profile column (single implicit profile; the roles change owns that
-migration). The pass SHALL be idempotent and restart-safe. The learning
+profile column — the l6-accounts rebuild put the per-user slots on
+`watched_items`; `tag_weights` stays profile-free because learning is
+global. The pass SHALL be idempotent and restart-safe. The learning
 passes SHALL read ALL viewers' rows — per-user ledger keying SHALL NOT fork
 tag learning or the shared score model (GLOBAL semantics, documented so
 nobody "fixes" it); the janitor's ledger reads stay System.

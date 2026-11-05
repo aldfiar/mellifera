@@ -483,6 +483,13 @@ body.side-open .app-content {
   font-size: 14px;
   font-weight: 600;
   overflow-wrap: anywhere;
+  /* Title clamp law (collections-ux 3.1): every poster-card title caps at
+     2 lines with an ellipsis — pure CSS, no JS measurement, no font
+     step-down; a long name never pushes the fact chip row down. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 /* ---- CardActions (collection cards, ui-management pass 1) ------------------

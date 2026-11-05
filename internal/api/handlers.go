@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -828,6 +829,120 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 		a.deps.OnProgress(ctx, itemID, *req.PositionSeconds, req.Completed)
 	}
 	writeJSON(w, http.StatusOK, toProgressDTO(rec))
+}
+
+// itemStateWatched / itemStateUnwatched are the closed vocabulary PUT
+// /items/{id}/state accepts (collections-ux): a playback-STATE endpoint named
+// for state so the set can grow. The handler strict-parses the wire string
+// against this set — an unknown value is 400 bad_request (the sort/include
+// grammar posture) — and the write switch below is exhaustive over the
+// validated set.
+const (
+	itemStateWatched   = "watched"
+	itemStateUnwatched = "unwatched"
+)
+
+// itemStateRequest is the body of PUT /api/v1/items/{id}/state.
+type itemStateRequest struct {
+	State string `json:"state"`
+}
+
+// itemStateDTO is the ONE wire shape for the state echo (no store type leaks
+// — INV4): the settled state plus the derived facts the SPA seeds its caches
+// from. PositionSeconds comes from the post-write progress read; CompletedAt
+// is present only when watched (omitempty) — an absent field on an unwatched
+// echo is the shape, never a type hole.
+type itemStateDTO struct {
+	ItemID          string `json:"item_id"`
+	State           string `json:"state"`
+	PositionSeconds int64  `json:"position_seconds"`
+	CompletedAt     string `json:"completed_at,omitempty"`
+}
+
+// putItemState: parse {id} + itemStateRequest → store ledger write → write
+// itemStateDTO (collections-ux). Validation is the parse step, BEFORE the
+// store calls: an unknown state string is 400 bad_request, a photo-module
+// item is 400 bad_request (photos carry no watched concept), an unknown item
+// is 404 not_found — no ledger or progress row is touched in any of the
+// three cases. The `watched` branch inserts the completion-ledger row exactly
+// like the detector path (InsertWatched: idempotent item_id PRIMARY KEY,
+// completed_at stamped by this write) with the series anchor read off the
+// stored document's parsed.series_relative_path — seriesPathOf, the same
+// resolution the detector persists (an unreadable document degrades to "",
+// intent wins, learning degrades honestly) — and does NOT touch the item's
+// playback position; the `unwatched` branch is DeleteWatched, one store
+// transaction deleting the ledger row AND zeroing the position (so the
+// positive-positions-only reads and the boot backfill can never re-ledger).
+// The response position comes from the post-write GetProgress read: the read
+// wraps sql.ErrNoRows on a missing row, so a watched write on a NEVER-STARTED
+// item maps the no-row to position_seconds 0 instead of surfacing an error —
+// the missing row is zero, never a failure. completed_at is this write's
+// stamp, formatted as the store persists ledger stamps (RFC3339Nano).
+//
+// @Summary      Set an item's playback state (watched toggle)
+// @Tags         progress
+// @ID           put-item-state
+// @Router       /items/{id}/state [put]
+// @Param        id path string true "item id (UUID)"
+// @Param        request body itemStateRequest true "the target state: watched (ledger the completion) or unwatched (clear the ledger and the resume point)"
+// @Success      200 {object} itemStateDTO
+// @Failure      400 {object} errorBody
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+func (a *app) putItemState(w http.ResponseWriter, r *http.Request) {
+	itemID := chi.URLParam(r, "id")
+	var req itemStateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON body", false)
+		return
+	}
+	switch req.State {
+	case itemStateWatched, itemStateUnwatched:
+	default:
+		writeError(w, http.StatusBadRequest, "bad_request", "state must be watched or unwatched", false)
+		return
+	}
+	v, ctx := a.viewerFor(r)
+	it, err := a.deps.Store.GetItem(ctx, itemID, v)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "item "+itemID+" not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	if it.ModuleID == photoModuleID {
+		writeError(w, http.StatusBadRequest, "bad_request", "photo items carry no watched state", false)
+		return
+	}
+	now := time.Now().UTC()
+	switch req.State {
+	case itemStateWatched:
+		// seriesPathOf is the detector's own anchor resolution (parsed.
+		// series_relative_path, "" when the document carries none); the
+		// position is deliberately untouched — the ledger row alone is the
+		// intent.
+		if err := a.deps.Store.InsertWatched(ctx, itemID, it.LibraryID, seriesPathOf(it), now, v); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+	case itemStateUnwatched:
+		if err := a.deps.Store.DeleteWatched(ctx, itemID, v); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
+	}
+	pos, err := a.deps.Store.GetProgress(ctx, itemID, v)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	dto := itemStateDTO{ItemID: itemID, State: req.State, PositionSeconds: pos.PositionSeconds}
+	if req.State == itemStateWatched {
+		dto.CompletedAt = now.Format(time.RFC3339Nano)
+	}
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // listProgress: parse ?limit + ?sort → store reads → write
