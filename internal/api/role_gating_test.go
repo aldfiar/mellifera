@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/scan"
 )
 
@@ -23,6 +24,20 @@ func principalInjector(role Role) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), principalKey{}, Principal{Role: role})
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// principalViewerInjector is the seam's viewer half: it seeds the request's
+// access.Viewer directly via access.WithViewer — the SAME carrier viewerFor
+// stashes (and reads back as its memo), so an injected viewer flows through
+// real handlers without riding the middleware chain's principal mapping.
+// The 6.2 handler-threading tests drive scoped viewers this way, and 7.1's
+// bound-device/session legs produce these same viewers in production.
+func principalViewerInjector(v access.Viewer) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(access.WithViewer(r.Context(), v)))
 		})
 	}
 }

@@ -30,10 +30,12 @@
 //
 // # Interfaces
 //
-//   - store (D6): the ONLY storage this package touches — two control tables
-//     (pairing_requests, device_tokens) through the store's pairing methods.
-//     Clock policy lives HERE (injected now func); the store stays
-//     value-agnostic and never sweeps.
+//   - store (D6): the ONLY storage this package touches — the pairing_requests
+//     control table and, post-migration (accounts 2.2), the credentials table
+//     (device mints write credentials kind='device' directly; the legacy
+//     device_tokens table is dormant, copied once at Open). Clock policy lives
+//     HERE (injected now func); the store stays value-agnostic and never
+//     sweeps.
 //   - api (D1/D3): wired as Deps.Pairing; LookupToken backs the
 //     authMiddleware device branch (hash of the presented bearer →
 //     RoleClient); handlers map ErrUnknownPairing → 404, ErrConflict → 409,

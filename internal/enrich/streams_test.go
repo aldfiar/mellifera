@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
@@ -29,7 +30,7 @@ func streamsItem(t *testing.T, s *store.Store, libID int64, id string) store.Ite
 	doc["sources"] = map[string]any{"tv-parser": map[string]any{"title": "done"}}
 	doc["_stages"] = []map[string]any{{"stage": "metadata_source", "plugin_id": "tv-parser", "status": "ok"}}
 	putItem(t, s, id, libID, statusReady, doc)
-	it, err := s.GetItem(context.Background(), id)
+	it, err := s.GetItem(context.Background(), id, access.System())
 	if err != nil {
 		t.Fatalf("GetItem %s: %v", id, err)
 	}
@@ -41,7 +42,7 @@ func streamsState(t *testing.T, s *store.Store, id, want string, timeout time.Du
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		it, err := s.GetItem(context.Background(), id)
+		it, err := s.GetItem(context.Background(), id, access.System())
 		if err == nil {
 			var doc map[string]any
 			_ = json.Unmarshal(it.Document, &doc)
@@ -451,7 +452,7 @@ func packLedgerRow(t *testing.T, s *store.Store, itemID string) store.FailureRow
 // mustGetItem loads an item or fails the test.
 func mustGetItem(t *testing.T, s *store.Store, id string) store.Item {
 	t.Helper()
-	it, err := s.GetItem(context.Background(), id)
+	it, err := s.GetItem(context.Background(), id, access.System())
 	if err != nil {
 		t.Fatalf("GetItem %s: %v", id, err)
 	}

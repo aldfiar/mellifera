@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -62,6 +63,15 @@ type namer struct {
 	// metadata block is composed: the DTOs stay byte-identical to the
 	// pre-projection wire.
 	chain []titleSourceBinding
+	// mutes is the calling Viewer's ChainMutes (l6-accounts 10.4, threaded
+	// in as an explicit namerFor parameter — never a fresh context read in
+	// the walk): a source muted for THIS viewer is skipped by the title
+	// walk exactly like a gate-disabled entry, so names resolve from the
+	// first UNMUTED source per viewer. The floor is per-response only —
+	// stored overrides, module configs, and other viewers' responses stay
+	// byte-identical. Nil (the zero value, and every mute-blind caller) is
+	// the empty-mute floor: byte-identical naming, the pre-accounts shape.
+	mutes map[string]bool
 	// moduleID is the library row's bound module id, read beside the naming
 	// options by the SAME GetLibrary namerFor already runs (recommendation-
 	// sorting: the photo carve-out branches on it — one comparison, no new
@@ -72,22 +82,37 @@ type namer struct {
 
 // namerFor builds the namer for one library: GetLibrary carries the two
 // naming options, plus ONE QuerySeries(libraryID, "") whole-table read mapped
-// by RelativePath (mirrors the SPA's matchSeries input). A MISSING library row
+// by RelativePath (mirrors the SPA's matchSeries input). mutes is the
+// calling Viewer's ChainMutes (l6-accounts 10.4) — callers pass v.ChainMutes
+// off the viewerFor they already resolved (no fresh context read here); nil
+// is the mute-blind floor the admin/write call sites keep. A MISSING library row
 // floors to the empty namer — the one floor EVERY namerFor call site shares,
 // so a vanished library row can never turn a previously-200 route into a 500:
 // elementTmpl "" means no composition, and display_name renders from the
 // floor tiers ("" when nothing resolves), exactly like the listItems browse
 // contract for a nonexistent ?library=. Any OTHER store error propagates to
 // the caller (the handlers map it → 500, like any other read).
-func (a *app) namerFor(ctx context.Context, libraryID int64) (namer, error) {
-	lib, err := a.deps.Store.GetLibrary(ctx, libraryID)
+//
+// Flag-(i) per-site re-derivation (the two access.System() reads 6.2
+// documented as deliberately unthreaded — 10.4 owns this neighborhood):
+// BOTH reads stay System() on purpose. The mute floor floors source
+// NAMESPACES in the walk, never rows: GetLibrary re-reads the one library
+// row the calling handler already admitted the viewer to (an invisible
+// library 404s upstream of every namerFor), and QuerySeries is the
+// whole-library series map (D-9) — every row in it belongs to that same
+// admitted library, so a viewer-scoped re-filter could only re-drop rows
+// the caller already vetted, never change a name. Row visibility is the
+// Viewer's VisibleLibraryIDs contract and lives at the caller; only the
+// title walk below carries the mutes.
+func (a *app) namerFor(ctx context.Context, libraryID int64, mutes map[string]bool) (namer, error) {
+	lib, err := a.deps.Store.GetLibrary(ctx, libraryID, access.System())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return namer{}, nil
 		}
 		return namer{}, err
 	}
-	rows, err := a.deps.Store.QuerySeries(ctx, libraryID, "")
+	rows, err := a.deps.Store.QuerySeries(ctx, libraryID, "", access.System())
 	if err != nil {
 		return namer{}, err
 	}
@@ -107,6 +132,7 @@ func (a *app) namerFor(ctx context.Context, libraryID int64) (namer, error) {
 		langPrefs:    pres.LanguagePreference,
 		chain:        pres.SourceChain,
 		moduleID:     lib.ModuleID,
+		mutes:        mutes,
 	}, nil
 }
 
@@ -175,8 +201,16 @@ func (n namer) seriesName(sr store.Series, override string) string {
 // the item's OWN namespaces — items carry plugin namespaces via
 // element-attached extras). The bindings arrive ALREADY
 // gate-resolved — upstream cmd-side via enrich.ResolveGates; this composer
-// is pure, imports no enrich symbol, and just skips disabled entries. Per
-// binding, in order: a disabled entry, a missing namespace, an empty string
+// is pure, imports no enrich symbol, and just skips disabled entries — and,
+// per l6-accounts 10.4, entries muted in the calling Viewer's ChainMutes
+// (the namer's mutes field, threaded in by namerFor): the mute floors THIS
+// response's walk to the first UNMUTED source exactly like a gate disable,
+// per-response only, storage untouched. The legs BELOW the walk are not
+// sources and stay mute-blind on purpose: the serial-parser title is the
+// parser's own fact leg (below the walk in seriesName's precedence — the
+// parser namespace is only reached when every walk source floored), and
+// _view.title is the document's own floor. Per binding, in order: a
+// disabled entry, a viewer-muted entry, a missing namespace, an empty string
 // title, a mistyped title (neither string nor object), or an empty language
 // pick all floor to the NEXT source. A string title passes through
 // verbatim; an object title is picked by the module's language_preference.
@@ -189,7 +223,7 @@ func (n namer) sourceTitle(doc map[string]any) string {
 	}
 	sources, _ := doc["sources"].(map[string]any)
 	for _, ts := range n.titleSources {
-		if !ts.Enabled {
+		if !ts.Enabled || n.mutes[ts.ID] {
 			continue
 		}
 		ns, ok := sources[ts.ID].(map[string]any)

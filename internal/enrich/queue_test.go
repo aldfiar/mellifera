@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
@@ -131,13 +132,13 @@ func waitForStatus(t *testing.T, s *store.Store, id, want string, timeout time.D
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		it, err := s.GetItem(context.Background(), id)
+		it, err := s.GetItem(context.Background(), id, access.System())
 		if err == nil && it.Status == want {
 			return it
 		}
 		time.Sleep(time.Millisecond)
 	}
-	it, _ := s.GetItem(context.Background(), id)
+	it, _ := s.GetItem(context.Background(), id, access.System())
 	t.Fatalf("item %s status = %q, want %q (timeout %v)", id, it.Status, want, timeout)
 	return it
 }

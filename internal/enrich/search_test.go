@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
@@ -302,7 +303,7 @@ func TestIdentifySeries(t *testing.T) {
 			t.Fatalf("CreateLibrary: %v", err)
 		}
 		serID := putSeriesRow(t, s, "serial", libID, "Show.Name.S01", statusReady, identifiedDoc())
-		before, err := s.GetSeries(ctx, serID)
+		before, err := s.GetSeries(ctx, serID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries: %v", err)
 		}
@@ -317,7 +318,7 @@ func TestIdentifySeries(t *testing.T) {
 		if queued || stripped != 0 || deferred != 1 {
 			t.Fatalf("queued=%v stripped=%d deferred=%d, want false/0/1", queued, stripped, deferred)
 		}
-		after, err := s.GetSeries(ctx, serID)
+		after, err := s.GetSeries(ctx, serID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries after: %v", err)
 		}
@@ -333,7 +334,7 @@ func TestIdentifySeries(t *testing.T) {
 			t.Fatalf("CreateLibrary: %v", err)
 		}
 		serID := putSeriesRow(t, s, "serial", libID, "Show.Name.S01", statusReady, identifiedDoc())
-		before, err := s.GetSeries(ctx, serID)
+		before, err := s.GetSeries(ctx, serID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries: %v", err)
 		}
@@ -362,7 +363,7 @@ func TestIdentifySeries(t *testing.T) {
 				if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
 					t.Fatalf("%s err = %v, want %v", tc.name, err, tc.wantErr)
 				}
-				after, gerr := s.GetSeries(ctx, serID)
+				after, gerr := s.GetSeries(ctx, serID, access.System())
 				if gerr != nil {
 					t.Fatalf("GetSeries after: %v", gerr)
 				}
@@ -416,7 +417,7 @@ func claimAndIngest(t *testing.T, r *Relay, result relay.RelayResult, stop <-cha
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		job, found, err := r.Claim(context.Background(), "test-principal")
+		job, found, err := r.Claim(context.Background(), "test-principal", access.System())
 		if err != nil {
 			t.Errorf("relay claim: %v", err)
 			return
@@ -665,7 +666,7 @@ func TestSearchRelayExpiresToUpstreamError(t *testing.T) {
 		go func() {
 			deadline := time.Now().Add(2 * time.Second)
 			for {
-				_, found, err := r.Claim(context.Background(), "test-principal")
+				_, found, err := r.Claim(context.Background(), "test-principal", access.System())
 				if err != nil {
 					t.Errorf("relay claim: %v", err)
 					return

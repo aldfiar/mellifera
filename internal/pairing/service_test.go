@@ -308,3 +308,55 @@ func TestServiceRevoke(t *testing.T) {
 		t.Fatalf("re-Revoke = %v, want ErrUnknownPairing", err)
 	}
 }
+
+// TestPairingMintsCredentials covers the post-migration mint path (accounts
+// 2.2/D6): Approve writes the device credential DIRECTLY into credentials
+// (kind='device') — the dormant device_tokens table is never written, so a
+// device paired mid-run resolves without a restart — while the pickup
+// contract is unchanged (the raw token is handed out exactly once, INV2) and
+// the minted token resolves at the data layer.
+func TestPairingMintsCredentials(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	req := pair(t, s, "tv")
+
+	if _, err := s.Approve(ctx, req.ID); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	got, err := s.Wait(ctx, req.ID)
+	if err != nil || got.Token == "" {
+		t.Fatalf("Wait pickup = %+v, %v; want a token", got, err)
+	}
+	raw := got.Token
+
+	// Pickup unchanged: the second poll reports consumed, no token (INV2).
+	if got, err := s.Wait(ctx, req.ID); err != nil || got.Status != statusConsumed || got.Token != "" {
+		t.Fatalf("second poll = %+v, %v; want consumed/no token", got, err)
+	}
+
+	// The minted row landed in credentials: exactly one kind='device' row,
+	// hash-preserving (the same SHA-256 the lookup uses), and it resolves.
+	rawHash := hashToken(raw)
+	var kind, storedHash string
+	if err := s.st.DB().QueryRowContext(ctx,
+		`SELECT kind, token_hash FROM credentials WHERE token_hash = ?`, rawHash,
+	).Scan(&kind, &storedHash); err != nil {
+		t.Fatalf("minted credential not found in credentials: %v", err)
+	}
+	if kind != "device" || storedHash != rawHash {
+		t.Fatalf("minted credential = kind %q hash %q, want device/%s", kind, storedHash, rawHash)
+	}
+	if ok, err := s.LookupToken(ctx, raw); err != nil || !ok {
+		t.Fatalf("LookupToken(raw) = %v, %v; want true, nil", ok, err)
+	}
+
+	// The dormant source table was never written: device_tokens stays empty.
+	var dormant int
+	if err := s.st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM device_tokens`).Scan(&dormant); err != nil {
+		t.Fatalf("count device_tokens: %v", err)
+	}
+	if dormant != 0 {
+		t.Fatalf("device_tokens rows after mint = %d, want 0 (dormant — mint writes credentials)", dormant)
+	}
+}

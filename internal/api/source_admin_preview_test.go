@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -46,7 +47,7 @@ func previewFixture(t *testing.T) (http.Handler, *store.Store, int64, map[string
 			RelativePath: path, Status: "active", Document: json.RawMessage(doc)}); err != nil {
 			t.Fatalf("seed series %q: %v", path, err)
 		}
-		sr, err := st.GetSeriesByPath(ctx, lib, path)
+		sr, err := st.GetSeriesByPath(ctx, lib, path, access.System())
 		if err != nil {
 			t.Fatalf("reload series %q: %v", path, err)
 		}
@@ -198,7 +199,7 @@ func TestSourcePreview(t *testing.T) {
 			"Only Shiki": `{"parsed":{"dir_name_raw":"Only Shiki"},"sources":{"shikimori":{"title":"Только"}}}`,
 			"Override":   `{"sources":{"shikimori":{"title":"Затмение"}}}`,
 		} {
-			sr, err := st.GetSeriesByPath(ctx, lib, path)
+			sr, err := st.GetSeriesByPath(ctx, lib, path, access.System())
 			if err != nil {
 				t.Fatalf("reread series %q: %v", path, err)
 			}
@@ -210,7 +211,7 @@ func TestSourcePreview(t *testing.T) {
 			"itm_view": `{"_view":{"title":{"value":"Old View Name"}},"sources":{"shikimori":{"title":"Кобра"}}}`,
 			"itm_bare": `{"sources":{"shikimori":{"title":"Кобра"}}}`,
 		} {
-			it, err := st.GetItem(ctx, id)
+			it, err := st.GetItem(ctx, id, access.System())
 			if err != nil {
 				t.Fatalf("reread item %s: %v", id, err)
 			}

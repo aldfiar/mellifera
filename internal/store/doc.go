@@ -69,14 +69,16 @@
 //     lifecycle pending → approved | denied | expired → consumed is owned by
 //     internal/pairing — expiry is lazy on read, the store never sweeps.
 //
-//   - DeviceToken: one paired-device credential row — the SHA-256 hash of the
-//     bearer token only, never the raw value (device-pairing D4); revocation
-//     = DeleteDevice.
+//   - DeviceToken: one paired-device credential row (accounts D6 — lives in
+//     credentials kind='device') — the SHA-256 hash of the bearer token only,
+//     never the raw value (device-pairing D4); revocation = DeleteDevice.
 //
 //   - CreatePairingRequest/GetPairingRequest/SetPairingStatus/
-//     ListPendingPairings/InsertDeviceToken/LookupDeviceTokenByHash/
+//     ListPendingPairings/InsertDeviceCredential/LookupDeviceCredentialByHash/
 //     ListDevices/DeleteDevice: the pairing control-table CRUD set (methods —
-//     outside the symbol budget).
+//     outside the symbol budget). The legacy device_tokens table is dormant:
+//     migrateDeviceTokens copies it into credentials once at Open
+//     (hash-preserving, guarded by token_hash), and nothing writes it after.
 //
 //   - UpsertArtOverride/GetArtOverride/DeleteArtOverride: the per-entity
 //     artwork-selection set, and InsertArtFetch/LookupArtFetch/DeleteArtFetch/
@@ -91,9 +93,9 @@
 //     budget; primitive signatures, no new exported types, the art.go
 //     precedent). watched_items is the completion ledger whose applied_at
 //     IS NULL rows ARE the learning queue (the derived-work posture, no
-//     jobs table); tag_weights holds the learned affinity. NO user/profile
-//     column — the single implicit profile; the roles change owns that
-//     migration.
+//     jobs table); tag_weights holds the learned affinity. The l6-accounts
+//     ledger rebuild (2.3) gave watched_items a user_id column — per-user
+//     slots, the legacy rows collapsing to user_id 0 until adopted.
 //
 // # Invariants
 //

@@ -5,9 +5,10 @@ import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, House, Menu, Puzzle, Settings } from "lucide-react";
 
-import type { AdminStatus, LibraryDTO } from "@/lib/api";
-import { apiRequest, getItem } from "@/lib/api";
+import type { LibraryDTO } from "@/lib/api";
+import { getItem } from "@/lib/api";
 import { useLibraries, useLibrarySummary } from "@/lib/queries";
+import Profile, { isAdminProfile, useProfile } from "@/components/Profile";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { TvModeToggle } from "@/components/TvModeToggle";
 import { cn } from "@/lib/utils";
@@ -21,20 +22,27 @@ import { cn } from "@/lib/utils";
 // the reserved FAB zone) exactly like the theme owns the `dark` class.
 //
 // Panel anatomy, top to bottom (INV from the mockup):
-//   brand + chevron · Home/Admin/Plugins icon nav · the side-colls list (ALL
-//   collections, pastel type dot + item count, INDEPENDENTLY scrollable via
-//   min-height: 0) · the pinned profile block (side-foot, margin-top: auto)
-//   with the probed role and the theme toggle.
+//   brand + chevron · Home/Admin/Plugins icon nav (admin-gated) · the
+//   side-colls list (ALL collections, pastel type dot + item count,
+//   INDEPENDENTLY scrollable via min-height: 0) · the pinned profile block
+//   (side-foot, margin-top: auto) with the served identity and the theme
+//   toggle.
 //
 // Data flow (D1): GET /libraries renders names + dots immediately; the
 // per-library summary counts load asynchronously and MUST NOT block opening —
 // the whole panel content mounts only while open, so closed sessions fire no
 // library requests at all.
 //
-// INV-pure-delegation holds: every network call goes through the queries
-// hooks or apiRequest. The one inline query is the role probe (D7 — the role
-// label is PROBED, not asserted): GET /admin/status succeeding → "admin",
-// 403 or any failure → "client".
+// Identity (l6-accounts 8.3): the sidebar reads the SERVED profile
+// (GET /api/v1/profile via the shared ["profile"] query — one fetch serving
+// the foot's identity block and this gate) instead of probing an operator
+// endpoint. The retired D7 role probe (GET /admin/status succeeding →
+// "admin") is GONE — an operator status endpoint is never an identity
+// oracle. The Admin/Plugins rows render when the served principal is an
+// admin (env admin or admin-role session, Profile.isAdminProfile) and fail
+// closed otherwise: loading, error, user-role sessions, and devices render
+// no admin surfaces. /admin/status itself stays an operator status endpoint
+// — only the SPA's identity use of it is removed here.
 
 // INV-fixed-key: the sidebar open-state key (mirrors mellifera.theme /
 // mellifera.token). Drift = bug.
@@ -181,6 +189,13 @@ function SideNav(): ReactElement {
   const libraries = useLibraries();
   const libs: LibraryDTO[] = libraries.data?.items ?? [];
 
+  // The admin gate rides the SHARED served-profile query (["profile"]) —
+  // the same cache entry the foot's identity block reads, so one GET
+  // /profile serves both and the gate can never disagree with the rendered
+  // identity. Fail closed: no served identity yet → no admin rows.
+  const profile = useProfile();
+  const showAdmin = isAdminProfile(profile.data);
+
   // Detail-page parent highlight (the sidebar SHALL): while an item detail
   // page is open, its parent collection's entry highlights too. The item is
   // fetched under the SAME ["item", id] query key ItemDetail uses, so an
@@ -218,15 +233,19 @@ function SideNav(): ReactElement {
         )}
       </div>
 
-      <NavLink to="/admin" className={sideLinkClass}>
-        <Settings aria-hidden="true" />
-        <span className="lbl">Admin</span>
-      </NavLink>
+      {showAdmin ? (
+        <>
+          <NavLink to="/admin" className={sideLinkClass}>
+            <Settings aria-hidden="true" />
+            <span className="lbl">Admin</span>
+          </NavLink>
 
-      <NavLink to="/admin/plugins" className={sideLinkClass}>
-        <Puzzle aria-hidden="true" />
-        <span className="lbl">Plugins</span>
-      </NavLink>
+          <NavLink to="/admin/plugins" className={sideLinkClass}>
+            <Puzzle aria-hidden="true" />
+            <span className="lbl">Plugins</span>
+          </NavLink>
+        </>
+      ) : null}
     </nav>
   );
 }
@@ -252,32 +271,14 @@ function SideColl(props: { lib: LibraryDTO; active?: boolean }): ReactElement {
 }
 
 // SideFoot — the PINNED profile block (margin-top: auto pushes it to the
-// panel bottom regardless of list length) plus the theme toggle. The role is
-// probed once per session (D7): success → "admin", 403/failure → "client".
-// The path is inlined here (same route as ENDPOINTS.adminStatus) so the probe
-// stays self-contained, mirroring how queries.ts inlines its GET paths.
+// panel bottom regardless of list length) plus the theme toggle. The block
+// is the served identity (l6-accounts 8.3): Profile reads GET /api/v1/
+// profile through the shared ["profile"] query — the served name, role
+// label, and groups replace the retired D7 /admin/status probe entirely.
 function SideFoot(): ReactElement {
-  const role = useQuery({
-    queryKey: ["admin-role"],
-    queryFn: async () => {
-      await apiRequest<AdminStatus>("/api/v1/admin/status");
-      return "admin" as const;
-    },
-    retry: false,
-    staleTime: Infinity,
-  });
-
-  const roleLabel = role.isSuccess ? "admin" : role.isError ? "client" : "…";
-
   return (
     <div className="side-foot">
-      <div className="profile">
-        <span className="avatar" aria-hidden="true">OP</span>
-        <span className="pinfo">
-          <b>Operator</b>
-          <small>{roleLabel}</small>
-        </span>
-      </div>
+      <Profile />
       {/* The display-preferences row (tv-mode D9): the «Режим ТВ» tri-state
           override beside the theme toggle — the foot is the control's home,
           reachable on a TV through the focusable menu FAB. */}

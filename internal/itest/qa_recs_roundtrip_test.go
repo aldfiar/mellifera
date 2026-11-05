@@ -62,6 +62,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
@@ -380,7 +381,7 @@ func qaRecsRunJanitor(ctx context.Context, st *store.Store, reg *module.Registry
 // production leg.
 func qaRecsWatchDetect(st *store.Store, wake chan<- struct{}) func(context.Context, string, int64, bool) {
 	return func(ctx context.Context, itemID string, position int64, completed bool) {
-		it, err := st.GetItem(ctx, itemID)
+		it, err := st.GetItem(ctx, itemID, access.System())
 		if err != nil {
 			return
 		}
@@ -397,7 +398,7 @@ func qaRecsWatchDetect(st *store.Store, wake chan<- struct{}) func(context.Conte
 				return
 			}
 		}
-		if err := st.InsertWatched(ctx, itemID, it.LibraryID, qaRecsSeriesPath(doc), time.Now().UTC()); err != nil {
+		if err := st.InsertWatched(ctx, itemID, it.LibraryID, qaRecsSeriesPath(doc), time.Now().UTC(), access.System()); err != nil {
 			return
 		}
 		select { // the notifyRecs shape: capacity-1, default-guarded
@@ -485,7 +486,7 @@ func qaRecsResolveWatchTags(ctx context.Context, st *store.Store, reg *module.Re
 	var modID string
 	var doc json.RawMessage
 	if seriesPath == "" {
-		it, err := st.GetItem(ctx, itemID)
+		it, err := st.GetItem(ctx, itemID, access.System())
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil, nil // vanished entity — honest absence
@@ -494,7 +495,7 @@ func qaRecsResolveWatchTags(ctx context.Context, st *store.Store, reg *module.Re
 		}
 		modID, doc = it.ModuleID, it.Document
 	} else {
-		sr, err := st.GetSeriesByPath(ctx, libraryID, seriesPath)
+		sr, err := st.GetSeriesByPath(ctx, libraryID, seriesPath, access.System())
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil, nil // vanished entity — honest absence
@@ -749,7 +750,7 @@ func TestRecsRoundtrip(t *testing.T) {
 	})
 
 	t.Run("zero interest: equal tag counts tie into the alphabetical floor", func(t *testing.T) {
-		if watched, err := j.w.st.ListWatched(ctx); err != nil || len(watched) != 0 {
+		if watched, err := j.w.st.ListWatched(ctx, access.System()); err != nil || len(watched) != 0 {
 			t.Fatalf("pre-watch ledger = %v (err %v), want empty", watched, err)
 		}
 		rows := qaRecsListSeries(t, j, "")
@@ -771,7 +772,7 @@ func TestRecsRoundtrip(t *testing.T) {
 		// The detector leg ran synchronously inside the PUT (after the stored
 		// upsert, before the response write): the ledger row is observable
 		// the moment the PUT returns.
-		watched, err := j.w.st.ListWatched(ctx)
+		watched, err := j.w.st.ListWatched(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListWatched: %v", err)
 		}
@@ -837,7 +838,7 @@ func TestRecsRoundtrip(t *testing.T) {
 	t.Run("rewatch is a ledger no-op: weights unchanged", func(t *testing.T) {
 		qaRecsPutProgress(t, j, zuluE01.ID, qaRecsWatchPos, false) // crosses 90% again
 
-		watched, err := j.w.st.ListWatched(ctx)
+		watched, err := j.w.st.ListWatched(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListWatched: %v", err)
 		}
@@ -912,7 +913,7 @@ func TestRecsRoundtrip(t *testing.T) {
 		// strictly below the 0.9 floor — carries the below-floor side; the
 		// floor's satisfied side is the completion subtest's 2 s write.
 		qaRecsPutProgress(t, j, alphaE01.ID, 0, false)
-		if watched, err := j.w.st.ListWatched(ctx); err != nil || len(watched) != 1 || watched[0] != zuluE01.ID {
+		if watched, err := j.w.st.ListWatched(ctx, access.System()); err != nil || len(watched) != 1 || watched[0] != zuluE01.ID {
 			t.Fatalf("ledger after the plain below-floor write = %v (err %v), want still exactly [%s] (the floor held)",
 				watched, err, zuluE01.ID)
 		}
@@ -921,7 +922,7 @@ func TestRecsRoundtrip(t *testing.T) {
 		// below-floor position with completed:true ledgers — intent needs no
 		// duration, no floor crossing.
 		qaRecsPutProgress(t, j, alphaE01.ID, 0, true)
-		watched, err := j.w.st.ListWatched(ctx)
+		watched, err := j.w.st.ListWatched(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListWatched: %v", err)
 		}

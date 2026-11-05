@@ -8,6 +8,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/swaggo/http-swagger v1.3.4
+	golang.org/x/crypto v0.53.0
 	golang.org/x/image v0.44.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/text v0.40.0

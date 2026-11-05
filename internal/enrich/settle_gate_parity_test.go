@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 )
@@ -67,7 +68,7 @@ func TestSettleGateParity(t *testing.T) {
 
 		q.workItem(ctx, "i_gate")
 
-		it, err := s.GetItem(ctx, "i_gate")
+		it, err := s.GetItem(ctx, "i_gate", access.System())
 		if err != nil {
 			t.Fatalf("GetItem: %v", err)
 		}
@@ -132,7 +133,7 @@ func TestSettleGateParity(t *testing.T) {
 		close(parser.release)
 		<-done
 
-		it, err := s.GetItem(ctx, "i_flip")
+		it, err := s.GetItem(ctx, "i_flip", access.System())
 		if err != nil {
 			t.Fatalf("GetItem: %v", err)
 		}
@@ -161,7 +162,7 @@ func TestSettleGateParity(t *testing.T) {
 
 		q.workItem(ctx, "i_un")
 
-		it, err := s.GetItem(ctx, "i_un")
+		it, err := s.GetItem(ctx, "i_un", access.System())
 		if err != nil {
 			t.Fatalf("GetItem: %v", err)
 		}
@@ -187,7 +188,7 @@ func TestSettleGateParity(t *testing.T) {
 
 		q.workItem(ctx, "i_plain")
 
-		it, err := s.GetItem(ctx, "i_plain")
+		it, err := s.GetItem(ctx, "i_plain", access.System())
 		if err != nil {
 			t.Fatalf("GetItem: %v", err)
 		}

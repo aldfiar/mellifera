@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -47,7 +48,7 @@ func relaySeedPlan() []relay.PlanSpec {
 // exposes) so the tests can assert the inserted row verbatim.
 func relayClaim(t *testing.T, s *store.Store) (relay.RelayJob, bool) {
 	t.Helper()
-	job, found, err := s.ClaimOldestRelayJob(context.Background(), "test-principal", time.Now(), time.Now().Add(time.Minute))
+	job, found, err := s.ClaimOldestRelayJob(context.Background(), "test-principal", access.System(), time.Now(), time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimOldestRelayJob: %v", err)
 	}
@@ -321,7 +322,7 @@ func relayHandoff(t *testing.T, r *Relay, purpose, rowID string, libraryID int64
 	if err := r.Enqueue(context.Background(), relaySeedPlan(), purpose, rowID, libraryID, pluginID, "network", "dial tcp: i/o timeout"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	job, found, err := r.Claim(context.Background(), principal)
+	job, found, err := r.Claim(context.Background(), principal, access.System())
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -355,7 +356,7 @@ func TestRelayClaim(t *testing.T) {
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_1", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
-		job, found, err := r.Claim(ctx, "principal-a")
+		job, found, err := r.Claim(ctx, "principal-a", access.System())
 		if err != nil || !found {
 			t.Fatalf("Claim: found=%v err=%v", found, err)
 		}
@@ -381,7 +382,7 @@ func TestRelayClaim(t *testing.T) {
 	t.Run("empty_queue_not_found", func(t *testing.T) {
 		s := relayTestStore(t)
 		r := &Relay{Store: s}
-		job, found, err := r.Claim(ctx, "principal-a")
+		job, found, err := r.Claim(ctx, "principal-a", access.System())
 		if err != nil || found {
 			t.Fatalf("Claim on empty queue: found=%v err=%v", found, err)
 		}
@@ -399,11 +400,11 @@ func TestRelayClaim(t *testing.T) {
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_2", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue #2: %v", err)
 		}
-		first, found, err := r.Claim(ctx, "principal-a")
+		first, found, err := r.Claim(ctx, "principal-a", access.System())
 		if err != nil || !found {
 			t.Fatalf("Claim #1: found=%v err=%v", found, err)
 		}
-		second, found, err := r.Claim(ctx, "principal-b")
+		second, found, err := r.Claim(ctx, "principal-b", access.System())
 		if err != nil || !found {
 			t.Fatalf("Claim #2: found=%v err=%v", found, err)
 		}
@@ -413,7 +414,7 @@ func TestRelayClaim(t *testing.T) {
 		if first.ClaimPrincipalHash != "principal-a" || second.ClaimPrincipalHash != "principal-b" {
 			t.Fatalf("each claim stamped its own principal: %q / %q", first.ClaimPrincipalHash, second.ClaimPrincipalHash)
 		}
-		if _, found, err := r.Claim(ctx, "principal-a"); err != nil || found {
+		if _, found, err := r.Claim(ctx, "principal-a", access.System()); err != nil || found {
 			t.Fatalf("drained queue must read not-found: found=%v err=%v", found, err)
 		}
 	})
@@ -424,12 +425,12 @@ func TestRelayClaim(t *testing.T) {
 		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_1", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
-		abandoned, found, err := r.Claim(ctx, "principal-a")
+		abandoned, found, err := r.Claim(ctx, "principal-a", access.System())
 		if err != nil || !found {
 			t.Fatalf("first Claim: found=%v err=%v", found, err)
 		}
 		time.Sleep(60 * time.Millisecond) // past the 25ms lease: the claim is now stale
-		retaken, found, err := r.Claim(ctx, "principal-b")
+		retaken, found, err := r.Claim(ctx, "principal-b", access.System())
 		if err != nil || !found {
 			t.Fatalf("re-claim after expiry: found=%v err=%v", found, err)
 		}
@@ -450,7 +451,10 @@ func TestRelayClaim(t *testing.T) {
 // consumes); a plan mismatch, a non-done state, and a missing job are all
 // misses that leave the store untouched (D4 — safe degradation).
 func TestRelayConsult(t *testing.T) {
-	ctx := context.Background()
+	// The fixture's Ingest runs against library-backed enrich jobs, so the
+	// context carries the see-all viewer (the 4.5 fixture convention — the
+	// 11.2 re-check reads the carrier and a bare context fails closed).
+	ctx := access.WithViewer(context.Background(), access.System())
 
 	// relayConsultFixture completes one full enrich round to a done state for
 	// the pair (itm_1, shikimori) with the given result.
@@ -533,7 +537,10 @@ func TestRelayConsult(t *testing.T) {
 // attempts column and re-arms the FLAT cooldown; search jobs complete without
 // touching ledger or notify.
 func TestRelayIngest(t *testing.T) {
-	ctx := context.Background()
+	// See-all viewer on the carrier (the 4.5 fixture convention): these
+	// subtests pin the pre-accounts guard law, whose see-all pass is the
+	// empty clause — byte-identical under the 11.2 re-check.
+	ctx := access.WithViewer(context.Background(), access.System())
 
 	t.Run("done_enrich_clears_ledger_and_notifies", func(t *testing.T) {
 		s := relayTestStore(t)
@@ -584,7 +591,7 @@ func TestRelayIngest(t *testing.T) {
 			t.Fatalf("expired claim must be refused with the 409 shape (wrapped ErrNoRows), got %v", err)
 		}
 		// Nothing was ingested: the expired row is back in the claimable pool.
-		retaken, found, err := r.Claim(ctx, "principal-b")
+		retaken, found, err := r.Claim(ctx, "principal-b", access.System())
 		if err != nil || !found || retaken.ID != job.ID {
 			t.Fatalf("expired job must be re-claimable: found=%v id=%d/%d err=%v", found, retaken.ID, job.ID, err)
 		}
@@ -653,7 +660,9 @@ func TestRelayIngest(t *testing.T) {
 // stores 6 with exhaustedDoublings(5, MaxAttempts 3) = 3 doublings of the 7d
 // default) — never the flat 10m again.
 func TestRelayIngestThirdFailureLandsExhausted(t *testing.T) {
-	ctx := context.Background()
+	// See-all viewer on the carrier (the 4.5 fixture convention) — the
+	// library-backed failed rounds must ingest as pre-accounts.
+	ctx := access.WithViewer(context.Background(), access.System())
 	s := relayTestStore(t)
 	r := &Relay{Store: s}
 
@@ -698,4 +707,136 @@ func TestRelayIngestThirdFailureLandsExhausted(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestRelayResultViewerRecheck pins the RESULT-time viewer re-check at the
+// enrich boundary (l6-accounts 11.2): Ingest reads the claimant's CURRENT
+// viewer off the context carrier (the api result handler's viewerFor stash —
+// the 4.5 fixture convention seeds it in tests) and the store's completion
+// guard re-verifies the job's library against it. A claimant narrowed since
+// the claim — here the revoked-grant shape, the visible set emptied — is
+// refused with the wrapped sql.ErrNoRows (the 409 shape upstream) while the
+// claim is released back to the pool and NOTHING ingests; the unchanged
+// viewer ingests and the stored response lands; the title-free 0-job ingests
+// for the narrowed principal and the bare-context zero Viewer alike (the
+// Identity-read-failure posture), while the zero Viewer fails closed on a
+// library-backed job.
+func TestRelayResultViewerRecheck(t *testing.T) {
+	ctx := context.Background()
+
+	// storedResult reads a job row's state + result blob straight over the
+	// store — the nothing-ingested proof (no titles may land on refusal).
+	storedResult := func(t *testing.T, s *store.Store, id int64) (string, []byte) {
+		t.Helper()
+		var (
+			state string
+			blob  []byte
+		)
+		if err := s.DB().QueryRowContext(ctx,
+			"SELECT state, result FROM relay_jobs WHERE id = ?", id).Scan(&state, &blob); err != nil {
+			t.Fatalf("select relay row %d: %v", id, err)
+		}
+		return state, blob
+	}
+
+	t.Run("revoked_grant_narrowed_refused_released_nothing_ingested", func(t *testing.T) {
+		s := relayTestStore(t)
+		r := &Relay{Store: s}
+		granted := access.User(42, []int64{7}, nil)
+		if err := r.Enqueue(ctx, relaySeedPlan(), "enrich", "itm_rc", 7, "shikimori", "network", "dial tcp: i/o timeout"); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		job, found, err := r.Claim(ctx, "principal-a", granted) // the claim minted under the grant
+		if err != nil || !found {
+			t.Fatalf("claim under the granted viewer: found=%v err=%v", found, err)
+		}
+
+		// The grant is revoked (the visible set empties — the identity
+		// surface's RemoveCollection outcome, narrowed at the Viewer seam this
+		// layer's contract actually rides): the ingest refuses AND releases.
+		narrowed := access.User(42, nil, nil)
+		err = r.Ingest(access.WithViewer(ctx, narrowed), job.ID, "principal-a", relayDoneResult())
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("narrowed ingest = %v, want wrapped sql.ErrNoRows (the 409 shape)", err)
+		}
+		state, blob := storedResult(t, s, job.ID)
+		if state != "pending" || len(blob) != 0 {
+			t.Fatalf("released row = state %q result %q, want pending with nothing ingested", state, blob)
+		}
+
+		// The ledger row Enqueue wrote must survive untouched: a refused
+		// ingest is NOT a round — the pair stays quietly relayed.
+		rows, err := s.ListFailures(ctx)
+		if err != nil || len(rows) != 1 || rows[0].Status != "relayed" {
+			t.Fatalf("refused ingest touched the ledger: rows=%d err=%v", len(rows), err)
+		}
+
+		// The pool re-entry: an eligible claimant takes the released job.
+		retaken, found, err := r.Claim(ctx, "principal-b", granted)
+		if err != nil || !found || retaken.ID != job.ID {
+			t.Fatalf("eligible re-claim = found=%v id=%d/%d err=%v", found, retaken.ID, job.ID, err)
+		}
+	})
+
+	t.Run("unchanged_viewer_ingests_titles_land", func(t *testing.T) {
+		s := relayTestStore(t)
+		r := &Relay{Store: s}
+		job := relayHandoff(t, r, "enrich", "itm_ok", 7, "shikimori", "principal-a")
+		granted := access.User(42, []int64{7}, nil)
+
+		// A viewer whose visible set still carries the job's library
+		// completes: the pre-accounts happy path, byte-identical.
+		if err := r.Ingest(access.WithViewer(ctx, granted), job.ID, "principal-a", relayDoneResult()); err != nil {
+			t.Fatalf("unchanged-viewer ingest: %v", err)
+		}
+		state, blob := storedResult(t, s, job.ID)
+		if state != "done" || len(blob) == 0 {
+			t.Fatalf("ingested row = state %q result %q, want done with the response stored", state, blob)
+		}
+		// The stored response is the consult cache — the titles landed for
+		// the consuming run, exactly as a server fetch would feed Convert.
+		if _, ok, err := r.Consult(ctx, "itm_ok", "shikimori", relaySeedPlan()); err != nil || !ok {
+			t.Fatalf("ingested result must be consultable: ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("zero_job_ingests_under_narrowed_and_zero_viewers", func(t *testing.T) {
+		s := relayTestStore(t)
+		r := &Relay{Store: s}
+		// A search job — library_id 0, carries no titles: claimable AND
+		// ingestable by the fail-closed narrowed principal (the 11.1/11.2
+		// 0-job law).
+		job := relayHandoff(t, r, "search", "", 0, "shikimori", "principal-a")
+		narrowed := access.User(42, nil, nil)
+		if err := r.Ingest(access.WithViewer(ctx, narrowed), job.ID, "principal-a", relayDoneResult()); err != nil {
+			t.Fatalf("narrowed 0-job ingest: %v", err)
+		}
+		if state, _ := storedResult(t, s, job.ID); state != "done" {
+			t.Fatalf("narrowed 0-job state = %q, want done", state)
+		}
+
+		// The bare-context zero Viewer (an Identity-read failure at
+		// viewerFor) is the same fail-closed shape: 0-jobs still ingest.
+		job2 := relayHandoff(t, r, "search", "", 0, "shikimori", "principal-a")
+		if err := r.Ingest(ctx, job2.ID, "principal-a", relayDoneResult()); err != nil {
+			t.Fatalf("zero-viewer 0-job ingest: %v", err)
+		}
+		if state, _ := storedResult(t, s, job2.ID); state != "done" {
+			t.Fatalf("zero-viewer 0-job state = %q, want done", state)
+		}
+	})
+
+	t.Run("zero_viewer_fails_closed_on_a_library_job", func(t *testing.T) {
+		s := relayTestStore(t)
+		r := &Relay{Store: s}
+		job := relayHandoff(t, r, "enrich", "itm_zv", 7, "shikimori", "principal-a")
+		// Bare context — the zero Viewer: the library-backed completion must
+		// refuse (fail closed), not fall open.
+		if err := r.Ingest(ctx, job.ID, "principal-a", relayDoneResult()); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("zero-viewer library ingest = %v, want wrapped sql.ErrNoRows", err)
+		}
+		if state, blob := storedResult(t, s, job.ID); state != "pending" || len(blob) != 0 {
+			t.Fatalf("zero-viewer refusal row = state %q result %q, want released pending, nothing ingested", state, blob)
+		}
+	})
 }

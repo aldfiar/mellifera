@@ -45,6 +45,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/scan"
@@ -167,10 +168,13 @@ func qaStatePutProgress(t *testing.T, j *qaStateJoint, itemID string, position i
 // duration ⇒ never backfills — the honest absence), and the InsertWatched
 // carrying the progress write's own stamp (backfillStamp). Every failure is
 // skip-and-continue exactly like production: the backfill is never
-// load-bearing.
+// load-bearing. The reads ride access.System() (the boot pass stays global —
+// the l6-accounts law) and the write stamps the legacy slot, correct for
+// this helper's slot-0 rows; production's per-row viewer shaping is pinned
+// by cmd's own backfill tests.
 func qaStateRunBackfill(ctx context.Context, t *testing.T, st *store.Store) {
 	t.Helper()
-	ledgered, err := st.ListWatched(ctx)
+	ledgered, err := st.ListWatched(ctx, access.System())
 	if err != nil {
 		t.Fatalf("backfill ListWatched: %v", err)
 	}
@@ -178,7 +182,7 @@ func qaStateRunBackfill(ctx context.Context, t *testing.T, st *store.Store) {
 	for _, id := range ledgered {
 		done[id] = struct{}{}
 	}
-	rows, err := st.ListProgressAll(ctx)
+	rows, err := st.ListProgressAll(ctx, access.System())
 	if err != nil {
 		t.Fatalf("backfill ListProgressAll: %v", err)
 	}
@@ -186,7 +190,7 @@ func qaStateRunBackfill(ctx context.Context, t *testing.T, st *store.Store) {
 		if _, ok := done[p.ItemID]; ok {
 			continue // already in the ledger — the PK dedupe stays upstream
 		}
-		it, err := st.GetItem(ctx, p.ItemID)
+		it, err := st.GetItem(ctx, p.ItemID, access.System())
 		if err != nil {
 			continue // vanished row — the tolerant reads already skip it
 		}
@@ -205,7 +209,7 @@ func qaStateRunBackfill(ctx context.Context, t *testing.T, st *store.Store) {
 		if ts, err := time.Parse(time.RFC3339Nano, p.UpdatedAt); err == nil {
 			stamp = ts // backfillStamp: the progress write's own stamp
 		}
-		if err := st.InsertWatched(ctx, p.ItemID, it.LibraryID, qaRecsSeriesPath(doc), stamp); err != nil {
+		if err := st.InsertWatched(ctx, p.ItemID, it.LibraryID, qaRecsSeriesPath(doc), stamp, access.System()); err != nil {
 			continue // log-and-skip — never load-bearing
 		}
 	}
@@ -264,14 +268,14 @@ func TestQaItemStateRoundtrip(t *testing.T) {
 			t.Fatalf("completed_at %q is not RFC3339Nano: %v", completedAt, err)
 		}
 
-		watched, err := j.st.ListWatched(ctx)
+		watched, err := j.st.ListWatched(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListWatched: %v", err)
 		}
 		if len(watched) != 1 || watched[0] != itemA {
 			t.Fatalf("watched ledger = %v, want exactly [%s]", watched, itemA)
 		}
-		rec, err := j.st.GetProgress(ctx, itemA)
+		rec, err := j.st.GetProgress(ctx, itemA, access.System())
 		if err != nil || rec.PositionSeconds != 42 {
 			t.Fatalf("GetProgress = (%+v, %v), want position 42 untouched", rec, err)
 		}
@@ -312,14 +316,14 @@ func TestQaItemStateRoundtrip(t *testing.T) {
 			t.Fatalf("completed_at = %v, want the KEY ABSENT on an unwatched echo (omitempty is the shape)", dto["completed_at"])
 		}
 
-		watched, err := j.st.ListWatched(ctx)
+		watched, err := j.st.ListWatched(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListWatched: %v", err)
 		}
 		if len(watched) != 0 {
 			t.Fatalf("watched ledger = %v, want empty (the row is gone)", watched)
 		}
-		rec, err := j.st.GetProgress(ctx, itemA)
+		rec, err := j.st.GetProgress(ctx, itemA, access.System())
 		if err != nil || rec.PositionSeconds != 0 {
 			t.Fatalf("GetProgress = (%+v, %v), want position reset to 0", rec, err)
 		}
@@ -336,7 +340,7 @@ func TestQaItemStateRoundtrip(t *testing.T) {
 		// zeroed position falls out of the positive-positions-only WHERE.
 		// This read is the load-bearing fact; the pass below only proves the
 		// negative holds through it.
-		rows, err := j.st.ListProgressAll(ctx)
+		rows, err := j.st.ListProgressAll(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListProgressAll: %v", err)
 		}
@@ -348,7 +352,7 @@ func TestQaItemStateRoundtrip(t *testing.T) {
 
 		// The pass provably RAN (B backfilled) yet did NOT re-ledger A —
 		// the negative assertion holds non-vacuously.
-		watched, err := j.st.ListWatched(ctx)
+		watched, err := j.st.ListWatched(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListWatched: %v", err)
 		}
@@ -371,7 +375,7 @@ func TestQaItemStateRoundtrip(t *testing.T) {
 			t.Fatalf("echo position_seconds = %v, want 0 (the zeroed row, untouched by the ledger write)", dto["position_seconds"])
 		}
 
-		watched, err := j.st.ListWatched(ctx)
+		watched, err := j.st.ListWatched(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListWatched: %v", err)
 		}
@@ -462,7 +466,7 @@ func TestQaItemStateRoundtrip(t *testing.T) {
 
 		// Neither rejection touched the settled loop state: the ledger holds
 		// its two rows, the queue stays empty, A's position stays 0.
-		watched, err := j.st.ListWatched(ctx)
+		watched, err := j.st.ListWatched(ctx, access.System())
 		if err != nil {
 			t.Fatalf("ListWatched: %v", err)
 		}
@@ -472,7 +476,7 @@ func TestQaItemStateRoundtrip(t *testing.T) {
 		if ids, _, _, _, err := j.st.ListUnappliedWatched(ctx); err != nil || len(ids) != 0 {
 			t.Fatalf("learning queue after the rejections = (%v, err %v), want empty (rejections queue nothing)", ids, err)
 		}
-		rec, err := j.st.GetProgress(ctx, itemA)
+		rec, err := j.st.GetProgress(ctx, itemA, access.System())
 		if err != nil || rec.PositionSeconds != 0 {
 			t.Fatalf("GetProgress %s after the rejections = (%+v, %v), want position 0 untouched", itemA, rec, err)
 		}

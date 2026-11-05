@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -218,7 +219,7 @@ func (a *app) adminSourcePatch(w http.ResponseWriter, r *http.Request) {
 	}
 	queued := 0
 	if *req.Enabled {
-		libs, err := a.deps.Store.ListLibraries(r.Context())
+		libs, err := a.deps.Store.ListLibraries(r.Context(), access.System())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -256,7 +257,7 @@ func (a *app) libraryGateTarget(w http.ResponseWriter, r *http.Request) (store.L
 		writeError(w, http.StatusBadRequest, "bad_request", "library id must be an integer", false)
 		return store.Library{}, "", false
 	}
-	lib, err := a.deps.Store.GetLibrary(r.Context(), id)
+	lib, err := a.deps.Store.GetLibrary(r.Context(), id, access.System())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "library "+chi.URLParam(r, "id")+" not found", false)
@@ -432,7 +433,7 @@ func (a *app) adminSourcePreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "library_id is required", false)
 		return
 	}
-	lib, err := a.deps.Store.GetLibrary(r.Context(), *req.LibraryID)
+	lib, err := a.deps.Store.GetLibrary(r.Context(), *req.LibraryID, access.System())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found",
@@ -453,14 +454,18 @@ func (a *app) adminSourcePreview(w http.ResponseWriter, r *http.Request) {
 	// namerFor builds for serving (so before == served display_names), and
 	// the after namer is a copy whose title-walk bindings carry the
 	// hypothetical vector — every other composition input is shared.
-	live, err := a.namerFor(r.Context(), lib.ID)
+	// Mute-blind namer (10.4, per-site): an ADMIN route (empty ChainMutes in
+	// production) whose before/after compare GATE vectors for the operator —
+	// the per-viewer mute floor is the client composition contract, not the
+	// preview's inventory.
+	live, err := a.namerFor(r.Context(), lib.ID, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
 	hypo := live
 	hypo.titleSources = gateOverriddenSources(live.titleSources, req.Gates)
-	srs, err := a.deps.Store.QuerySeries(r.Context(), lib.ID, "")
+	srs, err := a.deps.Store.QuerySeries(r.Context(), lib.ID, "", access.System())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
@@ -486,7 +491,7 @@ func (a *app) adminSourcePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := 0
 	for {
-		page, err := a.deps.Store.QueryItems(r.Context(), lib.ID, "", "", false, titleCountPageSize, offset)
+		page, err := a.deps.Store.QueryItems(r.Context(), lib.ID, "", "", false, titleCountPageSize, offset, access.System())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -643,7 +648,7 @@ func (a *app) collectSourceAggregate(ctx context.Context, wantCounts bool) (sour
 		}
 		moduleScope[moduleID] = res
 	}
-	libs, err := a.deps.Store.ListLibraries(ctx)
+	libs, err := a.deps.Store.ListLibraries(ctx, access.System())
 	if err != nil {
 		return sourceAdminAggregate{}, err
 	}
@@ -771,13 +776,13 @@ func (a *app) sourceTitleCounts(ctx context.Context, pluginIDs []string) (map[st
 	for _, id := range pluginIDs {
 		loaded[id] = true
 	}
-	libs, err := a.deps.Store.ListLibraries(ctx)
+	libs, err := a.deps.Store.ListLibraries(ctx, access.System())
 	if err != nil {
 		return nil, err
 	}
 	counts := make(map[string]sourceTitleCounts)
 	for _, lib := range libs {
-		srs, err := a.deps.Store.QuerySeries(ctx, lib.ID, "")
+		srs, err := a.deps.Store.QuerySeries(ctx, lib.ID, "", access.System())
 		if err != nil {
 			return nil, err
 		}
@@ -790,7 +795,7 @@ func (a *app) sourceTitleCounts(ctx context.Context, pluginIDs []string) (map[st
 		}
 		offset := 0
 		for {
-			page, err := a.deps.Store.QueryItems(ctx, lib.ID, "", "", false, titleCountPageSize, offset)
+			page, err := a.deps.Store.QueryItems(ctx, lib.ID, "", "", false, titleCountPageSize, offset, access.System())
 			if err != nil {
 				return nil, err
 			}

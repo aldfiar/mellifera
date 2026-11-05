@@ -68,6 +68,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/orchestrator"
@@ -253,7 +254,7 @@ func pmaCooldowns(ctx context.Context, st *store.Store) map[string]time.Time {
 // pmaPlaybackGET mirrors cmd/mellifera's playbackDescriptor (D-7/D7): pure
 // delegation over Describe + a fresh token, then the ONE decision line.
 func pmaPlaybackGET(ctx context.Context, st *store.Store, media *stream.Service, itemID string) (api.Playback, error) {
-	row, err := st.GetItem(ctx, itemID)
+	row, err := st.GetItem(ctx, itemID, access.System())
 	if err != nil {
 		return api.Playback{}, err
 	}
@@ -402,7 +403,7 @@ func pmaServer(t *testing.T, w *pbWorld, enqueue func(string) error) string {
 			return pmaPlaybackGET(ctx, w.st, w.media, itemID)
 		},
 		Play: func(ctx context.Context, itemID string, retry bool, _ *float64) (bool, error) {
-			row, err := w.st.GetItem(ctx, itemID)
+			row, err := w.st.GetItem(ctx, itemID, access.System())
 			if err != nil {
 				return false, err // sql.ErrNoRows → 404 at the handler
 			}
@@ -682,7 +683,7 @@ func pmaAwaitFreshNonce(t *testing.T, st *store.Store, itemID, oldNonce string, 
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		it, err := st.GetItem(context.Background(), itemID)
+		it, err := st.GetItem(context.Background(), itemID, access.System())
 		if err == nil {
 			var doc map[string]any
 			_ = json.Unmarshal(it.Document, &doc)
@@ -1081,7 +1082,7 @@ func TestPackManifestAudioJoint(t *testing.T) {
 		// Rewind the namespace to a PRE-RECORD build: state complete with the
 		// artifact pointer and nonce, NO codecs record, NO master marker —
 		// exactly what the lane persisted before this change existed.
-		row, err := w.st.GetItem(context.Background(), "pma_c")
+		row, err := w.st.GetItem(context.Background(), "pma_c", access.System())
 		if err != nil {
 			t.Fatalf("reload pma_c: %v", err)
 		}
@@ -1147,7 +1148,7 @@ func TestPackManifestAudioJoint(t *testing.T) {
 		// The hand-laid legacy build beside a namespace doc lacking the
 		// version: complete + nonce, no master key (v0) — the stale signal.
 		pmaHandLegacyBuild(t, w.media.Root, "pma_e", "legacy0")
-		row, err := w.st.GetItem(context.Background(), "pma_e")
+		row, err := w.st.GetItem(context.Background(), "pma_e", access.System())
 		if err != nil {
 			t.Fatalf("reload pma_e: %v", err)
 		}

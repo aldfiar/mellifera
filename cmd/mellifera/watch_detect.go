@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -44,7 +45,7 @@ func fanOut(legs ...func(context.Context, string, int64, bool)) func(context.Con
 // load-bearing, and the detector never changes a PUT response.
 func newWatchDetect(st *store.Store) func(context.Context, string, int64, bool) {
 	return func(ctx context.Context, itemID string, position int64, completed bool) {
-		it, err := st.GetItem(ctx, itemID)
+		it, err := st.GetItem(ctx, itemID, access.System())
 		if err != nil {
 			slog.Warn("watch detect: item lookup failed", "item", itemID, "error", err)
 			return
@@ -64,7 +65,18 @@ func newWatchDetect(st *store.Store) func(context.Context, string, int64, bool) 
 				return
 			}
 		}
-		if err := st.InsertWatched(ctx, itemID, it.LibraryID, watchSeriesPath(doc), time.Now().UTC()); err != nil {
+		// The completion stamps THE WRITING VIEWER's slot (l6-accounts 5.3):
+		// the ctx this leg receives from the api seam IS r.Context(), and
+		// api's viewerFor has stashed the resolved Viewer on it (D9: one key,
+		// one seam). FromContext of a bare ctx — internal calls, anything
+		// pre-threading — reads the ZERO Viewer, whose UserID 0 lands the
+		// insert in the slot-0 legacy row (the documented bare-ctx
+		// degradation). The item LOOKUP above stays System: it is the leg's
+		// internal read (the write path already proved the item visible in
+		// PutProgress's own item check), and a user/zero viewer there would
+		// hide the document and drop legitimate completions.
+		viewer := access.FromContext(ctx)
+		if err := st.InsertWatched(ctx, itemID, it.LibraryID, watchSeriesPath(doc), time.Now().UTC(), viewer); err != nil {
 			slog.Warn("watch detect: insert watched failed", "item", itemID, "error", err)
 			return
 		}

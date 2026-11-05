@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -114,7 +115,7 @@ func TestRecsStampedSkip(t *testing.T) {
 
 	putRecsProbeItem(t, ctx, st, "it_stamped", 1, `{}`,
 		`{"description": "d", "genres": ["Action"]}`)
-	if err := st.InsertWatched(ctx, "it_stamped", 1, "", time.Now()); err != nil {
+	if err := st.InsertWatched(ctx, "it_stamped", 1, "", time.Now(), access.System()); err != nil {
 		t.Fatalf("InsertWatched stamped: %v", err)
 	}
 	newRecsSweep(st, reg)(ctx) // first boot learns + stamps
@@ -134,7 +135,7 @@ func TestRecsStampedSkip(t *testing.T) {
 	// it — the stamped row's tags must NOT increment again.
 	putRecsProbeItem(t, ctx, st2, "it_fresh", 1, `{}`,
 		`{"description": "d", "genres": ["Comedy"]}`)
-	if err := st2.InsertWatched(ctx, "it_fresh", 1, "", time.Now()); err != nil {
+	if err := st2.InsertWatched(ctx, "it_fresh", 1, "", time.Now(), access.System()); err != nil {
 		t.Fatalf("InsertWatched fresh: %v", err)
 	}
 	newRecsSweep(st2, reg2)(ctx)

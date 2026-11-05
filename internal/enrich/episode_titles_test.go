@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	commonv1 "github.com/mellifera/mellifera/proto/mellifera/common/v1"
@@ -149,7 +150,7 @@ func TestEpisodeTitleRouting(t *testing.T) {
 		ep2 := putRoutedEpisode(t, s, 1, episodeRel(2), statusReady, routedEpisodeDoc(2, 1))
 		seriesBytes := rowDocument(t, s, seriesID)
 
-		sr, err := s.GetSeries(ctx, seriesID)
+		sr, err := s.GetSeries(ctx, seriesID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries: %v", err)
 		}
@@ -192,7 +193,7 @@ func TestEpisodeTitleRouting(t *testing.T) {
 			if stages, _ := doc["_stages"].([]map[string]any); len(stages) != 0 {
 				t.Fatalf("ep %d: routing wrote _stages entries: %v", ep, stages)
 			}
-			it, err := s.GetItem(ctx, itemID)
+			it, err := s.GetItem(ctx, itemID, access.System())
 			if err != nil {
 				t.Fatalf("GetItem ep %d: %v", ep, err)
 			}
@@ -216,7 +217,7 @@ func TestEpisodeTitleRouting(t *testing.T) {
 			otherNumber: rowDocument(t, s, otherNumber),
 		}
 
-		sr, err := s.GetSeries(ctx, seriesID)
+		sr, err := s.GetSeries(ctx, seriesID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries: %v", err)
 		}
@@ -236,7 +237,7 @@ func TestEpisodeTitleRouting(t *testing.T) {
 		ep1 := putRoutedEpisode(t, s, 1, episodeRel(1), statusReady, routedEpisodeDoc(1, 1))
 		before := rowDocument(t, s, ep1)
 
-		sr, err := s.GetSeries(ctx, seriesID)
+		sr, err := s.GetSeries(ctx, seriesID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries: %v", err)
 		}
@@ -257,7 +258,7 @@ func TestEpisodeTitleRouting(t *testing.T) {
 		ep1 := putRoutedEpisode(t, s, 1, episodeRel(1), statusReady, routedEpisodeDoc(1, 1)) // even matching facts
 		before := rowDocument(t, s, ep1)
 
-		sr, err := s.GetSeries(ctx, seriesID)
+		sr, err := s.GetSeries(ctx, seriesID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries: %v", err)
 		}
@@ -274,7 +275,7 @@ func TestEpisodeTitleRouting(t *testing.T) {
 		seriesID := putSeriesRow(t, s, "serial", 1, "Show.Name.S01", statusReady, routedSeriesDoc(1))
 		ep1 := putRoutedEpisode(t, s, 1, episodeRel(1), statusReady, routedEpisodeDoc(1, 1))
 
-		sr, err := s.GetSeries(ctx, seriesID)
+		sr, err := s.GetSeries(ctx, seriesID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries: %v", err)
 		}
@@ -299,7 +300,7 @@ func TestEpisodeTitleRouting(t *testing.T) {
 		ep1 := putRoutedEpisode(t, s, 1, episodeRel(1), statusReady, routedEpisodeDoc(1, 1))
 		before := rowDocument(t, s, ep1)
 
-		sr, err := s.GetSeries(ctx, seriesID)
+		sr, err := s.GetSeries(ctx, seriesID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries: %v", err)
 		}
@@ -356,7 +357,7 @@ func TestEpisodeTitleRouting(t *testing.T) {
 			if titleView["source"] != "shikimori" {
 				t.Fatalf("ep %d: _view.title = %v, want the shikimori stamp", ep, titleView)
 			}
-			it, err := s.GetItem(ctx, itemID)
+			it, err := s.GetItem(ctx, itemID, access.System())
 			if err != nil {
 				t.Fatalf("GetItem ep %d: %v", ep, err)
 			}
@@ -491,7 +492,7 @@ func TestReenrichSourceSeriesCascade(t *testing.T) {
 		if seriesProv["season"] == nil {
 			t.Fatalf("series lost the parse provenance: %v", seriesProv)
 		}
-		if sr, _ := s.GetSeries(ctx, seriesID); sr.Status != statusPending {
+		if sr, _ := s.GetSeries(ctx, seriesID, access.System()); sr.Status != statusPending {
 			t.Fatalf("series status = %q, want the refresh flip to pending", sr.Status)
 		}
 
@@ -516,7 +517,7 @@ func TestReenrichSourceSeriesCascade(t *testing.T) {
 		if epView["title"] != nil {
 			t.Fatalf("episode kept the routed view: %v", epView)
 		}
-		if it, _ := s.GetItem(ctx, epID); it.Status != statusPending {
+		if it, _ := s.GetItem(ctx, epID, access.System()); it.Status != statusPending {
 			t.Fatalf("episode status = %q, want the refresh flip to pending", it.Status)
 		}
 
@@ -526,7 +527,7 @@ func TestReenrichSourceSeriesCascade(t *testing.T) {
 		if movieSources["shikimori"] == nil {
 			t.Fatalf("unrelated item was stripped by a series-scoped refresh: %v", movieSources)
 		}
-		if it, _ := s.GetItem(ctx, movieID); it.Status != statusReady {
+		if it, _ := s.GetItem(ctx, movieID, access.System()); it.Status != statusReady {
 			t.Fatalf("unrelated item status = %q, want untouched ready", it.Status)
 		}
 

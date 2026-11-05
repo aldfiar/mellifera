@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -62,7 +63,7 @@ func TestPutItemStateWatched(t *testing.T) {
 	ctx := context.Background()
 	itemID := "itm_sw"
 	seedItem(t, st, libID, "sw", "S S01E01.mkv")
-	if _, err := st.PutProgress(ctx, itemID, 3720); err != nil {
+	if _, err := st.PutProgress(ctx, itemID, 3720, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 
@@ -87,14 +88,14 @@ func TestPutItemStateWatched(t *testing.T) {
 
 	// The ledger carries the row, the stored position is untouched, and the
 	// rail reflects both facts: default withdrawal, include=watched restore.
-	watched, err := st.ListWatched(ctx)
+	watched, err := st.ListWatched(ctx, access.System())
 	if err != nil {
 		t.Fatalf("ListWatched: %v", err)
 	}
 	if len(watched) != 1 || watched[0] != itemID {
 		t.Fatalf("ListWatched = %v, want [%s]", watched, itemID)
 	}
-	rec, err := st.GetProgress(ctx, itemID)
+	rec, err := st.GetProgress(ctx, itemID, access.System())
 	if err != nil || rec.PositionSeconds != 3720 {
 		t.Fatalf("GetProgress = (%+v, %v), want position 3720 untouched", rec, err)
 	}
@@ -114,7 +115,7 @@ func TestPutItemStateWatched(t *testing.T) {
 	if repeat.StatusCode != http.StatusOK {
 		t.Fatalf("repeat status = %d, want %d", repeat.StatusCode, http.StatusOK)
 	}
-	watched, err = st.ListWatched(ctx)
+	watched, err = st.ListWatched(ctx, access.System())
 	if err != nil {
 		t.Fatalf("ListWatched after repeat: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestPutItemStateWatchedFreshItem(t *testing.T) {
 	if dto.CompletedAt == "" {
 		t.Fatalf("completed_at must be present on a watched echo")
 	}
-	watched, err := st.ListWatched(ctx)
+	watched, err := st.ListWatched(ctx, access.System())
 	if err != nil {
 		t.Fatalf("ListWatched: %v", err)
 	}
@@ -170,10 +171,10 @@ func TestPutItemStateUnwatched(t *testing.T) {
 	ctx := context.Background()
 	itemID := "itm_uw"
 	seedItem(t, st, libID, "uw", "U S01E01.mkv")
-	if _, err := st.PutProgress(ctx, itemID, 3720); err != nil {
+	if _, err := st.PutProgress(ctx, itemID, 3720, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
-	if err := st.InsertWatched(ctx, itemID, libID, "", time.Now().UTC()); err != nil {
+	if err := st.InsertWatched(ctx, itemID, libID, "", time.Now().UTC(), access.System()); err != nil {
 		t.Fatalf("InsertWatched: %v", err)
 	}
 
@@ -192,14 +193,14 @@ func TestPutItemStateUnwatched(t *testing.T) {
 	if dto.CompletedAt != "" {
 		t.Fatalf("completed_at = %q, want absent on an unwatched echo", dto.CompletedAt)
 	}
-	watched, err := st.ListWatched(ctx)
+	watched, err := st.ListWatched(ctx, access.System())
 	if err != nil {
 		t.Fatalf("ListWatched: %v", err)
 	}
 	if len(watched) != 0 {
 		t.Fatalf("ListWatched = %v, want empty (row gone)", watched)
 	}
-	rec, err := st.GetProgress(ctx, itemID)
+	rec, err := st.GetProgress(ctx, itemID, access.System())
 	if err != nil || rec.PositionSeconds != 0 {
 		t.Fatalf("GetProgress = (%+v, %v), want position reset to 0", rec, err)
 	}
@@ -216,7 +217,7 @@ func TestPutItemStateValidation(t *testing.T) {
 	h, st, libID := newProgressAPI(t)
 	ctx := context.Background()
 	seedItem(t, st, libID, "val", "V S01E01.mkv")
-	if _, err := st.PutProgress(ctx, "itm_val", 900); err != nil {
+	if _, err := st.PutProgress(ctx, "itm_val", 900, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 	photoLib, err := st.CreateLibrary(ctx, "image", "/media/photos", "Photos")
@@ -259,18 +260,18 @@ func TestPutItemStateValidation(t *testing.T) {
 	}
 
 	// No ledger or progress row was touched by any rejection.
-	watched, err := st.ListWatched(ctx)
+	watched, err := st.ListWatched(ctx, access.System())
 	if err != nil {
 		t.Fatalf("ListWatched: %v", err)
 	}
 	if len(watched) != 0 {
 		t.Fatalf("ListWatched = %v, want empty (rejections touch nothing)", watched)
 	}
-	rec, err := st.GetProgress(ctx, "itm_val")
+	rec, err := st.GetProgress(ctx, "itm_val", access.System())
 	if err != nil || rec.PositionSeconds != 900 {
 		t.Fatalf("GetProgress itm_val = (%+v, %v), want position 900 untouched", rec, err)
 	}
-	if _, err := st.GetProgress(ctx, "itm_photo"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := st.GetProgress(ctx, "itm_photo", access.System()); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("GetProgress itm_photo err = %v, want sql.ErrNoRows (photo never ledged or progressed)", err)
 	}
 }

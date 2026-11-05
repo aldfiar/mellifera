@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"database/sql"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // openSeriesStore opens a fresh temp store for series tests.
@@ -57,7 +59,7 @@ func TestSeriesRoundtrip(t *testing.T) {
 		}
 		wantID := wantSeriesID(7, "Show.2022.S01")
 
-		got, err := s.GetSeries(ctx, wantID)
+		got, err := s.GetSeries(ctx, wantID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries(%q): %v", wantID, err)
 		}
@@ -77,7 +79,7 @@ func TestSeriesRoundtrip(t *testing.T) {
 			t.Errorf("timestamps not set: created=%v updated=%v", got.CreatedAt, got.UpdatedAt)
 		}
 
-		byPath, err := s.GetSeriesByPath(ctx, 7, "Show.2022.S01")
+		byPath, err := s.GetSeriesByPath(ctx, 7, "Show.2022.S01", access.System())
 		if err != nil {
 			t.Fatalf("GetSeriesByPath: %v", err)
 		}
@@ -87,7 +89,7 @@ func TestSeriesRoundtrip(t *testing.T) {
 	})
 
 	t.Run("upsert_preserves_id_and_created_at", func(t *testing.T) {
-		prior, err := s.GetSeriesByPath(ctx, 7, "Show.2022.S01")
+		prior, err := s.GetSeriesByPath(ctx, 7, "Show.2022.S01", access.System())
 		if err != nil {
 			t.Fatalf("prior GetSeriesByPath: %v", err)
 		}
@@ -100,7 +102,7 @@ func TestSeriesRoundtrip(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("upsert PutSeries: %v", err)
 		}
-		got, err := s.GetSeriesByPath(ctx, 7, "Show.2022.S01")
+		got, err := s.GetSeriesByPath(ctx, 7, "Show.2022.S01", access.System())
 		if err != nil {
 			t.Fatalf("post-upsert GetSeriesByPath: %v", err)
 		}
@@ -137,28 +139,28 @@ func TestSeriesRoundtrip(t *testing.T) {
 				t.Fatalf("PutSeries %s: %v", tc.rel, err)
 			}
 		}
-		all, err := s.QuerySeries(ctx, 9, "")
+		all, err := s.QuerySeries(ctx, 9, "", access.System())
 		if err != nil {
 			t.Fatalf("QuerySeries all: %v", err)
 		}
 		if len(all) != 2 || all[0].RelativePath != "A.Show" || all[1].RelativePath != "B.Show" {
 			t.Fatalf("QuerySeries all = %+v, want A.Show then B.Show (relative_path order)", all)
 		}
-		ready, err := s.QuerySeries(ctx, 9, "ready")
+		ready, err := s.QuerySeries(ctx, 9, "ready", access.System())
 		if err != nil {
 			t.Fatalf("QuerySeries ready: %v", err)
 		}
 		if len(ready) != 1 || ready[0].RelativePath != "A.Show" {
 			t.Fatalf("QuerySeries ready = %+v, want only A.Show", ready)
 		}
-		none, err := s.QuerySeries(ctx, 9, "deleted")
+		none, err := s.QuerySeries(ctx, 9, "deleted", access.System())
 		if err != nil || len(none) != 0 {
 			t.Fatalf("QuerySeries deleted = %+v (err=%v), want empty", none, err)
 		}
 	})
 
 	t.Run("list_series_ids", func(t *testing.T) {
-		ids, err := s.ListSeriesIDs(ctx, 9)
+		ids, err := s.ListSeriesIDs(ctx, 9, access.System())
 		if err != nil {
 			t.Fatalf("ListSeriesIDs: %v", err)
 		}
@@ -166,7 +168,7 @@ func TestSeriesRoundtrip(t *testing.T) {
 		if len(ids) != 2 || ids[0] != want[0] || ids[1] != want[1] {
 			t.Fatalf("ListSeriesIDs = %v, want %v", ids, want)
 		}
-		empty, err := s.ListSeriesIDs(ctx, 404)
+		empty, err := s.ListSeriesIDs(ctx, 404, access.System())
 		if err != nil {
 			t.Fatalf("ListSeriesIDs empty: %v", err)
 		}
@@ -176,10 +178,10 @@ func TestSeriesRoundtrip(t *testing.T) {
 	})
 
 	t.Run("misses_yield_wrapped_err_no_rows", func(t *testing.T) {
-		if _, err := s.GetSeries(ctx, "ser_7_deadbeefdeadbeef"); !errors.Is(err, sql.ErrNoRows) {
+		if _, err := s.GetSeries(ctx, "ser_7_deadbeefdeadbeef", access.System()); !errors.Is(err, sql.ErrNoRows) {
 			t.Errorf("GetSeries(unknown) = %v, want wrapped sql.ErrNoRows", err)
 		}
-		if _, err := s.GetSeriesByPath(ctx, 7, "Ghost.Show"); !errors.Is(err, sql.ErrNoRows) {
+		if _, err := s.GetSeriesByPath(ctx, 7, "Ghost.Show", access.System()); !errors.Is(err, sql.ErrNoRows) {
 			t.Errorf("GetSeriesByPath(unknown) = %v, want wrapped sql.ErrNoRows", err)
 		}
 	})
@@ -194,7 +196,7 @@ func TestSeriesRoundtrip(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("re-scan PutSeries: %v", err)
 		}
-		all, err := s.QuerySeries(ctx, 7, "")
+		all, err := s.QuerySeries(ctx, 7, "", access.System())
 		if err != nil {
 			t.Fatalf("QuerySeries: %v", err)
 		}
@@ -236,7 +238,7 @@ func TestSeriesEpisodesQuery(t *testing.T) {
 	fileSeries := Series{ID: wantSeriesID(3, "loose.mkv"), ModuleID: "serial", LibraryID: 3, RelativePath: "loose.mkv"}
 
 	t.Run("directory_backed_depth1_only", func(t *testing.T) {
-		items, err := s.QueryItemsBySeries(ctx, dirSeries, SeriesBackingDirectory)
+		items, err := s.QueryItemsBySeries(ctx, dirSeries, SeriesBackingDirectory, access.System())
 		if err != nil {
 			t.Fatalf("QueryItemsBySeries(directory): %v", err)
 		}
@@ -248,7 +250,7 @@ func TestSeriesEpisodesQuery(t *testing.T) {
 	})
 
 	t.Run("file_backed_exact_match", func(t *testing.T) {
-		items, err := s.QueryItemsBySeries(ctx, fileSeries, SeriesBackingFile)
+		items, err := s.QueryItemsBySeries(ctx, fileSeries, SeriesBackingFile, access.System())
 		if err != nil {
 			t.Fatalf("QueryItemsBySeries(file): %v", err)
 		}
@@ -258,14 +260,14 @@ func TestSeriesEpisodesQuery(t *testing.T) {
 	})
 
 	t.Run("wrong_backing_is_error", func(t *testing.T) {
-		if _, err := s.QueryItemsBySeries(ctx, dirSeries, "vhs"); err == nil {
-			t.Fatal("QueryItemsBySeries(unknown backing) = nil error, want error")
+		if _, err := s.QueryItemsBySeries(ctx, dirSeries, "vhs", access.System()); err == nil {
+			t.Fatal("QueryItemsBySeries(unknown backing) = nil error, want error", access.System())
 		}
 	})
 
 	t.Run("no_matches_yields_empty_slice", func(t *testing.T) {
 		empty := Series{LibraryID: 3, RelativePath: "Ghost"}
-		items, err := s.QueryItemsBySeries(ctx, empty, SeriesBackingDirectory)
+		items, err := s.QueryItemsBySeries(ctx, empty, SeriesBackingDirectory, access.System())
 		if err != nil {
 			t.Fatalf("QueryItemsBySeries(no matches): %v", err)
 		}
@@ -322,14 +324,14 @@ func TestTitleOverrides(t *testing.T) {
 	// seeds — the override write/clear never rewrites a document namespace.
 	documentsUnchanged := func(t *testing.T) {
 		t.Helper()
-		sr, err := s.GetSeries(ctx, sID)
+		sr, err := s.GetSeries(ctx, sID, access.System())
 		if err != nil {
 			t.Fatalf("GetSeries: %v", err)
 		}
 		if !bytes.Equal(sr.Document, []byte(seriesDoc)) {
 			t.Fatalf("series document mutated:\n got:  %s\n want: %s", sr.Document, seriesDoc)
 		}
-		it, err := s.GetItem(ctx, iID)
+		it, err := s.GetItem(ctx, iID, access.System())
 		if err != nil {
 			t.Fatalf("GetItem: %v", err)
 		}

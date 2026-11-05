@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
@@ -45,7 +46,7 @@ const (
 // lane's normal trigger, the answer never changes for it, and the lane's
 // per-item lease absorbs repeated GETs (never re-enqueued per request).
 func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.Service, enqueue func(string) error, optInCodecs bool, itemID string) (api.Playback, error) {
-	row, err := st.GetItem(ctx, itemID)
+	row, err := st.GetItem(ctx, itemID, access.System())
 	if err != nil {
 		return api.Playback{}, err // sql.ErrNoRows → 404 at the handler
 	}

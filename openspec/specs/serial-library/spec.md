@@ -541,7 +541,12 @@ The API SHALL expose, in the browse role group (admin+client, read-only):
 non-integer value SHALL yield `400 bad_request`), `GET /api/v1/series/{id}`
 (full serial-level document, opaque on the wire; an unknown id SHALL yield `404
 not_found` with the canonical error body), and `GET /api/v1/series/{id}/episodes`
-(the series' episode items, mirroring the item shape). Handlers SHALL be pure
+(the series' episode items, mirroring the item shape). Every series read SHALL
+be viewer-scoped: a series inside a library outside the caller's visible set —
+and the episode listing of such a series — SHALL yield the SAME `404
+not_found` as an unknown id (hidden ≡ unknown, never 403, never an empty
+marker); the library-scoped listing SHALL omit invisible libraries' series
+entirely. Handlers SHALL be pure
 delegation; the admin mutating group SHALL be unchanged; no write endpoint for
 series or item documents SHALL be added by this change.
 
@@ -568,6 +573,11 @@ set -e
 go test ./internal/api -run TestSeriesEpisodesAndNotFound
 ```
 <!-- /wf:probe -->
+
+#### Scenario: An invisible series is indistinguishable from an unknown one
+
+- **WHEN** a scoped user requests a series from a library their groups do not carry — by id, its episode listing, and its library-scoped listing
+- **THEN** the direct routes answer `404 not_found` with the canonical body and the listing omits the series — identical to the unknown-id answers, no existence signal
 
 ### Requirement: Additive posture
 

@@ -12,6 +12,7 @@ import PairingEntry from "@/pages/pair/PairingEntry";
 import Home from "@/pages/home/Home";
 import Collection from "@/pages/collections/Collection";
 import Collections from "@/pages/admin/Collections";
+import Accounts from "@/pages/admin/Accounts";
 import Sources from "@/pages/admin/Sources";
 import Plugins from "@/pages/admin/Plugins";
 import PluginFailures from "@/pages/admin/PluginFailures";
@@ -94,6 +95,16 @@ export default function App(): ReactElement {
           <RequireAuth>
             <Shell>
               <ItemDetail />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/admin/accounts"
+        element={
+          <RequireAuth>
+            <Shell>
+              <Accounts />
             </Shell>
           </RequireAuth>
         }

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mellifera/mellifera/internal/pairing"
+	"github.com/mellifera/mellifera/internal/store"
 )
 
 // TestAdminMiddleware_TokenMatrix is the S8 / AC-5 joint: the auth middleware
@@ -19,10 +20,12 @@ import (
 // invoking the wrapped handler. Asserting the dummy next handler's call count
 // proves the side-effect gating (no handler, hence no domain call, runs on a
 // miss). The matrix name is retained for test-stability across the
-// admin->auth middleware rename (S-roles).
+// admin->auth middleware rename (S-roles). Since l6-accounts 7.1 the device
+// leg resolves the credentials store directly (not pairing.LookupToken) —
+// the pairing service stays only to mint the real token.
 func TestAdminMiddleware_TokenMatrix(t *testing.T) {
 	// One real device credential: mint → approve → pick up through the real
-	// pairing service, so the middleware's LookupToken branch is exercised
+	// pairing service, so the middleware's device branch is exercised
 	// against the hash the store actually holds.
 	st := openAPIStore(t)
 	devices := pairing.NewService(st, nil)
@@ -43,7 +46,7 @@ func TestAdminMiddleware_TokenMatrix(t *testing.T) {
 	cases := []struct {
 		name       string
 		auth       string
-		devices    *pairing.Service
+		credStore  *store.Store
 		wantStatus int
 		wantCalled bool
 		wantRole   Role
@@ -52,9 +55,9 @@ func TestAdminMiddleware_TokenMatrix(t *testing.T) {
 		{"wrong_scheme", "Basic dXNlcjpwYXNz", nil, http.StatusUnauthorized, false, ""},
 		{"wrong_token", "Bearer " + adminToken + "-wrong", nil, http.StatusUnauthorized, false, ""},
 		{"correct_token", "Bearer " + adminToken, nil, http.StatusOK, true, RoleAdmin},
-		{"device_token_hit", "Bearer " + deviceToken, devices, http.StatusOK, true, RoleClient},
-		{"device_token_nil_service", "Bearer " + deviceToken, nil, http.StatusUnauthorized, false, ""},
-		{"unknown_device_token", "Bearer " + deviceToken + "-wrong", devices, http.StatusUnauthorized, false, ""},
+		{"device_token_hit", "Bearer " + deviceToken, st, http.StatusOK, true, RoleClient},
+		{"device_token_nil_store", "Bearer " + deviceToken, nil, http.StatusUnauthorized, false, ""},
+		{"unknown_device_token", "Bearer " + deviceToken + "-wrong", st, http.StatusUnauthorized, false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,7 +69,7 @@ func TestAdminMiddleware_TokenMatrix(t *testing.T) {
 				principal, hasPrincipal = principalFromContext(r.Context())
 				w.WriteHeader(http.StatusOK)
 			})
-			wrapped := authMiddleware(adminToken, tc.devices)(next)
+			wrapped := authMiddleware(adminToken, tc.credStore, nil)(next)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/items", nil)
 			if tc.auth != "" {

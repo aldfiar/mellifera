@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/scan"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -55,7 +56,7 @@ func writeMediaFile(t *testing.T, name, content string) string {
 // seedMediaItem persists one item whose document carries the given path facts.
 func (mh mediaHarness) seedMediaItem(t *testing.T, itemID, doc string) {
 	t.Helper()
-	libs, err := mh.st.ListLibraries(context.Background())
+	libs, err := mh.st.ListLibraries(context.Background(), access.System())
 	if err != nil {
 		t.Fatalf("ListLibraries: %v", err)
 	}

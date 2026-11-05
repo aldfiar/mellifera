@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/store"
@@ -70,6 +72,86 @@ func watchedCount(t *testing.T, ctx context.Context, st *store.Store) int {
 		t.Fatalf("ListUnappliedWatched: %v", err)
 	}
 	return len(itemIDs)
+}
+
+// watchedSlotRows reads the completion ledger DIRECTLY as "user_id:item_id"
+// strings ordered by user_id then item_id — the slot-level assertion the
+// viewer-stamping tests need (the scoped reads cannot see other slots, and a
+// foreign row in ANY slot is exactly what they must catch).
+func watchedSlotRows(t *testing.T, ctx context.Context, st *store.Store) []string {
+	t.Helper()
+	rows, err := st.DB().QueryContext(ctx, `SELECT user_id, item_id FROM watched_items ORDER BY user_id, item_id`)
+	if err != nil {
+		t.Fatalf("query watched_items: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var (
+			userID int64
+			itemID string
+		)
+		if err := rows.Scan(&userID, &itemID); err != nil {
+			t.Fatalf("scan watched_items: %v", err)
+		}
+		out = append(out, fmt.Sprintf("%d:%s", userID, itemID))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate watched_items: %v", err)
+	}
+	return out
+}
+
+// watchedCompletedAt reads ONE ledger row's completed_at directly — the
+// no-restamp assertion (a reconciled-adjacent row must keep its stamp).
+func watchedCompletedAt(t *testing.T, ctx context.Context, st *store.Store, userID int64, itemID string) time.Time {
+	t.Helper()
+	var stamp string
+	err := st.DB().QueryRowContext(ctx,
+		`SELECT completed_at FROM watched_items WHERE user_id = ? AND item_id = ?`, userID, itemID,
+	).Scan(&stamp)
+	if err != nil {
+		t.Fatalf("completed_at(%d, %s): %v", userID, itemID, err)
+	}
+	ts, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		t.Fatalf("parse completed_at(%d, %s) %q: %v", userID, itemID, stamp, err)
+	}
+	return ts
+}
+
+// TestWatchDetectStampsViewer (l6-accounts 5.3): the detector's insert lands
+// in the WRITING VIEWER's ledger slot — the ctx the api seam hands the leg
+// IS r.Context() with the resolved Viewer stashed on it, so a ≥90% completion
+// by user 7 stamps (7, item), never slot 0; a second user's completion of the
+// SAME item inserts its OWN row; and a bare ctx (no stashed viewer) degrades
+// to the slot-0 legacy row. Exactly three rows — no foreign row in any slot.
+func TestWatchDetectStampsViewer(t *testing.T) {
+	st, ctx := watchDetectFixture(t)
+	putWatchItem(t, ctx, st, "it_v7", 1,
+		`{"format": {"duration": "3600"}}`, `{}`)
+	drainRecsWake(t) // a clean wake slate
+
+	detect := newWatchDetect(st)
+	ctx7 := access.WithViewer(ctx, access.User(7, []int64{1}, nil))
+	detect(ctx7, "it_v7", 3400, false) // 94.4% — past the floor
+	ctx9 := access.WithViewer(ctx, access.User(9, []int64{1}, nil))
+	detect(ctx9, "it_v7", 3500, false) // same item, another user
+	detect(ctx, "it_v7", 3450, false)  // bare ctx — the documented degradation
+
+	got := watchedSlotRows(t, ctx, st)
+	want := []string{"0:it_v7", "7:it_v7", "9:it_v7"}
+	if len(got) != len(want) {
+		t.Fatalf("watched rows = %v, want exactly %v (one row per writing slot, no foreign slot)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("watched rows = %v, want %v (slot %s missing or foreign row present)", got, want, want[i])
+		}
+	}
+	if !drainRecsWake(t) {
+		t.Fatal("recs wake not poked by the stamped completions")
+	}
 }
 
 // TestWatchDetectRecordsCompletion covers the delta's wired happy path: a

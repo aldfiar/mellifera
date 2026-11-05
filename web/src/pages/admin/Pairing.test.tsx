@@ -28,6 +28,7 @@ const PAIRING: AdminPairing = {
 const DEVICE: AdminDevice = {
   device_id: "dev1",
   code: "ABCD-2345",
+  user_id: 0, // the unbound legacy viewer — the bind posture (l6-accounts 9.3)
   created_at: "2026-10-23T10:01:00Z",
 };
 
@@ -59,7 +60,13 @@ function row(container: HTMLElement, selector: string): HTMLElement {
 }
 
 describe("Pairing — admin surface (device-pairing 3.2)", () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    // The devices table's bind affordance (l6-accounts 9.4) reads the
+    // ["admin-users"] registry; an empty registry keeps every legacy row
+    // unbound and the legacy assertions untouched.
+    vi.spyOn(apiModule, "getAdminUsers").mockResolvedValue({ users: [] });
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("renders the pending code prominently with Approve/Deny taps, and the device registry with Revoke", async () => {

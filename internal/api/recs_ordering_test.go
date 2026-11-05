@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -77,7 +78,7 @@ func seedRecsSeries(t *testing.T, st *store.Store, libraryID int64, path string,
 	}); err != nil {
 		t.Fatalf("PutSeries %s: %v", path, err)
 	}
-	sr, err := st.GetSeriesByPath(context.Background(), libraryID, path)
+	sr, err := st.GetSeriesByPath(context.Background(), libraryID, path, access.System())
 	if err != nil {
 		t.Fatalf("GetSeriesByPath %s: %v", path, err)
 	}
@@ -96,7 +97,7 @@ func seedRecsItem(t *testing.T, st *store.Store, libraryID int64, id, relPath st
 	}); err != nil {
 		t.Fatalf("PutItem %s: %v", id, err)
 	}
-	got, err := st.GetItem(context.Background(), id)
+	got, err := st.GetItem(context.Background(), id, access.System())
 	if err != nil {
 		t.Fatalf("GetItem %s: %v", id, err)
 	}
@@ -164,12 +165,12 @@ func TestListSeriesScored(t *testing.T) {
 	// interest action=1, thriller=2 → tag component (1+1)+(1+2) = 5
 	watched := seedRecsSeries(t, st, lib, "aa-watched", recsSeriesDoc("Watched"))
 	epWatched := seedRecsItem(t, st, lib, "itm_w1", "aa-watched/e1.mkv", recsEpisodeDoc("aa-watched", ""), time.Time{})
-	if _, err := st.PutProgress(ctx, epWatched.ID, 300); err != nil {
+	if _, err := st.PutProgress(ctx, epWatched.ID, 300, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 	ongoing := seedRecsSeries(t, st, lib, "bb-ongoing", recsSeriesDoc("Ongoing"))
 	epStarted := seedRecsItem(t, st, lib, "itm_o1", "bb-ongoing/e1.mkv", recsEpisodeDoc("bb-ongoing", ""), time.Time{})
-	if _, err := st.PutProgress(ctx, epStarted.ID, 100); err != nil {
+	if _, err := st.PutProgress(ctx, epStarted.ID, 100, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 	seedRecsItem(t, st, lib, "itm_o2", "bb-ongoing/e2.mkv", recsEpisodeDoc("bb-ongoing", ""), time.Time{}) // fresh + unwatched → 1500
@@ -177,7 +178,7 @@ func TestListSeriesScored(t *testing.T) {
 	// stale (discovered outside NEW_WINDOW) scores in-progress alone.
 	stale := seedRecsSeries(t, st, lib, "ee-stale", recsSeriesDoc("Stale"))
 	epStaleOld := seedRecsItem(t, st, lib, "itm_s1", "ee-stale/e1.mkv", recsEpisodeDoc("ee-stale", ""), time.Now().AddDate(0, 0, -40))
-	if _, err := st.PutProgress(ctx, epStaleOld.ID, 50); err != nil {
+	if _, err := st.PutProgress(ctx, epStaleOld.ID, 50, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 	seedRecsItem(t, st, lib, "itm_s2", "ee-stale/e2.mkv", recsEpisodeDoc("ee-stale", ""), time.Now().AddDate(0, 0, -40))
@@ -266,10 +267,10 @@ func TestListItemsScored(t *testing.T) {
 		"_view":   map[string]any{"title": map[string]any{"value": "AAA watched"}},
 		"sources": map[string]any{recsMetaNS: map[string]any{"description": "d", "genres": []string{"action"}}},
 	}, time.Time{})
-	if _, err := st.PutProgress(ctx, watchedFilm.ID, 600); err != nil {
+	if _, err := st.PutProgress(ctx, watchedFilm.ID, 600, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
-	if err := st.InsertWatched(ctx, watchedFilm.ID, lib, "", time.Now().UTC()); err != nil {
+	if err := st.InsertWatched(ctx, watchedFilm.ID, lib, "", time.Now().UTC(), access.System()); err != nil {
 		t.Fatalf("InsertWatched: %v", err)
 	}
 	taggedFilm := seedRecsItem(t, st, lib, "itm_f2", "film-b.mkv", map[string]any{
@@ -287,7 +288,7 @@ func TestListItemsScored(t *testing.T) {
 	// episode documents here carry no sources at all).
 	seedRecsSeries(t, st, lib, "show", recsSeriesDoc("Show", "drama"))
 	epStarted := seedRecsItem(t, st, lib, "itm_e1", "show/e1.mkv", recsEpisodeDoc("show", "Mid Episode"), time.Time{})
-	if _, err := st.PutProgress(ctx, epStarted.ID, 100); err != nil {
+	if _, err := st.PutProgress(ctx, epStarted.ID, 100, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 	epNew := seedRecsItem(t, st, lib, "itm_e2", "show/e2.mkv", recsEpisodeDoc("show", ""), time.Time{}) // started series + fresh → 500 + drama
@@ -379,7 +380,7 @@ func TestListItemsSortPath(t *testing.T) {
 	// default inverts exactly this.
 	a := seedRecsItem(t, st, lib, "itm_a", "aaa.mkv", map[string]any{}, time.Time{})
 	b := seedRecsItem(t, st, lib, "itm_b", "bbb.mkv", map[string]any{}, time.Time{})
-	if _, err := st.PutProgress(ctx, b.ID, 900); err != nil {
+	if _, err := st.PutProgress(ctx, b.ID, 900, access.System()); err != nil {
 		t.Fatalf("PutProgress: %v", err)
 	}
 

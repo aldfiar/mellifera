@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
@@ -38,7 +39,7 @@ const (
 // the executor can never grow a document write because the seam has none
 // (D-1: the JPEG overwrites the deterministic path, the document stays put).
 type thumbStore interface {
-	GetItem(ctx context.Context, id string) (store.Item, error)
+	GetItem(ctx context.Context, id string, v access.Viewer) (store.Item, error)
 }
 
 // thumbSources is the plugin seam (plugin.Manager.MetadataSource's shape).
@@ -109,7 +110,7 @@ func (r *thumbRegrabber) regrab(ctx context.Context, itemID string, position flo
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	row, err := r.store.GetItem(ctx, itemID)
+	row, err := r.store.GetItem(ctx, itemID, access.System())
 	if err != nil {
 		slog.Warn("thumb re-grab: item lookup failed", "item", itemID, "error", err)
 		return

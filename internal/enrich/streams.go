@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/refusal"
 )
@@ -86,7 +87,7 @@ func (q *Queue) workStreams(ctx context.Context, itemID string) {
 	q.statInFlight.Add(1)
 	defer q.statInFlight.Add(-1)
 
-	row, err := q.deps.Store.GetItem(ctx, itemID)
+	row, err := q.deps.Store.GetItem(ctx, itemID, access.System())
 	if err != nil {
 		return // item gone (deleted between enqueue and drain); nothing to do
 	}
@@ -191,7 +192,7 @@ func (q *Queue) packFailAttempts(ctx context.Context, itemID string) int {
 // landed between the run's start and here is carried, not clobbered (D-10).
 func (q *Queue) persistStreams(ctx context.Context, itemID string, streams map[string]any) {
 	q.storeWrite(func() error {
-		row, err := q.deps.Store.GetItem(ctx, itemID)
+		row, err := q.deps.Store.GetItem(ctx, itemID, access.System())
 		if err != nil {
 			return fmt.Errorf("enrich: streams reload %s: %w", itemID, err)
 		}

@@ -693,6 +693,177 @@ export interface SeriesIdentifyResult {
   deferred: number;
 }
 
+// auth.go loginRequest / loginResponse (l6-accounts 7.2) — the POST
+// /api/v1/auth/login pair, mirrored verbatim. Field names match the JSON
+// tags EXACTLY (INV-verbatim-field-names). The response's token is the RAW
+// session token — it crosses the wire exactly once and is stored as the
+// caller's credential (the mellifera.token slot via lib/auth setToken); only
+// its SHA-256 lives at rest server-side.
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  token: string;
+}
+
+// profile.go profileGroup (l6-accounts 8.1) — one group entry of the
+// caller's own profile: the member facts {id, name} only, never a group's
+// doc document (that is the admin surfaces' 9.x wire).
+export interface ProfileGroup {
+  id: number;
+  name: string;
+}
+
+// profile.go profileResponse (l6-accounts 8.1) — the GET /profile wire
+// shape, mirrored verbatim. Field names match the JSON tags EXACTLY
+// (INV-verbatim-field-names). kind is the principal's user-backedness fact:
+// "admin" (env admin token), "user" (ANY user-backed principal — a login
+// session, an admin-role session, or a device bound to a user), "device"
+// (an unbound device). user_id is present ONLY on kind "user" (omitempty) —
+// absence means no backing user, never a type hole. role is the served
+// literal ("admin" for the env admin and admin-role sessions, "user" for
+// user-role sessions, "client" for a device). prefs is the caller's stored
+// document verbatim ("{}" for the env admin, null for a device) — the SPA
+// owns its shape (ProfilePrefs below); the identity block renders none of
+// it (the preference document is the playback surface's concern, 8.4).
+export interface ProfileDTO {
+  kind: "admin" | "user" | "device";
+  user_id?: number;
+  name: string;
+  role: string;
+  groups: ProfileGroup[];
+  prefs: ProfilePrefs | null;
+}
+
+// ProfilePrefs — the SPA-owned shape of the per-user preference document
+// (l6-accounts 8.4). The backend stores the bytes VERBATIM and never merges
+// (profile.go putProfilePrefs — a PUT is the whole replacement), so this
+// shape exists only client-side. `auto_next` is the durable per-user
+// auto-next playback flag: absent means the env watch-defaults answer (the
+// fallback law — the document overrides a knob only where it carries the
+// key); `false` disables the countdown autoplay. Future keys ride the index
+// signature WITHOUT touching this interface. Every writer must
+// READ-MERGE-WRITE through the shared ["profile"] cache — spread the SERVED
+// document and PUT the merged whole (see putProfilePrefs) — so surfaces
+// writing different keys can never clobber each other.
+export interface ProfilePrefs {
+  auto_next?: boolean;
+  [key: string]: unknown;
+}
+
+// admin_users.go wire shapes (l6-accounts 9.1) — the users admin surface,
+// mirrored verbatim. Field names match the JSON tags EXACTLY
+// (INV-verbatim-field-names). The list NEVER carries a password hash (the
+// hash-at-rest law — the wire row is display facts only).
+
+// admin_users.go adminUser — one user as every users surface sees it:
+// display facts + the role (user | admin) + the disable posture. NO hash,
+// NO prefs document.
+export interface AdminUser {
+  id: number;
+  username: string;
+  display_name: string;
+  role: string;
+  disabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// admin_users.go adminUserCreated — the POST /admin/users response: the
+// created row's fields flattened plus the ONE-WAY-DOOR notice. notice is
+// present ONLY when the create was the FIRST user ever (omitempty — a
+// second creation carries no notice field at all); its wording is served
+// by the backend and the SPA renders it VERBATIM.
+export interface AdminUserCreated extends AdminUser {
+  notice?: string;
+}
+
+// admin_users.go adminUsersResponse — empty array, never null
+export interface AdminUsersResponse {
+  users: AdminUser[];
+}
+
+// admin_users.go create request — username (lowercase-normalized server-side)
+// + password (hashed with argon2id before rest).
+export interface AdminUserCreateRequest {
+  username: string;
+  password: string;
+}
+
+// admin_users.go patch request — pointer fields, partial by construction:
+// an absent field leaves the column unchanged, so a role change sends ONLY
+// {role} and a disable toggle sends ONLY {disabled}.
+export interface AdminUserPatch {
+  role?: string;
+  disabled?: boolean;
+}
+
+// admin_groups.go wire shapes (l6-accounts 9.2) — the groups admin surface,
+// mirrored verbatim. Groups are id-ADDRESSED (names are case-preserved
+// display values; renames never move the id).
+
+// admin_groups.go adminGroup — one group row. doc is the schema-versioned
+// mute document stored VERBATIM (shape-only validated server-side — one
+// JSON object else 400): the current vocabulary lives under the "mutes" key
+// (identity/group.go — {"mutes": {plugin_id: true}}, metadata_source_prefs
+// shaped), but the SPA never assumes more keys than it writes; every
+// non-mutes key (operator extension or future vocabulary) must survive a
+// mute toggle WHOLE. Optional in TS like every additive field — a group
+// created without a doc answers without one.
+export interface AdminGroup {
+  id: number;
+  name: string;
+  doc?: Record<string, unknown>;
+  schema_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// admin_groups.go adminGroupsResponse — empty array, never null
+export interface AdminGroupsResponse {
+  groups: AdminGroup[];
+}
+
+// admin_groups.go group member-collections rows (l6-accounts 9.2): one
+// member Collection's library id and its display position. The served list
+// is position-ordered; the SPA renders the order verbatim.
+export interface AdminGroupCollection {
+  library_id: number;
+  position: number;
+}
+
+// admin_groups.go adminGroupCollectionsResponse — empty array, never null
+export interface AdminGroupCollectionsResponse {
+  collections: AdminGroupCollection[];
+}
+
+// admin_scoping.go wire shapes (l6-accounts 9.3) — the bind / adopt /
+// visibility-explain surface, mirrored verbatim.
+
+// admin_scoping.go adminVisibilityGroup — one granting group of the explain
+// answer: the group's id, display name, and the position its grant carries.
+export interface AdminVisibilityGroup {
+  group_id: number;
+  group_name: string;
+  position: number;
+}
+
+// admin_scoping.go adminVisibilityExplain — the GET
+// /admin/visibility-explain answer: the resolved grant for one
+// (user, collection) pair. An UNKNOWN library is NOT a 404 — the orphan law
+// mirrored: visible:false with empty granting_groups. chain_mutes is the
+// mute-wins merge of the user's groups' mute documents.
+export interface AdminVisibilityExplain {
+  user_id: number;
+  library_id: number;
+  visible: boolean;
+  granting_groups: AdminVisibilityGroup[];
+  visible_library_ids: number[];
+  chain_mutes: Record<string, boolean>;
+}
+
 // pairing.go wire shapes (device-pairing) — the seven-route pairing surface
 // mirrored verbatim. Field names match the JSON tags EXACTLY
 // (INV-verbatim-field-names): pairing_id / code / device_token / status.
@@ -741,10 +912,14 @@ export interface PairingActionResponse {
 
 // pairing.go deviceDTO — one paired device as the admin list sees it. The
 // token itself is hash-at-rest and NEVER rendered here (pairing INV3); code
-// is the approval code, kept for recognition.
+// is the approval code, kept for recognition. user_id is the bind posture
+// (l6-accounts 9.3): the bound user's id, 0 when the row is unbound (the
+// legacy see-all viewer) — the bind affordance on the devices list renders
+// both states from this field.
 export interface AdminDevice {
   device_id: string;
   code: string;
+  user_id: number;
   created_at: string;
 }
 
@@ -928,6 +1103,27 @@ export const ENDPOINTS = {
   adminPairingDeny: (id: string): string => `/api/v1/admin/pairings/${id}/deny`,
   adminDevices: "/api/v1/admin/devices",
   adminDevice: (id: string): string => `/api/v1/admin/devices/${id}`,
+  // authLogin — POST /api/v1/auth/login (auth.go login, l6-accounts 7.2):
+  // the UNAUTHENTICATED username+password bootstrap that mints a session
+  // token (mounted beside the pairing verbs; 429 rate_limited past 5
+  // failures per (IP, username) per 5m; the auth failure is a UNIFORM 401 —
+  // wrong password, unknown user, and disabled user are byte-identical on
+  // the wire, no enumeration).
+  authLogin: "/api/v1/auth/login",
+  // profile — GET /api/v1/profile (profile.go profile, l6-accounts 8.1): the
+  // caller's resolved identity — kind/name/role/groups/prefs per principal
+  // kind. Authenticated (browse group); rides the standard wrapper so a dead
+  // credential's 401 rotates through handle401 exactly like every other
+  // bearer call (unlike the login verb, a /profile 401 IS a dead-credential
+  // case).
+  profile: "/api/v1/profile",
+  // profilePrefs — PUT /api/v1/profile/prefs (profile.go putProfilePrefs,
+  // l6-accounts 8.4): replaces the CALLER's per-user preference document
+  // WHOLE (204 — the body IS the document; identity stores it verbatim and
+  // NEVER merges server-side). 409 conflict when the principal carries no
+  // per-user document (env admin token, unbound device) — surfaced, never
+  // swallowed; 404 not_found for a dangling credential.
+  profilePrefs: "/api/v1/profile/prefs",
   // Art object + poster override family (artwork): GET /art/object/{oid}
   // serves the stored poster bytes through the authenticated channel (an
   // <img src> cannot carry the bearer header — the fetchItemMediaObjectUrl
@@ -940,6 +1136,55 @@ export const ENDPOINTS = {
   seriesPoster: (id: string): string => `/api/v1/series/${id}/poster`,
   itemPosters: (id: string): string => `/api/v1/items/${id}/posters`,
   itemPoster: (id: string): string => `/api/v1/items/${id}/poster`,
+  // Users admin verbs (admin_users.go, l6-accounts 9.1): POST creates (201 —
+  // the FIRST-user response carries the one-way-door `notice`, rendered
+  // verbatim); PATCH {role?, disabled?} is partial (pointer fields — an
+  // absent field leaves the column unchanged); PUT …/password resets (204,
+  // that user's sessions die); DELETE removes (204 + the state cascade, or
+  // 409 conflict — the LAST-USER GUARD; the panel mirrors it client-side by
+  // disabling delete while one user remains). POST …/adopt-legacy (9.3) is
+  // a bare 204 — the one-shot newer-wins merge of the user_id=0 ledger slot
+  // into the user's slots; the server is idempotent (a second call is a
+  // no-op) and answers NO counts.
+  adminUsers: "/api/v1/admin/users",
+  adminUser: (id: number): string => `/api/v1/admin/users/${String(id)}`,
+  adminUserPassword: (id: number): string =>
+    `/api/v1/admin/users/${String(id)}/password`,
+  adminUserAdopt: (id: number): string =>
+    `/api/v1/admin/users/${String(id)}/adopt-legacy`,
+  // Groups admin verbs (admin_groups.go, l6-accounts 9.2): id-addressed
+  // (names are case-preserved display values; renames never move the id).
+  // Members ride …/users (add by USERNAME — the delete names the user too);
+  // member Collections ride …/collections ({library_id, position} — the
+  // position law: same-group re-add REPLACES via upsert, cross-group
+  // overlap allowed); the mute document rides …/doc (PUT — WHOLE
+  // replacement, never merged server-side; shape-only validated; the SPA
+  // does the read-merge-write).
+  adminGroups: "/api/v1/admin/groups",
+  adminGroup: (id: number): string => `/api/v1/admin/groups/${String(id)}`,
+  adminGroupUsers: (id: number): string =>
+    `/api/v1/admin/groups/${String(id)}/users`,
+  adminGroupUser: (id: number, username: string): string =>
+    `/api/v1/admin/groups/${String(id)}/users/${encodeURIComponent(username)}`,
+  adminGroupCollections: (id: number): string =>
+    `/api/v1/admin/groups/${String(id)}/collections`,
+  adminGroupCollection: (id: number, libraryId: number): string =>
+    `/api/v1/admin/groups/${String(id)}/collections/${String(libraryId)}`,
+  adminGroupDoc: (id: number): string =>
+    `/api/v1/admin/groups/${String(id)}/doc`,
+  // adminDeviceUser — PUT /api/v1/admin/devices/{id}/user
+  // (admin_scoping.go adminDeviceBind, l6-accounts 9.3): bind (204) — the
+  // body carries {user_id: number}; {user_id: null} (or an omitted field)
+  // UNBINDS to the legacy viewer. A session-credential id in the path is a
+  // 404 (the kind-guard — only device rows bind).
+  adminDeviceUser: (id: string): string =>
+    `/api/v1/admin/devices/${id}/user`,
+  // visibilityExplain — GET /api/v1/admin/visibility-explain
+  // (admin_scoping.go adminVisibilityExplainGet, l6-accounts 9.3): the
+  // resolved grant for one (user_id, library_id) pair — both query params
+  // required. An unknown library is NOT a 404: visible:false with empty
+  // granting_groups (the orphan law mirrored).
+  visibilityExplain: "/api/v1/admin/visibility-explain",
 } as const;
 
 // updateLibrary — PATCH /api/v1/libraries/{id} (handlers.go updateLibrary).
@@ -1532,6 +1777,71 @@ export async function getAdminPluginLogs(
   return apiRequest<PluginLogsResponse>(ENDPOINTS.adminPluginLogs(pluginId));
 }
 
+// login — POST /api/v1/auth/login (auth.go login, l6-accounts): verify the
+// username+password pair and mint a session token. This is the ONE call that
+// deliberately does NOT ride apiRequest: the login 401 is an EXPECTED
+// outcome — the uniform authentication failure (wrong password, unknown
+// user, disabled user are byte-identical on the wire, D6) — not a dead
+// credential, and routing it through the wrapper would fire handle401,
+// clearing nothing and bouncing an unauthenticated visitor off /login onto
+// the ROOT route's pairing entry. Everything else stays the wrapper's
+// posture: canonical-body parsing via the shared errorBody, verbatim 2xx
+// parse (INV-no-rounding). No Authorization header is attached — the caller
+// is here to GET a credential, not present one. The STORED session token's
+// own 401s rotate through the existing handle401 seam exactly like the
+// admin token's (it shares the credential slot), which is the rotation
+// reuse law — no second rotation mechanism exists.
+export async function login(req: LoginRequest): Promise<LoginResponse> {
+  const res: Response = await fetch(ENDPOINTS.authLogin, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, await errorBody(res));
+  }
+  const raw = await res.text();
+  return JSON.parse(raw) as LoginResponse;
+}
+
+// getProfile — GET /api/v1/profile (profile.go profile, l6-accounts 8.1):
+// the caller's resolved identity. Unlike the login verb above, this rides
+// the STANDARD wrapper on purpose: a /profile 401 means the presented
+// credential is dead, and the shared handle401 rotation (clear + redirect)
+// is exactly the wanted outcome. 404 not_found for a dangling credential
+// (a bound device whose user row was deleted) — canonical, surfaced by the
+// caller's error state.
+export async function getProfile(): Promise<ProfileDTO> {
+  return apiRequest<ProfileDTO>(ENDPOINTS.profile);
+}
+
+// putProfilePrefs — PUT /api/v1/profile/prefs (profile.go putProfilePrefs,
+// l6-accounts 8.4): the body IS the WHOLE preference document — the server
+// stores the bytes verbatim and NEVER merges (a PUT is the whole
+// replacement), so the READ-MERGE-WRITE law lives at the caller: take the
+// SERVED document from the shared ["profile"] cache, spread the caller's
+// own keys over it, and PUT the merged whole. Two surfaces writing
+// different keys through this helper WITHOUT the read step would clobber
+// each other's keys — the useUpdateProfilePrefs hook (lib/queries) is the
+// write path that performs the read-merge-write against that cache; prefer
+// it. apiRequestVoid does not stringify (its 204 parse would throw on
+// JSON.parse("")) — the pre-stringified body bridge sendPlaybackEvent
+// shares; the explicit Content-Type keeps the request canonical. 409
+// conflict (the principal carries no per-user document: env admin, unbound
+// device) and 404 not_found (dangling credential) reject as canonical
+// ApiErrors — surfaced by the caller, never swallowed; a 401 rotates
+// through handle401 like every bearer call.
+export function putProfilePrefs(prefs: ProfilePrefs): Promise<void> {
+  return apiRequestVoid(ENDPOINTS.profilePrefs, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(prefs),
+  });
+}
+
 // startPairing — POST /api/v1/pair (pairing.go createPairing, device-pairing):
 // mints one pending pairing request. UNAUTHENTICATED by design — an unpaired
 // device has no credential yet (the pair group runs without the auth
@@ -1596,6 +1906,249 @@ export async function getAdminDevices(): Promise<AdminDevicesResponse> {
 // surfaced inline (retry:0).
 export async function revokeDevice(deviceId: string): Promise<void> {
   await apiRequestVoid(ENDPOINTS.adminDevice(deviceId), { method: "DELETE" });
+}
+
+// getAdminUsers — GET /api/v1/admin/users (admin_users.go adminUsersList,
+// l6-accounts 9.1): the user registry, hashless display facts only. Empty
+// array, never null.
+export async function getAdminUsers(): Promise<AdminUsersResponse> {
+  return apiRequest<AdminUsersResponse>(ENDPOINTS.adminUsers);
+}
+
+// createAdminUser — POST /api/v1/admin/users (admin_users.go adminUserCreate):
+// 201 with the created row plus the one-way-door `notice` when this was the
+// FIRST user ever (omitempty — the field is absent otherwise). The wording
+// is served by the backend and rendered verbatim. 400 bad_request (missing
+// fields), 409 conflict (username taken), 503 unavailable (identity
+// disabled) — all canonical, surfaced inline.
+export async function createAdminUser(
+  req: AdminUserCreateRequest,
+): Promise<AdminUserCreated> {
+  return apiRequest<AdminUserCreated>(ENDPOINTS.adminUsers, {
+    method: "POST",
+    body: req as unknown as BodyInit,
+  });
+}
+
+// patchAdminUser — PATCH /api/v1/admin/users/{id} (admin_users.go
+// adminUserPatch): partial — send ONLY the fields changing ({role} for a
+// role select, {disabled} for a disable toggle); an absent field leaves the
+// column unchanged (pointer decode server-side). 200 with the updated row.
+export async function patchAdminUser(
+  id: number,
+  req: AdminUserPatch,
+): Promise<AdminUser> {
+  return apiRequest<AdminUser>(ENDPOINTS.adminUser(id), {
+    method: "PATCH",
+    body: req as unknown as BodyInit,
+  });
+}
+
+// resetAdminUserPassword — PUT /api/v1/admin/users/{id}/password
+// (admin_users.go adminUserPassword): rehashes and revokes every session of
+// that user (the password cascade). 204 — apiRequestVoid (the body rides
+// PRE-stringified — the void variant does not stringify, the
+// putProfilePrefs bridge).
+export async function resetAdminUserPassword(
+  id: number,
+  password: string,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminUserPassword(id), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+}
+
+// deleteAdminUser — DELETE /api/v1/admin/users/{id} (admin_users.go
+// adminUserDelete): one-transaction cascade (the user's session rows and
+// both ledger slots die with the row). 409 conflict is the LAST-USER GUARD
+// — the panel mirrors it client-side (delete disabled while one user
+// remains) but the server answers remain authoritative.
+export async function deleteAdminUser(id: number): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminUser(id), { method: "DELETE" });
+}
+
+// adoptLegacyUserProgress — POST /api/v1/admin/users/{id}/adopt-legacy
+// (admin_scoping.go adminUserAdopt, l6-accounts 9.3): the ONE-SHOT
+// newer-wins merge of the user_id=0 legacy ledger slot into the user's
+// slots. Bare 204, idempotent server-side (a second call is a no-op) — NO
+// counts ride the wire, and none are shown.
+export async function adoptLegacyUserProgress(id: number): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminUserAdopt(id), { method: "POST" });
+}
+
+// getAdminGroups — GET /api/v1/admin/groups (admin_groups.go
+// adminGroupsList): the group registry with their served mute documents.
+// Empty array, never null.
+export async function getAdminGroups(): Promise<AdminGroupsResponse> {
+  return apiRequest<AdminGroupsResponse>(ENDPOINTS.adminGroups);
+}
+
+// createAdminGroup — POST /api/v1/admin/groups (admin_groups.go
+// adminGroupCreate): 201 with the created row. 409 conflict when the name
+// is taken.
+export async function createAdminGroup(
+  name: string,
+): Promise<AdminGroup> {
+  return apiRequest<AdminGroup>(ENDPOINTS.adminGroups, {
+    method: "POST",
+    body: { name } as unknown as BodyInit,
+  });
+}
+
+// renameAdminGroup — PATCH /api/v1/admin/groups/{id} (admin_groups.go
+// adminGroupPatch): the name is the ONLY mutable field (members and
+// Collections ride sub-resources). 200 with the updated row; the id
+// addressing means a rename never re-keys anything.
+export async function renameAdminGroup(
+  id: number,
+  name: string,
+): Promise<AdminGroup> {
+  return apiRequest<AdminGroup>(ENDPOINTS.adminGroup(id), {
+    method: "PATCH",
+    body: { name } as unknown as BodyInit,
+  });
+}
+
+// deleteAdminGroup — DELETE /api/v1/admin/groups/{id} (admin_groups.go
+// adminGroupDelete): 204; the group's membership and Collection grants
+// cascade with the row.
+export async function deleteAdminGroup(id: number): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminGroup(id), { method: "DELETE" });
+}
+
+// getAdminGroupMembers — GET /api/v1/admin/groups/{id}/users
+// (admin_groups.go adminGroupMembersList): the member users, hashless rows.
+export async function getAdminGroupMembers(
+  id: number,
+): Promise<AdminUsersResponse> {
+  return apiRequest<AdminUsersResponse>(ENDPOINTS.adminGroupUsers(id));
+}
+
+// addAdminGroupMember — POST /api/v1/admin/groups/{id}/users
+// (admin_groups.go adminGroupMemberAdd): the body names the member BY
+// USERNAME (the group is addressed by id, the user by name). 204. The body
+// rides PRE-stringified (apiRequestVoid does not stringify — the
+// putProfilePrefs bridge).
+export async function addAdminGroupMember(
+  id: number,
+  username: string,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminGroupUsers(id), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username }),
+  });
+}
+
+// removeAdminGroupMember — DELETE /api/v1/admin/groups/{id}/users/{username}
+// (admin_groups.go adminGroupMemberRemove): idempotent server-side —
+// removing a non-member is a no-op; an unknown group or user is a 404. 204.
+export async function removeAdminGroupMember(
+  id: number,
+  username: string,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminGroupUser(id, username), {
+    method: "DELETE",
+  });
+}
+
+// getAdminGroupCollections — GET /api/v1/admin/groups/{id}/collections
+// (admin_groups.go adminGroupCollectionsList): the member Collections,
+// position-ordered as served.
+export async function getAdminGroupCollections(
+  id: number,
+): Promise<AdminGroupCollectionsResponse> {
+  return apiRequest<AdminGroupCollectionsResponse>(
+    ENDPOINTS.adminGroupCollections(id),
+  );
+}
+
+// addAdminGroupCollection — POST /api/v1/admin/groups/{id}/collections
+// (admin_groups.go adminGroupCollectionAdd): {library_id, position} — the
+// position law is the server's (same-group re-add REPLACES via upsert,
+// cross-group overlap allowed); the library id is NOT validated against
+// libraries (the D5 orphan law — an unknown id is accepted and simply
+// grants nothing live). 204. The body rides PRE-stringified (apiRequestVoid
+// does not stringify — the putProfilePrefs bridge).
+export async function addAdminGroupCollection(
+  id: number,
+  libraryId: number,
+  position: number,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminGroupCollections(id), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ library_id: libraryId, position }),
+  });
+}
+
+// removeAdminGroupCollection — DELETE
+// /api/v1/admin/groups/{id}/collections/{library_id}
+// (admin_groups.go adminGroupCollectionRemove): idempotent server-side. 204.
+export async function removeAdminGroupCollection(
+  id: number,
+  libraryId: number,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminGroupCollection(id, libraryId), {
+    method: "DELETE",
+  });
+}
+
+// putAdminGroupDoc — PUT /api/v1/admin/groups/{id}/doc (admin_groups.go
+// adminGroupDocPut): the WHOLE mute-document replacement — the server never
+// merges and validates SHAPE only (the body's doc must be one JSON object).
+// schema_version is omitted here (it defaults to 1 server-side; the served
+// row's version travels with the row, and re-sending it adds nothing).
+// Every writer READ-MERGE-WRITEs: spread the served document, flip the
+// mutes key, PUT the whole — operator keys (anything beyond "mutes")
+// survive verbatim. The body rides PRE-stringified (apiRequestVoid does not
+// stringify — the putProfilePrefs bridge).
+export async function putAdminGroupDoc(
+  id: number,
+  doc: Record<string, unknown>,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminGroupDoc(id), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ doc }),
+  });
+}
+
+// bindAdminDeviceUser — PUT /api/v1/admin/devices/{id}/user
+// (admin_scoping.go adminDeviceBind, l6-accounts 9.3): {user_id: number}
+// binds, {user_id: null} UNBINDS to the legacy viewer. 204; a
+// session-credential id is a 404 (the kind-guard). The body rides
+// PRE-stringified (apiRequestVoid does not stringify — the putProfilePrefs
+// bridge).
+export async function bindAdminDeviceUser(
+  deviceId: string,
+  userId: number | null,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminDeviceUser(deviceId), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+// getVisibilityExplain — GET /api/v1/admin/visibility-explain
+// (admin_scoping.go adminVisibilityExplainGet, l6-accounts 9.3): the
+// resolved grant for one (user, collection) pair. An unknown library is NOT
+// a 404 — the answer is visible:false with empty granting_groups (the
+// orphan law mirrored).
+export async function getVisibilityExplain(
+  userId: number,
+  libraryId: number,
+): Promise<AdminVisibilityExplain> {
+  const qs = new URLSearchParams({
+    user_id: String(userId),
+    library_id: String(libraryId),
+  });
+  return apiRequest<AdminVisibilityExplain>(
+    `${ENDPOINTS.visibilityExplain}?${qs.toString()}`,
+  );
 }
 
 // getItem — GET /api/v1/items/{id} (handlers.go:266-278). The id is the item's

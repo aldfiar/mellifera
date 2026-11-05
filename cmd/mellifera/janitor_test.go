@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/art"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -282,7 +283,7 @@ func putSeriesPoster(t *testing.T, st *store.Store, lib int64, relPath string, d
 // seriesIDOf loads the minted series id for (lib, relPath).
 func seriesIDOf(t *testing.T, st *store.Store, lib int64, relPath string) string {
 	t.Helper()
-	sr, err := st.GetSeriesByPath(context.Background(), lib, relPath)
+	sr, err := st.GetSeriesByPath(context.Background(), lib, relPath, access.System())
 	if err != nil {
 		t.Fatalf("GetSeriesByPath: %v", err)
 	}

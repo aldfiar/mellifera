@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -43,20 +44,20 @@ func TestRecsBackfillReconcilesStock(t *testing.T) {
 	putRecsProbeItem(t, ctx, st, "it_bfled", 1,
 		`{"format": {"duration": "3600"}}`,
 		`{"description": "d", "genres": ["Western"]}`)
-	if err := st.InsertWatched(ctx, "it_bfled", 1, "", prior); err != nil {
+	if err := st.InsertWatched(ctx, "it_bfled", 1, "", prior, access.System()); err != nil {
 		t.Fatalf("InsertWatched it_bfled: %v", err)
 	}
 	for _, p := range []struct {
 		id  string
 		pos int64
 	}{
-		{"it_bf97", 3492},    // 97% — backfills
-		{"it_bf50", 1800},    // 50% — never
+		{"it_bf97", 3492},      // 97% — backfills
+		{"it_bf50", 1800},      // 50% — never
 		{"it_bfnodur", 999999}, // no duration — never
-		{"it_bfzero", 0},     // zero position — not even listed
-		{"it_bfled", 3500},   // 97.2% but already ledgered — skipped
+		{"it_bfzero", 0},       // zero position — not even listed
+		{"it_bfled", 3500},     // 97.2% but already ledgered — skipped
 	} {
-		if _, err := st.PutProgress(ctx, p.id, p.pos); err != nil {
+		if _, err := st.PutProgress(ctx, p.id, p.pos, access.System()); err != nil {
 			t.Fatalf("PutProgress %s: %v", p.id, err)
 		}
 	}
@@ -76,7 +77,7 @@ func TestRecsBackfillReconcilesStock(t *testing.T) {
 	if !completed[0].Equal(prior) {
 		t.Fatalf("it_bfled completed_at = %v, want the ledger's original %v (no restamp)", completed[0], prior)
 	}
-	prog, err := st.GetProgress(ctx, "it_bf97")
+	prog, err := st.GetProgress(ctx, "it_bf97", access.System())
 	if err != nil {
 		t.Fatalf("GetProgress it_bf97: %v", err)
 	}
@@ -131,7 +132,7 @@ func TestRecsBackfillNeverBackfillsNonCompletions(t *testing.T) {
 		{"it_bfnodur", 999999},
 		{"it_bfzero", 0},
 	} {
-		if _, err := st.PutProgress(ctx, p.id, p.pos); err != nil {
+		if _, err := st.PutProgress(ctx, p.id, p.pos, access.System()); err != nil {
 			t.Fatalf("PutProgress %s: %v", p.id, err)
 		}
 	}
@@ -143,6 +144,92 @@ func TestRecsBackfillNeverBackfillsNonCompletions(t *testing.T) {
 	}
 	if drainRecsWake(t) {
 		t.Fatal("wake poked without a backfilled row")
+	}
+}
+
+// TestBackfillSlotAwareness (l6-accounts 5.3): the boot reconciliation is
+// slot-aware — the dedupe key is the (user_id, item_id) PAIR, not the item.
+// Pre-detector stock in the slot-0 legacy slot reconciles into slot 0
+// (access.System, the documented boot-backfill scope); stock in user 5's slot
+// reconciles into user 5's slot (the row's OWN user_id shapes the stamp — a
+// stamp carries no visibility); a cross-slot duplicate (the item ledgered in
+// slot 0 but ALSO mid-completion in user 5's slot) suppresses ONLY the slot-0
+// leg and still lands user 5's row; an already-ledgered user row is skipped
+// with its stamp intact. Asserted via direct SQL — the scoped reads cannot
+// see other slots, and a foreign row in ANY slot is exactly the bug class.
+func TestBackfillSlotAwareness(t *testing.T) {
+	st, ctx := watchDetectFixture(t)
+
+	dur := `{"format": {"duration": "3600"}}`
+	putWatchItem(t, ctx, st, "it_sa_legacy", 1, dur, `{}`) // slot-0 stock only
+	putWatchItem(t, ctx, st, "it_sa_user5", 1, dur, `{}`)  // user-5 stock only
+	putWatchItem(t, ctx, st, "it_sa_both", 1, dur, `{}`)   // ledgered slot-0 + stock in BOTH slots
+	putWatchItem(t, ctx, st, "it_sa_led5", 1, dur, `{}`)   // ledgered in user 5's slot already
+
+	// The pre-detector stock: legacy rows via System, user rows via the
+	// user's own viewer (PutProgress stamps the writing viewer's slot).
+	for _, p := range []struct {
+		itemID string
+		pos    int64
+		v      access.Viewer
+	}{
+		{"it_sa_legacy", 3500, access.System()},
+		{"it_sa_user5", 3500, access.User(5, []int64{1}, nil)},
+		{"it_sa_both", 3500, access.System()},
+		{"it_sa_both", 3520, access.User(5, []int64{1}, nil)},
+		{"it_sa_led5", 3510, access.User(5, []int64{1}, nil)},
+	} {
+		if _, err := st.PutProgress(ctx, p.itemID, p.pos, p.v); err != nil {
+			t.Fatalf("PutProgress %s: %v", p.itemID, err)
+		}
+	}
+	// The pre-existing ledger rows: a detector-era slot-0 completion and user
+	// 5's own earlier completion — fixed stamps the pass must never restamp.
+	prior := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
+	if err := st.InsertWatched(ctx, "it_sa_both", 1, "", prior, access.System()); err != nil {
+		t.Fatalf("InsertWatched it_sa_both (slot 0): %v", err)
+	}
+	if err := st.InsertWatched(ctx, "it_sa_led5", 1, "", prior, access.User(5, nil, nil)); err != nil {
+		t.Fatalf("InsertWatched it_sa_led5 (slot 5): %v", err)
+	}
+	drainRecsWake(t)
+
+	newRecsBackfill(st)(ctx)
+
+	got := watchedSlotRows(t, ctx, st)
+	want := []string{
+		"0:it_sa_both",   // pre-existing slot-0 row — kept, never restamped
+		"0:it_sa_legacy", // reconciled INTO the legacy slot
+		"5:it_sa_both",   // the cross-slot duplicate: user 5's OWN row lands
+		"5:it_sa_led5",   // pre-existing user row — kept
+		"5:it_sa_user5",  // reconciled INTO user 5's slot
+	}
+	if len(got) != len(want) {
+		t.Fatalf("watched rows = %v, want exactly %v (per-(user,item) dedupe, no foreign slot)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("watched rows = %v, want %v (slot %s missing or foreign row present)", got, want, want[i])
+		}
+	}
+	if !watchedCompletedAt(t, ctx, st, 0, "it_sa_both").Equal(prior) {
+		t.Fatalf("slot-0 it_sa_both restamped — want the original %v (already-ledgered rows are skipped, not reconciled)", prior)
+	}
+	if !watchedCompletedAt(t, ctx, st, 5, "it_sa_led5").Equal(prior) {
+		t.Fatalf("slot-5 it_sa_led5 restamped — want the original %v", prior)
+	}
+	if !drainRecsWake(t) {
+		t.Fatal("recs wake not poked though the pass landed rows")
+	}
+
+	// The rerun: every slot reconciled or ruled out — a no-op pass, the row
+	// set unchanged.
+	newRecsBackfill(st)(ctx)
+	if got := watchedSlotRows(t, ctx, st); len(got) != len(want) {
+		t.Fatalf("watched rows after rerun = %v, want unchanged (the pass is idempotent per slot)", got)
+	}
+	if drainRecsWake(t) {
+		t.Fatal("no-op backfill poked the wake")
 	}
 }
 
@@ -167,7 +254,7 @@ func TestRecsBackfillEpisodeJoinsSeriesAndSweepLearns(t *testing.T) {
 	putWatchItem(t, ctx, st, "it_bfep", 1,
 		`{"format": {"duration": "3600"}}`,
 		`{"series_relative_path": "Backfill Show"}`)
-	if _, err := st.PutProgress(ctx, "it_bfep", 3500); err != nil { // 97.2%
+	if _, err := st.PutProgress(ctx, "it_bfep", 3500, access.System()); err != nil { // 97.2%
 		t.Fatalf("PutProgress episode: %v", err)
 	}
 	drainRecsWake(t)

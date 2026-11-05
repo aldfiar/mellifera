@@ -93,6 +93,9 @@ type playResponse struct {
 // cookie-primary media token → write playbackResponse. Read-only by contract:
 // it never enqueues, never persists, never mutates packaging state. Nil
 // closure → 503 (degrades cleanly like Deps.Status); a missing item → 404.
+// The pre-mint visibility precheck (l6-accounts 6.3) resolves the item
+// through the viewer-scoped GetItem BEFORE the descriptor closure: a hidden
+// item is 404 not_found and no media token is ever minted for it.
 //
 // @Summary      Playback descriptor for one item
 // @Tags         items
@@ -103,11 +106,20 @@ type playResponse struct {
 // @Failure      404 {object} errorBody
 // @Failure      503 {object} errorBody
 func (a *app) itemPlayback(w http.ResponseWriter, r *http.Request) {
+	v, ctx := a.viewerFor(r)
 	if a.deps.Playback == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "playback endpoint disabled", false)
 		return
 	}
-	pb, err := a.deps.Playback(r.Context(), chi.URLParam(r, "id"))
+	// Pre-mint visibility precheck (l6-accounts 6.3): the viewer-scoped
+	// GetItem is the FIRST store interaction and gates the closure — hidden
+	// ≡ 404 (no existence oracle), any read error fails closed the same way,
+	// and no media token is minted on this path.
+	if _, err := a.deps.Store.GetItem(ctx, chi.URLParam(r, "id"), v); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "item "+chi.URLParam(r, "id")+" not found", false)
+		return
+	}
+	pb, err := a.deps.Playback(ctx, chi.URLParam(r, "id"))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "item "+chi.URLParam(r, "id")+" not found", false)
@@ -157,6 +169,9 @@ func wireArray[T any](s []T) []T {
 // retry absent/false is a plain acknowledgement (200). An
 // unknown item → 404; a malformed body or a negative from_seconds → 400
 // BEFORE the domain call. from_seconds is otherwise reserved (no-op in v1).
+// The pre-mint visibility precheck (l6-accounts 6.3) resolves the item
+// through the viewer-scoped GetItem BEFORE the mutation closure: a hidden
+// item is 404 not_found and the play enqueue never runs for it.
 //
 // @Summary      Play one item (the only playback mutation)
 // @Tags         items
@@ -170,6 +185,7 @@ func wireArray[T any](s []T) []T {
 // @Failure      404 {object} errorBody
 // @Failure      503 {object} errorBody
 func (a *app) itemPlay(w http.ResponseWriter, r *http.Request) {
+	v, ctx := a.viewerFor(r)
 	if a.deps.Play == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "play endpoint disabled", false)
 		return
@@ -184,7 +200,15 @@ func (a *app) itemPlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	retry := req.Retry != nil && *req.Retry
-	queued, err := a.deps.Play(r.Context(), chi.URLParam(r, "id"), retry, req.FromSeconds)
+	// Pre-mint visibility precheck (l6-accounts 6.3): the viewer-scoped
+	// GetItem is the FIRST store interaction and gates the mutation — hidden
+	// ≡ 404 (no existence oracle), any read error fails closed the same way,
+	// and the play enqueue never runs on this path.
+	if _, err := a.deps.Store.GetItem(ctx, chi.URLParam(r, "id"), v); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "item "+chi.URLParam(r, "id")+" not found", false)
+		return
+	}
+	queued, err := a.deps.Play(ctx, chi.URLParam(r, "id"), retry, req.FromSeconds)
 	if err != nil {
 		var gateRefusal refusal.PlayRefusal
 		if errors.As(err, &gateRefusal) {

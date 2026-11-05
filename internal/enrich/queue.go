@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -232,7 +233,7 @@ func (q *Queue) seedLibs(ctx context.Context) {
 	if !empty {
 		return
 	}
-	libs, err := q.deps.Store.ListLibraries(ctx)
+	libs, err := q.deps.Store.ListLibraries(ctx, access.System())
 	if err != nil {
 		return
 	}
@@ -471,7 +472,7 @@ func (q *Queue) pendingExtras(
 	ctx context.Context, mod module.Module, prefs []store.MetadataSourcePref, libraryID int64,
 	doc map[string]any, itemID string, chainPending []string, idx failureIndex, nowt time.Time,
 ) []queueTask {
-	attached, err := q.deps.Store.ListItemParsers(ctx, itemID)
+	attached, err := q.deps.Store.ListItemParsers(ctx, itemID, access.System())
 	if err != nil || len(attached) == 0 {
 		return nil
 	}
@@ -501,7 +502,7 @@ func (q *Queue) pendingExtras(
 func (q *Queue) allItems(ctx context.Context, libraryID int64) ([]store.Item, error) {
 	var out []store.Item
 	for offset := 0; ; offset += deriveBatch {
-		batch, err := q.deps.Store.QueryItems(ctx, libraryID, "", "", false, deriveBatch, offset)
+		batch, err := q.deps.Store.QueryItems(ctx, libraryID, "", "", false, deriveBatch, offset, access.System())
 		if err != nil {
 			return nil, fmt.Errorf("enrich: derive items lib %d: %w", libraryID, err)
 		}
@@ -517,7 +518,7 @@ func (q *Queue) allItems(ctx context.Context, libraryID int64) ([]store.Item, er
 // are small (one row per serial directory), so a single QuerySeries call is the
 // intended granularity.
 func (q *Queue) allSeries(ctx context.Context, libraryID int64) ([]store.Series, error) {
-	rows, err := q.deps.Store.QuerySeries(ctx, libraryID, "")
+	rows, err := q.deps.Store.QuerySeries(ctx, libraryID, "", access.System())
 	if err != nil {
 		return nil, fmt.Errorf("enrich: derive series lib %d: %w", libraryID, err)
 	}
@@ -577,7 +578,7 @@ type queueRow struct {
 // serials-library D5). A row missing from both tables is gone (deleted between
 // derive and work) and yields an error the driver treats as nothing-to-do.
 func (q *Queue) loadRow(ctx context.Context, id string) (queueRow, error) {
-	it, err := q.deps.Store.GetItem(ctx, id)
+	it, err := q.deps.Store.GetItem(ctx, id, access.System())
 	if err == nil {
 		return queueRow{
 			id: it.ID, moduleID: it.ModuleID, libraryID: it.LibraryID,
@@ -591,7 +592,7 @@ func (q *Queue) loadRow(ctx context.Context, id string) (queueRow, error) {
 	if !errors.Is(err, sql.ErrNoRows) {
 		return queueRow{}, err
 	}
-	sr, serr := q.deps.Store.GetSeries(ctx, id)
+	sr, serr := q.deps.Store.GetSeries(ctx, id, access.System())
 	if serr != nil {
 		return queueRow{}, serr // includes ErrNoRows: the row is gone
 	}
@@ -609,7 +610,7 @@ func (q *Queue) loadRow(ctx context.Context, id string) (queueRow, error) {
 // (element-pages D-4). A read error leaves the extras empty (soft-fail: the row
 // still drains its chain; the extras re-derive on a later pass).
 func (q *Queue) itemExtras(ctx context.Context, itemID string) []string {
-	ids, err := q.deps.Store.ListItemParsers(ctx, itemID)
+	ids, err := q.deps.Store.ListItemParsers(ctx, itemID, access.System())
 	if err != nil {
 		return nil
 	}

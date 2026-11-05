@@ -12,13 +12,27 @@ import {
 import {
   ApiError,
   approvePairing,
+  addAdminGroupCollection,
+  addAdminGroupMember,
+  adoptLegacyUserProgress,
   apiRequest,
+  bindAdminDeviceUser,
+  createAdminGroup,
+  createAdminUser,
+  deleteAdminGroup,
+  deleteAdminUser,
   deleteLibrary,
   denyPairing,
   fetchItemMediaObjectUrl,
   fetchWatchDefaults,
   getAdminDevices,
+  getAdminGroupCollections,
+  getAdminGroupMembers,
+  getAdminGroups,
   getAdminPairings,
+  getAdminSources,
+  getAdminUsers,
+  getVisibilityExplain,
   getItem,
   getLibrary,
   getLibraryFolders,
@@ -26,10 +40,17 @@ import {
   getSeries,
   getSeriesEpisodes,
   listItems,
+  patchAdminUser,
   posterCandidates,
   listProgress,
+  putAdminGroupDoc,
   putItemState,
   putPoster,
+  putProfilePrefs,
+  removeAdminGroupCollection,
+  removeAdminGroupMember,
+  renameAdminGroup,
+  resetAdminUserPassword,
   uploadPoster,
   deletePoster,
   revokeDevice,
@@ -37,8 +58,16 @@ import {
   updateLibrary,
   waitPairing,
   type AdminDevicesResponse,
+  type AdminGroup,
+  type AdminGroupCollectionsResponse,
+  type AdminGroupsResponse,
   type AdminPairingsResponse,
-  type AdminStatus,
+  type AdminUserCreated,
+  type AdminUser,
+  type AdminUserCreateRequest,
+  type AdminUserPatch,
+  type AdminUsersResponse,
+  type AdminVisibilityExplain,
   type CreateLibraryRequest,
   type ItemResponse,
   type ItemsResponse,
@@ -50,16 +79,20 @@ import {
   type PairingActionResponse,
   type PosterCandidatesDTO,
   type PosterOverrideDTO,
+  type ProfileDTO,
+  type ProfilePrefs,
   type PairingRequest,
   type PairingWait,
   type ItemState,
   type ItemStateDTO,
   type ProgressListResponse,
   type ScanResponse,
+  type SourcesResponse,
   type SeriesListResponse,
   type UpdateLibraryRequest,
   type WatchDefaultsDTO,
 } from "@/lib/api";
+import { PROFILE_QUERY_KEY } from "@/components/Profile";
 
 // TanStack Query hooks over the 4 pre-existing Go endpoints
 // (router.go:92,98-100). Each hook is pure delegation to `apiRequest` (T04) —
@@ -239,20 +272,6 @@ export function useLibraryFolders(
   });
 }
 
-// useAdminStatus — GET /api/v1/admin/status, polled on a refetch interval so
-// the Status page (T10) reflects current plugin/enricher health (AC-4). GET
-// queries keep the default retry; a 503 (status disabled) propagates as an
-// error state — the hook does NOT special-case it (T10 renders the
-// "unavailable" edge). The query key reserves a slot for the id-shape
-// convention even though admin-status takes no arg.
-export function useAdminStatus(): UseQueryResult<AdminStatus> {
-  return useQuery({
-    queryKey: ["admin-status"],
-    queryFn: () => apiRequest<AdminStatus>("/api/v1/admin/status"),
-    refetchInterval: 5000,
-  });
-}
-
 // useItem — GET /api/v1/items/{id} via getItem. Keyed ["item", id]: one cache
 // entry per item id, so deep links and navigations between items cache
 // independently. Pure delegation — a missing item surfaces as ApiError
@@ -365,6 +384,38 @@ export function useWatchDefaults(): UseQueryResult<WatchDefaultsDTO> {
   return useQuery({
     queryKey: ["watch-defaults"],
     queryFn: () => fetchWatchDefaults(),
+  });
+}
+
+// useUpdateProfilePrefs — PUT /api/v1/profile/prefs via putProfilePrefs
+// (l6-accounts 8.4): the whole-document write behind the auto-next playback
+// toggle. The server stores the document VERBATIM and never merges
+// (profile.go putProfilePrefs), so the mutation receives the WHOLE merged
+// document — served keys plus the flipped one — never a patch; the
+// READ-MERGE-WRITE step belongs to the caller (the AutoNext card reads the
+// SERVED prefs through the shared ["profile"] cache and spreads its key
+// over them). On success the cache entry is set to the exact document the
+// server now holds (identity stored the sent bytes — no refetch needed),
+// keeping every profile consumer in agreement. Keyed on Profile.tsx's
+// PROFILE_QUERY_KEY — the ONE identity cache entry the sidebar gate, the
+// profile block, and this write share (INV-shared-identity). retry:0
+// (INV-no-mutation-retry): a 409 conflict (the principal carries no
+// per-user document — env admin, unbound device) surfaces to the caller's
+// error state, never retried or swallowed.
+export function useUpdateProfilePrefs(): UseMutationResult<
+  void,
+  ApiError,
+  ProfilePrefs /* the WHOLE merged document */
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (prefs: ProfilePrefs) => putProfilePrefs(prefs),
+    retry: 0,
+    onSuccess: (_void, prefs) => {
+      queryClient.setQueryData<ProfileDTO>(PROFILE_QUERY_KEY, (old) =>
+        old === undefined ? old : { ...old, prefs },
+      );
+    },
   });
 }
 
@@ -711,4 +762,387 @@ export function usePosterMutations(
     onSuccess: invalidateRead,
   });
   return { put, upload, reset };
+}
+
+// adminAccountsQueryKeys — the accounts admin surfaces' cache keys (one
+// declaration so hooks and tests cannot drift): the users registry, the
+// groups registry, and the per-group member/collection axes keyed by group
+// id.
+export const ADMIN_USERS_QUERY_KEY = ["admin-users"] as const;
+export const ADMIN_GROUPS_QUERY_KEY = ["admin-groups"] as const;
+export const adminGroupMembersKey = (groupId: number): readonly unknown[] => [
+  "admin-group-members",
+  groupId,
+];
+export const adminGroupCollectionsKey = (groupId: number): readonly unknown[] => [
+  "admin-group-collections",
+  groupId,
+];
+
+// useAdminUsers — GET /api/v1/admin/users via getAdminUsers (l6-accounts
+// 9.1): the hashless user registry behind the Accounts page's users panel
+// AND the device bind affordance on the Pairing surface (both read the one
+// cache entry — a bind and a user edit cannot disagree). Keyed
+// ["admin-users"]; every users write invalidates it.
+export function useAdminUsers(): UseQueryResult<AdminUsersResponse> {
+  return useQuery({
+    queryKey: ADMIN_USERS_QUERY_KEY,
+    queryFn: () => getAdminUsers(),
+  });
+}
+
+// useAdminSources — GET /api/v1/admin/sources via getAdminSources (no title
+// counts — the mute toggle list needs only identity, the plugin ids that
+// key the mute documents). Shared by the Sources surface's own inline query
+// key ["admin-sources"].
+export function useAdminSources(): UseQueryResult<SourcesResponse> {
+  return useQuery({
+    queryKey: ["admin-sources"],
+    queryFn: () => getAdminSources(false),
+  });
+}
+
+// useCreateAdminUser — POST /api/v1/admin/users via createAdminUser
+// (l6-accounts 9.1): the create's response carries the FIRST-user one-way
+// door notice verbatim — the CALLER renders it, so the mutation's result
+// type is the full AdminUserCreated, never narrowed. Success invalidates
+// ["admin-users"] (the row re-reads from the server, never the write's
+// body). retry:0 (INV-no-mutation-retry).
+export function useCreateAdminUser(): UseMutationResult<
+  AdminUserCreated,
+  ApiError,
+  AdminUserCreateRequest
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: AdminUserCreateRequest) => createAdminUser(req),
+    retry: 0,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ADMIN_USERS_QUERY_KEY });
+    },
+  });
+}
+
+// usePatchAdminUser — PATCH /api/v1/admin/users/{id} via patchAdminUser:
+// the partial write ({role} or {disabled} — the caller sends only the
+// field changing, the pointer decode leaves the rest). Success invalidates
+// ["admin-users"]. retry:0.
+export function usePatchAdminUser(): UseMutationResult<
+  AdminUser,
+  ApiError,
+  { id: number; patch: AdminUserPatch }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: AdminUserPatch }) =>
+      patchAdminUser(id, patch),
+    retry: 0,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ADMIN_USERS_QUERY_KEY });
+    },
+  });
+}
+
+// useResetAdminUserPassword — PUT /api/v1/admin/users/{id}/password via
+// resetAdminUserPassword: 204, and that user's sessions die server-side
+// (the password cascade). Success invalidates ["admin-users"] (updated_at
+// moves). retry:0.
+export function useResetAdminUserPassword(): UseMutationResult<
+  void,
+  ApiError,
+  { id: number; password: string }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, password }: { id: number; password: string }) =>
+      resetAdminUserPassword(id, password),
+    retry: 0,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ADMIN_USERS_QUERY_KEY });
+    },
+  });
+}
+
+// useDeleteAdminUser — DELETE /api/v1/admin/users/{id} via deleteAdminUser:
+// the cascade delete. The LAST-USER GUARD is mirrored client-side (the
+// panel disables the action while one user remains) but the server's 409
+// stays authoritative — it surfaces here on any forced race. Success
+// invalidates ["admin-users"]. retry:0.
+export function useDeleteAdminUser(): UseMutationResult<
+  void,
+  ApiError,
+  number /* user id */
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => deleteAdminUser(id),
+    retry: 0,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ADMIN_USERS_QUERY_KEY });
+    },
+  });
+}
+
+// useAdoptLegacyUserProgress — POST /api/v1/admin/users/{id}/adopt-legacy
+// via adoptLegacyUserProgress (l6-accounts 9.3): the one-shot newer-wins
+// merge of the user_id=0 ledger slot into the user's slots. Bare 204 — no
+// counts exist on the wire, none surface. The server is idempotent (a
+// second call is a no-op); no cache carries ledger rows, so nothing to
+// invalidate. retry:0.
+export function useAdoptLegacyUserProgress(): UseMutationResult<
+  void,
+  ApiError,
+  number /* user id */
+> {
+  return useMutation({
+    mutationFn: (id: number) => adoptLegacyUserProgress(id),
+    retry: 0,
+  });
+}
+
+// useAdminGroups — GET /api/v1/admin/groups via getAdminGroups
+// (l6-accounts 9.2): the group registry (rows carry the served mute
+// documents). Keyed ["admin-groups"]; every group write invalidates it.
+export function useAdminGroups(): UseQueryResult<AdminGroupsResponse> {
+  return useQuery({
+    queryKey: ADMIN_GROUPS_QUERY_KEY,
+    queryFn: () => getAdminGroups(),
+  });
+}
+
+// useCreateAdminGroup — POST /api/v1/admin/groups via createAdminGroup:
+// 201 with the created row. 409 conflict when the name is taken — surfaced
+// inline. Success invalidates ["admin-groups"]. retry:0.
+export function useCreateAdminGroup(): UseMutationResult<
+  AdminGroup,
+  ApiError,
+  string /* name */
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => createAdminGroup(name),
+    retry: 0,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ADMIN_GROUPS_QUERY_KEY });
+    },
+  });
+}
+
+// useRenameAdminGroup — PATCH /api/v1/admin/groups/{id} via renameAdminGroup:
+// the name is the only mutable field; id addressing makes renames
+// re-key-free. Success invalidates ["admin-groups"]. retry:0.
+export function useRenameAdminGroup(): UseMutationResult<
+  AdminGroup,
+  ApiError,
+  { id: number; name: string }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: number; name: string }) =>
+      renameAdminGroup(id, name),
+    retry: 0,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ADMIN_GROUPS_QUERY_KEY });
+    },
+  });
+}
+
+// useDeleteAdminGroup — DELETE /api/v1/admin/groups/{id} via
+// deleteAdminGroup: membership and Collection grants cascade server-side.
+// Success invalidates the registry AND the deleted group's axes (belt and
+// braces — the axes die with the group). retry:0.
+export function useDeleteAdminGroup(): UseMutationResult<
+  void,
+  ApiError,
+  number /* group id */
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => deleteAdminGroup(id),
+    retry: 0,
+    onSuccess: (_void, id) => {
+      void qc.invalidateQueries({ queryKey: ADMIN_GROUPS_QUERY_KEY });
+      void qc.invalidateQueries({ queryKey: adminGroupMembersKey(id) });
+      void qc.invalidateQueries({ queryKey: adminGroupCollectionsKey(id) });
+    },
+  });
+}
+
+// useAdminGroupMembers — GET /api/v1/admin/groups/{id}/users via
+// getAdminGroupMembers: the member users of ONE group, keyed per group.
+export function useAdminGroupMembers(
+  groupId: number,
+): UseQueryResult<AdminUsersResponse> {
+  return useQuery({
+    queryKey: adminGroupMembersKey(groupId),
+    queryFn: () => getAdminGroupMembers(groupId),
+  });
+}
+
+// useAddAdminGroupMember — POST /api/v1/admin/groups/{id}/users via
+// addAdminGroupMember: add by USERNAME. Success invalidates that group's
+// member axis. retry:0.
+export function useAddAdminGroupMember(): UseMutationResult<
+  void,
+  ApiError,
+  { groupId: number; username: string }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, username }: { groupId: number; username: string }) =>
+      addAdminGroupMember(groupId, username),
+    retry: 0,
+    onSuccess: (_void, { groupId }) => {
+      void qc.invalidateQueries({ queryKey: adminGroupMembersKey(groupId) });
+    },
+  });
+}
+
+// useRemoveAdminGroupMember — DELETE /api/v1/admin/groups/{id}/users/{username}
+// via removeAdminGroupMember (idempotent server-side). Success invalidates
+// that group's member axis. retry:0.
+export function useRemoveAdminGroupMember(): UseMutationResult<
+  void,
+  ApiError,
+  { groupId: number; username: string }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, username }: { groupId: number; username: string }) =>
+      removeAdminGroupMember(groupId, username),
+    retry: 0,
+    onSuccess: (_void, { groupId }) => {
+      void qc.invalidateQueries({ queryKey: adminGroupMembersKey(groupId) });
+    },
+  });
+}
+
+// useAdminGroupCollections — GET /api/v1/admin/groups/{id}/collections via
+// getAdminGroupCollections: the member Collections, position-ordered as
+// served, keyed per group.
+export function useAdminGroupCollections(
+  groupId: number,
+): UseQueryResult<AdminGroupCollectionsResponse> {
+  return useQuery({
+    queryKey: adminGroupCollectionsKey(groupId),
+    queryFn: () => getAdminGroupCollections(groupId),
+  });
+}
+
+// useAddAdminGroupCollection — POST /api/v1/admin/groups/{id}/collections
+// via addAdminGroupCollection: {library_id, position} — the position law
+// (same-group re-add REPLACES) is the server's. Success invalidates that
+// group's collection axis. retry:0.
+export function useAddAdminGroupCollection(): UseMutationResult<
+  void,
+  ApiError,
+  { groupId: number; libraryId: number; position: number }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      groupId,
+      libraryId,
+      position,
+    }: { groupId: number; libraryId: number; position: number }) =>
+      addAdminGroupCollection(groupId, libraryId, position),
+    retry: 0,
+    onSuccess: (_void, { groupId }) => {
+      void qc.invalidateQueries({ queryKey: adminGroupCollectionsKey(groupId) });
+    },
+  });
+}
+
+// useRemoveAdminGroupCollection — DELETE
+// /api/v1/admin/groups/{id}/collections/{library_id} via
+// removeAdminGroupCollection (idempotent server-side). Success invalidates
+// that group's collection axis. retry:0.
+export function useRemoveAdminGroupCollection(): UseMutationResult<
+  void,
+  ApiError,
+  { groupId: number; libraryId: number }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      groupId,
+      libraryId,
+    }: { groupId: number; libraryId: number }) =>
+      removeAdminGroupCollection(groupId, libraryId),
+    retry: 0,
+    onSuccess: (_void, { groupId }) => {
+      void qc.invalidateQueries({ queryKey: adminGroupCollectionsKey(groupId) });
+    },
+  });
+}
+
+// usePutAdminGroupDoc — PUT /api/v1/admin/groups/{id}/doc via
+// putAdminGroupDoc: the WHOLE mute-document replacement (the server never
+// merges; shape-only validation). The mutation receives the WHOLE merged
+// document — the READ-MERGE-WRITE belongs to the caller: spread the served
+// doc (AdminGroup.doc), flip the mutes key, PUT the whole — operator keys
+// survive verbatim (the autoNextPrefs 8.4 law for whole-replace documents).
+// Success invalidates ["admin-groups"] (the served doc re-reads). retry:0.
+export function usePutAdminGroupDoc(): UseMutationResult<
+  void,
+  ApiError,
+  { groupId: number; doc: Record<string, unknown> }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, doc }: { groupId: number; doc: Record<string, unknown> }) =>
+      putAdminGroupDoc(groupId, doc),
+    retry: 0,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ADMIN_GROUPS_QUERY_KEY });
+    },
+  });
+}
+
+// useBindAdminDeviceUser — PUT /api/v1/admin/devices/{id}/user via
+// bindAdminDeviceUser (l6-accounts 9.3): {user_id: number} binds,
+// {user_id: null} unbinds to the legacy viewer. Success invalidates
+// ["admin-devices"] (the posture column re-reads from the server).
+// retry:0.
+export function useBindAdminDeviceUser(): UseMutationResult<
+  void,
+  ApiError,
+  { deviceId: string; userId: number | null }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deviceId, userId }: { deviceId: string; userId: number | null }) =>
+      bindAdminDeviceUser(deviceId, userId),
+    retry: 0,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin-devices"] });
+    },
+  });
+}
+
+// useVisibilityExplain — GET /api/v1/admin/visibility-explain via
+// getVisibilityExplain (l6-accounts 9.3): the resolved grant for one
+// (user, collection) pair. `enabled` guards the un-asked state — the
+// ExplainViewer fires the query only once the operator has picked the pair
+// and pressed Explain (requested !== null). GET keeps the default retry.
+// An unknown library is NOT a 404: the answer is visible:false with empty
+// granting_groups (the orphan law mirrored).
+export function useVisibilityExplain(
+  requested: { userId: number; libraryId: number } | null,
+): UseQueryResult<AdminVisibilityExplain> {
+  return useQuery({
+    queryKey: [
+      "visibility-explain",
+      requested?.userId,
+      requested?.libraryId,
+    ],
+    queryFn: () => {
+      if (requested === null) {
+        // Unreachable while enabled guards — keeps the fetch honest.
+        return Promise.reject(new Error("no explain pair requested"));
+      }
+      return getVisibilityExplain(requested.userId, requested.libraryId);
+    },
+    enabled: requested !== null,
+  });
 }

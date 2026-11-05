@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -154,7 +155,7 @@ func roundTripDoc(t *testing.T, doc map[string]any) map[string]any {
 // mustGetDoc reads an item's opaque document bytes from the store.
 func mustGetDoc(t *testing.T, s *store.Store, id string) []byte {
 	t.Helper()
-	it, err := s.GetItem(context.Background(), id)
+	it, err := s.GetItem(context.Background(), id, access.System())
 	if err != nil {
 		t.Fatalf("GetItem %s: %v", id, err)
 	}

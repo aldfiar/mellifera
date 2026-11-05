@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 )
@@ -56,7 +57,7 @@ func (q *Queue) routeEpisodeTitles(ctx context.Context, sr store.Series, seriesD
 	if !ok {
 		return // no season fact: an entry can never match honestly
 	}
-	eps, err := q.deps.Store.QueryItemsBySeries(ctx, sr, store.SeriesBackingDirectory)
+	eps, err := q.deps.Store.QueryItemsBySeries(ctx, sr, store.SeriesBackingDirectory, access.System())
 	if err != nil || len(eps) == 0 {
 		return // best-effort: a read failure or an empty directory leaves every doc untouched
 	}

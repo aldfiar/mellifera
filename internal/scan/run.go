@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/plugin"
@@ -119,7 +120,10 @@ type notifier func(ctx context.Context, libraryID int64)
 func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolve scannerResolver, enrichItem enricher, notify notifier, libraryID int64) (Result, error) {
 	res := Result{LibraryID: libraryID, StartedAt: time.Now().UTC()}
 
-	lib, err := st.GetLibrary(ctx, libraryID)
+	// MUST-be-true read (access.System — scan is operator work, never a
+	// principal's view): a false not-found would abort the rescan of a live
+	// library, so the sweep can never carry a scoped viewer.
+	lib, err := st.GetLibrary(ctx, libraryID, access.System())
 	if err != nil {
 		return finish(res), fmt.Errorf("scan: library %d: %w", libraryID, err)
 	}
@@ -227,7 +231,9 @@ const scanStatusDeleted = "deleted"
 // drain: a CONFIRMED clean completion (the scanner stream reported nil) plus a
 // live context.
 func sweepSeries(ctx context.Context, st *store.Store, libraryID int64, observed map[string]bool, res *Result) error {
-	rows, err := st.QuerySeries(ctx, libraryID, "")
+	// MUST-be-true read (access.System): this walk drives the deletion sweep —
+	// a false-empty would tombstone live series rows that were merely unseen.
+	rows, err := st.QuerySeries(ctx, libraryID, "", access.System())
 	if err != nil {
 		return fmt.Errorf("scan: series sweep: %w", err)
 	}
@@ -396,7 +402,10 @@ func assembleSeriesDoc(f *scannerv1.DiscoveredFile, parsed map[string]any, rootP
 // the carry. A lookup error is soft (AC-6): it falls back to "pending" — the
 // queue re-derives either way.
 func nextSeriesState(ctx context.Context, st *store.Store, libraryID int64, rel string, refreshed map[string]any, res *Result) (string, map[string]any) {
-	prior, err := st.GetSeriesByPath(ctx, libraryID, rel)
+	// MUST-be-true read (access.System): a false not-found makes the rescan
+	// treat an existing series as first sight — parsed-identity carry lost,
+	// re-identification corruption, never a scoped viewer here.
+	prior, err := st.GetSeriesByPath(ctx, libraryID, rel, access.System())
 	if err != nil {
 		return scanStatusPending, nil // first sight (or unreadable prior) -> re-queue
 	}
@@ -441,7 +450,10 @@ const (
 // (AC-6): it falls back to "pending" — the queue re-derives either way, and a
 // transient read failure must never abort the scan.
 func nextScanState(ctx context.Context, st *store.Store, libraryID int64, fileID string, refreshed map[string]any, res *Result) (string, map[string]any) {
-	prior, err := st.GetItem(ctx, itemID(libraryID, fileID))
+	// MUST-be-true read (access.System): a false not-found makes the rescan
+	// treat an existing item as new — status churn plus derived-namespace loss
+	// (re-identification corruption), never a scoped viewer here.
+	prior, err := st.GetItem(ctx, itemID(libraryID, fileID), access.System())
 	if err != nil {
 		return scanStatusPending, nil // no prior row (first scan) or unreadable -> re-queue
 	}

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // The recommendation-sorting 3.2 duty: the continue surface's scored default
@@ -94,7 +96,7 @@ func TestListProgressRecScore(t *testing.T) {
 		{filmTagged.ID, 100},
 		{filmZero.ID, 0},
 	} {
-		if _, err := st.PutProgress(ctx, p.id, p.pos); err != nil {
+		if _, err := st.PutProgress(ctx, p.id, p.pos, access.System()); err != nil {
 			t.Fatalf("PutProgress %s: %v", p.id, err)
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -173,7 +175,7 @@ func TestListProgressSortRecent(t *testing.T) {
 		t.Fatalf("ApplyTagWeights: %v", err)
 	}
 	for _, id := range []string{a.ID, tagged.ID, c.ID} {
-		if _, err := st.PutProgress(ctx, id, 100); err != nil {
+		if _, err := st.PutProgress(ctx, id, 100, access.System()); err != nil {
 			t.Fatalf("PutProgress %s: %v", id, err)
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -233,13 +235,13 @@ func TestGetProgressRecScore(t *testing.T) {
 	seedRecsSeries(t, st, lib, "serial", recsSeriesDoc("Serial", "thriller"))
 	ep := seedRecsItem(t, st, lib, "itm_ge", "serial/e1.mkv", recsEpisodeDoc("serial", ""), time.Time{})
 
-	if _, err := st.PutProgress(ctx, watched.ID, 500); err != nil {
+	if _, err := st.PutProgress(ctx, watched.ID, 500, access.System()); err != nil {
 		t.Fatalf("PutProgress watched: %v", err)
 	}
-	if _, err := st.PutProgress(ctx, zero.ID, 0); err != nil {
+	if _, err := st.PutProgress(ctx, zero.ID, 0, access.System()); err != nil {
 		t.Fatalf("PutProgress zero: %v", err)
 	}
-	if _, err := st.PutProgress(ctx, ep.ID, 60); err != nil {
+	if _, err := st.PutProgress(ctx, ep.ID, 60, access.System()); err != nil {
 		t.Fatalf("PutProgress ep: %v", err)
 	}
 
@@ -312,16 +314,16 @@ func TestGetProgressRecScoreZeroPositionEpisodeStartedSeries(t *testing.T) {
 	if err := st.ApplyTagWeights(ctx, []string{"drama"}, time.Now().UTC()); err != nil {
 		t.Fatalf("ApplyTagWeights: %v", err)
 	}
-	if _, err := st.PutProgress(ctx, epProgSibling.ID, 100); err != nil {
+	if _, err := st.PutProgress(ctx, epProgSibling.ID, 100, access.System()); err != nil {
 		t.Fatalf("PutProgress prog sibling: %v", err)
 	}
-	if _, err := st.PutProgress(ctx, epProgTarget.ID, 0); err != nil {
+	if _, err := st.PutProgress(ctx, epProgTarget.ID, 0, access.System()); err != nil {
 		t.Fatalf("PutProgress prog target: %v", err)
 	}
-	if err := st.InsertWatched(ctx, epWatchedSibling.ID, lib, "watched-show", time.Now().UTC()); err != nil {
+	if err := st.InsertWatched(ctx, epWatchedSibling.ID, lib, "watched-show", time.Now().UTC(), access.System()); err != nil {
 		t.Fatalf("InsertWatched watched sibling: %v", err)
 	}
-	if _, err := st.PutProgress(ctx, epWatchedTarget.ID, 0); err != nil {
+	if _, err := st.PutProgress(ctx, epWatchedTarget.ID, 0, access.System()); err != nil {
 		t.Fatalf("PutProgress watched target: %v", err)
 	}
 

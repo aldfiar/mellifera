@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // Series is a persisted serial-level entity (serials-library D1): one row per
@@ -85,9 +87,13 @@ ON CONFLICT(library_id, relative_path) DO UPDATE SET
 	return nil
 }
 
-// GetSeries loads a series by id. A missing row yields a wrapped sql.ErrNoRows.
-func (s *Store) GetSeries(ctx context.Context, id string) (Series, error) {
-	row := s.db.QueryRowContext(ctx, seriesColumns+" FROM series WHERE id = ?", id)
+// GetSeries loads a series by id within the viewer's visible libraries — a
+// row whose library is outside the visible set reads exactly like a missing
+// row (wrapped sql.ErrNoRows; hidden ≡ not-found).
+func (s *Store) GetSeries(ctx context.Context, id string, v access.Viewer) (Series, error) {
+	clause, visArgs := visibleWhere(v, "library_id")
+	args := append([]any{id}, visArgs...)
+	row := s.db.QueryRowContext(ctx, seriesColumns+" FROM series WHERE "+andVisible("id = ?", clause), args...)
 	sr, err := scanSeries(row)
 	if err != nil {
 		return Series{}, fmt.Errorf("store: get series %q: %w", id, err)
@@ -96,12 +102,16 @@ func (s *Store) GetSeries(ctx context.Context, id string) (Series, error) {
 }
 
 // GetSeriesByPath loads a series by its identity key (library_id,
-// relative_path). A missing row yields a wrapped sql.ErrNoRows. It is the
-// re-scan lookup the drain loop uses to decide pending/stale/preserve.
-func (s *Store) GetSeriesByPath(ctx context.Context, libraryID int64, relativePath string) (Series, error) {
+// relative_path) within the viewer's visible libraries — a row whose library
+// is outside the visible set reads exactly like a missing row (wrapped
+// sql.ErrNoRows). It is the re-scan lookup the drain loop uses to decide
+// pending/stale/preserve.
+func (s *Store) GetSeriesByPath(ctx context.Context, libraryID int64, relativePath string, v access.Viewer) (Series, error) {
+	clause, visArgs := visibleWhere(v, "library_id")
+	args := append([]any{libraryID, relativePath}, visArgs...)
 	row := s.db.QueryRowContext(ctx,
-		seriesColumns+" FROM series WHERE library_id = ? AND relative_path = ?",
-		libraryID, relativePath,
+		seriesColumns+" FROM series WHERE "+andVisible("library_id = ? AND relative_path = ?", clause),
+		args...,
 	)
 	sr, err := scanSeries(row)
 	if err != nil {
@@ -110,25 +120,29 @@ func (s *Store) GetSeriesByPath(ctx context.Context, libraryID int64, relativePa
 	return sr, nil
 }
 
-// QuerySeries lists a library's series rows ordered by relative_path. An empty
-// status returns series of ALL statuses; a non-empty status filters by exact
-// match (the lifecycle set is owned by internal/enrich — the store stays
-// value-agnostic, INV-value-agnostic-store; status is never interpolated into
-// SQL, INV1).
-func (s *Store) QuerySeries(ctx context.Context, libraryID int64, status string) ([]Series, error) {
+// QuerySeries lists a library's series rows ordered by relative_path — only
+// the rows inside the viewer's visible set (an empty result, never an error,
+// when the library itself is hidden). An empty status returns series of ALL
+// statuses; a non-empty status filters by exact match (the lifecycle set is
+// owned by internal/enrich — the store stays value-agnostic,
+// INV-value-agnostic-store; status is never interpolated into SQL, INV1).
+func (s *Store) QuerySeries(ctx context.Context, libraryID int64, status string, v access.Viewer) ([]Series, error) {
+	clause, visArgs := visibleWhere(v, "library_id")
 	var (
 		rows *sql.Rows
 		err  error
 	)
 	if status != "" {
+		args := append([]any{libraryID, status}, visArgs...)
 		rows, err = s.db.QueryContext(ctx,
-			seriesColumns+" FROM series WHERE library_id = ? AND status = ? ORDER BY relative_path",
-			libraryID, status,
+			seriesColumns+" FROM series WHERE "+andVisible("library_id = ? AND status = ?", clause)+" ORDER BY relative_path",
+			args...,
 		)
 	} else {
+		args := append([]any{libraryID}, visArgs...)
 		rows, err = s.db.QueryContext(ctx,
-			seriesColumns+" FROM series WHERE library_id = ? ORDER BY relative_path",
-			libraryID,
+			seriesColumns+" FROM series WHERE "+andVisible("library_id = ?", clause)+" ORDER BY relative_path",
+			args...,
 		)
 	}
 	if err != nil {
@@ -150,10 +164,13 @@ func (s *Store) QuerySeries(ctx context.Context, libraryID int64, status string)
 }
 
 // ListSeriesIDs returns the ids of a library's series rows, relative_path
-// ordered. A library with no series yields a non-nil empty slice.
-func (s *Store) ListSeriesIDs(ctx context.Context, libraryID int64) ([]string, error) {
+// ordered — only the rows inside the viewer's visible set. A library with no
+// (visible) series yields a non-nil empty slice.
+func (s *Store) ListSeriesIDs(ctx context.Context, libraryID int64, v access.Viewer) ([]string, error) {
+	clause, visArgs := visibleWhere(v, "library_id")
+	args := append([]any{libraryID}, visArgs...)
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id FROM series WHERE library_id = ? ORDER BY relative_path", libraryID)
+		"SELECT id FROM series WHERE "+andVisible("library_id = ?", clause)+" ORDER BY relative_path", args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list series ids lib %d: %w", libraryID, err)
 	}
@@ -181,12 +198,16 @@ func (s *Store) ListSeriesIDs(ctx context.Context, libraryID int64) ([]string, e
 // prefix predicate (no LIKE, no escaping hazards), then a Go-side depth-1
 // filter (no further "/" in the remainder). Rows are relative_path ordered.
 // An unknown backing string is an error — never a silent wrong-shaped match.
-func (s *Store) QueryItemsBySeries(ctx context.Context, sr Series, backing string) ([]Item, error) {
+// v scopes the episode read to the viewer's visible libraries: episode rows
+// whose library is outside the visible set never surface (an empty result,
+// never an error — even when the passed series row itself sits in a hidden
+// library).
+func (s *Store) QueryItemsBySeries(ctx context.Context, sr Series, backing string, v access.Viewer) ([]Item, error) {
 	switch backing {
 	case SeriesBackingFile:
-		return s.queryItemsBySeriesFile(ctx, sr)
+		return s.queryItemsBySeriesFile(ctx, sr, v)
 	case SeriesBackingDirectory:
-		return s.queryItemsBySeriesDirectory(ctx, sr)
+		return s.queryItemsBySeriesDirectory(ctx, sr, v)
 	default:
 		return nil, fmt.Errorf("store: query items by series %q: unknown backing %q", sr.ID, backing)
 	}
@@ -199,11 +220,13 @@ func (s *Store) QueryItemsBySeries(ctx context.Context, sr Series, backing strin
 // it is computed with utf8.RuneCountInString — a Go byte length silently
 // returns zero rows for any non-ASCII series path (a Cyrillic prefix matched
 // 61 of 81 bytes and the equality never held).
-func (s *Store) queryItemsBySeriesDirectory(ctx context.Context, sr Series) ([]Item, error) {
+func (s *Store) queryItemsBySeriesDirectory(ctx context.Context, sr Series, v access.Viewer) ([]Item, error) {
 	prefix := sr.RelativePath + "/"
+	clause, visArgs := visibleWhere(v, "library_id")
+	args := append([]any{sr.LibraryID, utf8.RuneCountInString(prefix), prefix}, visArgs...)
 	rows, err := s.db.QueryContext(ctx,
-		itemColumns+" FROM items WHERE library_id = ? AND substr(relative_path, 1, ?) = ? ORDER BY relative_path",
-		sr.LibraryID, utf8.RuneCountInString(prefix), prefix,
+		itemColumns+" FROM items WHERE "+andVisible("library_id = ? AND substr(relative_path, 1, ?) = ?", clause)+" ORDER BY relative_path",
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query items by series %s: %w", sr.ID, err)
@@ -235,11 +258,13 @@ func (s *Store) queryItemsBySeriesDirectory(ctx context.Context, sr Series) ([]I
 }
 
 // queryItemsBySeriesFile matches the single file-backed episode by exact
-// relative_path equality.
-func (s *Store) queryItemsBySeriesFile(ctx context.Context, sr Series) ([]Item, error) {
+// relative_path equality, scoped to the viewer's visible libraries.
+func (s *Store) queryItemsBySeriesFile(ctx context.Context, sr Series, v access.Viewer) ([]Item, error) {
+	clause, visArgs := visibleWhere(v, "library_id")
+	args := append([]any{sr.LibraryID, sr.RelativePath}, visArgs...)
 	rows, err := s.db.QueryContext(ctx,
-		itemColumns+" FROM items WHERE library_id = ? AND relative_path = ? ORDER BY relative_path",
-		sr.LibraryID, sr.RelativePath,
+		itemColumns+" FROM items WHERE "+andVisible("library_id = ? AND relative_path = ?", clause)+" ORDER BY relative_path",
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query items by series %s: %w", sr.ID, err)

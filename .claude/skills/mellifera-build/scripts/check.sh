@@ -47,6 +47,28 @@ while IFS= read -r pkg; do
   fi
 done < <(go list ./... 2>/dev/null)
 
+echo "==> principalFromContext placement rule"
+# principalFromContext exposes the RAW auth principal. Only the auth chain
+# (middleware.go) and the ONE principal→Viewer translation point (viewerFor in
+# viewer.go) may touch it — the l6-accounts-access design: ONE translation per
+# request, stashed via access.WithViewer. Handlers consume the stashed Viewer
+# through access.FromContext / viewerFor; re-deriving authority from the raw
+# principal elsewhere bypasses that design, so a third non-test file fails.
+pfc_offenders=()
+while IFS= read -r f; do
+  case "$f" in
+    internal/api/middleware.go|internal/api/viewer.go) ;;
+    *) pfc_offenders+=("$f") ;;
+  esac
+done < <(grep -rln 'principalFromContext' internal/api --include='*.go' 2>/dev/null | grep -v _test || true)
+if (( ${#pfc_offenders[@]} > 0 )); then
+  for f in "${pfc_offenders[@]}"; do
+    echo "  FAIL  $f: principalFromContext is legal ONLY in internal/api/middleware.go and internal/api/viewer.go — consume the Viewer via access.FromContext / viewerFor"
+  done
+  echo "check.sh: FAILED — principalFromContext placement rule violated."
+  exit 1
+fi
+
 if (( FAIL )); then
   echo "check.sh: FAILED — complexity budget exceeded. Redesign; do not relax the budget."
   exit 1

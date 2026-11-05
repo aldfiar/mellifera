@@ -237,17 +237,12 @@ func (s *Service) Approve(ctx context.Context, pairingID string) (Pairing, error
 	if err != nil {
 		return Pairing{}, err
 	}
-	deviceID, err := mintHex(pairingIDBytes)
-	if err != nil {
-		return Pairing{}, err
-	}
-	tok := store.DeviceToken{
-		ID:        deviceID,
-		TokenHash: hashToken(raw),
-		Code:      req.Code,
-		CreatedAt: s.now().UTC(),
-	}
-	if err := s.st.InsertDeviceToken(ctx, tok); err != nil {
+	// Post-migration (accounts 2.2/D6) the mint lands in credentials
+	// directly — the dormant device_tokens table is never written, so a
+	// device paired mid-run needs no restart to resolve. The label carries
+	// the approval code (the admin panel's recognition field); the row is
+	// unbound (user_id NULL) and non-expiring.
+	if err := s.st.InsertDeviceCredential(ctx, hashToken(raw), req.Code, s.now().UTC()); err != nil {
 		return Pairing{}, fmt.Errorf("pairing: approve %s (token): %w", pairingID, err)
 	}
 	s.mu.Lock()
@@ -307,10 +302,12 @@ func (s *Service) Revoke(ctx context.Context, deviceID string) error {
 }
 
 // LookupToken resolves a presented bearer credential: SHA-256 it, seek the
-// hash in the indexed device_tokens table. A miss is (false, nil) — the
-// middleware's "not a device token" branch, never an error.
+// hash among the device-kind credentials — where both the one-time guarded
+// copy of the legacy device_tokens rows and every post-migration mint land
+// (accounts 2.2/D6). A miss is (false, nil) — the middleware's "not a device
+// token" branch, never an error.
 func (s *Service) LookupToken(ctx context.Context, raw string) (bool, error) {
-	_, err := s.st.LookupDeviceTokenByHash(ctx, hashToken(raw))
+	_, err := s.st.LookupDeviceCredentialByHash(ctx, hashToken(raw))
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, nil

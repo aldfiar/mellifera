@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
 )
@@ -206,7 +207,7 @@ func TestPlaybackDecisionLog(t *testing.T) {
 			}
 
 			// Read-only: the GET never mutates packaging state.
-			row, err := st.GetItem(ctx, tc.id)
+			row, err := st.GetItem(ctx, tc.id, access.System())
 			if err != nil {
 				t.Fatalf("re-GetItem %s: %v", tc.id, err)
 			}

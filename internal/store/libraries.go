@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // Library is a configured scan root bound to a module (arch §9.1).
@@ -95,7 +97,9 @@ WHERE id = ?`,
 	if affected == 0 {
 		return Library{}, fmt.Errorf("store: update library %d: %w", id, sql.ErrNoRows)
 	}
-	return s.GetLibrary(ctx, id)
+	// The trailing read is the write path's legacy all-seeing scope: writes
+	// are not viewer-gated (only the reads are — l6-accounts group 4).
+	return s.GetLibrary(ctx, id, access.System())
 }
 
 // DeleteLibrary removes a library and every dependent row in ONE transaction:
@@ -164,8 +168,11 @@ func (s *Store) DeleteLibrary(ctx context.Context, id int64) error {
 // (INV-value-agnostic-store), but the summary contract is defined over
 // non-deleted items and store cannot import enrich (INV5). Every other row
 // counts regardless of lifecycle state.
-func (s *Store) LibrarySummary(ctx context.Context, id int64) (items int64, updatedAt string, err error) {
-	if err := libraryExists(ctx, s.db, id); err != nil {
+//
+// v scopes the read: a library outside the viewer's visible set reads exactly
+// like a missing library (wrapped sql.ErrNoRows — hidden ≡ not-found).
+func (s *Store) LibrarySummary(ctx context.Context, id int64, v access.Viewer) (items int64, updatedAt string, err error) {
+	if err := libraryVisible(ctx, s.db, id, v); err != nil {
 		return 0, "", err
 	}
 	row := s.db.QueryRowContext(ctx,
@@ -182,9 +189,9 @@ func (s *Store) LibrarySummary(ctx context.Context, id int64) (items int64, upda
 // prefixes entirely in SQL (no documents loaded): the prefix is the text before
 // the first '/', "" for top-level files. Rows are path-ordered; the count
 // excludes deleted items (same literal carve-out as LibrarySummary). A missing
-// library yields a wrapped sql.ErrNoRows.
-func (s *Store) LibraryFolders(ctx context.Context, id int64) ([]FolderCount, error) {
-	if err := libraryExists(ctx, s.db, id); err != nil {
+// — or viewer-hidden — library yields a wrapped sql.ErrNoRows.
+func (s *Store) LibraryFolders(ctx context.Context, id int64, v access.Viewer) ([]FolderCount, error) {
+	if err := libraryVisible(ctx, s.db, id, v); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
@@ -227,7 +234,9 @@ ORDER BY prefix`, id)
 // enrichment queue priority derive from it; the module seed's chain being the
 // default when absent is the api layer's concern, not store's.
 func (s *Store) SetLibraryChain(ctx context.Context, libraryID int64, pluginIDs []string) error {
-	if err := libraryExists(ctx, s.db, libraryID); err != nil {
+	// The existence guard is the write path's legacy all-seeing scope: writes
+	// are not viewer-gated (only the reads are — l6-accounts group 4).
+	if err := libraryVisible(ctx, s.db, libraryID, access.System()); err != nil {
 		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -286,12 +295,15 @@ ORDER BY p.position, p.plugin_id`, libraryID)
 	return out, nil
 }
 
-// libraryExists maps a missing libraries row to the same wrapped sql.ErrNoRows
-// the other library reads yield, so every caller's 404 path is one errors.Is
-// check.
-func libraryExists(ctx context.Context, db *sql.DB, id int64) error {
+// libraryVisible maps a missing — or viewer-hidden — libraries row to the
+// same wrapped sql.ErrNoRows the other library reads yield, so every caller's
+// 404 path is one errors.Is check. A hidden row and an absent row are
+// indistinguishable by construction (hidden ≡ not-found, l6-accounts AC).
+func libraryVisible(ctx context.Context, db *sql.DB, id int64, v access.Viewer) error {
+	clause, visArgs := visibleWhere(v, "id")
+	args := append([]any{id}, visArgs...)
 	var one int
-	err := db.QueryRowContext(ctx, "SELECT 1 FROM libraries WHERE id = ?", id).Scan(&one)
+	err := db.QueryRowContext(ctx, "SELECT 1 FROM libraries WHERE "+andVisible("id = ?", clause), args...).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("store: library %d: %w", id, err)
 	}
@@ -301,16 +313,19 @@ func libraryExists(ctx context.Context, db *sql.DB, id int64) error {
 	return nil
 }
 
-// GetLibrary loads a library by id. A missing row yields a wrapped
-// sql.ErrNoRows.
-func (s *Store) GetLibrary(ctx context.Context, id int64) (Library, error) {
+// GetLibrary loads a library by id within the viewer's visible libraries —
+// a row outside the visible set reads exactly like a missing row (wrapped
+// sql.ErrNoRows; hidden ≡ not-found).
+func (s *Store) GetLibrary(ctx context.Context, id int64, v access.Viewer) (Library, error) {
 	var (
 		l           Library
 		createdText string
 	)
+	clause, visArgs := visibleWhere(v, "id")
+	args := append([]any{id}, visArgs...)
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, module_id, root_path, display_name, description, streams_enabled, naming_group_style, naming_element_name, created_at FROM libraries WHERE id = ?",
-		id,
+		"SELECT id, module_id, root_path, display_name, description, streams_enabled, naming_group_style, naming_element_name, created_at FROM libraries WHERE "+andVisible("id = ?", clause),
+		args...,
 	)
 	if err := row.Scan(&l.ID, &l.ModuleID, &l.RootPath, &l.DisplayName, &l.Description, &l.StreamsEnabled, &l.NamingGroupStyle, &l.NamingElementName, &createdText); err != nil {
 		return Library{}, fmt.Errorf("store: get library %d: %w", id, err)
@@ -323,17 +338,21 @@ func (s *Store) GetLibrary(ctx context.Context, id int64) (Library, error) {
 	return l, nil
 }
 
-// ListLibraries returns every library row ordered id ASC. It takes no filter
-// arguments: GET /libraries lists ALL configured scan roots (AC-3). The query
-// has no user-supplied args, so the ORDER BY is the only clause (INV1:
-// parameterized SQL; nothing is interpolated). A libraries table with zero
-// rows yields a non-nil empty slice so the api handler serializes
-// {"items":[]} rather than {"items":null} (the JSON contract the admin panel
-// library list relies on).
-func (s *Store) ListLibraries(ctx context.Context) ([]Library, error) {
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, module_id, root_path, display_name, description, streams_enabled, naming_group_style, naming_element_name, created_at FROM libraries ORDER BY id",
-	)
+// ListLibraries returns the viewer's visible library rows ordered id ASC —
+// every row for the see-all viewers (System/Admin/LegacyDevice, byte-identical
+// to pre-accounts), only the granted rows for a scoped user. The visibility
+// ids ride as BOUND args (INV1: nothing is interpolated). A libraries table
+// with zero visible rows yields a non-nil empty slice so the api handler
+// serializes {"items":[]} rather than {"items":null} (the JSON contract the
+// admin panel library list relies on).
+func (s *Store) ListLibraries(ctx context.Context, v access.Viewer) ([]Library, error) {
+	clause, visArgs := visibleWhere(v, "id")
+	query := "SELECT id, module_id, root_path, display_name, description, streams_enabled, naming_group_style, naming_element_name, created_at FROM libraries"
+	if clause != "" {
+		query += " WHERE " + clause
+	}
+	query += " ORDER BY id"
+	rows, err := s.db.QueryContext(ctx, query, visArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list libraries: %w", err)
 	}

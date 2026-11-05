@@ -29,6 +29,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/art"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -121,16 +122,20 @@ type posterRef struct {
 // returning every usable namespace poster in walk order: present and
 // non-placeholder — the missing-art predicate treats a placeholder as
 // absent, so the walk continues past it. Gate-disabled namespaces are
-// skipped exactly like the metadata projection. A corrupt document yields
-// nil (tolerant floor).
-func usablePosters(n namer, doc map[string]any) []posterRef {
+// skipped exactly like the metadata projection, and a namespace muted for
+// the calling viewer (mutes — the Viewer's ChainMutes threaded in as an
+// explicit parameter, l6-accounts 10.3; nil on the mute-blind callers) is
+// skipped the same way: the mute floors THIS response's walk to the next
+// usable source without touching storage. A corrupt document yields nil
+// (tolerant floor).
+func usablePosters(n namer, doc map[string]any, mutes map[string]bool) []posterRef {
 	if len(n.chain) == 0 || doc == nil {
 		return nil
 	}
 	sources, _ := doc["sources"].(map[string]any)
 	var out []posterRef
 	for _, b := range n.chain {
-		if !b.Enabled {
+		if !b.Enabled || mutes[b.ID] {
 			continue
 		}
 		ns, ok := sources[b.ID].(map[string]any)
@@ -201,8 +206,11 @@ func itemThumbPath(itemID string) string {
 // silently to the chain value while the override row is retained. final is
 // a URL ready to serve; remote is a raw poster URL still needing the
 // materialization check; both "" mean the floor applies. An unknown stored
-// value floors — never errors the read.
-func resolveArtSelection(sel, entityID string, isItem bool, n namer, doc map[string]any) (final, remote string) {
+// value floors — never errors the read. The walk runs under the CALLING
+// viewer's mutes (mutes threaded in — 10.3), so a pin whose namespace is
+// muted for this viewer floors in this response alone: the stored override
+// row is untouched (the mute floors composition, never the record).
+func resolveArtSelection(sel, entityID string, isItem bool, n namer, doc map[string]any, mutes map[string]bool) (final, remote string) {
 	if sha, ok := artTokenSHA(sel); ok {
 		return artObjectPath + "art_" + sha, ""
 	}
@@ -213,7 +221,7 @@ func resolveArtSelection(sel, entityID string, isItem bool, n namer, doc map[str
 		return "", ""
 	}
 	if ns, ok := strings.CutPrefix(sel, artSelectionSrcPrefix); ok {
-		for _, p := range usablePosters(n, doc) {
+		for _, p := range usablePosters(n, doc, mutes) {
 			if p.source == ns {
 				return "", p.url
 			}
@@ -250,8 +258,13 @@ func seriesOwnsItem(sr store.Series, itemPath string) bool {
 // resolved, so never handed off). A nil Deps.Art degrades to absence (the
 // additive field simply omits); a nil seriesOf (the series leg) skips the
 // fallback; a store failure propagates (500 at the call site); a corrupt
-// document — row's or owning series' — floors to absence.
-func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n namer, seriesOf func(context.Context) ([]store.Series, error)) (map[string]string, error) {
+// document — row's or owning series' — floors to absence. mutes is the
+// calling Viewer's ChainMutes (10.3, threaded in as an explicit parameter —
+// never a fresh context read here): a source muted for THIS viewer composes
+// no poster in THIS response — own walk, pinned-selection walk, and the
+// series fallback all floor past it — while the stored namespaces and the
+// other viewers' compositions stay byte-identical.
+func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n namer, seriesOf func(context.Context) ([]store.Series, error), mutes map[string]bool) (map[string]string, error) {
 	out := make(map[string]string, len(rows))
 	if a.deps.Art == nil || len(rows) == 0 {
 		return out, nil
@@ -275,10 +288,10 @@ func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n name
 		doc := docMap(row.doc)
 		final, remote := "", ""
 		if sel := stored[row.id]; sel != "" {
-			final, remote = resolveArtSelection(sel, row.id, kind == artKindItem, n, doc)
+			final, remote = resolveArtSelection(sel, row.id, kind == artKindItem, n, doc, mutes)
 		}
 		if final == "" && remote == "" {
-			if p := usablePosters(n, doc); len(p) > 0 {
+			if p := usablePosters(n, doc, mutes); len(p) > 0 {
 				remote = p[0].url
 			}
 		}
@@ -307,7 +320,7 @@ func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n name
 				if !seriesOwnsItem(sr, row.path) {
 					continue
 				}
-				if p := usablePosters(n, docMap(sr.Document)); len(p) > 0 {
+				if p := usablePosters(n, docMap(sr.Document), mutes); len(p) > 0 {
 					pendings = append(pendings, pending{row.id, p[0].url})
 				}
 				break
@@ -390,16 +403,26 @@ type artEntityRow struct {
 // loadArtEntity loads the series or item row an art route addresses — the
 // existence check the read and mutating verbs share (a ghost is a wrapped
 // sql.ErrNoRows → 404 at the call site, the title-override precedent).
+//
+// Mute floor (10.3, per-site): this load stays access.System() DELIBERATELY.
+// Its only callers are the poster override family's picker and write verbs
+// (posters, putPoster, uploadPoster) — routes mounted in the ADMIN group
+// (router.go, "operator mutations/observability"), whose Viewer carries
+// EMPTY ChainMutes, so a mute floor here is unreachable in production; the
+// mute is per-SOURCE and never gates ENTITY existence (that axis is
+// VisibleLibraryIDs — 6.2's documented per-site posture for these loads is
+// unchanged). The floor lives where the composition walks — artworkFor and
+// its usablePosters callers — not at the entity load.
 func loadArtEntity(ctx context.Context, st *store.Store, kind, id string) (artEntityRow, error) {
 	switch kind {
 	case artKindSeries:
-		sr, err := st.GetSeries(ctx, id)
+		sr, err := st.GetSeries(ctx, id, access.System())
 		if err != nil {
 			return artEntityRow{}, err
 		}
 		return artEntityRow{id: sr.ID, libraryID: sr.LibraryID, doc: sr.Document}, nil
 	default:
-		it, err := st.GetItem(ctx, id)
+		it, err := st.GetItem(ctx, id, access.System())
 		if err != nil {
 			return artEntityRow{}, err
 		}
@@ -518,13 +541,22 @@ func (a *app) posters(w http.ResponseWriter, r *http.Request, kind string) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	n, err := a.namerFor(r.Context(), row.libraryID)
+	// Mute-blind namer (10.4, per-site): the candidates picker is an ADMIN
+	// route (router.go admin group — empty ChainMutes in production), and its
+	// namer feeds only the picker's chain walk below (nil there too), never a
+	// served display name.
+	n, err := a.namerFor(r.Context(), row.libraryID, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
 	doc := docMap(row.doc)
-	refs := usablePosters(n, doc)
+	// Mute-blind walk (10.3, per-site): the candidates picker is an ADMIN
+	// route (router.go admin group — empty ChainMutes in production) and
+	// serves every candidate so the operator can see what exists; the mute
+	// floor is the per-viewer COMPOSITION contract (artworkFor), not the
+	// picker's inventory.
+	refs := usablePosters(n, doc, nil)
 	urls := make([]string, 0, len(refs))
 	for _, p := range refs {
 		urls = append(urls, p.url)
@@ -622,12 +654,19 @@ func (a *app) putPoster(w http.ResponseWriter, r *http.Request, kind string) {
 	// nothing and floors silently at composition).
 	var handoff []string
 	if ns, ok := strings.CutPrefix(stored, artSelectionSrcPrefix); ok {
-		n, err := a.namerFor(r.Context(), row.libraryID)
+		// Mute-blind namer (10.4, per-site): the PUT is a write path behind
+		// the admin group — the stored selection record is viewer-independent
+		// (10.3's per-site posture, mirrored for the title walk).
+		n, err := a.namerFor(r.Context(), row.libraryID, nil)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
-		for _, ref := range usablePosters(n, docMap(row.doc)) {
+		// Mute-blind walk (10.3, per-site): the PUT validates the stored
+		// selection and starts its acquisition — a write path behind the
+		// admin group — never a per-viewer composition; the stored record
+		// is viewer-independent.
+		for _, ref := range usablePosters(n, docMap(row.doc), nil) {
 			if ref.source == ns {
 				handoff = append(handoff, ref.url)
 			}

@@ -31,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/module"
@@ -133,7 +134,7 @@ func pbNewWorld(t *testing.T) *pbWorld {
 			return scan.Run(ctx, w.scanDep, libraryID)
 		},
 		Playback: func(ctx context.Context, itemID string) (api.Playback, error) {
-			row, err := st.GetItem(ctx, itemID)
+			row, err := st.GetItem(ctx, itemID, access.System())
 			if err != nil {
 				return api.Playback{}, err
 			}
@@ -201,7 +202,7 @@ func (w *pbWorld) pbSweep(t *testing.T, enqueue func(string) error) []orchestrat
 		}
 	}
 	watched := map[string]bool{}
-	if rows, err := w.st.ListProgress(ctx, 10_000); err == nil {
+	if rows, err := w.st.ListProgress(ctx, 10_000, access.System()); err == nil {
 		for _, p := range rows {
 			if p.PositionSeconds > 0 {
 				watched[p.ItemID] = true
@@ -209,17 +210,17 @@ func (w *pbWorld) pbSweep(t *testing.T, enqueue func(string) error) []orchestrat
 		}
 	}
 	in := orchestrator.FrontierIn{Watched: watched, Now: time.Now()}
-	libs, err := w.st.ListLibraries(ctx)
+	libs, err := w.st.ListLibraries(ctx, access.System())
 	if err != nil {
 		t.Fatalf("sweep ListLibraries: %v", err)
 	}
 	for _, l := range libs {
-		series, err := w.st.QuerySeries(ctx, l.ID, "")
+		series, err := w.st.QuerySeries(ctx, l.ID, "", access.System())
 		if err != nil {
 			t.Fatalf("sweep QuerySeries: %v", err)
 		}
 		for _, sr := range series {
-			items, err := w.st.QueryItemsBySeries(ctx, sr, pbSeriesBacking(sr.Document))
+			items, err := w.st.QueryItemsBySeries(ctx, sr, pbSeriesBacking(sr.Document), access.System())
 			if err != nil {
 				t.Fatalf("sweep QueryItemsBySeries: %v", err)
 			}
@@ -275,7 +276,7 @@ func pbSeriesBacking(raw json.RawMessage) string {
 // resolves through parsed.absolute_path and nothing else.
 func pbOriginalResolver(st *store.Store) func(ctx context.Context, itemID string) (string, bool) {
 	return func(ctx context.Context, itemID string) (string, bool) {
-		row, err := st.GetItem(ctx, itemID)
+		row, err := st.GetItem(ctx, itemID, access.System())
 		if err != nil {
 			return "", false
 		}
@@ -312,7 +313,7 @@ func pbAwaitStreams(t *testing.T, st *store.Store, itemID, want string, timeout 
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		it, err := st.GetItem(context.Background(), itemID)
+		it, err := st.GetItem(context.Background(), itemID, access.System())
 		if err == nil {
 			var doc map[string]any
 			_ = json.Unmarshal(it.Document, &doc)

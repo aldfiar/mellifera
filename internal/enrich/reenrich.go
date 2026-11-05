@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -139,14 +140,14 @@ func (q *Queue) scopeWithEpisodes(ctx context.Context, rowIDs []string) []string
 	}
 	for _, id := range rowIDs {
 		keep(id)
-		sr, err := q.deps.Store.GetSeries(ctx, id)
+		sr, err := q.deps.Store.GetSeries(ctx, id, access.System())
 		if err != nil {
 			continue // an item id (or a gone row): no cascade
 		}
 		if backingOf(decodeDoc(sr.Document)) != store.SeriesBackingDirectory {
 			continue // a file-backed series has no routed episode docs to cascade
 		}
-		eps, err := q.deps.Store.QueryItemsBySeries(ctx, sr, store.SeriesBackingDirectory)
+		eps, err := q.deps.Store.QueryItemsBySeries(ctx, sr, store.SeriesBackingDirectory, access.System())
 		if err != nil {
 			continue // best-effort: the named series row itself stays scoped
 		}

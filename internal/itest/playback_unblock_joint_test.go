@@ -44,6 +44,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/store"
@@ -106,7 +107,7 @@ func pubNewWorld(t *testing.T) *pubWorld {
 		Store:      st,
 		Pairing:    pairing.NewService(st, nil),
 		Playback: func(ctx context.Context, itemID string) (api.Playback, error) {
-			row, err := st.GetItem(ctx, itemID)
+			row, err := st.GetItem(ctx, itemID, access.System())
 			if err != nil {
 				return api.Playback{}, err
 			}
@@ -291,7 +292,7 @@ func pubBeaconLines(buf *strings.Builder) []string {
 // store (the fetch-changed-nothing guard reads reality, not the wire).
 func pubStoredStreamsState(t *testing.T, w *pubWorld, itemID string) string {
 	t.Helper()
-	row, err := w.st.GetItem(context.Background(), itemID)
+	row, err := w.st.GetItem(context.Background(), itemID, access.System())
 	if err != nil {
 		t.Fatalf("re-read item %s: %v", itemID, err)
 	}

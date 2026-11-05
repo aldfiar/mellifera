@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/mellifera/mellifera/internal/access"
 )
 
 // seedProgressItem puts one item (id itm_<suffix>) in a fresh library and
@@ -43,12 +45,12 @@ func TestProgressUpsert(t *testing.T) {
 	s := openStore(t)
 	itemID := seedProgressItem(t, s, "upsert")
 
-	first, err := s.PutProgress(ctx, itemID, 30)
+	first, err := s.PutProgress(ctx, itemID, 30, access.System())
 	if err != nil {
 		t.Fatalf("PutProgress 30: %v", err)
 	}
 	time.Sleep(2 * time.Millisecond) // ensure a strictly later updated_at stamp
-	second, err := s.PutProgress(ctx, itemID, 90)
+	second, err := s.PutProgress(ctx, itemID, 90, access.System())
 	if err != nil {
 		t.Fatalf("PutProgress 90: %v", err)
 	}
@@ -61,7 +63,7 @@ func TestProgressUpsert(t *testing.T) {
 	if rows != 1 {
 		t.Fatalf("rows for %s = %d, want 1 (upsert, not append)", itemID, rows)
 	}
-	got, err := s.GetProgress(ctx, itemID)
+	got, err := s.GetProgress(ctx, itemID, access.System())
 	if err != nil {
 		t.Fatalf("GetProgress: %v", err)
 	}
@@ -73,7 +75,7 @@ func TestProgressUpsert(t *testing.T) {
 	}
 
 	t.Run("zero_position_allowed", func(t *testing.T) {
-		if _, err := s.PutProgress(ctx, itemID, 0); err != nil {
+		if _, err := s.PutProgress(ctx, itemID, 0, access.System()); err != nil {
 			t.Fatalf("PutProgress 0: %v", err)
 		}
 	})
@@ -96,12 +98,12 @@ func TestPlaybackProgressReads(t *testing.T) {
 
 	// Oldest → newest write order: c, a, b (plus the two invisible rows).
 	for _, id := range []string{c, a, b} {
-		if _, err := s.PutProgress(ctx, id, 100); err != nil {
+		if _, err := s.PutProgress(ctx, id, 100, access.System()); err != nil {
 			t.Fatalf("PutProgress %s: %v", id, err)
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	if _, err := s.PutProgress(ctx, deleted, 100); err != nil {
+	if _, err := s.PutProgress(ctx, deleted, 100, access.System()); err != nil {
 		t.Fatalf("PutProgress deleted: %v", err)
 	}
 	// An orphaned row (item never existed) and a zero-position row are written
@@ -111,12 +113,12 @@ func TestPlaybackProgressReads(t *testing.T) {
 		formatTime(time.Now().UTC())); err != nil {
 		t.Fatalf("seed orphan row: %v", err)
 	}
-	if _, err := s.PutProgress(ctx, a, 0); err != nil {
+	if _, err := s.PutProgress(ctx, a, 0, access.System()); err != nil {
 		t.Fatalf("PutProgress zero: %v", err)
 	}
 
 	t.Run("list_positive_newest_first", func(t *testing.T) {
-		got, err := s.ListProgress(ctx, 20)
+		got, err := s.ListProgress(ctx, 20, access.System())
 		if err != nil {
 			t.Fatalf("ListProgress: %v", err)
 		}
@@ -132,13 +134,13 @@ func TestPlaybackProgressReads(t *testing.T) {
 	})
 
 	t.Run("get_orphan_is_absent", func(t *testing.T) {
-		if _, err := s.GetProgress(ctx, "itm_orphan"); !errors.Is(err, sql.ErrNoRows) {
+		if _, err := s.GetProgress(ctx, "itm_orphan", access.System()); !errors.Is(err, sql.ErrNoRows) {
 			t.Fatalf("GetProgress orphan err = %v, want wrapped sql.ErrNoRows", err)
 		}
 	})
 
 	t.Run("get_deleted_item_is_absent", func(t *testing.T) {
-		if _, err := s.GetProgress(ctx, deleted); !errors.Is(err, sql.ErrNoRows) {
+		if _, err := s.GetProgress(ctx, deleted, access.System()); !errors.Is(err, sql.ErrNoRows) {
 			t.Fatalf("GetProgress deleted err = %v, want wrapped sql.ErrNoRows", err)
 		}
 	})
@@ -202,10 +204,10 @@ CREATE TABLE playback_progress (
 	if err := again.Close(); err != nil {
 		t.Fatalf("Close after second re-Open: %v", err)
 	}
-	if _, err := reopened.PutProgress(ctx, "itm_legacy", 42); err != nil {
+	if _, err := reopened.PutProgress(ctx, "itm_legacy", 42, access.System()); err != nil {
 		t.Fatalf("PutProgress on migrated table: %v", err)
 	}
-	got, err := reopened.GetProgress(ctx, "itm_legacy")
+	got, err := reopened.GetProgress(ctx, "itm_legacy", access.System())
 	if err != nil {
 		t.Fatalf("GetProgress on migrated table: %v", err)
 	}

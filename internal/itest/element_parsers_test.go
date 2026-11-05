@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -71,7 +72,7 @@ func TestElement_Parsers_AttachmentLifetime(t *testing.T) {
 	// RE-SCAN (same root): the scanner re-observes the same file_id, so the
 	// upsert lands on the same item id — the attachment must survive.
 	attached = scanPut(t, "file-1")
-	got, err := st.ListItemParsers(ctx, attached)
+	got, err := st.ListItemParsers(ctx, attached, access.System())
 	if err != nil {
 		t.Fatalf("ListItemParsers after rescan: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestElement_Parsers_AttachmentLifetime(t *testing.T) {
 	}
 	// Sibling isolation: the re-scan of the sibling (no attachment of its
 	// own) surfaces nothing.
-	if got, err := st.ListItemParsers(ctx, sibling); err != nil || len(got) != 0 {
+	if got, err := st.ListItemParsers(ctx, sibling, access.System()); err != nil || len(got) != 0 {
 		t.Fatalf("sibling attachments = %v, err = %v, want empty", got, err)
 	}
 
@@ -88,7 +89,7 @@ func TestElement_Parsers_AttachmentLifetime(t *testing.T) {
 	// scan mints a NEW item identity. The new identity starts with NO
 	// attachments — nothing copies across identities.
 	reidentified := scanPut(t, "file-1-moved")
-	if got, err := st.ListItemParsers(ctx, reidentified); err != nil || len(got) != 0 {
+	if got, err := st.ListItemParsers(ctx, reidentified, access.System()); err != nil || len(got) != 0 {
 		t.Fatalf("re-identified attachments = %v, err = %v, want empty (die with identity)", got, err)
 	}
 	// The re-identify cleanup removes the old item rows; the old attachments
@@ -97,7 +98,7 @@ func TestElement_Parsers_AttachmentLifetime(t *testing.T) {
 	if _, err := st.DB().ExecContext(ctx, "DELETE FROM items WHERE id = ?", fmt.Sprintf("itm_%d_file-1", libID)); err != nil {
 		t.Fatalf("remove re-identified-away item rows: %v", err)
 	}
-	if got, err := st.ListItemParsers(ctx, fmt.Sprintf("itm_%d_file-1", libID)); err != nil || len(got) != 0 {
+	if got, err := st.ListItemParsers(ctx, fmt.Sprintf("itm_%d_file-1", libID), access.System()); err != nil || len(got) != 0 {
 		t.Fatalf("removed identity's attachments = %v, err = %v, want empty", got, err)
 	}
 }
