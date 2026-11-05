@@ -32,10 +32,10 @@
   asserted content unchanged, each site commented with the 2.2/D2 consequence.
   The runner applied the minimal ripple fix and reported it. Design.md
   Interfaces #4 and proposal.md Impact now carry AMENDED-AT-APPLY notes stating
-  exactly this. **GATE 2 reviewer: read these three hunks in
-  Collection.test.tsx diff** (the two `card`/`f1` scope widenings + the `f3`
-  duration pin) and confirm they are scope-only, content-identical.
-- Not yet committed (session commits per batch) — commit lands with 3.1.
+  exactly this. GATE 2 reviewer ruled the hunks COMPLIANT (see below) with a
+  precision note: three edit SITES, the first of which drags six assertions in
+  that test to the card-box scope (negatives strictly stronger at the wider
+  scope; the positive pin's content unchanged).
 
 ## Apply batch 2 (2026-11-04) — 3.1 green (4/6); commits landed
 
@@ -58,13 +58,36 @@
   five authored tasks green; only the built-in git-check remains, closed by
   this batch's commit + push (clean tree incl. untracked, upstream set).
 
+## GATE 2 verdict (2026-11-05) — PASS-WITH-FLAGS, approved
+
+- Reviewer re-ran all six duties in its own shell (`--by wf-reviewer`): all rc 0
+  (21:09–21:10Z receipts) — 1.1 23/23; 2.1 75/75; 2.2 84/84; 3.1 33/33; 4.1
+  17.2s with dist BYTE-IDENTICAL (same hashes as committed — regen dirtied
+  nothing); git-check rc 0.
+- `wf pipeline status` rc 0 — 6/6 green, cmd-match. Reviewer inbox clean (rc 0).
+- Gate anchor: full `go test ./...` rc 0 (23 ok, 0 FAIL) from the worktree —
+  same shape as the 9949db0 baseline.
+- All seven checklist axes clean: diff vs spec deltas CLEAN (every SHALL traced,
+  nothing contradictory, nothing unimplemented); standards axis CLEAN (toggle
+  strictly simpler, no dead code, pure-append CSS); symbol-removal re-ground
+  CLEAN (placement/WATCHED_ACCENT/word-span zero live callers; all WatchedToggle
+  callers inside the diff); integration.md re-ground HELD (all 10 edges
+  evidenced, no orphans, no waivers — all four Q1–Q4 amendments verified on
+  disk); N1 eyeball SATISFIED (own reveals authored at 0,4,0, after the hide).
+- The 2.2 deviation hunks RULED COMPLIANT — scope-only, content-identical.
+- Flags (P3, non-blocking): (1) the deviation count means edit SITES, not
+  assertion scopes (first site drags six assertions wider — negatives strictly
+  stronger); recorded here and to be worded precisely in review.md. (2) the
+  stale pre-apply "Next" section in this record — RESOLVED by this rewrite.
+
 ## Next
 
-The first task in the DAG: **1.1** (WatchedStates.tsx glyph rewrite + test
-re-pins). Apply = one fresh @wf-coder per task, sequential (shared test file
-`WatchedStates.test.tsx` across 1.1/2.2/3.1 — no concurrency), each ending
-`wf pipeline verify watched-signal-refinement <id> --by wf-coder` from the
-worktree cwd.
+Human archive approval pending (gate step 3). On approval: review.md (verdict +
+approval line) → pinned `openspec archive watched-signal-refinement --yes` →
+@wf-docs actualization → close-out notes → `wf pipeline clean` → merge-back
+(dry-run, then `--apply`: push + PR only; worktree removal is the human's).
+The MANUAL TEST NOTE eyeballs (4×4 grid both themes; tv forced via
+`mellifera.tv=on`) ride the human gate pass — jsdom cannot see media queries.
 
 ## Mechanics notes for the next session
 
