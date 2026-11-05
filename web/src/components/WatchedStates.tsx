@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-import type { CSSProperties, ReactElement } from "react";
+import type { ReactElement } from "react";
 
 import type { ItemState } from "@/lib/api";
 import { useSetItemState } from "@/lib/queries";
-
-// The library's pastel accent — the .watched-mark token (index.css), kept as
-// a literal here because the toggle's watched fill rides the inline style
-// (the chip's whole state split is inline — see WatchedToggle below).
-const WATCHED_ACCENT = "#a4c8f4";
 
 // The watched element state's shared leaves (watched-states D5, task 2.3).
 // The tri-state law per browsable element: `watched` renders the small ✓
@@ -75,25 +70,23 @@ export function InProgressBar(props: { percent: number }): ReactElement {
 }
 
 // WatchedToggle — the watched slot as a REAL <button> (collections-ux 2.2,
-// reworked by watched-toggle-label 1.1): hence a D-pad addressable walker
-// target (focusWalker's a[href]/button set) in tv mode. The slot flips to
-// the TOP-RIGHT corner — inline right:40px, NO left override — sitting one
-// stylesheet gutter (6px) left of the ⋯ cardact trigger (its own top:6px /
-// right:6px 28px slot is untouched; 40px clears the ⋯'s 34px left edge).
-// The ✓ glyph becomes a quiet `watched` TEXT CHIP (inline padding 2px 8px on
-// the class carrier's rounded 28px-ish box idiom):
-// - watched: the pastel accent text (WATCHED_ACCENT);
-// - unwatched: muted ghost text + a 1px ring in the --border token.
-// The disclosure law (opacity 0 at rest, hover/focus reveal) is RETIRED for
-// this control: BOTH states pin inline `opacity: 1` — always visible. The
-// coarse-pointer 40px hit block and the html.tv twin are beaten the same
-// way: inline width/height auto + the chip padding override their fixed
-// sizes (the established inline-override idiom, no new CSS class); the ⋯
-// trigger's own law in index.css is untouched (pinned by the stylesheet
-// sweep). Placement: "corner" (default) is the card slot; "inline" reuses
-// the existing `cardact-trigger--inline` variant (the element page heading's
-// flow context, its own always-visible carve-out) and carries no corner
-// offsets — corner-scoped overrides stay corner-scoped.
+// reworked by watched-toggle-label 1.1, then to the glyph law by
+// watched-signal-refinement 1.1): hence a D-pad addressable walker target
+// (focusWalker's a[href]/button set) in tv mode. ONE glyph, never a word:
+// the body is a single aria-hidden ✓ at the meta-line scale (≈12px, the
+// `.watched-mark` em idiom — sized in CSS, task 3.1), accent when watched,
+// muted ghost when not. NO pill, badge, or ring chrome in either state (D5)
+// — the whole state split is CLASS-driven (`wtoggle--watched` /
+// `wtoggle--unwatched`; the media-query twins need classes to target), and
+// the button renders ONE carrier form on every mount — `cardact-trigger
+// cardact-trigger--inline` — with no placement prop and no inline styles
+// (D7: dead API once the meta row owns the slot). The visibility law is
+// context-scoped in CSS, not by props: the card's `.card-meta-row` scopes
+// the fine-pointer hide-at-rest to the unwatched state (D9), coarse
+// pointers and html.tv keep both states visible, and the element page
+// heading is exempt (D1) — it never sits in a `.card-meta-row`, and a bare
+// `.cardact-trigger` there could never be revealed, so `--inline` always
+// shows.
 // Click: stopPropagation FIRST (the card click navigates — the toggle's
 // never does), then the target state is picked from the SERVED watched flag
 // only (watched → "unwatched", else → "watched") and fired through
@@ -102,32 +95,15 @@ export function InProgressBar(props: { percent: number }): ReactElement {
 export function WatchedToggle(props: {
   itemId: string;
   watched: boolean;
-  placement?: "corner" | "inline";
 }): ReactElement {
   const setItemState = useSetItemState();
-  const corner = (props.placement ?? "corner") === "corner";
   const target: ItemState = props.watched ? "unwatched" : "watched";
-  const style: CSSProperties = {
-    // Always visible — the disclosure law is retired for this control.
-    opacity: 1,
-    // Beat the class carrier's fixed 28px box AND the coarse-pointer/html.tv
-    // 40px twins: the chip sizes itself from the padding.
-    width: "auto",
-    height: "auto",
-    padding: "2px 8px",
-    ...(corner ? { right: "40px" } : {}),
-    ...(props.watched
-      ? { color: WATCHED_ACCENT }
-      : {
-          color: "hsl(var(--muted-foreground))",
-          border: "1px solid hsl(var(--border))",
-        }),
-  };
   return (
     <button
       type="button"
-      className={`cardact-trigger${corner ? "" : " cardact-trigger--inline"}`}
-      style={style}
+      className={`cardact-trigger cardact-trigger--inline wtoggle--${
+        props.watched ? "watched" : "unwatched"
+      }`}
       aria-pressed={props.watched}
       aria-label={props.watched ? "Watched" : "Unwatched"}
       onClick={(e) => {
@@ -135,7 +111,7 @@ export function WatchedToggle(props: {
         setItemState.mutate({ itemId: props.itemId, state: target });
       }}
     >
-      <span aria-hidden="true">watched</span>
+      <span aria-hidden="true">✓</span>
     </button>
   );
 }

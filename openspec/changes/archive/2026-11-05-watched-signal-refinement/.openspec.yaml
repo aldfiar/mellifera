@@ -1,0 +1,3 @@
+schema: lite
+created: 2026-11-04
+goal: The watched state renders as one quiet glyph on the meta line - never a word

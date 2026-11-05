@@ -1253,16 +1253,15 @@ function IdentityBlock(props: {
                 {heading}
               </span>
             </h1>
-            {/* The watched toggle (watched-states 2.3): beside the served
-                display name — the `watched` text chip as the always-visible
-                inline variant (no disclosure reveal; the affordance must be
-                visible at rest). The button stays OUTSIDE the h1 so the
-                heading's accessible name remains the display name alone. */}
-            <WatchedToggle
-              itemId={item.id}
-              watched={watched}
-              placement="inline"
-            />
+            {/* The watched toggle (watched-signal-refinement 2.1): beside the
+                served display name — the ✓ glyph per the glyph law (accent
+                when watched, muted ghost when unwatched; never a word).
+                D1 exemption: the hide-at-rest is `.card-meta-row`-scoped and
+                the heading never sits in one, so the ✓ stays visible at rest
+                in BOTH states here — no disclosure reveal. The button stays
+                OUTSIDE the h1 so the heading's accessible name remains the
+                display name alone. */}
+            <WatchedToggle itemId={item.id} watched={watched} />
           </div>
         </div>
         <ItemActions
