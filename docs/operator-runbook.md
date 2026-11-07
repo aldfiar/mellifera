@@ -44,12 +44,19 @@ via chapter sections, watch the eviction log line under a small budget. The peri
 under the cmd-level janitor registry (artwork, `cmd/mellifera/janitor.go`):
 one named task per ticker goroutine — `streams` (this sweep, fixed 60 s),
 `art` (the art store's settle+GC walk, `MELLIFERA_ART_INTERVAL`, default 6 h,
-`0` = off), and `recs` (recommendation-sorting — the tag-interest learner: each
+`0` = off), `recs` (recommendation-sorting — the tag-interest learner: each
 pass applies unstamped `watched_items` rows by raising every watched entity's
 convention-genre weights by 1; fixed 60 s tick plus an immediate wake on every
 completion insert, no env knob — restart-safe, unstamped rows ARE the pending
-work); every enabled task also runs once at boot, so a restarted server
-resumes its settle and learning before serving. Walkthrough beat: watch a
+work), and `browse` (browse-scale — the search/facet index: the boot-warm
+Reconcile floors to a synchronous Build, so the index is warm before the
+server serves; then the 60 s tick reconciles — a two-part epoch drift means a
+full rebuild, else a watermark walk + orphan sweep; scan-complete,
+source-gate-flip, and title-change events poke the wake channel so a rename
+re-anchors early; locked 60 s rule constant, no env knob — an interval ≤ 0
+disables the task alone); every enabled task also runs once at boot, so a
+restarted server resumes its settle, learning, and index warmth before
+serving. Walkthrough beat: watch a
 video past 90 % of its duration — the completion is recorded exactly once
 (no stored duration ⇒ never auto-completes) and the next `recs` pass logs the
 tags it raised.

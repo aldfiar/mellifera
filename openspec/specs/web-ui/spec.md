@@ -711,82 +711,87 @@ test -z "$(grep -rn 'pill ok\|pill warn\|pill stale\|pill bad' web/src/pages/col
 
 ### Requirement: Continue and Next up surfaces
 
-The home surface SHALL render a **Continue** row from
-`GET /api/v1/progress`: one card per item with `position_seconds > 0`, ordered
-by recency, showing a progress bar, remaining-time or percent label, source
-collection, and a Play affordance — plus the item's frame-grabber thumb preview
-(loaded through the authenticated media fetch, the same pattern as the
-collection card's preview) and a real name taken from the item's served
-`display_name` — the server-composed chain (override → composed
-`<series title> · SxxEyy` → `_view.title` floor). The client MUST NOT
-re-implement the composition and SHALL carry no per-surface copies of the
-chain. An item whose document carries no thumb fact SHALL keep the honest
-badge-only card — never a broken-image state. The **Next up** row SHALL key on
-SERIES RECORDS instead of episode-carried titles: each progress item maps
-through its library and `parsed.series_relative_path` to its series row, the
-series' episodes load once per started series (`GET /series/{id}/episodes`,
-cached), and the offered episode is the lowest `(season, episode)` strictly
-after the highest-started one — the skip-aware reading of "no progress
-record": with sequential viewing the two readings coincide, and the derivation
-never suggests an episode the viewer has already moved past. Next-up cards
-SHALL render the series' served `display_name`, an `SxxEyy` chip rendered from
-the episode's raw facts (which stay on the wire in item documents), and the
-episode's thumb; tv-module films never enter Next up (it is an episode concept
-— films surface via Continue). Each card carries a Play affordance; until the
-playback capability ships, Play SHALL deep-link to the item's detail page —
-the surfaces MUST NOT attempt inline streaming. Both rows SHALL render shared
-empty states when the progress list is empty.
+The home surface SHALL render the Continue rail from `GET /api/v1/home` in a
+single request: one row per served continue entry, showing the series' served
+`display_name`, its source collection name, a progress bar for the row's
+current item rendered ONLY when the row carries `duration_seconds` (honest
+absence — no duration, no bar), a remaining-time or percent label, and the
+item's frame-grabber thumb preview loaded through the authenticated media
+fetch (the same pattern as the collection card's preview); an item whose
+document carries no thumb fact SHALL keep the honest badge-only row — never a
+broken-image state. When a row carries a served `next` entry, the row SHALL
+render its next-episode affordance — the served `label` (e.g. `S02E06`)
+verbatim — navigating to `next.item_id`; when `next` is absent, no such
+affordance SHALL render. The client MUST NOT re-derive next-up, re-implement
+name composition, or carry per-surface copies of either chain: the home
+surface's per-series episode fan-out (`GET /series/{id}/episodes` per started
+series), the client started-series grouping, and the `module_id === "tv"`
+gate are removed from it — films surface as continue rows without a next
+offer. Each row keeps a Play affordance for its current item with the same
+navigation the Continue cards use today. The home surface SHALL render the
+shared empty state when the `/home` response carries no rows. The watch
+page's next-episode derivation is a different surface and is untouched by
+this requirement.
 
 #### Scenario: Continue renders in-progress items with progress
 
-- **WHEN** the progress API returns three records with positive positions
-- **THEN** the Continue row renders exactly those items ordered by recency with progress bars and Play affordances that navigate to the items' detail pages
-
-<!-- wf:probe id=b95db436defdd04e -->
-```bash
-set -e
-grep -q 'Continue' web/src/pages/home/Home.tsx
-grep -q 'progress' web/src/pages/home/Home.tsx
-grep -q 'deep-link\|/items/' web/src/pages/home/Home.tsx
-```
-<!-- /wf:probe -->
+- **WHEN** the home response carries continue rows whose current items have
+  positive positions
+- **THEN** the Continue rail renders exactly those rows in the served order
+  with progress bars and Play affordances, from the single `/home` request
 
 #### Scenario: Next up derives the next unstarted episode
 
-- **WHEN** Continue contains an episode of a series with later-numbered episodes and no progress on them
-- **THEN** the Next up row offers the lowest-numbered unstarted episode of that series with a Play affordance, and renders the empty state when no such episode exists
-
-<!-- wf:probe id=d337c75bf42912ac -->
-```bash
-set -e
-grep -q 'Next up' web/src/pages/home/Home.tsx
-go test ./internal/api -run TestProgressList
-```
-<!-- /wf:probe -->
+- **WHEN** a continue row's series holds later unstarted episodes
+- **THEN** the row itself carries the server-served next offering the
+  lowest-numbered unstarted episode with a Play affordance, a row whose series
+  has nothing later renders no next affordance, and the shared empty state
+  still renders when the whole rail is empty
 
 #### Scenario: Continue cards carry the stop-frame thumb and the series-named title
 
-- **WHEN** the home surface renders an in-progress serial episode whose document carries the thumb fact, alongside an episode with no thumb fact and a tv-module film
-- **THEN** the serial episode card shows the thumb preview and its served `display_name` (the composed `<series title> · SxxEyy`), the no-thumb item keeps the honest badge-only card, and the film keeps its `_view.title`-floored `display_name`
-
-<!-- wf:probe id=9b462ec5474bd157 -->
-```bash
-set -e
-cd web && npx vitest run && npx tsc --noEmit
-```
-<!-- /wf:probe -->
+- **WHEN** the home surface renders an in-progress serial episode whose
+  document carries the thumb fact, alongside an episode with no thumb fact
+  and a tv-module film
+- **THEN** the serial episode row shows the thumb preview and its served
+  `display_name` (the composed `<series title> · SxxEyy`), the no-thumb item
+  keeps the honest badge-only row, and the film renders as a continue row
+  without a next offer
 
 #### Scenario: Next up derives from series records and their episode lists
 
-- **WHEN** Continue touches episodes of a series whose episode list holds later-numbered episodes
-- **THEN** Next up offers the lowest `(season, episode)` strictly after the highest-started one, rendered with the series' served `display_name`, the `SxxEyy` chip from the raw facts, and the episode thumb — a film item never enters Next up, and the empty state renders when nothing follows
+- **WHEN** the server composes a row's next pick
+- **THEN** it offers the lowest `(season, episode)` strictly after the
+  highest-started one — the same reading the client derivation used to apply
+  over series records and their episode lists — while the SPA performs no
+  episode-list fetches, no started-series grouping, and no `module_id`
+  gating itself
 
-<!-- wf:probe id=d157549511f54714 -->
-```bash
-set -e
-cd web && npx vitest run && npx tsc --noEmit
-```
-<!-- /wf:probe -->
+#### Scenario: Single-request home render
+
+- **WHEN** the home surface mounts with several started series
+- **THEN** exactly one `GET /api/v1/home` request fires — no `/progress`
+  listing and no per-series episode fetches — and the rows render the served
+  fields verbatim
+
+#### Scenario: Honest progress bar
+
+- **WHEN** a continue row arrives without `duration_seconds`
+- **THEN** that row renders without a progress bar, its label and thumb
+  otherwise intact
+
+#### Scenario: Next affordance comes from the server
+
+- **WHEN** one row carries `next` and another does not
+- **THEN** the first row shows the served label navigating to `next.item_id`
+  and the second renders no next affordance — the client composed neither
+  label nor pick
+
+#### Scenario: Empty home is a shared empty state
+
+- **WHEN** `GET /api/v1/home` returns no continue rows
+- **THEN** the home surface renders the shared empty state in place of the
+  rail
 
 ### Requirement: Collection pages
 
@@ -2328,33 +2333,45 @@ and `GET /api/v1/enrich/failures`.
 
 ### Requirement: Continue and Next up consume served scores
 
-The SPA's Continue row SHALL render the served `GET /progress` order
-(rec_score descending) without client-side scoring, and the Next up
-derivation SHALL order its entries by the served `rec_score` of the series'
-progress rows, ties by recency — the served-names-only rule extends to
-ordering: the SPA SHALL NOT re-implement the score model. Collection grids
-SHALL remain served-order renderers (now recommendation order by default)
-with no new affordances, no score chips, and no sort toggles in v1.
+The served-scores rule SHALL hold on the surfaces that keep client
+derivations. The watch page's Next up derivation SHALL order its entries by
+the served `rec_score` of the series' progress rows, ties by recency,
+through its `nextEpisodeAfter` derivation — the SPA SHALL NOT re-implement
+the score model on any surface. Collection grids SHALL remain served-order
+renderers (recommendation order by default) with no new affordances, no
+score chips, and no sort toggles in v1. The home surface is superseded by
+`GET /api/v1/home`: its Continue rail SHALL render the single `/home`
+response (the single-request home contract above) instead of the served
+`GET /progress` order — the `/progress`-ordering clause no longer applies
+to the home surface.
 
 #### Scenario: Continue follows the served order
 
-- **WHEN** the progress endpoint serves a scored order that differs from
-  recency order
-- **THEN** the Continue row renders the served order and performs no
-  client-side re-sorting
+- **WHEN** the home response carries continue rows whose served order
+  differs from recency order
+- **THEN** the Continue rail renders the served `/home` order and performs
+  no client-side re-sorting — the score model stays server-side
 
 #### Scenario: Next up orders by served score
 
 - **WHEN** two started series hold next-up episodes and their progress rows
   carry different rec_scores
-- **THEN** the Next up row lists the higher-scored series' episode first,
-  ties falling to recency
+- **THEN** the watch page's nextEpisodeAfter derivation lists the
+  higher-scored series' episode first, ties falling to recency, with no
+  client-side scoring
 
 #### Scenario: Grids change nothing client-side
 
 - **WHEN** a collection grid renders against the reordered series listing
 - **THEN** the component code is unchanged from today (it already renders
   served order) and no score value appears on any card
+
+#### Scenario: Home renders the /home response, not the progress listing
+
+- **WHEN** the home surface mounts with started series
+- **THEN** the Continue rail renders the single `GET /api/v1/home` response
+  per the single-request home contract and no `/progress` fetch backs the
+  home rail
 
 ### Requirement: Watched element states
 

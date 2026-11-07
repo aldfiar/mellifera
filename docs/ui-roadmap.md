@@ -12,7 +12,7 @@ change. Continue with `/build <change-name>` — the original draft text follows
 | 2.3 — poster-change overlay | `poster-override-overlay` | planned (may fold into the Layer 2 change) |
 | 3 — player polish | `player-watch-polish` | planned (cast UI row lands here) |
 | 4 — TMDB (B3) | `tmdb-metadata-source` | planned |
-| 5 — search / facets / home | `browse-search-facets` | planned |
+| 5 — search / facets / home | `browse-scale` | done (archived 2026-11-08 — shipped as `browse-scale`, not the planned `browse-search-facets`) |
 
 GATE 1 amendments to the draft (media-data-convention, 2026-10-21): cast[] is flat
 {name, role?, photo_url?}; episode title/summary live in the source's own namespace
@@ -313,6 +313,15 @@ admin page, no new surface.
 --------------------------------------------------------------------------------
 
 ## Layer 5 — Browse scale (when libraries grow)
+
+SHIPPED as openspec change `browse-scale` (archived 2026-11-08): 5.1/5.2/5.3
+landed as `GET /api/v1/search`, `GET /api/v1/libraries/{id}/facets` (+ the
+additive genre/kind/status filters), and `GET /api/v1/home` over the RAM read
+model in `internal/browse` — behavior: `openspec/specs/{global-search,
+library-facets,home-continue}/spec.md`. The draft text below is the original
+plan (the search wire matches; the store-LIKE matching became the RAM index —
+SQLite's LIKE/lower() are ASCII-only, a Cyrillic library can never be matched
+by SQL).
 
 Mockup: mockup-search.html (the ⌘K palette; the same design language covers 5.2 facets and 5.3 home rows).
 
