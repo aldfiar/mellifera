@@ -9,129 +9,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/naming"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
-// TestMetadataProjection covers the convention projection (media-data-
-// convention 1.2): the served metadata block resolves each convention group
-// WHOLE from the FIRST effectively-enabled source_chain namespace that
-// carries it — first-chain-wins, the gate-muted source skipped, a partial
-// winner served with just its own members, and no carrier serving nothing —
-// composed at read onto both itemDTO and seriesDTO, with the block absent
-// from the wire when nothing resolves.
+// TestMetadataProjection covers the api half of the convention projection
+// (media-data-convention 1.2) — the About DTO seam. The resolver's group law
+// is pinned in-package at internal/naming (TestMetadataProjection /
+// TestAboutBlockCarrier, browse-scale OQ2); this test pins the seam: both
+// row DTOs stamp the resolver's block onto the wire verbatim, and the
+// omitempty omits the whole metadata key when nothing resolves.
 func TestMetadataProjection(t *testing.T) {
-	tests := []struct {
-		name  string
-		chain []titleSourceBinding
-		doc   string
-		want  map[string]any // nil = no block at all (honest absence)
-	}{
-		{
-			name:  "first_chain_wins_whole",
-			chain: []titleSourceBinding{{ID: "alpha", Enabled: true}, {ID: "beta", Enabled: true}},
-			doc:   `{"sources":{"alpha":{"description":"Alpha desc","genres":["Drama","Sci-Fi"],"score":4.6,"kind":"tv","status":"released","episodes":13,"aired_on":"2005-04-02"},"beta":{"description":"Beta desc","genres":["Beta-only"]}}}`,
-			want: map[string]any{
-				"about": map[string]any{
-					"source":      "alpha",
-					"description": "Alpha desc",
-					"genres":      []any{"Drama", "Sci-Fi"},
-					"score":       json.Number("4.6"),
-					"kind":        "tv",
-					"status":      "released",
-					"episodes":    json.Number("13"),
-					"aired_on":    "2005-04-02",
-				},
-			},
-		},
-		{
-			name:  "gate_disabled_source_never_wins",
-			chain: []titleSourceBinding{{ID: "alpha", Enabled: false}, {ID: "beta", Enabled: true}},
-			doc:   `{"sources":{"alpha":{"description":"Muted desc"},"beta":{"description":"Beta desc"}}}`,
-			want: map[string]any{
-				"about": map[string]any{"source": "beta", "description": "Beta desc"},
-			},
-		},
-		{
-			name:  "partial_winner_never_stitches_a_later_member",
-			chain: []titleSourceBinding{{ID: "alpha", Enabled: true}, {ID: "beta", Enabled: true}},
-			doc:   `{"sources":{"alpha":{"description":"Alpha desc"},"beta":{"description":"Beta desc","genres":["Beta genre"]}}}`,
-			want: map[string]any{
-				// alpha wins the group on its description and carries no
-				// genres — beta's genres NEVER stitch in.
-				"about": map[string]any{"source": "alpha", "description": "Alpha desc"},
-			},
-		},
-		{
-			name:  "no_carrier_serves_nothing",
-			chain: []titleSourceBinding{{ID: "alpha", Enabled: true}, {ID: "beta", Enabled: true}},
-			// an empty cast array is not a carrier; facts alone never claim
-			// the synopsis group.
-			doc:  `{"sources":{"alpha":{"genres":["Orphan facts"]},"beta":{"cast":[]}}}`,
-			want: nil,
-		},
-		{
-			name:  "cast_group_served_verbatim",
-			chain: []titleSourceBinding{{ID: "alpha", Enabled: true}},
-			doc:   `{"sources":{"alpha":{"cast":[{"name":"Asuka Langley","role":"Yuko Miyamura","photo_url":"https://img/1.jpg"},{"name":"Rei Ayanami"}]}}}`,
-			want: map[string]any{
-				"cast": []any{
-					map[string]any{"name": "Asuka Langley", "role": "Yuko Miyamura", "photo_url": "https://img/1.jpg"},
-					map[string]any{"name": "Rei Ayanami"},
-				},
-			},
-		},
-		{
-			name:  "episode_group_needs_an_episode_document",
-			chain: []titleSourceBinding{{ID: "alpha", Enabled: true}},
-			// no parsed series anchor — a series-level (or film) document:
-			// the title/description here are show-level, so the episode
-			// group NEVER serves (D2) and description resolves as about.
-			doc: `{"sources":{"alpha":{"title":"Show title","description":"Show desc"}}}`,
-			want: map[string]any{
-				"about": map[string]any{"source": "alpha", "description": "Show desc"},
-			},
-		},
-		{
-			name:  "episode_group_serves_partial",
-			chain: []titleSourceBinding{{ID: "alpha", Enabled: true}},
-			// the parsed series anchor is what marks this an EPISODE document.
-			doc: `{"parsed":{"series_relative_path":"a"},"sources":{"alpha":{"season":1,"episode":2,"title":"Ep 1"}}}`,
-			want: map[string]any{
-				"episode": map[string]any{"title": "Ep 1"},
-			},
-		},
-		{
-			name:  "episode_group_carries_both_members",
-			chain: []titleSourceBinding{{ID: "alpha", Enabled: true}},
-			doc:   `{"parsed":{"series_relative_path":"a"},"sources":{"alpha":{"season":1,"episode":2,"title":"Ep 1","description":"The first episode"}}}`,
-			want: map[string]any{
-				"episode": map[string]any{"title": "Ep 1", "description": "The first episode"},
-			},
-		},
-		{
-			name:  "groups_resolve_independently",
-			chain: []titleSourceBinding{{ID: "alpha", Enabled: true}, {ID: "beta", Enabled: true}},
-			doc:   `{"sources":{"alpha":{"cast":[{"name":"Rei"}]},"beta":{"description":"Beta desc"}}}`,
-			want: map[string]any{
-				// each group's own first carrier wins — cast from alpha,
-				// about from beta.
-				"about": map[string]any{"source": "beta", "description": "Beta desc"},
-				"cast":  []any{map[string]any{"name": "Rei"}},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			n := namer{chain: tt.chain}
-			got := n.metadataFor(json.RawMessage(tt.doc))
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("metadataFor =\n\t%#v\nwant\n\t%#v", got, tt.want)
-			}
-		})
-	}
-
 	t.Run("served_on_item_and_series_dtos", func(t *testing.T) {
-		n := namer{chain: []titleSourceBinding{{ID: "alpha", Enabled: true}}}
+		n := naming.Namer{Chain: []titleSourceBinding{{ID: "alpha", Enabled: true}}}
 		doc := json.RawMessage(`{"sources":{"alpha":{"description":"Served desc","cast":[{"name":"Rei"}]}}}`)
 		want := map[string]any{
 			"about": map[string]any{"source": "alpha", "description": "Served desc"},
@@ -154,7 +44,7 @@ func TestMetadataProjection(t *testing.T) {
 	})
 
 	t.Run("absent_block_omits_the_wire_key", func(t *testing.T) {
-		n := namer{chain: []titleSourceBinding{{ID: "alpha", Enabled: true}}}
+		n := naming.Namer{Chain: []titleSourceBinding{{ID: "alpha", Enabled: true}}}
 		it := store.Item{
 			ID: "itm_1", ModuleID: "tv", LibraryID: 1, FileID: "f1",
 			RelativePath: "a/f1.mkv", MediaType: "tv",

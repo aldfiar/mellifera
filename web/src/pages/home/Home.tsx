@@ -2,80 +2,60 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactElement } from "react";
 import { Link } from "react-router-dom";
-import { useQueries } from "@tanstack/react-query";
 
 import {
   ENDPOINTS,
-  getSeries,
-  getSeriesEpisodes,
   hasFrameGrabberThumb,
   hasOriginalFile,
+  isServedArtPath,
   type ApiError,
+  type ContinueRow,
   type ItemDTO,
   type LibraryDTO,
-  type ProgressDTO,
-  type SeriesDTO,
 } from "@/lib/api";
-import { getItem } from "@/lib/api";
 import {
+  useArtworkObjectUrl,
+  useHome,
   useItemMedia,
   useItems,
   useLibraries,
   useLibrarySummary,
-  useProgressList,
 } from "@/lib/queries";
-import type { ItemDocument } from "@/lib/document";
-import { viewEntries } from "@/lib/document";
-import {
-  nextUpEntries,
-  seriesKey,
-  startedSeries,
-  type NextUpEntry,
-} from "@/lib/nextup";
 import { cn } from "@/lib/utils";
-import { unwatchedRows } from "@/lib/watchedRows";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
 
-// Home — the root route's collections surface (web-ui-phase-3 group 4):
+// Home — the root route's collections surface:
 //
 //   1. the collections grid — one card per library (pastel type badge, name,
 //      description, item count + updated stamp from the summary) with the
 //      type chips as a client-side filter; zero-item collections render the
 //      explicit "Not scanned yet" card state;
-//   2. the Continue row — GET /progress records (newest-first, positive
-//      positions) as Play cards deep-linking into /items/{id}, with the
-//      item's frame-grabber thumb preview (authenticated fetch; no thumb fact
-//      → the honest badge-only card), a percent-of-duration bar when the
-//      item's ffprobe duration is known, and a real name: the SERVED
-//      item `display_name` (display-naming — the server composes
-//      `{serial title} · SxxEyy` and floors through `_view.title`), floored
-//      client-side to viewTitle only when the served name is empty;
-//   3. the Next up row — keyed on SERIES records (D-8): progress items map
-//      through (library, parsed.series_relative_path) to the series row
-//      (GET /series?library={id}, the collection page's shared cache), the
-//      started tuple is the max (season, episode) across the series' progress
-//      items, and the offered episode is the lowest strictly after it from
-//      GET /series/{id}/episodes (one cached fetch per started series)
-//      (episodeFacts/startedSeries/nextUpEntries — the derivation's pure
-//      core, moved verbatim to lib/nextup.ts and re-exported below;
-//      unit-tested in Home.test.tsx and lib/nextup.test.ts). Card titles
-//      carry the SERVED series `display_name`; the SxxEyy chip still
-//      composes from the raw episode facts, which remain on the wire. Films
-//      never enter Next up — it is an episode concept; films surface via
-//      Continue.
+//   2. the Continue rail — ONE GET /api/v1/home round-trip (browse-scale
+//      D5/D7): the server composes ≤50 per-series rows — the resume point's
+//      SERVED display_name, the parsed episode identity's own title, the
+//      position, the honest ffprobe duration, the query-time artwork and the
+//      next-episode pick — and the rail renders the served fields verbatim in
+//      the served order (rec_score desc, recency tiebreak; never a client
+//      re-sort). The 1+N fan-out this surface used to run (the /progress
+//      listing, a per-item document fetch per row, per-series /series +
+//      /series/{id}/episodes fetches, the started-series grouping and the
+//      module_id gate) is GONE: the client derives nothing — no name
+//      composition, no next pick, no duration guess, no watched withdrawal
+//      (the rail's rows are the calling viewer's visibility-conjunct ledger
+//      consumption server-side). The progress bar renders ONLY when the row
+//      carries duration_seconds (honest absence — no duration, no bar; an
+//      unfilled track would read as "not started", a lie); a served `next`
+//      renders the served label verbatim deep-linking into next.item_id,
+//      and its absence renders no affordance. Films surface as rows without
+//      a next offer (an episode concept).
 //
-// No root folders and no enrich-lifecycle pills ever render here, and the
-// surface never guesses: an episode whose series row does not resolve is
-// OMITTED from Next up (honest fallback over a wrong suggestion). Play
-// deep-links only — inline streaming is a deferred capability (design D3).
+// No root folders and no enrich-lifecycle pills ever render here. Play
+// deep-links only — inline streaming is a deferred capability (D3).
 
 // Bounded first page the collection cards scan for a representative preview
 // item (media-preview D8 — the card fetches the collection's first items; one
 // small page per card, cached under the shared ["items", params] key space).
 const CARD_PREVIEW_LIMIT = 12;
-
-// Next up row cap — the row is a suggestion strip, not a queue dump.
-const NEXT_UP_LIMIT = 12;
 
 // TYPE_LABELS — human badge label per module_id (D6 keys). An unknown
 // module_id renders verbatim rather than guessed.
@@ -112,7 +92,7 @@ function formatDate(rfc3339: string): string {
 }
 
 // formatPosition — whole seconds as "H:MM:SS" / "MM:SS". Display formatting
-// only: the stored position is rendered, never rewritten.
+// only: the served position is rendered, never rewritten.
 export function formatPosition(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   const h = Math.floor(s / 3600);
@@ -121,76 +101,6 @@ export function formatPosition(seconds: number): string {
   return h > 0
     ? `${String(h)}:${String(m).padStart(2, "0")}:${ss}`
     : `${String(m).padStart(2, "0")}:${ss}`;
-}
-
-// ---- Next up derivation (pure core) ----------------------------------------
-
-// The derivation's pure core (EpisodeFacts/episodeFacts,
-// StartedSeries/startedSeries, NextUpEntry/nextUpEntries and the private
-// helpers they carry) moved VERBATIM to lib/nextup.ts (watch-flow D3 —
-// moves, not forks); Home re-exports the moved symbols so the existing
-// named imports keep resolving untouched. matchSeries stays here: the page
-// matches series rows itself before the episode lists load.
-
-export {
-  type EpisodeFacts,
-  episodeFacts,
-  type StartedSeries,
-  startedSeries,
-  type NextUpEntry,
-  nextUpEntries,
-} from "@/lib/nextup";
-
-// matchSeries — the series row for one episode's series anchor: the row whose
-// relative_path equals parsed.series_relative_path. Deleted rows (the
-// janitor's tombstones) are not a browse surface and never match. Null when
-// no row resolves — the caller omits the series rather than guessing.
-// Exported pure for tests.
-export function matchSeries(
-  rows: SeriesDTO[],
-  seriesPath: string,
-): SeriesDTO | null {
-  for (const sr of rows) {
-    if (sr.status !== "deleted" && sr.relative_path === seriesPath) {
-      return sr;
-    }
-  }
-  return null;
-}
-
-// durationSeconds — the item's total whole-second duration, read from the
-// verbatim ffprobe blob (ffprobe writes format.duration as a decimal-seconds
-// STRING). Anything missing/unparseable → null: the Continue card then shows
-// the position without a percent label or filled bar.
-export function durationSeconds(doc: ItemDocument): number | null {
-  const ffprobe = doc.ffprobe;
-  if (!ffprobe || typeof ffprobe !== "object") {
-    return null;
-  }
-  const format = (ffprobe as { format?: unknown }).format;
-  if (!format || typeof format !== "object") {
-    return null;
-  }
-  const raw = (format as { duration?: unknown }).duration;
-  if (typeof raw !== "string" && typeof raw !== "number") {
-    return null;
-  }
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
-}
-
-// viewTitle — the item's display title: `_view.title.value` verbatim (same
-// accessor contract as the collection page's local copy).
-function viewTitle(doc: ItemDocument): string {
-  const title = viewEntries(doc).find((e) => e.fieldPath === "title");
-  const value = title?.entry.value;
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return String(value); // lossless primitive stringify (INV-no-rounding)
-  }
-  return "—";
 }
 
 // representativeItem — the collection card's preview candidate (media-preview
@@ -291,8 +201,7 @@ export default function Home(): ReactElement {
         </ul>
       </section>
 
-      <ContinueRow libraries={libs} />
-      <NextUpRow />
+      <ContinueRail />
     </main>
   );
 }
@@ -377,10 +286,10 @@ function CollectionCard(props: { lib: LibraryDTO }): ReactElement {
   );
 }
 
-// ---- Continue ---------------------------------------------------------------
+// ---- Continue rail -----------------------------------------------------------
 
-// ROW_EMPTY_MESSAGE — the SHARED Continue/Next up empty state: an empty
-// progress list means both rows have nothing to show.
+// ROW_EMPTY_MESSAGE — the shared empty state: an empty served rail means the
+// Continue section has nothing to show.
 const ROW_EMPTY_MESSAGE =
   "Nothing in progress yet — open an item and it will show up here.";
 
@@ -388,76 +297,23 @@ function RowEmpty(): ReactElement {
   return <EmptyState message={ROW_EMPTY_MESSAGE} />;
 }
 
-// useProgressDocs — the item documents behind a progress list, fanned out on
-// the shared ["item", id] cache (the detail page's entries), so each
-// document is fetched once no matter how many rows consume it. Returns null
-// while any document is still in flight — rows render a loading state, not
-// partial derivations; documents that fail (e.g. an item deleted since) are
-// simply absent from the map.
-function useProgressDocs(records: ProgressDTO[]): Map<string, ItemDTO> | null {
-  const docs = useQueries({
-    queries: records.map((r) => ({
-      queryKey: ["item", r.item_id],
-      queryFn: () => getItem(r.item_id),
-    })),
-  });
+// ContinueRail — the served /home rows, verbatim: the rail renders the
+// response's `continue` array in the served order (rec_score desc, recency
+// tiebreak — the ordering contract is inherited server-side; never a client
+// re-sort), from the ONE request useHome fires. No rows → the shared empty
+// state; a failed request → the canonical error with retry (retry:0 — no
+// auto-retry, the user's retry is the affordance).
+function ContinueRail(): ReactElement {
+  const home = useHome();
 
-  if (docs.some((d) => d.isLoading)) {
-    return null;
-  }
-  const map = new Map<string, ItemDTO>();
-  docs.forEach((d, i) => {
-    const res = d.data;
-    if (res) {
-      map.set(records[i]!.item_id, res.item);
-    }
-  });
-  return map;
-}
-
-// ContinueRow — GET /progress (the SERVED order — rec_score desc with a
-// recency tiebreak by default; the row renders records exactly as served,
-// never a client re-sort) as one card per in-progress item: the item's
-// frame-grabber thumb preview when the
-// document carries that fact (authenticated fetch — absent fact → the honest
-// badge-only card), the SERVED display_name (display-naming — the server
-// composes serial-episode names), percent-of-duration label + bar when the
-// item's ffprobe duration is known (position label always), source
-// collection, updated stamp, and Play deep-linking into the item detail.
-// Watched-states D2: the shared query fetches ?include=watched, and the rail
-// is the client-side half of the withdrawal — it renders only rows with
-// `watched` absent/false (lib/watchedRows.ts, served flag only); the Next up
-// anchors keep consuming ALL served rows (a fully-watched series still
-// anchors its next unwatched episode).
-function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
-  const progress = useProgressList();
-  const records: ProgressDTO[] = unwatchedRows(progress.data?.items ?? []);
-  const docs = useProgressDocs(records);
-
-  const cards = useMemo(() => {
-    if (!docs) {
-      return [];
-    }
-    return records
-      .filter((r) => docs.has(r.item_id))
-      .map((r) => ({ record: r, item: docs.get(r.item_id)! }));
-  }, [records, docs]);
-
-  if (progress.isLoading) {
+  if (home.isLoading) {
     return <LoadingState label="Loading progress…" />;
   }
-  if (progress.error) {
-    return (
-      <ErrorState error={progress.error as ApiError} onRetry={progress.refetch} />
-    );
+  if (home.error) {
+    return <ErrorState error={home.error as ApiError} onRetry={home.refetch} />;
   }
-  if (records.length === 0) {
-    return <RowEmpty />;
-  }
-  if (!docs) {
-    return <LoadingState label="Loading items…" />;
-  }
-  if (cards.length === 0) {
+  const rows: ContinueRow[] = home.data?.continue ?? [];
+  if (rows.length === 0) {
     return <RowEmpty />;
   }
 
@@ -465,59 +321,60 @@ function ContinueRow(props: { libraries: LibraryDTO[] }): ReactElement {
     <section aria-label="Continue" className="flex flex-col gap-3">
       <h2 className="text-lg font-semibold">Continue</h2>
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {cards.map((c) => (
-          <ContinueCard
-            key={c.record.item_id}
-            record={c.record}
-            item={c.item}
-            libraryName={
-              props.libraries.find((l) => l.id === c.item.library_id)
-                ?.display_name ?? ""
-            }
-          />
+        {rows.map((row) => (
+          <ContinueCard key={row.current.item_id} row={row} />
         ))}
       </ul>
     </section>
   );
 }
 
-// ContinueCard — one resume card: the thumb preview above the name (only when
-// the document carries the frame-grabber fact — an absent fact keeps the
-// badge-only card, never a broken image), the SERVED display_name (the
-// server-composed episode name or the film's name; a floor-empty "" falls
-// back to the document's `_view` title), and the bar only when the duration
-// is known: an unfilled track would read as "not started", which would be a
-// lie.
-function ContinueCard(props: {
-  record: ProgressDTO;
-  item: ItemDTO;
-  libraryName: string;
-}): ReactElement {
-  const { record, item } = props;
-  const title = item.display_name || viewTitle(item.document);
-  const duration = durationSeconds(item.document);
+// ContinueCard — one served row: the artwork preview when the row serves the
+// poster's PROXY form (isServedArtPath — a raw remote URL, an unmaterialized
+// winner's transient, is never fetched; absent artwork keeps the badge-only
+// card, never a broken image), the served series name + the served current
+// display_name verbatim (no client-side name composition), the served episode
+// title when present, the position label always, and the percent bar ONLY
+// when the row carries duration_seconds. A served `next` renders the served
+// label verbatim as the row's next-episode affordance deep-linking into
+// next.item_id — the client composed neither label nor pick; its absence
+// renders no affordance. Play deep-links into the current item detail.
+function ContinueCard(props: { row: ContinueRow }): ReactElement {
+  const { row } = props;
+  const cur = row.current;
+  const title = cur.display_name;
   const percent =
-    duration !== null
-      ? Math.min(100, Math.round((record.position_seconds / duration) * 100))
+    cur.duration_seconds !== undefined
+      ? Math.min(
+          100,
+          Math.round((cur.position_seconds / cur.duration_seconds) * 100),
+        )
       : null;
-  const hasThumb = hasFrameGrabberThumb(item.document);
-  const thumb = useItemMedia(
-    hasThumb ? ENDPOINTS.itemMedia(item.id, "thumb") : null,
+  const artSrc = useArtworkObjectUrl(
+    isServedArtPath(row.artwork) ? row.artwork : null,
   );
 
   return (
-    <li>
+    <li className="flex h-full flex-col gap-2 rounded-md border p-3">
       <Link
-        to={`/items/${item.id}`}
+        to={`/items/${cur.item_id}`}
         aria-label={`Play ${title}`}
-        className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
+        className="flex flex-1 flex-col gap-2 rounded-md hover:bg-accent"
       >
-        {hasThumb ? <CardPreview src={thumb} /> : null}
+        {isServedArtPath(row.artwork) ? <CardPreview src={artSrc} /> : null}
+        {row.series_display_name ? (
+          <span className="text-xs text-muted-foreground">
+            {row.series_display_name}
+          </span>
+        ) : null}
         <span className="text-sm font-medium">{title}</span>
+        {cur.episode_title ? (
+          <span className="text-xs text-muted-foreground">{cur.episode_title}</span>
+        ) : null}
         <span className="text-xs text-muted-foreground">
           {percent !== null ? `${String(percent)}% · ` : ""}
-          {formatPosition(record.position_seconds)}
-          {props.libraryName ? ` · ${props.libraryName}` : ""}
+          {formatPosition(cur.position_seconds)}
+          {row.library_name ? ` · ${row.library_name}` : ""}
         </span>
         {percent !== null ? (
           <span
@@ -531,146 +388,19 @@ function ContinueCard(props: {
             />
           </span>
         ) : null}
-        <span className="mt-auto flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">
-            {formatDate(record.updated_at)}
-          </span>
-          <span className="chip">Play</span>
-        </span>
-      </Link>
-    </li>
-  );
-}
-
-// ---- Next up ----------------------------------------------------------------
-
-// NextUpRow — keyed on SERIES records (D-8): progress items map through
-// (library, parsed.series_relative_path) to the series row (one
-// GET /series?library={id} per touched library, the collection page's shared
-// ["series", id] cache), and per started series with a resolved row the
-// episode list loads once (GET /series/{id}/episodes, the shared
-// ["series-episodes", id] cache). The offered episode is the lowest
-// (season, episode) strictly after the highest started one. A series whose
-// row did not resolve — the episode-without-series fallback — or with no
-// later episode is omitted; with nothing derivable the row renders its empty
-// state (honest, never a guess). Films never enter (startedSeries skips the
-// tv module). Entries order by the served rec_score (recommendation-sorting
-// D8 — lib/nextup.ts, higher first, ties by the served order); the row is
-// interim until browse-scale's GET /home supersedes it.
-function NextUpRow(): ReactElement {
-  const progress = useProgressList();
-  const records = useMemo(() => progress.data?.items ?? [], [progress.data]);
-  const docs = useProgressDocs(records);
-
-  const started = useMemo(
-    () => (docs ? startedSeries(records, docs) : []),
-    [records, docs],
-  );
-
-  const libraryIds = [...new Set(started.map((s) => s.libraryId))];
-  const seriesLists = useQueries({
-    queries: libraryIds.map((id) => ({
-      queryKey: ["series", id],
-      queryFn: () => getSeries(id),
-    })),
-  });
-
-  const seriesByKey = new Map<string, SeriesDTO>();
-  for (const s of started) {
-    const idx = libraryIds.indexOf(s.libraryId);
-    const rows = seriesLists[idx]?.data?.items ?? [];
-    const series = matchSeries(rows, s.seriesPath);
-    if (series !== null) {
-      seriesByKey.set(seriesKey(s), series);
-    }
-  }
-
-  const resolved = started
-    .map((s) => seriesByKey.get(seriesKey(s)))
-    .filter((s): s is SeriesDTO => s !== undefined);
-  const episodePages = useQueries({
-    queries: resolved.map((series) => ({
-      queryKey: ["series-episodes", series.id],
-      queryFn: () => getSeriesEpisodes(series.id),
-    })),
-  });
-
-  const episodesBySeriesId = new Map<string, ItemDTO[]>();
-  resolved.forEach((series, i) => {
-    const data = episodePages[i]?.data;
-    if (data) {
-      episodesBySeriesId.set(series.id, data.items);
-    }
-  });
-
-  const nextUp = docs
-    ? nextUpEntries(started, seriesByKey, episodesBySeriesId)
-    : [];
-
-  if (progress.isLoading) {
-    return <LoadingState label="Loading progress…" />;
-  }
-  if (progress.error) {
-    return (
-      <ErrorState error={progress.error as ApiError} onRetry={progress.refetch} />
-    );
-  }
-  if (records.length === 0) {
-    return <RowEmpty />;
-  }
-  if (docs === null) {
-    return <LoadingState label="Loading items…" />;
-  }
-  if (seriesLists.some((q) => q.isLoading)) {
-    return <LoadingState label="Loading series…" />;
-  }
-  if (episodePages.some((q) => q.isLoading)) {
-    return <LoadingState label="Loading episodes…" />;
-  }
-  if (nextUp.length === 0) {
-    return <EmptyState message="No upcoming episodes found." />;
-  }
-
-  return (
-    <section aria-label="Next up" className="flex flex-col gap-3">
-      <h2 className="text-lg font-semibold">Next up</h2>
-      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {nextUp.slice(0, NEXT_UP_LIMIT).map((entry) => (
-          <NextUpCard key={entry.item.id} entry={entry} />
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-// NextUpCard — one suggestion: the series' display title, the SxxEyy chip and
-// the episode's frame-grabber thumb (absent fact → no preview area — the same
-// honest fallback as Continue). Play deep-links into the episode detail
-// (inline streaming stays out of scope, D3).
-function NextUpCard(props: { entry: NextUpEntry }): ReactElement {
-  const { entry } = props;
-  const hasThumb = hasFrameGrabberThumb(entry.item.document);
-  const thumb = useItemMedia(
-    hasThumb ? ENDPOINTS.itemMedia(entry.item.id, "thumb") : null,
-  );
-
-  return (
-    <li>
-      <Link
-        to={`/items/${entry.item.id}`}
-        aria-label={`Play ${entry.title} ${entry.label}`}
-        className="flex h-full flex-col gap-2 rounded-md border p-3 hover:bg-accent"
-      >
-        {hasThumb ? <CardPreview src={thumb} /> : null}
-        <span className="text-sm font-medium">{entry.title}</span>
-        <span className="flex gap-1">
-          <span className="chip">{entry.label}</span>
-          <span className="chip">not started</span>
-        </span>
         <span className="mt-auto flex items-center justify-end">
           <span className="chip">Play</span>
         </span>
       </Link>
+      {row.next ? (
+        <Link
+          to={`/items/${row.next.item_id}`}
+          aria-label={`Next ${row.next.label}`}
+          className="chip self-start"
+        >
+          Next {row.next.label}
+        </Link>
+      ) : null}
     </li>
   );
 }

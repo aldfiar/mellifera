@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mellifera/mellifera/internal/naming"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -73,16 +74,16 @@ func loadGoldenVectors(t *testing.T) []goldenVector {
 // options, the gate-resolved title chain, the language pick order, and the
 // library-wide series map the item join reads (tombstones included — the join
 // is the skipper, exactly like namerFor's whole-table read).
-func goldenNamer(v goldenVector) namer {
-	n := namer{
-		groupStyle:   v.GroupStyle,
-		elementTmpl:  v.ElementTemplate,
-		seriesByPath: make(map[string]store.Series, len(v.LibrarySeries)),
-		titleSources: v.TitleSources,
-		langPrefs:    v.LanguagePreference,
+func goldenNamer(v goldenVector) naming.Namer {
+	n := naming.Namer{
+		GroupStyle:   v.GroupStyle,
+		ElementTmpl:  v.ElementTemplate,
+		SeriesByPath: make(map[string]store.Series, len(v.LibrarySeries)),
+		TitleSources: v.TitleSources,
+		LangPrefs:    v.LanguagePreference,
 	}
 	for _, row := range v.LibrarySeries {
-		n.seriesByPath[row.RelativePath] = store.Series{
+		n.SeriesByPath[row.RelativePath] = store.Series{
 			RelativePath: row.RelativePath,
 			Status:       row.Status,
 			Document:     row.Document,
@@ -104,21 +105,21 @@ func composeGoldenVector(t *testing.T, v goldenVector) string {
 			t.Fatalf("vector %q: kind series carries no series row", v.Name)
 		}
 		sr := store.Series{RelativePath: v.Series.RelativePath, Document: v.Series.Document}
-		return n.seriesName(sr, v.Series.TitleOverride)
+		return n.SeriesName(sr, v.Series.TitleOverride)
 	case "item":
 		if v.Item == nil {
 			t.Fatalf("vector %q: kind item carries no item row", v.Name)
 		}
-		doc := docMap(v.Item.Document)
-		if sr, _, _, ok := n.elementFacts(doc); ok {
+		doc := naming.DocMap(v.Item.Document)
+		if sr, _, _, ok := n.ElementFacts(doc); ok {
 			for _, row := range v.LibrarySeries {
 				if row.RelativePath == sr.RelativePath {
-					n.seriesOverride = row.TitleOverride
+					n.SeriesOverride = row.TitleOverride
 				}
 			}
 		}
 		it := store.Item{RelativePath: v.Item.RelativePath, Document: v.Item.Document}
-		return n.itemName(it, v.Item.TitleOverride)
+		return n.ItemName(it, v.Item.TitleOverride)
 	default:
 		t.Fatalf("vector %q: unknown kind %q", v.Name, v.Kind)
 		return ""

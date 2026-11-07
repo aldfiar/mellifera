@@ -1958,6 +1958,29 @@
                 }
             }
         },
+        "/home": {
+            "get": {
+                "tags": [
+                    "home"
+                ],
+                "summary": "Continue rail (home)",
+                "operationId": "get-home",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.homeResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/items": {
             "get": {
                 "tags": [
@@ -1997,6 +2020,18 @@
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "facet genres filter — only items whose resolved About block carries the value (composes with library/folders/sort/status; unknown value → empty list)",
+                        "name": "genre",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "facet kind filter — same law as genre",
+                        "name": "kind",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "page size (default 50, max 200)",
                         "name": "limit",
@@ -2024,6 +2059,12 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "$ref": "#/definitions/api.errorBody"
                         }
@@ -2875,6 +2916,56 @@
                 }
             }
         },
+        "/libraries/{id}/facets": {
+            "get": {
+                "tags": [
+                    "libraries"
+                ],
+                "summary": "List a library's facet values",
+                "operationId": "library-facets",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "library id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.facetsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/libraries/{id}/folders": {
             "get": {
                 "tags": [
@@ -3637,6 +3728,55 @@
                 }
             }
         },
+        "/search": {
+            "get": {
+                "tags": [
+                    "search"
+                ],
+                "summary": "Global grouped search over composed names",
+                "operationId": "search",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "query text; empty or absent serves both lists empty",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "restrict results to one library id",
+                        "name": "library",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "per-group bound (default 8, max 8 — lowers the bound, never raises it)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.searchResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/series": {
             "get": {
                 "tags": [
@@ -3657,6 +3797,24 @@
                         "description": "sort=path restores path order (default: recommendation score order, rec_score desc)",
                         "name": "sort",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "facet genres filter — only series whose resolved About block carries the value (composes with library/sort; unknown value → empty list)",
+                        "name": "genre",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "facet kind filter — same law as genre",
+                        "name": "kind",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "facet status filter — same law as genre",
+                        "name": "status",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -3674,6 +3832,12 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "$ref": "#/definitions/api.errorBody"
                         }
@@ -4457,6 +4621,75 @@
                 }
             }
         },
+        "api.continueCurrent": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "duration_seconds": {
+                    "type": "integer"
+                },
+                "episode": {
+                    "type": "integer"
+                },
+                "episode_title": {
+                    "type": "string"
+                },
+                "item_id": {
+                    "type": "string"
+                },
+                "position_seconds": {
+                    "type": "integer"
+                },
+                "season": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.continueNext": {
+            "type": "object",
+            "properties": {
+                "item_id": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.continueRow": {
+            "type": "object",
+            "properties": {
+                "artwork": {
+                    "description": "Artwork is the query-time composed poster URL (artwork): the owning\nseries' for serial rows, the item's own (with the owning-series\nfallback) for films — resolved over the bounded row set per request,\nnever from a cache of display bytes. Absent (omitempty) when nothing\ncomposes — honest absence, never a placeholder.",
+                    "type": "string"
+                },
+                "current": {
+                    "$ref": "#/definitions/api.continueCurrent"
+                },
+                "library_id": {
+                    "type": "integer"
+                },
+                "library_name": {
+                    "type": "string"
+                },
+                "next": {
+                    "description": "Next is the next-episode offer — omitted (omitempty) when none: films\nnever carry it (an episode concept), and neither does a series whose\nhighest-started episode is also its last, or whose remaining episodes\ncarry no parseable facts.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/api.continueNext"
+                        }
+                    ]
+                },
+                "series_display_name": {
+                    "type": "string"
+                },
+                "series_id": {
+                    "type": "string"
+                }
+            }
+        },
         "api.createLibraryRequest": {
             "type": "object",
             "properties": {
@@ -4553,6 +4786,42 @@
                 }
             }
         },
+        "api.facetDTO": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string"
+                },
+                "values": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.facetValueDTO"
+                    }
+                }
+            }
+        },
+        "api.facetValueDTO": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.facetsResponse": {
+            "type": "object",
+            "properties": {
+                "facets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.facetDTO"
+                    }
+                }
+            }
+        },
         "api.folderDTO": {
             "type": "object",
             "properties": {
@@ -4561,6 +4830,17 @@
                 },
                 "path": {
                     "type": "string"
+                }
+            }
+        },
+        "api.homeResponse": {
+            "type": "object",
+            "properties": {
+                "continue": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.continueRow"
+                    }
                 }
             }
         },
@@ -5228,6 +5508,23 @@
                     "items": {
                         "type": "object",
                         "additionalProperties": {}
+                    }
+                }
+            }
+        },
+        "api.searchResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.itemDTO"
+                    }
+                },
+                "series": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.seriesDTO"
                     }
                 }
             }

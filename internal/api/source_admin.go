@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/mellifera/mellifera/internal/access"
+	"github.com/mellifera/mellifera/internal/naming"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -464,7 +465,7 @@ func (a *app) adminSourcePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hypo := live
-	hypo.titleSources = gateOverriddenSources(live.titleSources, req.Gates)
+	hypo.TitleSources = gateOverriddenSources(live.TitleSources, req.Gates)
 	srs, err := a.deps.Store.QuerySeries(r.Context(), lib.ID, "", access.System())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -477,15 +478,15 @@ func (a *app) adminSourcePreview(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
-		doc := docMap(sr.Document)
+		doc := naming.DocMap(sr.Document)
 		out.Before = append(out.Before, sourcePreviewRow{
 			ItemID: sr.ID,
-			Name:   live.seriesName(sr, override),
+			Name:   live.SeriesName(sr, override),
 			NoData: seriesNoData(live, doc, override),
 		})
 		out.After = append(out.After, sourcePreviewRow{
 			ItemID: sr.ID,
-			Name:   hypo.seriesName(sr, override),
+			Name:   hypo.SeriesName(sr, override),
 			NoData: seriesNoData(hypo, doc, override),
 		})
 	}
@@ -520,15 +521,15 @@ func (a *app) adminSourcePreview(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 				return
 			}
-			doc := docMap(it.Document)
+			doc := naming.DocMap(it.Document)
 			out.Before = append(out.Before, sourcePreviewRow{
 				ItemID: it.ID,
-				Name:   liveRow.itemName(it, override),
+				Name:   liveRow.ItemName(it, override),
 				NoData: itemNoData(liveRow, doc, override),
 			})
 			out.After = append(out.After, sourcePreviewRow{
 				ItemID: it.ID,
-				Name:   hypoRow.itemName(it, override),
+				Name:   hypoRow.ItemName(it, override),
 				NoData: itemNoData(hypoRow, doc, override),
 			})
 		}
@@ -563,11 +564,11 @@ func gateOverriddenSources(live []titleSourceBinding, gates map[string]bool) []t
 // "raw" group style skips the walk deliberately (never no_data); a walk hit
 // (before pass on a titled row) is false — the marker is the want-of-title-
 // data floor, not a change detector.
-func seriesNoData(n namer, doc map[string]any, override string) bool {
-	if override != "" || n.groupStyle == "raw" {
+func seriesNoData(n naming.Namer, doc map[string]any, override string) bool {
+	if override != "" || n.GroupStyle == "raw" {
 		return false
 	}
-	return n.sourceTitle(doc) == ""
+	return n.SourceTitle(doc) == ""
 }
 
 // itemNoData is an item row's no_data verdict for one pass: the name resolved
@@ -577,16 +578,16 @@ func seriesNoData(n namer, doc map[string]any, override string) bool {
 // never no_data even when its {title} floored: the title data question for
 // THAT series is the series row's own marker in the same preview; here the
 // composition chain supplied a name above the item's own walk.
-func itemNoData(n namer, doc map[string]any, override string) bool {
+func itemNoData(n naming.Namer, doc map[string]any, override string) bool {
 	if override != "" {
 		return false
 	}
-	if n.elementTmpl != "" {
-		if _, ok := n.elementName(doc); ok {
+	if n.ElementTmpl != "" {
+		if _, ok := n.ElementName(doc); ok {
 			return false
 		}
 	}
-	return n.sourceTitle(doc) == ""
+	return n.SourceTitle(doc) == ""
 }
 
 // affectedSourceModules returns the module ids whose metadata-source chain
@@ -787,7 +788,7 @@ func (a *app) sourceTitleCounts(ctx context.Context, pluginIDs []string) (map[st
 			return nil, err
 		}
 		for _, sr := range srs {
-			for _, id := range titledNamespaces(docMap(sr.Document), loaded) {
+			for _, id := range titledNamespaces(naming.DocMap(sr.Document), loaded) {
 				c := counts[id]
 				c.Series++
 				counts[id] = c
@@ -804,7 +805,7 @@ func (a *app) sourceTitleCounts(ctx context.Context, pluginIDs []string) (map[st
 			}
 			offset += len(page)
 			for _, it := range page {
-				for _, id := range titledNamespaces(docMap(it.Document), loaded) {
+				for _, id := range titledNamespaces(naming.DocMap(it.Document), loaded) {
 					c := counts[id]
 					c.Items++
 					counts[id] = c

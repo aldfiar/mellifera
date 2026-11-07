@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 
 import { RequireAuth } from "@/components/RequireAuth";
+import { SearchPalette } from "@/components/SearchPalette";
 import Sidebar from "@/components/Sidebar";
 import TvFocusRoot from "@/components/TvFocusRoot";
 import { getDeviceToken, getToken } from "@/lib/auth";
@@ -46,6 +47,10 @@ function Shell({ children }: { children: ReactNode }): ReactElement {
     <>
       <Sidebar />
       <div className="app-content">{children}</div>
+      {/* browse-scale 5.1: the ⌘K search palette — ONE mount inside the
+          authenticated shell; /login and the unauthenticated RootGate
+          branch never render Shell and never summon it. */}
+      <SearchPalette />
     </>
   );
 }

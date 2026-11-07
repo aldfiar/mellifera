@@ -31,6 +31,7 @@ import (
 
 	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/art"
+	"github.com/mellifera/mellifera/internal/naming"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -128,13 +129,13 @@ type posterRef struct {
 // skipped the same way: the mute floors THIS response's walk to the next
 // usable source without touching storage. A corrupt document yields nil
 // (tolerant floor).
-func usablePosters(n namer, doc map[string]any, mutes map[string]bool) []posterRef {
-	if len(n.chain) == 0 || doc == nil {
+func usablePosters(n naming.Namer, doc map[string]any, mutes map[string]bool) []posterRef {
+	if len(n.Chain) == 0 || doc == nil {
 		return nil
 	}
 	sources, _ := doc["sources"].(map[string]any)
 	var out []posterRef
-	for _, b := range n.chain {
+	for _, b := range n.Chain {
 		if !b.Enabled || mutes[b.ID] {
 			continue
 		}
@@ -210,7 +211,7 @@ func itemThumbPath(itemID string) string {
 // viewer's mutes (mutes threaded in — 10.3), so a pin whose namespace is
 // muted for this viewer floors in this response alone: the stored override
 // row is untouched (the mute floors composition, never the record).
-func resolveArtSelection(sel, entityID string, isItem bool, n namer, doc map[string]any, mutes map[string]bool) (final, remote string) {
+func resolveArtSelection(sel, entityID string, isItem bool, n naming.Namer, doc map[string]any, mutes map[string]bool) (final, remote string) {
 	if sha, ok := artTokenSHA(sel); ok {
 		return artObjectPath + "art_" + sha, ""
 	}
@@ -264,7 +265,7 @@ func seriesOwnsItem(sr store.Series, itemPath string) bool {
 // no poster in THIS response — own walk, pinned-selection walk, and the
 // series fallback all floor past it — while the stored namespaces and the
 // other viewers' compositions stay byte-identical.
-func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n namer, seriesOf func(context.Context) ([]store.Series, error), mutes map[string]bool) (map[string]string, error) {
+func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n naming.Namer, seriesOf func(context.Context) ([]store.Series, error), mutes map[string]bool) (map[string]string, error) {
 	out := make(map[string]string, len(rows))
 	if a.deps.Art == nil || len(rows) == 0 {
 		return out, nil
@@ -285,7 +286,7 @@ func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n name
 	var pendings []pending
 	var absent []artRow
 	for _, row := range rows {
-		doc := docMap(row.doc)
+		doc := naming.DocMap(row.doc)
 		final, remote := "", ""
 		if sel := stored[row.id]; sel != "" {
 			final, remote = resolveArtSelection(sel, row.id, kind == artKindItem, n, doc, mutes)
@@ -320,7 +321,7 @@ func (a *app) artworkFor(ctx context.Context, kind string, rows []artRow, n name
 				if !seriesOwnsItem(sr, row.path) {
 					continue
 				}
-				if p := usablePosters(n, docMap(sr.Document), mutes); len(p) > 0 {
+				if p := usablePosters(n, naming.DocMap(sr.Document), mutes); len(p) > 0 {
 					pendings = append(pendings, pending{row.id, p[0].url})
 				}
 				break
@@ -550,7 +551,7 @@ func (a *app) posters(w http.ResponseWriter, r *http.Request, kind string) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	doc := docMap(row.doc)
+	doc := naming.DocMap(row.doc)
 	// Mute-blind walk (10.3, per-site): the candidates picker is an ADMIN
 	// route (router.go admin group — empty ChainMutes in production) and
 	// serves every candidate so the operator can see what exists; the mute
@@ -666,7 +667,7 @@ func (a *app) putPoster(w http.ResponseWriter, r *http.Request, kind string) {
 		// selection and starts its acquisition — a write path behind the
 		// admin group — never a per-viewer composition; the stored record
 		// is viewer-independent.
-		for _, ref := range usablePosters(n, docMap(row.doc), nil) {
+		for _, ref := range usablePosters(n, naming.DocMap(row.doc), nil) {
 			if ref.source == ns {
 				handoff = append(handoff, ref.url)
 			}

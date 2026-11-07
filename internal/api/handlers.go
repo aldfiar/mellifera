@@ -21,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/mellifera/mellifera/internal/access"
+	"github.com/mellifera/mellifera/internal/naming"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -171,16 +172,14 @@ type ModulePresentation struct {
 
 // titleSourceBinding is one title-walk entry (plugin-title-enrichment D3/D5):
 // the source's plugin id and its effective enablement after gate resolution.
-// UNEXPORTED on purpose: the repo's complexity budget caps package-level
-// exports at 12 per package (mellifera-build check.sh) and api sits exactly
-// at the cap — the pair type is type surface, not package surface. The
-// cmd-side closure constructs pairs through the exported AddTitleSource
-// method; the exported JSON-tagged fields keep the wire bytes identical
-// ({"id":…,"enabled":…}).
-type titleSourceBinding struct {
-	ID      string `json:"id"`
-	Enabled bool   `json:"enabled"`
-}
+// The type itself lives in internal/naming (browse-scale 1.1 — the composer
+// moved there reads it); this alias keeps every api-side signature, JSON tag,
+// and Add* construction path byte-identical — an alias is transparent through
+// slices, so the wire bytes ({"id":…,"enabled":…}) and the cmd closure's
+// calls are unchanged, and the alias adds no package-level export to api
+// (the complexity budget's cap of 12 holds). The cmd-side closure constructs
+// pairs through the exported AddTitleSource method.
+type titleSourceBinding = naming.TitleSourceBinding
 
 // AddTitleSource appends one resolved title-walk pair to the presentation's
 // TitleSources (plugin-title-enrichment D3/D5): the cmd-side closure's
@@ -581,7 +580,7 @@ func (a *app) patchLibrary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.NamingElementName != nil && !validElementTemplate(*req.NamingElementName) {
+	if req.NamingElementName != nil && !naming.ValidElementTemplate(*req.NamingElementName) {
 		writeError(w, http.StatusBadRequest, "bad_request",
 			"naming_element_name's {...} groups must each be exactly {title}, {season}, or {episode}", false)
 		return
@@ -1228,11 +1227,14 @@ func (a *app) scanLibrary(w http.ResponseWriter, r *http.Request) {
 // @Param        path_prefix query string  false "folder prefix filter — only items whose relative_path is under prefix/ (leading/trailing slashes trimmed, '.'/'..' segments rejected)"
 // @Param        top_level   query boolean false "only items with no subfolder in relative_path (conflicts with path_prefix)"
 // @Param        sort        query string  false "sort=path restores id order (default: recommendation score order, rec_score desc)"
+// @Param        genre       query string  false "facet genres filter — only items whose resolved About block carries the value (composes with library/folders/sort/status; unknown value → empty list)"
+// @Param        kind        query string  false "facet kind filter — same law as genre"
 // @Param        limit       query int     false "page size (default 50, max 200)"
 // @Param        offset      query int     false "page offset"
 // @Success      200 {object} itemsResponse
 // @Failure      400 {object} errorBody
 // @Failure      500 {object} errorBody
+// @Failure      503 {object} errorBody
 func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.URL.Query().Get("library"), 10, 64)
 	if err != nil {
@@ -1251,8 +1253,19 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, offset := parsePagination(r)
+	// The facet filter trio minus `status` (browse-scale 3.2, library-facets
+	// delta): on /items the `status` param NAME is pinned to the enrichment-
+	// lifecycle filter by the living specs (plugin-pipeline / async-
+	// enrichment's ?status= passthrough — the filter above), so the facet-
+	// status filter composes on /series only, whose `status` name is
+	// unoccupied. genre/kind compose additively as authored, conjunct with
+	// every existing param.
+	facets := parseFacetFilters(r)
+	facets.status = ""
 	// The caller's scope (6.2): the item set, the scored composition's ledger
-	// facts, and the watched stamps all ride the requesting viewer.
+	// facts, and the watched stamps all ride the requesting viewer — an
+	// invisible library contributes nothing (the store read is visibility-
+	// conjunct, so its row set is empty before any filter runs).
 	v, ctx := a.viewerFor(r)
 	// The display-naming namer is per-library: the naming options off the
 	// library row plus the whole-series map the composed names join against
@@ -1275,11 +1288,17 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 	// the scoredServe block below never runs, so the wire carries no
 	// rec_score either. An explicit sort value still parses first, so an
 	// unknown sort stays a 400 on a photo library like anywhere else.
-	if n.moduleID == photoModuleID {
+	if n.ModuleID == photoModuleID {
 		byPath = true
 	}
+	// A facet-filtered listing must read the FULL filtered set first: the
+	// intersection is applied in Go, so a windowed store read would cut the
+	// page before the filter drops rows (D7's score-then-window law, general-
+	// ized to filter-then-window — the design's whole-library raw scan at
+	// filter time, tolerable by budget). The unfiltered sort=path branch
+	// keeps the store's own SQL window.
 	var items []store.Item
-	if byPath {
+	if byPath && !facets.any() {
 		// The opt-out keeps today's exact contract: the store's own
 		// id-ordered SQL window, unscored.
 		items, err = a.deps.Store.QueryItems(ctx, id, status, pathPrefix, topLevel, limit, offset, v)
@@ -1289,6 +1308,17 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
+	}
+	// Facet filters (browse-scale 3.2): the item id set resolved cmd-side
+	// against the facet corpus, the intersection applied in Go over the
+	// fetched rows — an unknown value resolves to an empty set → 200 empty,
+	// never an error.
+	if facets.any() {
+		_, iids, ok := a.facetIDSet(ctx, w, id, facets.genre, facets.kind, "")
+		if !ok {
+			return
+		}
+		items = facetFilter(items, iids, func(it store.Item) string { return it.ID })
 	}
 	dtos, err := a.itemDTOs(ctx, items, n, v.ChainMutes)
 	if err != nil {
@@ -1315,21 +1345,16 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		for i := range dtos {
 			dtos[i].Watched = facts.completed(dtos[i].ID)
 		}
-		if offset > len(dtos) {
-			offset = len(dtos)
-		}
-		if end := offset + limit; end < len(dtos) {
-			dtos = dtos[offset:end]
-		} else {
-			dtos = dtos[offset:]
-		}
+		dtos = cutPage(dtos, offset, limit)
 	} else {
 		// The watched stamps (watched-states D1) ride the opt-out branch
 		// from the LEDGER ALONE: one batched ListWatched read — no score
 		// composition (rec_score stays absent exactly as today), and the
 		// store's id-ordered window is untouched (a field stamp never
 		// reorders). The photo carve-out rides this same branch and stamps
-		// identically.
+		// identically. A facet-filtered request fetched the FULL set (the
+		// filter-then-window law), so the page cut happens HERE — in Go,
+		// after the intersection, in the store's preserved order.
 		done, err := a.deps.Store.ListWatched(ctx, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1340,6 +1365,9 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 			if _, has := watched[dtos[i].ID]; has {
 				dtos[i].Watched = true
 			}
+		}
+		if facets.any() {
+			dtos = cutPage(dtos, offset, limit)
 		}
 	}
 	writeJSON(w, http.StatusOK, itemsResponse{Items: dtos})
@@ -1670,9 +1698,13 @@ func strongETag(fi os.FileInfo) string {
 // @Router       /series [get]
 // @Param        library query int    true "library id filter"
 // @Param        sort    query string false "sort=path restores path order (default: recommendation score order, rec_score desc)"
+// @Param        genre   query string false "facet genres filter — only series whose resolved About block carries the value (composes with library/sort; unknown value → empty list)"
+// @Param        kind    query string false "facet kind filter — same law as genre"
+// @Param        status  query string false "facet status filter — same law as genre"
 // @Success      200 {object} seriesListResponse
 // @Failure      400 {object} errorBody
 // @Failure      500 {object} errorBody
+// @Failure      503 {object} errorBody
 func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.URL.Query().Get("library"), 10, 64)
 	if err != nil {
@@ -1684,13 +1716,29 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
 	}
+	facets := parseFacetFilters(r)
 	// The caller's scope (6.2): the series set, the episode facts, and the
-	// watched stamps all ride the requesting viewer.
+	// watched stamps all ride the requesting viewer — an invisible library
+	// contributes nothing (the store read is visibility-conjunct, so its row
+	// set is empty before any filter runs).
 	v, ctx := a.viewerFor(r)
 	series, err := a.deps.Store.QuerySeries(ctx, id, "", v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
+	}
+	// Facet filters (browse-scale 3.2, library-facets delta): narrow to the
+	// series whose resolved About block carries EVERY requested value — the
+	// id sets resolved cmd-side against the facet corpus, the intersection
+	// applied in Go over the fetched rows (facetFilter keeps the fetched
+	// order, so sort=path and the scored default's input order both compose).
+	// An unknown value resolves to an empty set → 200 empty, never an error.
+	if facets.any() {
+		sids, _, ok := a.facetIDSet(ctx, w, id, facets.genre, facets.kind, facets.status)
+		if !ok {
+			return
+		}
+		series = facetFilter(series, sids, func(sr store.Series) string { return sr.ID })
 	}
 	// The display-naming namer is per-library: the naming options off the
 	// library row plus the whole-series map the composed names join against.
@@ -1951,6 +1999,21 @@ func parsePagination(r *http.Request) (limit, offset int) {
 	return limit, offset
 }
 
+// cutPage applies offset/limit in Go over a fully-narrowed row set: the
+// scored default's D7 window (score-then-window — no page can outrank page
+// 1) and the facet-filtered path branch's window (browse-scale 3.2 — the
+// intersection runs before the cut, so no matching row is lost to a page
+// boundary). An offset past the end serves an empty page.
+func cutPage[T any](rows []T, offset, limit int) []T {
+	if offset > len(rows) {
+		offset = len(rows)
+	}
+	if end := offset + limit; end < len(rows) {
+		return rows[offset:end]
+	}
+	return rows[offset:]
+}
+
 // parsePathFilter reads the optional folder filters of GET /items (the photos
 // chip lane): path_prefix keeps only items under that folder (any depth),
 // top_level=true only "/"-free paths. Validation and normalization live HERE
@@ -1998,7 +2061,7 @@ func parsePathFilter(r *http.Request) (pathPrefix string, topLevel bool, bad str
 // the row's own, so a series rename reaches the composed name while the
 // item's own override still wins. A store failure on any override read
 // propagates (500 at the call site).
-func (a *app) itemDTOs(ctx context.Context, items []store.Item, n namer, mutes map[string]bool) ([]itemDTO, error) {
+func (a *app) itemDTOs(ctx context.Context, items []store.Item, n naming.Namer, mutes map[string]bool) ([]itemDTO, error) {
 	rows := make([]artRow, len(items))
 	for i, it := range items {
 		rows[i] = artRow{id: it.ID, path: it.RelativePath, doc: it.Document}
@@ -2042,7 +2105,7 @@ func (a *app) itemDTOs(ctx context.Context, items []store.Item, n namer, mutes m
 // poster URL ("" = absent, the field omitted), and n the request's namer,
 // whose itemName chain stamps Display (display-naming 3.1). Factored out so
 // the list and detail handlers share one conversion (DRY).
-func toItemDTO(it store.Item, override, artwork string, n namer) itemDTO {
+func toItemDTO(it store.Item, override, artwork string, n naming.Namer) itemDTO {
 	return itemDTO{
 		ID:            it.ID,
 		ModuleID:      it.ModuleID,
@@ -2054,9 +2117,9 @@ func toItemDTO(it store.Item, override, artwork string, n namer) itemDTO {
 		SchemaVersion: it.SchemaVersion,
 		Status:        it.Status,
 		TitleOverride: override,
-		Display:       n.itemName(it, override),
+		Display:       n.ItemName(it, override),
 		Artwork:       artwork,
-		Metadata:      n.metadataFor(it.Document),
+		Metadata:      n.MetadataFor(it.Document),
 	}
 }
 
@@ -2092,7 +2155,7 @@ func toLibraryDTO(l store.Library) libraryDTO {
 // handler (display-naming 3.1 — the same seam stamps title_override per
 // row). A store failure on any override read propagates (500 at the call
 // site).
-func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n namer, mutes map[string]bool) ([]seriesDTO, error) {
+func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n naming.Namer, mutes map[string]bool) ([]seriesDTO, error) {
 	rows := make([]artRow, len(srs))
 	for i, sr := range srs {
 		rows[i] = artRow{id: sr.ID, doc: sr.Document}
@@ -2117,7 +2180,7 @@ func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n namer, mutes
 // poster URL ("" = absent, the field omitted), and n the request's namer,
 // whose seriesName chain stamps Display (display-naming 3.1). Factored out
 // so the list and detail responses share one conversion (DRY).
-func toSeriesDTO(sr store.Series, override, artwork string, n namer) seriesDTO {
+func toSeriesDTO(sr store.Series, override, artwork string, n naming.Namer) seriesDTO {
 	return seriesDTO{
 		ID:            sr.ID,
 		ModuleID:      sr.ModuleID,
@@ -2127,9 +2190,9 @@ func toSeriesDTO(sr store.Series, override, artwork string, n namer) seriesDTO {
 		SchemaVersion: sr.SchemaVersion,
 		Status:        sr.Status,
 		TitleOverride: override,
-		Display:       n.seriesName(sr, override),
+		Display:       n.SeriesName(sr, override),
 		Artwork:       artwork,
-		Metadata:      n.metadataFor(sr.Document),
+		Metadata:      n.MetadataFor(sr.Document),
 	}
 }
 

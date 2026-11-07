@@ -193,7 +193,7 @@ func TestLibraryPatchNaming(t *testing.T) {
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
-		if got := n.itemName(it, ""); got != "Атланта · S02E06" {
+		if got := n.ItemName(it, ""); got != "Атланта · S02E06" {
 			t.Fatalf("composed = %q, want %q", got, "Атланта · S02E06")
 		}
 		// A DIFFERENT option re-composes the same document on the next read.
@@ -202,7 +202,7 @@ func TestLibraryPatchNaming(t *testing.T) {
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
-		if got := n.itemName(it, ""); got != "02x06 — Атланта" {
+		if got := n.ItemName(it, ""); got != "02x06 — Атланта" {
 			t.Fatalf("re-composed = %q, want %q", got, "02x06 — Атланта")
 		}
 	})
@@ -240,10 +240,10 @@ func TestModuleDefaultItemName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
-		if n.elementTmpl != "{title} · S{season}E{episode}" {
-			t.Fatalf("elementTmpl = %q, want the module default", n.elementTmpl)
+		if n.ElementTmpl != "{title} · S{season}E{episode}" {
+			t.Fatalf("elementTmpl = %q, want the module default", n.ElementTmpl)
 		}
-		if got := n.itemName(it, ""); got != "Ход королевской кобры · S01E03" {
+		if got := n.ItemName(it, ""); got != "Ход королевской кобры · S01E03" {
 			t.Fatalf("composed = %q, want the module-default composition", got)
 		}
 	})
@@ -257,10 +257,10 @@ func TestModuleDefaultItemName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
-		if n.elementTmpl != "{season}x{episode}" {
-			t.Fatalf("elementTmpl = %q, want the library option", n.elementTmpl)
+		if n.ElementTmpl != "{season}x{episode}" {
+			t.Fatalf("elementTmpl = %q, want the library option", n.ElementTmpl)
 		}
-		if got := n.itemName(it, ""); got != "01x03" {
+		if got := n.ItemName(it, ""); got != "01x03" {
 			t.Fatalf("composed = %q, want the option-driven composition", got)
 		}
 		if _, err := st.UpdateLibrary(ctx, libID, nil, nil, nil, nil, strPtr("")); err != nil {
@@ -276,10 +276,10 @@ func TestModuleDefaultItemName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
-		if n.elementTmpl != "" {
-			t.Fatalf("elementTmpl = %q, want \"\" (no template)", n.elementTmpl)
+		if n.ElementTmpl != "" {
+			t.Fatalf("elementTmpl = %q, want \"\" (no template)", n.ElementTmpl)
 		}
-		if got := n.itemName(it, ""); got != "файловое имя" {
+		if got := n.ItemName(it, ""); got != "файловое имя" {
 			t.Fatalf("display = %q, want the _view floor", got)
 		}
 	})
@@ -290,7 +290,7 @@ func TestModuleDefaultItemName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("namerFor: %v", err)
 		}
-		if got := n.itemName(it, ""); got != "файловое имя" {
+		if got := n.ItemName(it, ""); got != "файловое имя" {
 			t.Fatalf("display = %q, want the _view floor", got)
 		}
 	})
