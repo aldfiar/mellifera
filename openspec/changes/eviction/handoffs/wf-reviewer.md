@@ -1,34 +1,98 @@
-# Handoff — wf-surveyor → wf-reviewer (eviction integration audit)
+# Handoff — wf-reviewer → session (eviction GATE 2 verdict)
 
-Written 2026-11-08 after amendment round 1 (initial audit 2026-11-07). This is BELIEF; the evidence is
-`openspec/changes/eviction/integration.md` (graph + grounding + verdicts + resolutions) and the map
-(211665a, CURRENT — re-checked at re-audit: HEAD unchanged, no code drift, `git status` clean over cmd/ internal/ web/src).
-Re-ground everything at the gate against the post-change map.
+Written 2026-11-08, gate run at HEAD e6ab4a2 (branch feature/eviction, pushed). Replaces the
+surveyor's dispatch record (latest-wins per role file; the surveyor's audit remains durable in
+`integration.md`, committed). BELIEF — the evidence is the receipts, the diff, and the fresh
+re-runs cited below.
 
-## Audit summary (post-amendment)
+## Verdict: APPROVED — 8 PASS, 1 FLAG (process residue), 0 FAIL
 
-- Nodes 13 (7 production files incl. the NEW `internal/itest/eviction_joint_test.go`; 6+ test files — 4 of them now IN-contract via the amendment), edges 16 (E1–E16), all grounded at 211665a.
-- Wiring coverage: COVERED — no orphan nodes; every planned edge has an owning task; the former hidden-scope repairs are owned (Q1/Q2 amendments).
-- QA seam coverage: COVERED — every cross-module seam has a unit duty + the Tier-1 joint (5.1 `@qa`, non-empty `qa:` list). Widened duty regexes verified against source: `TestWatchedSemantics` (watched_test.go:77, spans the :216/:234/:256 captures), `TestSweepBudget` (retention_test.go:286, spans :350/:382/:408/:429), `TestRepackSweepGateRefusal` (playback_gate_test.go:175, spans :204) — every -run pattern matches a real test; no silent no-match greens.
-- Complexity: one hot file (`cmd/mellifera/playback.go` — tasks 1.1, 1.2, 2.1; apply group 1 serially, file-ownership constraint). Amendment bonus: 1.1's widened duty compiles `./cmd/mellifera`, closing the 1.1→1.2 compile window entirely. Residual: `internal/itest` first compiles at 5.1's duty — the harness fix (owned by 1.1) is caught there; owned repair, deferred catching, tolerated mid-loop.
-- Register grammar re-checked post-amendment: all 7 task lines single physical lines at indent 0, field lines at two-space indent, ids unchanged N.M; duties at tasks.md:6, :8, :13, :18, :20, :25, :31 are clean single-line bash. The surveyor independently re-ran `openspec validate eviction --strict` through the pin (1.14.0): valid, rc 0.
-- Verified TRUE at source, no question needed: the play verb already emits `queued:false` on deferral today (`packOnPlay` playback.go:78-86 → `playResponse` internal/api/playback.go:88-90); the SPA ignores it (`web/src/lib/api.ts:356` types it, ItemDetail.tsx never reads it) — task 4.1's assumption holds. Budget eviction already unpublishes (playback.go:427-429); `resetStreamsState` is complete-only today (:528-530) exactly as the plan claims; "cmd/mellifera is the only production caller" of `Frontier` holds; nothing outside the three gated seams assumes re-front-after-evict.
+Gate line: **Approved** — conditional only on the session-owned git-check re-green below
+(the close order already mandates it: git-check green → archive).
 
-## Question frontier: EMPTY (4/4 resolved, amendment round 1)
+### Anchors (all run fresh in the reviewer's shell, not trusted from receipts)
 
-1. **Q1 — RESOLVED (amend task 1.1):** 1.1's prose now owns `cmd/mellifera/watched_test.go` (:216/:234/:256 captures) + `internal/itest/qa_playback_harness_test.go` (`pbSweep` :236) as signature-only fixes, no behavior change; duty widened to `go test ./internal/orchestrator ./cmd/mellifera -run 'TestFrontier|TestWatchedSemantics'` (tasks.md:5-6).
-2. **Q2 — RESOLVED (amend task 2.1):** 2.1's prose now owns `cmd/mellifera/retention_test.go` (:350/:382/:408/:429, new arg passes nil) + `cmd/mellifera/playback_gate_test.go` (:204) as signature-only fixes; duty widened with `TestSweepBudget|TestRepackSweepGateRefusal` (tasks.md:12-13).
-3. **Q3 — RESOLVED (amend; the surveyor's recommendation adopted):** the re-arm lives in the `main.go` `Deps.Play` closure BEFORE it delegates to the pack decisions; `packOnPlay`/`retryFailedPack` signatures untouched, their nine direct `playback_gate_test.go` call sites stay compiling. Amended consistently across tasks.md 2.1, design.md D3 (:87) and Interfaces 2 (:144), proposal.md Impact (:90). No edge orphaned: E9's owner and catching duty unchanged in substance (`TestPlayClearsSuppression` asserts the closure re-arm), E13 inherits both the urgent seam and the closure re-arm, and the joint replicates the closure wiring test-side with no production edits (the 5.1 contract's rule stands).
-4. **Q4 — RESOLVED (duty unchanged):** task 5.1's duty stands byte-identical (tasks.md:31); ffmpeg present on the gate machine; the strictness is deliberate — the acceptance joint must actually run. GATE 2 note: confirm the 5.1 receipt's stdout shows a RUN, not a skip.
+- All 9 duties re-run `--by wf-reviewer`: 1.1, 1.2, 2.1, 3.1, 3.2, 3.3, 4.1, 5.1 GREEN;
+  git-check RED solely on ` M openspec/changes/eviction/handoffs/session.md` (see FLAG).
+- Full-suite anchor: `go test ./...` exit 0 (itest 340s real lane, enrich 8.1s, cmd 1.7s,
+  orchestrator 0.44s). Web: `npx vitest run` 50 files / 706 tests passed + `npx tsc --noEmit`
+  clean. `make check` → check.sh: OK exit 0 (lint + exported-symbol budget; the store/sdk >8
+  WARNs are pre-existing, gate-OK).
+- `openspec validate eviction --strict` re-run by the reviewer through the pin (1.14.0):
+  valid, rc 0.
+- Handoff inbox for wf-reviewer: 0 open items.
 
-No new contradictions introduced by the amendments: line refs verified against un-drifted source; the one-line prose law re-checked (§ summary above); the closure placement orphans nothing; validate --strict green re-confirmed by the surveyor, not just the planner's claim.
+### Per-task table
 
-## Waiver list
+| Task | Verdict | Evidence (fresh re-run + file:line) |
+|---|---|---|
+| 1.1 | PASS | duty green 2.2s; `frontier.go:46-66` FrontierIn gains Recency/BuildBytes/PinCapBytes/Suppressed, `:102` 3-value return, `:113-141` serial-recency order + byte-capped PREFIX (overflow ends the walk) + demote fully-watched in input order; cap = `budgetBytes*3/5` locked at `playback.go:461`, no env knob; owned signature fixes byte-verified (watched_test 3× `jobs, fronted, _ :=`, pbSweep `jobs, _, _ :=`); `TestFrontierBoundedPinSet` + `TestFrontierDemote` exist (no silent no-match greens); fully-watched fronted=∅ law intact (watched_test:216-242) |
+| 1.2 | PASS | duty green; `newSweep:422-427` pass order frontier → demotion → retention → budget → integrity, demotion before budget in the SAME pass (freed bytes count in accounting — sweepBudget re-walks disk at :543); `sweepDemotion:505-519` unconditional, evictDir per nonce, `sup.mark` after; `resetStreamsState:709-719` complete always / partial when demoted, nonce-guarded, resets to none; `TestSweepDemotion` asserts all four contract points (demotion_test.go:124-198 incl. budget accounting ≤ budget) |
+| 2.1 | PASS | duty green; `suppressionSet:349-403` mutex-guarded, nil-safe (nil reads as nothing-suppressed — makes the signature-only nil-arg test fixes behave byte-identically); three seams verified: frontier consult (`:462` snapshot → `frontier.go:144-151` no job/pin/bytes), integrity skip with ONE INFO (`:787-793`, one-line + zero-ledger-rows asserted in test), mark at BOTH eviction sites (budget `:594-601` document-named-only via the `named` map; demotion `:518`); closure re-arm `:209-211` AFTER the 404 check, BEFORE packOnPlay/retryFailedPack — all three play paths (plain/retry/legacy-through-packOnPlay) pass through the one closure; signature fixes byte-verified (retention_test 4× `..., nil, nil)`, playback_gate_test 1× `..., nil)`). **Session review note (a) resolved**: the garbling was transcript-side, not disk — seams re-read BY INSPECTION and coherent with D3 (in-memory set, restart re-fronts once, snapshot keeps the policy pure) |
+| 3.1 | PASS | duty green; `streams.go:66-79` EnqueuePackUrgent is EnqueuePack's exact contract mirror (sendMu, running-guard, non-blocking select/default → "urgent lane full", never spills into the shared buffer); `queue.go:45` urgentCapacity=16 locked; `:168` Start creates the channel, `:194-203` Stop closes both under sendMu; doc.go stale "streams lane's dispatch entry" comment fixed (byte-verified diff: now "shared (background) dispatch entry — a play-requested pack rides EnqueuePackUrgent") |
+| 3.2 | PASS | duty green; `main.go:376` Deps.Play rides `newPlayClosure(st, enrichQueue.EnqueuePackUrgent, …)`; `:366` descriptor lazy re-heal and `:513` newSweep keep plain EnqueuePack; legacyRepackOnPlay inherits through packOnPlay (playback.go:77); TestPlayUsesUrgentLane: queued=true under a saturated shared buffer, sweep enqueue honestly refused in the same state |
+| 3.3 | PASS | duty green; `queue.go:330-353` ONE blocking select, urgent case FIRST, shared second, NO default; **session review note (b) resolved**: the 5.1 joint finding's amended mechanism is on disk (worker comment :316-327 carries the idle-queue invariant), the red-first evidence trail holds (waitWorkerParked :738-763 scans runtime.Stack for `[chan receive]` OR `[select]` — the barrier is correct against BOTH loop shapes; the failure message names the joint 5.1 finding; the red-first proof ran pre-register as a finding demonstration, so its absence from receipts is grammar-coherent), and the register trail is coherent (tasks.md 3.3 + receipts 10:57:08 3.1-re-run + 10:57:15 3.3 + git-check 10:59:14; design.md D4 heading byte-verified amended; delta's idle-queue scenario on disk). The noted Stop-semantics deviation (shared-closed case drains the urgent lane's residual buffered tasks, :341-350) is FAITHFUL — Go's select picks among ready cases, the drain preserves "workers drain both" |
+| 4.1 | PASS | duty green (54 tests in the file); both contract tests byte-present as it-name prefixes (:1601, :1648); deferred test asserts the not-queued variant, the ABSENCE of the auto-update promise, retry re-firing POST /play {retry:false} once per activation, and the descriptor fetch count FROZEN across intervals; queued test asserts one POST + bounded poll + no retry control. **Session review note (c) resolved**: deviation #1 (test ids as it-name prefixes) is cosmetic naming — the duty runs the whole file so coverage lands regardless, and the contract names appear verbatim; deviation #2 (onSuccess invalidation gated to queued:true, ItemDetail.tsx:462-470) is FAITHFUL to the web-ui delta's SHALL lines (:23-32): queued:true still invalidates → poll resumes unchanged; queued:false invalidates nothing ("a refused enqueue changed nothing server-side") and the poll effect is gated on packDeferred (:491) — the observable contract is exactly the delta's |
+| 5.1 | PASS | duty green as a RUN (6.8s wall, 4.07s test time, no SKIP in the receipt — Q4 obligation met, ffmpeg present); the joint asserts all three contract legs with falsifiable controls: no-requeue-after-evict (unmarked control fronts the same fixture, so only the suppression explains the silence), play-clears-suppression through the replicated Deps.Play closure, urgent-lane preference under a SATURATED shared buffer (saturators park inside PackItem; dispatch-before-state discriminator); NO production edits — internal/itest diff = 2 new test files + the owned 2-line harness signature fix |
+| git-check | FLAG | the journaled green (10:59:14Z) was true at its time; the FRESH re-run is red solely on ` M openspec/changes/eviction/handoffs/session.md` — the session's GATE-2 record written after git-check closed, pending human approval. Expected gate ordering, not a change defect. Session must commit (session.md + this record + review.md) and re-run `verify eviction git-check` before `openspec archive` |
 
-NONE — nothing was waived; all four questions resolved by amendment (Q1–Q3) or conscious acceptance (Q4).
+### Spec axis (delta → code, all landed)
 
-## Review obligations this record pins
+packaged-playback delta: 14 scenarios, all with landed code — bounded pin set (frontier.go cap
+walk), eviction-suppression (both mark sites + frontier/integrity consults), budget-is-last-resort
+with the loud pinned WARN (playback.go:587-592), completion-driven demotion (sweepDemotion +
+resetStreamsState partial). async-enrichment delta: 4 scenarios incl. the amendment's idle-wake
+(:29-30) — EnqueuePackUrgent + blocking select. web-ui delta: 5 scenarios incl. queued:false —
+ItemDetail not-queued variant. Wire contract untouched (no internal/api files in the diff —
+E14's no-op holds). Strict validate re-run valid rc 0.
 
-- At GATE 2: re-ground E1–E13 post-change via `wf index query callers Frontier` / `EnqueuePack` / `packOnPlay` (map freshens on read); re-run the orphan check; honor the (empty) waiver list — an unwaived, unimplemented edge is a FAIL; re-run the full 5.1 `qa:` list, not just the joint.
-- Verify the suppression set is consulted at all three seams (frontier input, integrity skip with ONE INFO line naming the suppression, marking at BOTH eviction sites — budget and demotion) and that the closure re-arm precedes every play path (plain :372, retry :374, legacy through `packOnPlay` :71).
-- The qa: entries' `tests/…` paths are grammar shape, not repo paths — real files land at `cmd/mellifera/…`, `internal/…`.
+### Integration re-grounding (post-change map)
+
+No symbol was removed or renamed (the six "removed" decls in the diff are same-name signature
+changes, re-verified byte-exactly). All callers of every touched seam are inside the diff:
+`Frontier` (playback.go:483 + owned test sites incl. the joint's shell mirror), `EnqueuePackUrgent`
+(main.go:376 + tests), `EnqueuePack` method-values (main.go:366/:513 + background tests),
+`packOnPlay`/`retryFailedPack` (closure :217/:219 only), sweep* (newSweep :423-427 only).
+Orphan check: every new node is wired — suppressionSet methods, sweepDemotion, EnqueuePackUrgent,
+buildBytes (sweepFrontier:460), newPlayClosure (main.go:376), drainShared/dispatch (worker), the
+urgent channel (Start:168/Stop:203). **No orphans; waiver list empty — no unimplemented edge.**
+E1–E16 all grounded in the diff (E13 legacy inheritance verified at playback.go:77).
+Tool note: `wf index query callers` returned "none in map" for every symbol — the map auto-built
+with symbols=0 in this worktree (tool quirk, recorded here); grep grounding substituted per the
+map's own instruction, byte-exact and complete.
+
+### Standards axis (judgement calls only — no hard violations)
+
+- P3 — `cmd/mellifera/urgent_lane_test.go:29-30`: header comment still describes the pre-3.3
+  mechanism ("the worker's non-blocking urgent receive before the shared range"). The test is
+  mechanism-agnostic and green, but the comment contradicts the amended design D4. Fix: update
+  the comment at the docs/close-out pass.
+- P3 (sanctioned duplication) — `internal/itest/eviction_shell_test.go` mirrors the package-main
+  shell composition (evSweep/evBudget/evDemotion/evIntegrity/evResetNone/evPlayClosure). Forced
+  by Go's package boundary (internal/itest cannot import package main) and disclosed in
+  session.md + the joint test's header comment. Drift risk: a future pass-order change in
+  playback.go can silently diverge the mirror — a future refactor may extract the sweep
+  composition into an importable package (out of this change's scope).
+- P3 — `resetStreamsState(ctx, st, itemID, nonce, demoted bool)`: boolean-flag param, two call
+  sites, documented contract — KISS-acceptable, note only.
+- P3 (belief-record hygiene) — `handoffs/session.md` (superseded content): its 1.2/2.1 summary
+  blocks were swapped and one date read 2026-11-07 for a 2026-11-08 receipt; the receipts and
+  the diff prove the right code landed under the right ids. Evidence governs; no action.
+- Positive notes: control-paired falsifiable tests throughout (suppression, integrity, joint);
+  the nil-safe suppression set is pit-of-success design; the drop-on-full contract is mirrored
+  exactly with honest errors end to end; gofmt clean; the full suite, lint budget, and race run
+  (session) all green.
+
+### Reader advisory (do NOT "fix" these files)
+
+My prose reads of design.md / integration.md / the spec deltas / session.md garbled in-flight
+(same phenomenon as the session's 2.1 transcript report). Every load-bearing fact was
+re-verified byte-exactly via `git show` blobs and grep: the committed artifacts are CLEAN
+(proposal.md, 28/8/10 clean-shaped WHEN/THEN bullets across the three deltas, design.md D2/D4
+intact, strict validate valid). No artifact defect exists; no prose repair is warranted.
+
+### Follow-ups (none block the archive)
+
+1. Session: commit the gate residue and re-run `verify eviction git-check` before archive.
+2. Docs pass: fix the urgent_lane_test.go:29-30 stale mechanism comment.
+3. On the radar: the itest shell-mirror drift risk (see Standards axis).
