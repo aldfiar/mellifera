@@ -34,7 +34,9 @@
 //   - Enrich: the SYNC per-item chain for one item (worker-internal + preserved
 //     for sync/tests; AC-3 deprecate-don't-delete).
 //   - Queue: the in-process async dispatcher (derived queue + worker pool);
-//     its EnqueuePack method is the streams lane's dispatch entry.
+//     its EnqueuePack method is the streams lane's shared (background)
+//     dispatch entry — a play-requested pack rides EnqueuePackUrgent
+//     instead (eviction D4).
 //   - QueueConfig: the §4.4 knobs (zero-value = defaults).
 //   - Stats: a best-effort liveness snapshot (pending/in-flight/done/failed).
 //   - NewQueue: construct a Queue over Deps + QueueConfig (not yet running).

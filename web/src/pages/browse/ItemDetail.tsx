@@ -124,7 +124,8 @@ import {
 // the packaged-playback pair (getPlayback via useQuery; playItem via
 // useMutation — the retry affordance {retry:true} and the pack-on-play
 // {retry:false} one POST per preparing descriptor instance,
-// tv-playback-unblock D6) and the best-effort stall beacon
+// tv-playback-unblock D6; a queued:false answer renders the not-queued
+// deferral variant — eviction 4.1) and the best-effort stall beacon
 // (sendPlaybackEvent, swallowed outcomes). Error edges: ApiError code
 // "not_found" (HTTP 404) → a clear not-found state, never a crash; any other
 // failure → the canonical error (code + message) surfaced inline.
@@ -446,11 +447,26 @@ function ItemLoadedView(props: {
       ? descriptorInstanceId(descriptor)
       : null;
   const packInstanceRef = useRef<string | null>(null);
+  // The bounded poll's stall flag (D6) and the deferral answer (eviction
+  // 4.1): a queued:false body on the preparing POST means the enqueue was
+  // REFUSED — the build queue is busy. The page renders the not-queued
+  // preparing variant (the deferral named, a retry control carried) and
+  // stops polling as though a build were in flight — it never promises the
+  // auto-update for a pack that was never enqueued; queued:true, including
+  // a re-queue from the retry control, hands back to the ordinary poll.
+  const [stalled, setStalled] = useState(false);
+  const [packDeferred, setPackDeferred] = useState(false);
   const playPack = useMutation({
     mutationFn: () => playItem(item.id, { retry: false }),
     retry: 0,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["playback", item.id] });
+    onSuccess: (answer) => {
+      setPackDeferred(!answer.queued);
+      setStalled(false);
+      // Only a real re-queue is worth a descriptor refetch; a refused
+      // enqueue changed nothing server-side.
+      if (answer.queued) {
+        void queryClient.invalidateQueries({ queryKey: ["playback", item.id] });
+      }
     },
   });
   const playPackMutate = playPack.mutate;
@@ -459,6 +475,7 @@ function ItemLoadedView(props: {
       return;
     }
     packInstanceRef.current = packInstanceKey;
+    setPackDeferred(false);
     playPackMutate();
   }, [packInstanceKey, playPackMutate]);
 
@@ -467,11 +484,11 @@ function ItemLoadedView(props: {
   // stops, the page settles into the honest stall state, and the stall is
   // beaconed once (fire-and-forget — sendPlaybackEvent never rejects).
   // Leaving preparing (hls mounted, failed handed to retry, unsupported)
-  // tears the interval down and clears the stall.
-  const [stalled, setStalled] = useState(false);
+  // tears the interval down and clears the stall. A standing deferral
+  // (queued:false) holds the poll too — nothing is in flight to wait for.
   const refetchDescriptor = playback.refetch;
   useEffect(() => {
-    if (packInstanceKey === null || stalled) {
+    if (packInstanceKey === null || stalled || packDeferred) {
       return;
     }
     const startedAt = Date.now();
@@ -491,10 +508,11 @@ function ItemLoadedView(props: {
       void refetchDescriptor();
     }, PREPARING_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [packInstanceKey, stalled, item.id, refetchDescriptor]);
+  }, [packInstanceKey, stalled, packDeferred, item.id, refetchDescriptor]);
   useEffect(() => {
     if (packInstanceKey === null) {
       setStalled(false);
+      setPackDeferred(false);
     }
   }, [packInstanceKey]);
 
@@ -595,7 +613,14 @@ function ItemLoadedView(props: {
     : descriptor.state === "unsupported"
       ? <UnsupportedBanner reason={descriptor.state_reason} />
       : descriptorPreparing
-        ? <PreparingSurface stalled={stalled} />
+        ? (
+            <PreparingSurface
+              deferred={packDeferred}
+              stalled={stalled}
+              onRetry={() => playPack.mutate()}
+              retrying={playPack.isPending}
+            />
+          )
         : (
           <Player
             itemId={item.id}
@@ -1598,26 +1623,50 @@ function HeroImage(props: {
 
 // PreparingSurface — the pack-on-play preparing state's stage
 // (tv-playback-unblock): REPLACES the player attach while the descriptor
-// answers preparing — no <video>, no raw-original src. The stall variant
+// answers preparing — no <video>, no raw-original src. The deferred variant
+// (eviction 4.1: the play POST answered queued:false — the enqueue was
+// refused, the build queue is busy) names the deferral and carries a retry
+// control re-firing POST /play {retry:false}; it never promises the
+// auto-update for a pack that was never enqueued. The stall variant
 // (the bounded poll window exhausted) keeps the same surface but names what
 // happened and what to do next — the page never spins forever and never
 // pretends progress.
-function PreparingSurface(props: { stalled: boolean }): ReactElement {
+function PreparingSurface(props: {
+  deferred: boolean;
+  stalled: boolean;
+  onRetry: () => void;
+  retrying: boolean;
+}): ReactElement {
+  // The deferral outranks the stall: a refused enqueue is the honest state
+  // even if the (stopped) poll window had already exhausted.
+  const stalledShown = props.stalled && !props.deferred;
   return (
     <div
       role="status"
       className="flex min-h-40 flex-col items-center justify-center gap-2 rounded-lg border bg-card p-6 text-center"
     >
       <p className="text-sm font-medium">
-        {props.stalled
+        {stalledShown
           ? "Подготовка занимает дольше обычного — упакованная версия ещё не готова."
           : "Подготовка к воспроизведению…"}
       </p>
       <p className="text-xs text-muted-foreground">
-        {props.stalled
-          ? "Упаковка не собралась в отведённое время (например, очередь сборки занята). Попробуйте открыть страницу позже."
-          : "Упакованная версия собирается — страница обновится сама."}
+        {props.deferred
+          ? "Упакованная версия не поставлена в очередь — очередь сборки занята."
+          : stalledShown
+            ? "Упаковка не собралась в отведённое время (например, очередь сборки занята). Попробуйте открыть страницу позже."
+            : "Упакованная версия собирается — страница обновится сама."}
       </p>
+      {props.deferred ? (
+        <button
+          type="button"
+          onClick={props.onRetry}
+          disabled={props.retrying}
+          className="rounded-md border bg-card px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-accent disabled:opacity-50"
+        >
+          {props.retrying ? "Повторная попытка…" : "Повторить"}
+        </button>
+      ) : null}
     </div>
   );
 }

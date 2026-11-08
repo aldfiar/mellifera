@@ -1,0 +1,38 @@
+# Session handoff — eviction
+
+## GATE 1 (approved 2026-11-07)
+
+- Proposal approved by the human with ALL four surveyor answers applied as pre-register amendments (Q1 task 1.1 prose owns watched_test.go + qa_playback_harness_test.go signature-only fixes, duty widened; Q2 task 2.1 prose owns retention_test.go + playback_gate_test.go signature-only fixes, duty widened; Q3 re-arm moved to the main.go closure — packOnPlay/retryFailedPack signatures untouched; Q4 unchanged, ffmpeg 7.1.1 verified on the gate machine).
+- `openspec validate eviction --strict` green (rc 0) post-amendment.
+- Surveyor re-ran post-amendment: question frontier EMPTY (4/4 RESOLVED).
+- Baseline: full `go test ./...` green in this worktree @ base 211665a.
+
+## Environment facts
+
+- Pipeline home MOVED into this worktree per the browse-scale loop lesson (duties execute at the cwd git toplevel; the header `worktree:` key reaches only the built-in git-check). Header: lane strict, wf_cmd resolved, worktree key present.
+- Change name `eviction`; worktree base 211665a — NOTE main has since moved (PR #32 browse-scale merged @ bd7edcc); merge-back may need a rebase or a clean merge; ItemDetail.tsx overlap possible (4.1 touches it).
+- Apply schedule (1.1/1.2/2.1 all touch cmd/mellifera/playback.go → serial): 1.1 → 1.2 → 2.1 → [3.1 parallel 4.1] → 3.2 → 5.1.
+- Production context (alatoic): data dir moved to /mnt/onlas/mellifera-data 7 Nov; churn continues there until this change deploys.
+
+## Apply progress
+
+- **1.1** (frontier bounded pin set: Recency/BuildBytes/PinCapBytes/Suppressed in FrontierIn; recency-prefix working set under the cap) — GREEN, receipt @ 2026-11-07T07:39:52Z, disk-verified.
+- **1.2** (newPlayClosure + suppression set: sup.clear after the 404 check, before packOnPlay/retryFailedPack) — GREEN, receipt @ 2026-11-07T08:03:52Z, disk-verified.
+- **2.1** (sweep pass order: frontier → demotion → retention → budget → integrity; sweepDemotion; resetStreamsState demoted flag; sweepIntegrity skips suppressed with one INFO; main.go composition root wires suppress into Play + newSweep) — GREEN, receipt on disk, disk-verified via `wf pipeline status eviction` (3/8). Coder flagged one deviation-within-scope: demotion_test.go arity ripple. **Reviewer note: re-read playback.go suppression seams (newPlayClosure, suppressionSet, sweepIntegrity skip) + suppression_test.go at GATE 2 — coder reported transcript garbling during its run.**
+- **[3.1 parallel 4.1]** — GREEN, both receipts rc=0 on disk, disk-verified (status 5/8; diff census matches both contracts exactly: internal/enrich trio + the ItemDetail pair). 3.1 coder notes for the reviewer: workers parked on the shared receive notice an urgent arrival on their next loop iteration (per pinned design); internal/enrich/doc.go ~37 calls EnqueuePack "the streams lane's dispatch entry" — stale until 3.2, else a one-line docs fix. 4.1 coder notes: test ids carried as it-name prefixes (no Test- precedent in the file, byte-greppable); onSuccess invalidation gated to queued:true inside the deferral branch (new micro-decision); installed web/node_modules via npm ci and fixed web/node_modules gitignore matching.
+- **3.2** (main.go packOnPlay/retryFailedPack closures ride EnqueuePackUrgent) — GREEN, receipt rc=0 (duty `go test ./cmd/mellifera -run TestPlayUsesUrgentLane -count=1`), disk-verified (6/8). main.go composition: Play rides EnqueuePackUrgent, descriptor/sweep stay plain; playback.go doc-comment truthing; the doc.go fix landed; NEW urgent_lane_test.go pins lane landing (green incl. -race x3).. Also carries the one doc-line fix to internal/enrich/doc.go (~37) naming EnqueuePack the shared/background entry.
+- **5.1** (@wf-qa joint itest per contracts/5.1-joint-suppression-play.md) — GREEN, receipt rc=0 @ 2026-11-08T10:38:16Z (ffmpeg-gated duty), disk-verified (7/8; only git-check remains). Deliverables: internal/itest/eviction_joint_test.go + eviction_shell_test.go (mirrored shell, file-size split per code-quality limit), 3/3 stability passes + full itest package pass. Original dispatch note: (@wf-qa; six-slot contract contracts/5.1-joint-suppression-play.md; duty gates on command -v ffmpeg; qa: list = the joint test + the two landed unit seams).
+
+- **FINDING (5.1 qa, 8 Nov, session-verified at queue.go ~325):** the urgent lane is dead on an IDLE queue — worker loop-top urgent select is non-blocking, then the loop parks in a bare shared receive; an urgent send cannot wake it (Go channel semantics). Production norm for plays; GATE 2 would fail the async-enrichment delta's own requirement. Harness repro: pending=1/inflight=0, zero pack-seam entries, 60s. design.md ~103 pins the defective mechanism ("non-blocking urgent receive before ranging"). Also from qa: fixture needed module "serial" (tv binds base-scanner, no series rows); one invented-API slip (ListFailuresSync) vet-caught and replaced with the real Store.ListFailures.
+
+## Amendment (LANDED 8 Nov)
+
+Planner authored + validate --strict rc 0 (pin 1.14.0): NEW task 3.3 (worker selects over BOTH lanes in ONE blocking select, urgent first, no default: fallthrough; TestUrgentLaneWakesIdleWorker), design.md D4 mechanism sentence corrected (~103) with the idle-queue invariant as the reason, async-enrichment delta gained the scenario "An idle queue wakes a parked worker for the play pack" (4 scenarios total). Receipted task lines byte-identical — register re-ran clean: 5 groups / 9 tasks, drift gate passed, status 7/9.
+
+Planner dispatched to author: NEW task 3.3 (worker selects over BOTH lanes, urgent preferred, in one blocking select; TestUrgentLaneWakesIdleWorker; existing lane tests stay green), design.md mechanism correction, idle-queue scenario in the async-enrichment delta if absent. Receipted task lines stay byte-identical (drift gate). Then: re-register → apply 3.3 (@wf-coder) → re-run verify 3.1 on the amended code (fresh receipt keeps cmd-match green) → git-check → GATE 2.
+
+## Next
+
+3.3 DISPATCHED (@wf-coder, TDD order: red-first TestUrgentLaneWakesIdleWorker proving the defect, then the select fix, then green; journaled re-run of 3.1's duty on the amended code + journaled 3.3 verify; regression sanity: full enrich package + TestPlayUsesUrgentLane).
+
+After 3.3 lands green: built-in git-check (commit + push from the worktree) → GATE 2 (@wf-reviewer re-runs every verify `--by wf-reviewer`, re-grounds integration.md's planned edges, honors the playback.go-suppression-seams reviewer note, runs the full-suite anchor) → human archive approval in review.md → `openspec archive eviction --yes` → @wf-docs → close-out notes → `wf pipeline clean` → `wf worktree merge-back` (human-gated; main has moved to bd7edcc since base 211665a).

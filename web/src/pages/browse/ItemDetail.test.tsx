@@ -1597,6 +1597,83 @@ describe("ItemDetail — pack-on-play wiring (tv-playback-unblock 4.2)", () => {
     // No auto-retry: one POST ever.
     expect(playSpy).toHaveBeenCalledTimes(1);
   });
+
+  it("TestPreparingDeferredShowsRetry — a queued:false answer renders the not-queued preparing state: the deferral is named, the retry control re-fires POST /play {retry:false} once per activation, and no poll rides the deferral", async () => {
+    mockPackItem();
+    const playSpy = vi
+      .spyOn(apiModule, "playItem")
+      .mockResolvedValue({ queued: false });
+    const getSpy = vi
+      .spyOn(apiModule, "getPlayback")
+      .mockResolvedValue({ ...PREPARING_PLAYBACK });
+
+    renderAtId(PACK_ITEM_ID, freshClient());
+    await settle();
+
+    // The not-queued variant names the deferral honestly — the auto-update
+    // promise is gone for a pack that was never enqueued.
+    expect(
+      screen.getByText(
+        "Упакованная версия не поставлена в очередь — очередь сборки занята.",
+      ),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(
+        "Упакованная версия собирается — страница обновится сама.",
+      ),
+    ).toBeNull();
+
+    // The instance POST fired once; the retry control re-fires the SAME
+    // pack-on-play verb, once per activation.
+    expect(playSpy).toHaveBeenCalledTimes(1);
+    expect(playSpy).toHaveBeenCalledWith(PACK_ITEM_ID, { retry: false });
+    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    await flush(PREPARING_POLL_INTERVAL_MS);
+    expect(playSpy).toHaveBeenCalledTimes(2);
+    expect(playSpy).toHaveBeenLastCalledWith(PACK_ITEM_ID, { retry: false });
+
+    // No poll rides the deferral: the descriptor fetch count is frozen.
+    const callsAtDeferral = getSpy.mock.calls.length;
+    await flush(PREPARING_POLL_INTERVAL_MS * 3);
+    expect(getSpy.mock.calls.length).toBe(callsAtDeferral);
+
+    // The retry answered queued:false again — the deferral stands, and the
+    // POST count still moves only with activations.
+    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    await flush(PREPARING_POLL_INTERVAL_MS);
+    expect(playSpy).toHaveBeenCalledTimes(3);
+    expect(getSpy.mock.calls.length).toBe(callsAtDeferral);
+  });
+
+  it("TestPreparingQueuedPolls — a queued:true answer keeps the bounded poll and the single-POST-per-instance law: one POST, the descriptor refetches every interval, no retry control", async () => {
+    mockPackItem();
+    const playSpy = vi
+      .spyOn(apiModule, "playItem")
+      .mockResolvedValue({ queued: true });
+    const getSpy = vi
+      .spyOn(apiModule, "getPlayback")
+      .mockResolvedValue({ ...PREPARING_PLAYBACK });
+
+    renderAtId(PACK_ITEM_ID, freshClient());
+    await settle();
+
+    // One POST for the preparing instance; no not-queued variant, no retry
+    // control.
+    expect(playSpy).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByText(
+        "Упакованная версия не поставлена в очередь — очередь сборки занята.",
+      ),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Повторить" })).toBeNull();
+
+    // The bounded poll rides: the descriptor refetches across the intervals
+    // while the POST count stays at exactly one.
+    const callsAtPollStart = getSpy.mock.calls.length;
+    await flush(PREPARING_POLL_INTERVAL_MS * 3);
+    expect(getSpy.mock.calls.length).toBeGreaterThan(callsAtPollStart);
+    expect(playSpy).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("ItemDetail — subtitle control (serial-watch-flow 5.1/5.2)", () => {

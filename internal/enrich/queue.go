@@ -38,6 +38,12 @@ const (
 // deriveBatch is the pagination width for derivation's QueryItems scan.
 const deriveBatch = 1000
 
+// urgentCapacity is the preferred lane's locked capacity (play-priority pack
+// dispatch): wide enough to absorb a burst of concurrent plays, small enough
+// that a saturated lane refuses honestly instead of hiding behind the shared
+// buffer. Deliberately NOT a QueueConfig field — no env knob.
+const urgentCapacity = 16
+
 // QueueConfig tunes the async queue. Every field has a §4.4 zero-value default
 // applied by NewQueue, so a literal QueueConfig{} is a valid, production-default
 // configuration; cmd/mellifera overrides fields from MELLIFERA_ENRICH_* env.
@@ -108,7 +114,8 @@ type Queue struct {
 
 	explicit *explicitSet // process-lifetime explicitly-refreshed (row, plugin) pairs (enrichment 3.4)
 
-	work chan laneTask // bounded buffer of dispatch tasks; closed by Stop
+	work   chan laneTask // shared bounded buffer of dispatch tasks; closed by Stop
+	urgent chan laneTask // preferred lane (play-requested packs, urgentCapacity); closed by Stop
 
 	wg       sync.WaitGroup // worker goroutines
 	feederWG sync.WaitGroup // active derive-and-feed goroutines
@@ -158,6 +165,7 @@ func (q *Queue) Start(ctx context.Context) error {
 		return errAlreadyStarted
 	}
 	q.work = make(chan laneTask, q.cfg.Workers*16) // bounded buffer: backpressure on slow drains — wide enough to absorb a pack storm (the sweep's frontier burst after a fresh library or an opt-in codec flip) without starving metadata dispatch
+	q.urgent = make(chan laneTask, urgentCapacity) // preferred lane (EnqueuePackUrgent): a play's pack never queues behind buffered background work
 	ctx, q.cancel = context.WithCancel(ctx)
 	q.leases = newLeaseMap()
 	q.seedLibs(ctx) // fresh-boot fix (enrichment D-8): sweep libraries persisted by a previous process
@@ -191,8 +199,9 @@ func (q *Queue) Stop() {
 		q.cancel() // halt feeders (they select on ctx.Done); workers hard-abort current item
 	}
 	q.feederWG.Wait() // no feeder writes after this point
-	q.sendMu.Lock()   // no EnqueuePack send can race the close
-	close(q.work)     // workers drain remaining buffered items, then range ends
+	q.sendMu.Lock()   // no enqueue send can race the close
+	close(q.urgent)   // workers drain both lanes' remaining buffered tasks, then exit
+	close(q.work)
 	q.sendMu.Unlock()
 	q.wg.Wait()
 	q.cancel = nil
@@ -304,21 +313,63 @@ func uniqueItems(tasks []queueTask) []string {
 	return out
 }
 
-// worker is one pool goroutine. It ranges over the channel, routing each task
-// to its lane's driver — the metadata dispatch (workItem) or the streams lane
-// (workStreams) — until Stop closes the channel. The driver honors ctx
+// worker is one pool goroutine. The loop selects over BOTH lanes in ONE
+// blocking select, the urgent case first and the shared case second, with no
+// default fallthrough: the preferred lane's play packs dispatch ahead of any
+// buffered background work, and a worker parked in the select wakes directly
+// on an urgent arrival (the idle-queue invariant, D4 — the old non-blocking
+// urgent pre-check plus a bare shared receive parked the worker where an
+// urgent send could not wake it, the joint 5.1 finding). Background work
+// never enters the urgent lane (EnqueuePack vs EnqueuePackUrgent), so the
+// preference cannot starve the shared dispatch. The driver honors ctx
 // per-source (a cancelled ctx hard-aborts the in-flight row to failed, then
-// the loop continues draining remaining buffered rows before the close ends
-// the range).
+// the loop continues draining both lanes' remaining buffered tasks until
+// Stop's closes end them).
 func (q *Queue) worker(ctx context.Context) {
 	defer q.wg.Done()
-	for t := range q.work {
-		if t.streams {
-			q.workStreams(ctx, t.rowID)
-			continue
+	for {
+		select {
+		case t, ok := <-q.urgent:
+			if !ok {
+				// urgent closed and drained (Stop): the shared buffer may
+				// still hold work — drain it, then exit.
+				q.drainShared(ctx)
+				return
+			}
+			q.dispatch(ctx, t)
+		case t, ok := <-q.work:
+			if !ok {
+				// shared closed and drained (Stop — Stop closes both lanes
+				// under sendMu, so the urgent lane is closed here too): the
+				// select's pick among ready cases can land here while the
+				// urgent lane still holds buffered tasks — drain them, then
+				// exit.
+				for t := range q.urgent {
+					q.dispatch(ctx, t)
+				}
+				return
+			}
+			q.dispatch(ctx, t)
 		}
-		q.workItem(ctx, t.rowID)
 	}
+}
+
+// drainShared ranges the shared buffer to its close (Stop), dispatching every
+// remaining task — the post-close tail of a worker that saw the urgent lane
+// close first.
+func (q *Queue) drainShared(ctx context.Context) {
+	for t := range q.work {
+		q.dispatch(ctx, t)
+	}
+}
+
+// dispatch routes one taken task to its lane's driver.
+func (q *Queue) dispatch(ctx context.Context, t laneTask) {
+	if t.streams {
+		q.workStreams(ctx, t.rowID)
+		return
+	}
+	q.workItem(ctx, t.rowID)
 }
 
 // queueTask is one derived (row, plugin) pending unit — row being an item OR a

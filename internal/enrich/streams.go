@@ -31,11 +31,12 @@ const streamsLaneID = "__streams__"
 const streamsOwner = "streams"
 
 // EnqueuePack enqueues one packaging job for itemID into the running queue's
-// channel (the streams lane's dispatch entry — the frontier's and the play
-// verb's re-enqueue point). It returns an error when the queue is not running
-// or its buffer is momentarily full; a job whose item's lease is already held
-// is dropped by the driver (the in-flight run owns the item). The channel send
-// is serialized against Stop's close by sendMu.
+// shared buffer (the BACKGROUND dispatch entry — the frontier sweep, the
+// integrity repack, and the descriptor's lazy re-heal; a pack requested by an
+// actual play rides EnqueuePackUrgent instead). It returns an error when the
+// queue is not running or its buffer is momentarily full; a job whose item's
+// lease is already held is dropped by the driver (the in-flight run owns the
+// item). The channel send is serialized against Stop's close by sendMu.
 func (q *Queue) EnqueuePack(itemID string) error {
 	q.sendMu.Lock()
 	defer q.sendMu.Unlock()
@@ -48,6 +49,32 @@ func (q *Queue) EnqueuePack(itemID string) error {
 		return nil
 	default:
 		return errors.New("enrich: queue buffer full")
+	}
+}
+
+// EnqueuePackUrgent is the preferred lane's dispatch entry (play-priority
+// pack dispatch): a pack requested by an actual play — the play verb's
+// enqueue seam — buffers here and every worker takes urgent tasks before the
+// shared buffer, so a play's pack never queues behind background work. The
+// contract is EnqueuePack's exactly: an error when the queue is not running
+// or the lane is momentarily full — never a blocking send, never a spill
+// into the shared buffer (honest backpressure the play verb answers
+// queued:false with). The lane's capacity is the locked urgentCapacity — no
+// env knob. Background work must keep EnqueuePack: nothing but the play
+// closures belongs in this lane. The send is serialized against Stop's close
+// by sendMu like EnqueuePack's.
+func (q *Queue) EnqueuePackUrgent(itemID string) error {
+	q.sendMu.Lock()
+	defer q.sendMu.Unlock()
+	if !q.running.Load() {
+		return errors.New("enrich: queue not running")
+	}
+	select {
+	case q.urgent <- laneTask{rowID: itemID, streams: true}:
+		q.statPending.Add(1)
+		return nil
+	default:
+		return errors.New("enrich: urgent lane full")
 	}
 }
 

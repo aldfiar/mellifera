@@ -3,7 +3,10 @@
 
 package orchestrator
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // Frontier job reasons (informational — carried on Job for the operator log).
 const (
@@ -44,6 +47,23 @@ type FrontierIn struct {
 	Serials []Serial
 	Watched map[string]bool
 	Now     time.Time
+	// Recency is the per-item playback-progress stamp map (the shell's
+	// watchState read): a serial's recency is the most recent stamp among
+	// its episodes — the working-set walk visits most recent first.
+	Recency map[string]time.Time
+	// BuildBytes is the position item's current build size (dirSize over
+	// the artifact root at the shell — this package stays disk-free).
+	BuildBytes map[string]int64
+	// PinCapBytes caps the working set's accumulated build bytes; <=0 is
+	// unbounded — the zero value reproduces today's behavior.
+	PinCapBytes int64
+	// Suppressed marks the items whose document-named build a policy
+	// eviction took this process lifetime (the shell's suppression set,
+	// eviction D3): a suppressed position emits no job, joins no pin, and
+	// contributes no bytes. A real play clears the mark (the shell's
+	// Deps.Play closure), which re-fronts the serial here. Zero value
+	// (nil) suppresses nothing — the pre-eviction behavior byte for byte.
+	Suppressed map[string]bool
 }
 
 // Job is ONE enqueue decision: the item to package, its library (for
@@ -64,28 +84,44 @@ type Job struct {
 // library is skipped at the gate; a never-pre-warmed movie library is
 // absent from the input by construction (movies pack on play — OnPlay).
 //
-// It returns the eligible jobs AND the WORKING SET — the frontier-position
-// item of every gated, not-fully-watched serial, whether or not a job was
-// emitted for it this pass. The working set is the budget sweep's eviction
-// pin: a position item that is packaged (or cooling) emits no job today but
-// WILL be the frontier's next repack after any eviction — pinning only the
-// job-emitting ticks is the evict→repack churn loop (the set empties exactly
-// when fresh builds exist to protect). The result is deterministic: serials
-// in input order, one job per serial at most, empty slice never nil.
-func Frontier(in FrontierIn) ([]Job, map[string]bool) {
+// It returns three decisions. The WORKING SET (pinned) is the recency-ordered
+// PREFIX of the frontier positions whose accumulated build bytes fit
+// PinCapBytes — serials ordered by serial recency (the most recent stamp
+// among the serial's episodes; a stampless serial oldest; input order
+// breaking ties), and a position that would overflow the cap ends the walk;
+// a non-positive cap is unbounded. Jobs emit ONLY from pinned positions.
+// The working set is the budget sweep's eviction pin: a position item that
+// is packaged (or cooling) emits no job today but WILL be the frontier's
+// next repack after any eviction — and an unbounded set guarantees the
+// evict→repack churn loop, which is exactly what the cap breaks (the set
+// empties when fresh builds no longer fit under the cap to protect). DEMOTE
+// carries every fully-watched serial's episode ids in input order (the
+// judgment stays in this policy — the executor is the shell's, task 1.2).
+// The result is deterministic; the slices are empty, never nil, and the
+// zero-value input reproduces the pre-cap behavior byte for byte.
+func Frontier(in FrontierIn) ([]Job, map[string]bool, []string) {
 	jobs := make([]Job, 0)
-	fronted := make(map[string]bool)
+	pinned := make(map[string]bool)
+	demote := make([]string, 0)
+	positions := make([]frontierPosition, 0)
 	for _, sr := range in.Serials {
 		if !sr.StreamsEnabled || len(sr.Episodes) == 0 {
 			continue // gate: disabled library (or empty serial) — nothing fronts
 		}
 		last := -1
-		for i, ep := range sr.Episodes {
-			if in.Watched[ep.ItemID] {
+		var recency time.Time
+		for i, e := range sr.Episodes {
+			if stamp, ok := in.Recency[e.ItemID]; ok && stamp.After(recency) {
+				recency = stamp // serial recency: the most recent episode stamp
+			}
+			if in.Watched[e.ItemID] {
 				last = i // canonical order: the LAST index wins
 			}
 		}
 		if last == len(sr.Episodes)-1 {
+			for _, e := range sr.Episodes {
+				demote = append(demote, e.ItemID) // fully watched: the demote list
+			}
 			continue // the whole serial is watched — nothing is past the frontier
 		}
 		reason := reasonPilot
@@ -93,13 +129,49 @@ func Frontier(in FrontierIn) ([]Job, map[string]bool) {
 			reason = reasonNext
 		}
 		cand := sr.Episodes[last+1] // pilot (last<0) or K+1-after-watched
-		fronted[cand.ItemID] = true // the working set: pinned whether or not eligible
-		if !eligible(cand, in.Now) {
+		positions = append(positions, frontierPosition{
+			libID: sr.LibraryID, reason: reason, cand: cand,
+			bytes: in.BuildBytes[cand.ItemID], recency: recency,
+		})
+	}
+	// Most recently watched first; the stable sort keeps input order for
+	// equal stamps and leaves stampless (zero-time) serials oldest.
+	sort.SliceStable(positions, func(i, j int) bool {
+		return positions[i].recency.After(positions[j].recency)
+	})
+	var pinnedBytes int64
+	for _, pos := range positions {
+		if in.Suppressed[pos.cand.ItemID] {
+			// Eviction D3: the position item's build was policy-evicted this
+			// process lifetime — no job, no pin, no bytes (the mark also
+			// keeps the position out of the cap's walk, so it can neither
+			// end the prefix nor consume budget for builds it will never
+			// receive). A real play clears the mark, which re-fronts here.
 			continue
 		}
-		jobs = append(jobs, Job{ItemID: cand.ItemID, LibraryID: sr.LibraryID, Reason: reason})
+		if in.PinCapBytes > 0 { // <=0: unbounded — the zero value's behavior
+			pinnedBytes += pos.bytes
+			if pinnedBytes > in.PinCapBytes {
+				break // the prefix ends: this position would overflow the cap
+			}
+		}
+		pinned[pos.cand.ItemID] = true
+		if eligible(pos.cand, in.Now) {
+			jobs = append(jobs, Job{ItemID: pos.cand.ItemID, LibraryID: pos.libID, Reason: pos.reason})
+		}
 	}
-	return jobs, fronted
+	return jobs, pinned, demote
+}
+
+// frontierPosition is one gated, not-fully-watched serial's working-set
+// candidate: the frontier episode, its job facts, the serial's recency
+// stamp, and the candidate's build size (absent from BuildBytes = none).
+type frontierPosition struct {
+	libID   int64
+	reason  string
+	cand    Episode
+	bytes   int64
+	recency time.Time
 }
 
 // OnPlay is the pack-on-play decision (D-8; the movie half of the frontier

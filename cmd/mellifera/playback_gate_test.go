@@ -201,7 +201,7 @@ func TestRepackSweepGateRefusal(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	sweepIntegrity(ctx, st, root, validate, enqueue, false)
+	sweepIntegrity(ctx, st, root, validate, enqueue, false, nil)
 
 	if len(enqueued) != 1 || enqueued[0] != "it_openbad" {
 		t.Errorf("enqueued = %v, want exactly it_openbad (the gate-open broken build)", enqueued)

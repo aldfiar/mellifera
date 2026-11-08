@@ -4,16 +4,20 @@
 package enrich
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mellifera/mellifera/internal/access"
+	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/pack"
 	"github.com/mellifera/mellifera/internal/refusal"
 	"github.com/mellifera/mellifera/internal/store"
@@ -540,4 +544,258 @@ func TestStreamsMasterMarker(t *testing.T) {
 			t.Fatalf("legacy doc carries master %v, want an absent key (it predates the master lane)", st["master"])
 		}
 	})
+}
+
+// settledPackItem seeds a streamsItem whose every queueable tv-module source
+// is done (the tmdb namespace added to the streamsItem shape), so Start's
+// derivation sweep derives nothing and only lane tasks ride the channels —
+// the lane tests observe exactly the tasks they enqueue themselves.
+func settledPackItem(t *testing.T, s *store.Store, libID int64, id string) {
+	t.Helper()
+	it := streamsItem(t, s, libID, id)
+	var doc map[string]any
+	if err := json.Unmarshal(it.Document, &doc); err != nil {
+		t.Fatalf("unmarshal %s document: %v", id, err)
+	}
+	srcs, ok := doc["sources"].(map[string]any)
+	if !ok {
+		t.Fatalf("item %s document carries no sources map", id)
+	}
+	srcs["tmdb"] = map[string]any{"title": "done"}
+	srcs["frame-grabber"] = map[string]any{"title": "done"} // the tv seed's 4th queueable source (registry.go)
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal %s document: %v", id, err)
+	}
+	it.Document = b
+	if err := s.PutItem(context.Background(), it); err != nil {
+		t.Fatalf("PutItem %s: %v", id, err)
+	}
+}
+
+// packHold records pack-seam call order and holds the worker on one background
+// item — the determinism primitive for the lane tests: started closes when
+// the held item enters the seam, release frees it.
+type packHold struct {
+	mu      sync.Mutex
+	order   []string
+	started chan struct{}
+	release chan struct{}
+}
+
+func newPackHold() *packHold {
+	return &packHold{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+// seam is the Deps.PackItem over the hold: it records call order, blocks on
+// holdID until release closes, and answers every call with a canned outcome.
+func (h *packHold) seam(holdID string) func(context.Context, string, string, map[string]any, []string) (pack.PackOutcome, error) {
+	return func(_ context.Context, itemID, _ string, _ map[string]any, _ []string) (pack.PackOutcome, error) {
+		h.mu.Lock()
+		h.order = append(h.order, itemID)
+		h.mu.Unlock()
+		if itemID == holdID {
+			close(h.started) // the held item owns the worker
+			<-h.release
+		}
+		return pack.PackOutcome{Playlist: "/media/" + itemID + "/ab12cd34/index.m3u8", Nonce: "ab12cd34"}, nil
+	}
+}
+
+// calls snapshots the recorded order.
+func (h *packHold) calls() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.order...)
+}
+
+// parkedQueue starts a one-worker queue over settled items and parks its only
+// worker inside the seam on background item holdID (signaled on h.started,
+// held until h.release closes) — the test then owns both lanes undisturbed.
+func parkedQueue(t *testing.T, s *store.Store, reg *module.Registry, h *packHold, holdID string) *Queue {
+	t.Helper()
+	q := NewQueue(Deps{Store: s, Modules: reg, PackItem: h.seam(holdID)}, QueueConfig{Workers: 1})
+	if err := q.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := q.EnqueuePack(holdID); err != nil {
+		t.Fatalf("EnqueuePack %s: %v", holdID, err)
+	}
+	<-h.started
+	return q
+}
+
+// TestEnqueuePackUrgent is the preferred lane's enqueue contract: accepted
+// when free, refused with an error when full or stopped, and nothing buffered
+// on a refusal — the shared buffer is never touched.
+func TestEnqueuePackUrgent(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("accepted_when_free", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		settledPackItem(t, s, libID, "i_bg")
+		h := newPackHold()
+		q := parkedQueue(t, s, reg, h, "i_bg")
+
+		if err := q.EnqueuePackUrgent("i_urgent"); err != nil {
+			t.Fatalf("EnqueuePackUrgent: %v", err)
+		}
+		select {
+		case got := <-q.urgent:
+			if got.rowID != "i_urgent" || !got.streams {
+				t.Fatalf("urgent lane task = %+v, want {i_urgent streams}", got)
+			}
+		default:
+			t.Fatal("urgent lane empty after EnqueuePackUrgent — the task was not buffered")
+		}
+
+		close(h.release)
+		q.Stop()
+	})
+
+	t.Run("full_lane_refuses_and_spills_nothing", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+		settledPackItem(t, s, libID, "i_bg")
+		h := newPackHold()
+		q := parkedQueue(t, s, reg, h, "i_bg")
+
+		for i := 0; i < urgentCapacity; i++ {
+			if err := q.EnqueuePackUrgent(fmt.Sprintf("i_u_%02d", i)); err != nil {
+				t.Fatalf("urgent enqueue %d: %v", i, err)
+			}
+		}
+		if err := q.EnqueuePackUrgent("i_overflow"); err == nil {
+			t.Fatal("EnqueuePackUrgent over a full lane returned nil, want the drop-on-full error")
+		}
+		if len(q.urgent) != urgentCapacity {
+			t.Fatalf("urgent lane holds %d, want exactly %d — nothing buffered on refusal", len(q.urgent), urgentCapacity)
+		}
+		if len(q.work) != 0 {
+			t.Fatalf("shared buffer holds %d, want 0 — a refused urgent pack never spills", len(q.work))
+		}
+
+		close(h.release)
+		q.Stop()
+	})
+
+	t.Run("stopped_queue_refuses", func(t *testing.T) {
+		s, reg := queueTestStore(t)
+		q := NewQueue(Deps{Store: s, Modules: reg}, QueueConfig{})
+		if err := q.EnqueuePackUrgent("i_x"); err == nil {
+			t.Fatal("EnqueuePackUrgent on a never-started queue returned nil, want an error")
+		}
+		if err := q.Start(ctx); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		q.Stop()
+		if err := q.EnqueuePackUrgent("i_x"); err == nil {
+			t.Fatal("EnqueuePackUrgent on a stopped queue returned nil, want an error")
+		}
+	})
+}
+
+// TestUrgentLanePreferred is the play-priority dispatch scenario: with the
+// shared buffer backlogged behind a parked worker, one urgent pack dispatches
+// ahead of the backlog's head.
+func TestUrgentLanePreferred(t *testing.T) {
+	ctx := context.Background()
+	s, reg := queueTestStore(t)
+	libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+	for _, id := range []string{"i_bg_0", "i_bg_1", "i_bg_2", "i_bg_3", "i_bg_4", "i_urgent"} {
+		settledPackItem(t, s, libID, id)
+	}
+	h := newPackHold()
+	q := parkedQueue(t, s, reg, h, "i_bg_0") // the lone worker is now held inside the seam on i_bg_0
+
+	for _, id := range []string{"i_bg_1", "i_bg_2", "i_bg_3", "i_bg_4"} { // the backlog
+		if err := q.EnqueuePack(id); err != nil {
+			t.Fatalf("backlog enqueue %s: %v", id, err)
+		}
+	}
+	if err := q.EnqueuePackUrgent("i_urgent"); err != nil {
+		t.Fatalf("urgent enqueue: %v", err)
+	}
+	close(h.release)
+
+	var calls []string
+	deadline := time.Now().Add(2 * time.Second)
+	for len(calls) < 2 {
+		calls = h.calls()
+		if time.Now().After(deadline) {
+			t.Fatalf("packs never dispatched after release; order = %v", calls)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if calls[0] != "i_bg_0" || calls[1] != "i_urgent" {
+		t.Fatalf("dispatch order = %v, want i_bg_0 then i_urgent ahead of the backlog head i_bg_1", calls)
+	}
+
+	q.Stop()
+}
+
+// waitWorkerParked polls runtime.Stack until the queue's worker goroutine is
+// parked in its lane receive — the deterministic park barrier for the
+// idle-queue test (bounded poll, no sleeps-for-correctness): on the pre-fix
+// loop the park is the bare shared receive (goroutine status [chan receive]),
+// on the amended loop it is the blocking lane select ([select]). Either is
+// the parked state the urgent send must wake.
+func waitWorkerParked(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		for _, g := range bytes.Split(buf[:n], []byte("\n\n")) {
+			if !bytes.Contains(g, []byte("internal/enrich.(*Queue).worker")) {
+				continue
+			}
+			if bytes.Contains(g, []byte("[chan receive]")) || bytes.Contains(g, []byte("[select]")) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queue worker never parked in its lane receive; stacks:\n%s", buf[:n])
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestUrgentLaneWakesIdleWorker is the idle-queue invariant (D4, the joint
+// 5.1 finding): with the queue idle — derivation deriving nothing, the shared
+// buffer empty, and the worker parked in its lane receive — one
+// EnqueuePackUrgent dispatches without any shared-lane work arriving. The
+// play never waits on background traffic to be discovered.
+func TestUrgentLaneWakesIdleWorker(t *testing.T) {
+	ctx := context.Background()
+	s, reg := queueTestStore(t)
+	libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
+	settledPackItem(t, s, libID, "i_urgent")
+	h := newPackHold()
+	// the hold id matches nothing the test enqueues, so the seam only records
+	// call order and never blocks.
+	q := NewQueue(Deps{Store: s, Modules: reg, PackItem: h.seam("i_never_held")}, QueueConfig{Workers: 1})
+	if err := q.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer q.Stop()
+
+	waitWorkerParked(t)
+	if err := q.EnqueuePackUrgent("i_urgent"); err != nil {
+		t.Fatalf("EnqueuePackUrgent: %v", err)
+	}
+
+	var calls []string
+	deadline := time.Now().Add(2 * time.Second)
+	for len(calls) < 1 {
+		calls = h.calls()
+		if time.Now().After(deadline) {
+			t.Fatalf("urgent pack never dispatched to the idle worker (parked in its lane receive, no shared work to wake it); seam calls = %v — the joint 5.1 finding", calls)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if calls[0] != "i_urgent" {
+		t.Fatalf("seam calls = %v, want [i_urgent]", calls)
+	}
 }
