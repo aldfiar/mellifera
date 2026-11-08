@@ -19,12 +19,12 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"sort"
 	"time"
 
 	"github.com/mellifera/mellifera/internal/access"
+	"github.com/mellifera/mellifera/internal/naming"
 	"github.com/mellifera/mellifera/internal/recs"
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -235,9 +235,9 @@ func (a *app) allFilteredItems(ctx context.Context, v access.Viewer, libraryID i
 // photo GRID's path order itself is enforced in listItems (the scoredServe
 // skip); zeroing here keeps every OTHER surface honest, since equal-zero
 // scores degrade to that surface's own recency/id floor.
-func scoreItems(n namer, items []store.Item, f recsFacts, startedSeed map[string]bool) []float64 {
+func scoreItems(n naming.Namer, items []store.Item, f recsFacts, startedSeed map[string]bool) []float64 {
 	scores := make([]float64, len(items))
-	if n.moduleID == photoModuleID {
+	if n.ModuleID == photoModuleID {
 		return scores
 	}
 	started := make(map[string]bool, len(startedSeed))
@@ -257,7 +257,7 @@ func scoreItems(n namer, items []store.Item, f recsFacts, startedSeed map[string
 		scores[i] = recs.Score(recs.EntityState{
 			InProgress: hasProgress && !done,
 			NewEpisode: path != "" && !hasProgress && !done && started[path] && time.Since(it.CreatedAt) <= newEpisodeWindow,
-			Tags:       n.itemTags(it, path),
+			Tags:       n.ItemTags(it, path),
 		}, f.weights)
 	}
 	return scores
@@ -278,7 +278,7 @@ func scoreItems(n namer, items []store.Item, f recsFacts, startedSeed map[string
 // document's own genres (D1). Photo libraries have no series rows (series
 // are serial-only), so no photo case exists here. Both returned slices align
 // with srs.
-func scoreSeries(n namer, srs []store.Series, eps map[string][]store.Item, f recsFacts) ([]float64, []bool) {
+func scoreSeries(n naming.Namer, srs []store.Series, eps map[string][]store.Item, f recsFacts) ([]float64, []bool) {
 	scores := make([]float64, len(srs))
 	watched := make([]bool, len(srs))
 	for i, sr := range srs {
@@ -301,7 +301,7 @@ func scoreSeries(n namer, srs []store.Series, eps map[string][]store.Item, f rec
 		scores[i] = recs.Score(recs.EntityState{
 			InProgress: inProgress,
 			NewEpisode: started && fresh,
-			Tags:       n.genresFor(sr.Document),
+			Tags:       n.GenresFor(sr.Document),
 		}, f.weights)
 	}
 	return scores, watched
@@ -312,9 +312,12 @@ func scoreSeries(n namer, srs []store.Series, eps map[string][]store.Item, f rec
 // one the display composer uses. "" means the item is a film/tv item with no
 // series behind it.
 func seriesPathOf(it store.Item) string {
-	doc := docMap(it.Document)
+	doc := naming.DocMap(it.Document)
 	parsed, _ := doc["parsed"].(map[string]any)
-	return strField(parsed, "series_relative_path")
+	// The composer's strField read, inlined for its one non-naming caller:
+	// a non-string (or absent) anchor floors to "" — the film/tv shape.
+	path, _ := parsed["series_relative_path"].(string)
+	return path
 }
 
 // episodesBySeries groups items by their parsed series anchor — the batched
@@ -329,64 +332,6 @@ func episodesBySeries(items []store.Item) map[string][]store.Item {
 		}
 	}
 	return out
-}
-
-// itemTags resolves an item entity's tags (D1): the series document's genres
-// for an episode, the item's own document's genres for films/tv items. An
-// episode whose series row is gone (tombstoned or rescanned away) scores an
-// empty tag set — honest absence, never a fabricated fallback to the episode
-// document.
-func (n namer) itemTags(it store.Item, seriesPath string) []string {
-	if seriesPath != "" {
-		if sr, ok := n.seriesByPath[seriesPath]; ok {
-			return n.genresFor(sr.Document)
-		}
-		return nil
-	}
-	return n.genresFor(it.Document)
-}
-
-// genresFor resolves one document's genres (recommendation-sorting D1): the
-// genres array of the FIRST effectively-enabled chain namespace carrying the
-// synopsis group — the carrier test is the description; facts alone never
-// claim the group. The chain is the namer's gate-resolved source chain, and
-// this walk is the api's own projection of the enrich resolver's RULE (INV2
-// bars the import; drift is pinned by the api goldens). Genres pass through
-// verbatim as strings; no chain, no carrier, or a winner without usable
-// genres resolves to nil — honest absence, and a later namespace never
-// stitches into a won group.
-func (n namer) genresFor(raw json.RawMessage) []string {
-	if len(n.chain) == 0 {
-		return nil
-	}
-	doc := docMap(raw)
-	sources, _ := doc["sources"].(map[string]any)
-	for _, b := range n.chain {
-		if !b.Enabled {
-			continue
-		}
-		ns, ok := sources[b.ID].(map[string]any)
-		if !ok || strField(ns, "description") == "" {
-			continue
-		}
-		arr, ok := ns["genres"].([]any)
-		if !ok {
-			return nil // the winner wins whole — absence inside it is honest
-		}
-		out := make([]string, 0, len(arr))
-		for _, e := range arr {
-			s, is := e.(string)
-			if !is || s == "" {
-				continue
-			}
-			out = append(out, s)
-		}
-		if len(out) == 0 {
-			return nil
-		}
-		return out
-	}
-	return nil
 }
 
 // scoredServe reorders rows into the served scored order — recs.Order, the
@@ -472,7 +417,7 @@ func orderByScoreRecency(entries []progressScored) {
 // uses: every listed row IS a resume point — the positive-progress fact is
 // true by construction, so InProgress (the resume bonus, the point of this
 // surface) holds and NewEpisode is impossible (D3's bonus needs an episode
-// with NO progress row) — and the tags ride the item's genres via itemTags.
+// with NO progress row) — and the tags ride the item's genres via ItemTags.
 // The namer is per-library and rows may span libraries, so each row scores
 // under its own item's library namer, built once per distinct library. The
 // item rows ride per-row point reads: the store has no batched items-by-id
@@ -488,7 +433,7 @@ func (a *app) scoreProgress(ctx context.Context, v access.Viewer, rows []store.P
 		items[i] = it
 		byLib[it.LibraryID] = append(byLib[it.LibraryID], i)
 	}
-	namers := make(map[int64]namer, len(byLib))
+	namers := make(map[int64]naming.Namer, len(byLib))
 	scores := make([]float64, len(rows))
 	for libID, idx := range byLib {
 		n, ok := namers[libID]
@@ -523,10 +468,10 @@ func (a *app) scoreProgress(ctx context.Context, v access.Viewer, rows []store.P
 // full set. One point read for ONE entity — never in a listing loop, so the
 // batched-read rule's anti-N+1 posture holds. The namer's seriesByPath
 // carries the series row the store read needs; a series row that is gone
-// reports not-started — honest absence, the same floor itemTags serves for
+// reports not-started — honest absence, the same floor ItemTags serves for
 // the identical loss.
-func (a *app) seriesStartedFact(ctx context.Context, v access.Viewer, n namer, path string, f recsFacts) (bool, error) {
-	sr, ok := n.seriesByPath[path]
+func (a *app) seriesStartedFact(ctx context.Context, v access.Viewer, n naming.Namer, path string, f recsFacts) (bool, error) {
+	sr, ok := n.SeriesByPath[path]
 	if !ok {
 		return false, nil
 	}

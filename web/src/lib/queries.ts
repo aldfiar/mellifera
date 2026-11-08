@@ -33,8 +33,10 @@ import {
   getAdminSources,
   getAdminUsers,
   getVisibilityExplain,
+  getHome,
   getItem,
   getLibrary,
+  getLibraryFacets,
   getLibraryFolders,
   getLibrarySummary,
   getSeries,
@@ -69,8 +71,11 @@ import {
   type AdminUsersResponse,
   type AdminVisibilityExplain,
   type CreateLibraryRequest,
+  type HomeResponse,
   type ItemResponse,
   type ItemsResponse,
+  type FacetSelection,
+  type FacetsResponse,
   type LibrariesResponse,
   type LibraryDTO,
   type LibraryFoldersResponse,
@@ -108,6 +113,10 @@ import { PROFILE_QUERY_KEY } from "@/components/Profile";
 //   ["library-scan", id]    — POST /api/v1/libraries/{id}/scan result
 //   ["items", params]       — GET /api/v1/items (params = ListItemsParams, so
 //                             limit/offset/status key pages independently)
+//   ["facets", id]          — GET /api/v1/libraries/{id}/facets (browse-scale
+//                             5.2; staleTime Infinity — once per view, and
+//                             the key carries no filter state, so chip
+//                             toggles never refetch it)
 
 // QueryClient for the app. GET queries keep the default retry; POST mutations
 // (create/scan) are non-idempotent and MUST NOT be auto-retried
@@ -301,6 +310,19 @@ export function useProgressList(): UseQueryResult<ProgressListResponse> {
   });
 }
 
+// useHome — GET /api/v1/home via getHome (browse-scale D5/D7). Keyed ["home"]:
+// the ONE server-composed continue rail the home surface renders from — the
+// 1+N fan-out (the /progress listing + per-item documents + per-series
+// episode lists) is gone; the surface derives nothing from the rows. The
+// rows are already the calling viewer's visibility-conjunct consumption
+// server-side, so no client-side withdrawal or gating rides this read.
+export function useHome(): UseQueryResult<HomeResponse> {
+  return useQuery({
+    queryKey: ["home"],
+    queryFn: getHome,
+  });
+}
+
 // useSetItemState — PUT /api/v1/items/{id}/state via putItemState
 // (collections-ux 2.1): the watched-toggle write. retry:0
 // (INV-no-mutation-retry — a 400 bad_request / 404 not_found surfaces
@@ -347,13 +369,45 @@ export function useItems(
 // library, mirroring the summary/folders hooks' per-library keying. The list
 // comes back whole (no limit/offset on the wire) — no pagination state here.
 // `enabled` guards a not-yet-parsed route id (NaN) like useLibrarySummary.
+//
+// filters (browse-scale 5.2, the serial grid's facet chips): genre/kind/status
+// ride the query — each SELECTED filter joins the key as its own element so
+// combinations cache independently; an ALL-UNSELECTED selection keeps the
+// plain two-element key, so every existing consumer of the shared unfiltered
+// cache (the episode flow's header, the watch page's InfoColumn/AutoNext —
+// all unfiltered reads) stays on the same entry byte-for-byte.
 export function useSeries(
   libraryId: number,
+  filters: FacetSelection = {},
 ): UseQueryResult<SeriesListResponse> {
+  const facetKey = [filters.genre ?? "", filters.kind ?? "", filters.status ?? ""];
+  const filtered = facetKey.some((v) => v !== "");
   return useQuery({
-    queryKey: ["series", libraryId],
-    queryFn: () => getSeries(libraryId),
+    queryKey: ["series", libraryId, ...(filtered ? facetKey : [])],
+    queryFn: () => getSeries(libraryId, filters),
     enabled: Number.isFinite(libraryId),
+  });
+}
+
+// useLibraryFacets — GET /api/v1/libraries/{id}/facets via getLibraryFacets
+// (browse-scale 5.2, the grids' FacetChips feed). Keyed ["facets", libraryId]:
+// one cache entry per library, carrying NO filter state — a chip toggle
+// changes the LISTING's key, never this one, so the aggregates are fetched
+// exactly once per view and never re-fetched behind the filter clicks.
+// staleTime: Infinity makes that hold across remounts within the session too:
+// the aggregates only move on a scan/enrichment landing (the index's ≤60 s
+// reconcile), chip counts are browsing aids, and the honest-stale posture
+// beats a refetch per grid visit. Failure posture is the caller's: a 503
+// unwired closure or any canonical error leaves the chips ABSENT — additive
+// chrome never blocks the grid.
+export function useLibraryFacets(
+  libraryId: number,
+): UseQueryResult<FacetsResponse> {
+  return useQuery({
+    queryKey: ["facets", libraryId],
+    queryFn: () => getLibraryFacets(libraryId),
+    enabled: Number.isFinite(libraryId),
+    staleTime: Infinity,
   });
 }
 

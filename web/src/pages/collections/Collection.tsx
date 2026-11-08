@@ -13,6 +13,7 @@ import {
   postLibraryRefresh,
   type ApiError,
   type EnrichPreview,
+  type FacetSelection,
   type ItemDTO,
   type LibraryDTO,
   type LibraryRefreshResult,
@@ -29,6 +30,7 @@ import {
   useItems,
   useLibraries,
   useLibrary,
+  useLibraryFacets,
   useLibraryFolders,
   useLibrarySummary,
   useProgressList,
@@ -44,6 +46,7 @@ import { cn } from "@/lib/utils";
 import { formatPosition } from "@/pages/home/Home";
 import type { BrowseHandoff } from "@/pages/browse/ItemDetail";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
+import { FacetChips } from "@/components/FacetChips";
 import {
   InProgressBar,
   WatchedMark,
@@ -1046,15 +1049,22 @@ function Pagination(props: {
 // the page-turn/reset callbacks every body reuses. The optional folder drives
 // the server-side chip filter: a named folder → path_prefix (items under that
 // folder, any depth), "" (the top-level chip) → top_level=true, null → no
-// filter. The filter rides the request, NEVER a client-side post-filter — a
-// client filter over one unfiltered page both hides off-page items and lies
-// next to whole-library chip counts (the bug this hook parameter closes).
-function usePagedItems(libraryId: number, folder: string | null = null) {
+// filter. The facet selection (browse-scale 5.2, the movies grid's chips)
+// rides the same law: genre/kind on the wire — every filter rides the request,
+// NEVER a client-side post-filter, which would both hide off-page items and
+// lie next to whole-library chip counts (the bug this hook parameter closes).
+function usePagedItems(
+  libraryId: number,
+  folder: string | null = null,
+  facets: FacetSelection = {},
+) {
   const [offset, setOffset] = useState(0);
   const params: ListItemsParams = {
     library: libraryId,
     path_prefix: folder !== null && folder !== "" ? folder : undefined,
     top_level: folder === "" ? true : undefined,
+    genre: facets.genre,
+    kind: facets.kind,
     limit: PAGE_SIZE,
     offset,
   };
@@ -1080,25 +1090,89 @@ function usePagedItems(libraryId: number, folder: string | null = null) {
 // into /items/{id} and carry the CardActions menu (rename/identify/refresh).
 // No raw filename row, no season/episode token (display-naming took both off
 // the card), no paths, no lifecycle pills (D5).
-function MoviesBody(props: {
+//
+// Facet chips (browse-scale 5.2): the genre/kind lane above the grid, fed by
+// the once-per-view /facets read. Deliberately only genre/kind — /items
+// carries no facet-status param (its `status` name is pinned to the
+// enrichment-lifecycle filter), so a served status facet is not wired here.
+// A chip pick is server-side (the params ride the request) and restarts the
+// page at offset 0, like a folder switch.
+//
+// Exported for FacetChips' wiring tests (the fetch-seam assertions run
+// against this body directly).
+export function MoviesBody(props: {
   libraryId: number;
   chain?: ParserBinding[];
   refreshSources?: RefreshSourceBinding[];
 }): ReactElement {
-  const { query, items, offset, prev, next } = usePagedItems(props.libraryId);
+  const [facets, setFacets] = useState<FacetSelection>({});
+  const facetsQuery = useLibraryFacets(props.libraryId);
+  const { query, items, offset, prev, next, reset } = usePagedItems(
+    props.libraryId,
+    null,
+    facets,
+  );
+  const toggleFacet = (key: keyof FacetSelection, value: string): void => {
+    setFacets((cur) => {
+      const nextSelection = { ...cur };
+      if (nextSelection[key] === value) {
+        delete nextSelection[key];
+      } else {
+        nextSelection[key] = value;
+      }
+      return nextSelection;
+    });
+    reset();
+  };
+  const filtered =
+    facets.genre !== undefined || facets.kind !== undefined;
+
+  // The chip lane renders in EVERY body state (loading/error/empty/grid): it
+  // is the control driving the listing's query — unmounting it behind the
+  // refetch it triggered would strand the operator mid-interaction.
+  const facetLane = (
+    <FacetChips
+      facets={facetsQuery.data?.facets}
+      keys={["genres", "kind"]}
+      active={facets}
+      onToggle={toggleFacet}
+    />
+  );
 
   if (query.isLoading) {
-    return <LoadingState label="Loading items…" />;
+    return (
+      <section className="flex flex-col gap-3">
+        {facetLane}
+        <LoadingState label="Loading items…" />
+      </section>
+    );
   }
   if (query.error) {
-    return <ErrorState error={query.error as ApiError} onRetry={query.refetch} />;
+    return (
+      <section className="flex flex-col gap-3">
+        {facetLane}
+        <ErrorState error={query.error as ApiError} onRetry={query.refetch} />
+      </section>
+    );
   }
   if (items.length === 0 && offset === 0) {
-    return <EmptyState message="No items in this collection." />;
+    return (
+      <section className="flex flex-col gap-3">
+        {facetLane}
+        <EmptyState
+          message={
+            filtered
+              ? "Nothing matches the selected filters."
+              : "No items in this collection."
+          }
+        />
+      </section>
+    );
   }
 
   return (
     <section className="flex flex-col gap-3">
+      {facetLane}
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((item, index) => (
           <li key={item.id}>
@@ -1462,7 +1536,11 @@ function PhotoTile(props: { item: ItemDTO; handoff: BrowseHandoff }): ReactEleme
 // episode documents are NEVER fetched eagerly per series row). The param is
 // real URL state, so an episode view deep-links and /collections/{id} alone
 // still lands on the grid.
-function SerialsBody(props: {
+//
+// Exported for FacetChips' wiring tests (the fetch-seam assertions run
+// against this body directly — the serial arm carries the grid + the
+// full genre/kind/status facet lane).
+export function SerialsBody(props: {
   libraryId: number;
   chain?: ParserBinding[];
   refreshSources?: RefreshSourceBinding[];
@@ -1533,29 +1611,88 @@ function seriesBacking(doc: SeriesDTO["document"]): string | null {
 
 // SeriesGrid — one poster card per series row. Deleted rows are skipped (the
 // janitor's tombstones are not a browse surface); an empty list after the
-// fetch is an honest "nothing scanned yet" state. `chain` threads through to
-// the series menu's Refresh metadata… row (box 2.3).
+// fetch is an honest "nothing scanned yet" state (an empty list UNDER an
+// active facet filter says so instead — never "not scanned"). `chain` threads
+// through to the series menu's Refresh metadata… row (box 2.3).
+//
+// Facet chips (browse-scale 5.2): the full genre/kind/status lane above the
+// grid, wired into the /series query — each picked chip rides the request as
+// ?genre=/kind=/status= (single value per key, conjunct across keys), the
+// facets themselves fetched once per view through the shared ["facets"]
+// cache. Exported (via SerialsBody below) for FacetChips' wiring tests.
 function SeriesGrid(props: {
   libraryId: number;
   chain?: ParserBinding[];
   refreshSources?: RefreshSourceBinding[];
 }): ReactElement {
-  const series = useSeries(props.libraryId);
+  const [facets, setFacets] = useState<FacetSelection>({});
+  const facetsQuery = useLibraryFacets(props.libraryId);
+  const series = useSeries(props.libraryId, facets);
+  const toggleFacet = (key: keyof FacetSelection, value: string): void => {
+    setFacets((cur) => {
+      const nextSelection = { ...cur };
+      if (nextSelection[key] === value) {
+        delete nextSelection[key];
+      } else {
+        nextSelection[key] = value;
+      }
+      return nextSelection;
+    });
+  };
+  const filtered =
+    facets.genre !== undefined ||
+    facets.kind !== undefined ||
+    facets.status !== undefined;
+
+  // The chip lane renders in EVERY grid state (loading/error/empty/grid):
+  // it is the control driving the /series query — unmounting it behind the
+  // refetch it triggered would strand the operator mid-interaction.
+  const facetLane = (
+    <FacetChips
+      facets={facetsQuery.data?.facets}
+      keys={["genres", "kind", "status"]}
+      active={facets}
+      onToggle={toggleFacet}
+    />
+  );
 
   if (series.isLoading) {
-    return <LoadingState label="Loading series…" />;
+    return (
+      <section className="flex flex-col gap-3">
+        {facetLane}
+        <LoadingState label="Loading series…" />
+      </section>
+    );
   }
   if (series.error) {
-    return <ErrorState error={series.error as ApiError} onRetry={series.refetch} />;
+    return (
+      <section className="flex flex-col gap-3">
+        {facetLane}
+        <ErrorState error={series.error as ApiError} onRetry={series.refetch} />
+      </section>
+    );
   }
 
   const rows = (series.data?.items ?? []).filter((s) => s.status !== "deleted");
   if (rows.length === 0) {
-    return <EmptyState message="No series scanned yet." />;
+    return (
+      <section className="flex flex-col gap-3">
+        {facetLane}
+        <EmptyState
+          message={
+            filtered
+              ? "Nothing matches the selected filters."
+              : "No series scanned yet."
+          }
+        />
+      </section>
+    );
   }
 
   return (
-    <ul
+    <section className="flex flex-col gap-3">
+      {facetLane}
+      <ul
       className="series-poster-grid grid gap-3"
       /* Height-aware tracks (density-contract 2.1, GATE 2 follow-up): both
          tier budgets are emitted here; the index.css height media query picks
@@ -1586,10 +1723,10 @@ function SeriesGrid(props: {
           />
         </li>
       ))}
-    </ul>
+      </ul>
+    </section>
   );
 }
-
 
 // SeriesCard — one series card: poster-ratio placeholder (media serving is a
 // deferred capability), display title (the SERVED display_name, display-

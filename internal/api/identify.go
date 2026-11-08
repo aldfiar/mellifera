@@ -105,7 +105,11 @@ func (a *app) sourceSearch(w http.ResponseWriter, r *http.Request) {
 // candidate (identify-match-override): the closure writes the picked id into
 // doc.identifiers.<source_id>_id, strips the source's namespace, and notifies
 // the library so the next derivation run fetches BY the picked id — the
-// display name and every other plugin's namespace stay untouched. Unknown
+// display name and every other plugin's namespace stay untouched. After a
+// successful re-anchor the Deps.OnTitleChange invalidation seam fires with
+// the series id — the anchor may rename the composed title — after the
+// closure, before the response write (browse-scale 3.4); nil closure, silent
+// no-op. Unknown
 // series → 404 (the store's sql.ErrNoRows, preserved through the closure);
 // unknown source → 400 (ErrUnknownPlugin); an empty source_id/external_id or
 // a malformed body → 400 before the closure runs; nil closure → 503.
@@ -153,6 +157,9 @@ func (a *app) seriesIdentify(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
+	}
+	if a.deps.OnTitleChange != nil {
+		a.deps.OnTitleChange(r.Context(), seriesID)
 	}
 	writeJSON(w, http.StatusAccepted, identifyResult{Queued: queued, Stripped: stripped, Deferred: deferred})
 }

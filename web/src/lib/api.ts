@@ -648,13 +648,58 @@ export interface ItemResponse {
 // photos chip lane — path_prefix pages only items under that folder (any
 // depth), top_level=true only "/"-free paths. They are mutually exclusive on
 // the wire (api 400s on both) and the request omits whichever is unset.
+//
+// genre/kind (browse-scale 3.2, additive facet filters): the movies grid's
+// facet chips ride here. Deliberately NO facet `status` field — on /items the
+// `status` param name is pinned to the enrichment-lifecycle filter by the
+// living specs, so the chip trio is genre/kind only on this endpoint.
 export interface ListItemsParams {
   library: number;
   status?: string;
   path_prefix?: string;
   top_level?: boolean;
+  genre?: string;
+  kind?: string;
   limit?: number;
   offset?: number;
+}
+
+// FacetKey — the client-side wiring vocabulary of the three facet keys the
+// browse index aggregates (browse-scale 2.2): the About block's genres, kind
+// and status facts. The wire (FacetDTO.key) stays typed `string` — served
+// bytes — this union names only what the grids wire chips for.
+export type FacetKey = "genres" | "kind" | "status";
+
+// FacetSelection — a grid's active facet chips: one picked value per key at
+// most (the server takes a single value per param), absent = unselected. The
+// serial grid selects all three keys onto /series; the movies grid only
+// genre/kind onto /items.
+export interface FacetSelection {
+  genre?: string;
+  kind?: string;
+  status?: string;
+}
+
+// FacetValueDTO — one counted facet value (facets.go facetValueDTO): the
+// served fact rendered verbatim with its per-library count. Count >= 1 always
+// (the browse-side build never materializes a zero).
+export interface FacetValueDTO {
+  value: string;
+  count: number;
+}
+
+// FacetDTO — one facet key's counted values (facets.go facetDTO): only keys
+// some document's resolved About block carries are present; a photo library
+// serves an empty list.
+export interface FacetDTO {
+  key: string;
+  values: FacetValueDTO[];
+}
+
+// FacetsResponse — the GET /libraries/{id}/facets wire shape (facets.go
+// facetsResponse): facets is never null — an empty list, never a type hole.
+export interface FacetsResponse {
+  facets: FacetDTO[];
 }
 
 // SearchCandidate — one served candidate of the interactive source search
@@ -1016,6 +1061,11 @@ export const ENDPOINTS = {
   adminPlugins: "/api/v1/admin/plugins",
   adminPluginLogs: (pluginId: string): string =>
     `/api/v1/admin/plugins/${pluginId}/logs`,
+  // libraryFacets — GET /api/v1/libraries/{id}/facets (facets.go
+  // libraryFacets, browse-scale 3.2): the index's per-library facet
+  // aggregates, viewer-scoped like every browse route. Only getLibraryFacets
+  // should call it.
+  libraryFacets: (id: number): string => `/api/v1/libraries/${id}/facets`,
   items: "/api/v1/items",
   item: (id: string): string => `/api/v1/items/${id}`,
   // itemMedia — GET /api/v1/items/{id}/media (handlers.go itemMedia,
@@ -1040,6 +1090,10 @@ export const ENDPOINTS = {
     `/api/v1/items/${id}/media?variant=sidecar&n=${String(n)}`,
   series: "/api/v1/series",
   seriesEpisodes: (id: string): string => `/api/v1/series/${id}/episodes`,
+  // search — GET /api/v1/search (search.go search, browse-scale 3.1): the
+  // grouped global search over the composed-name index — ≤8 series + ≤8
+  // items, server-ranked. Only the `search` read should call it.
+  search: "/api/v1/search",
   // sourceSearch / seriesIdentify — the identify overlay pair (identify-
   // match-override, identify.go). GET /admin/sources/{plugin_id}/search
   // passes the operator's interactive search through to the named source
@@ -1063,6 +1117,11 @@ export const ENDPOINTS = {
   // empty list clears.
   itemParsers: (id: string): string => `/api/v1/items/${id}/parsers`,
   progress: "/api/v1/progress",
+  // home — GET /api/v1/home (internal/api/home.go, browse-scale D5/D7): the
+  // ONE server-composed continue rail the SPA's home surface renders from —
+  // ≤50 scored ContinueRows, no parameters by design (D5's declined
+  // alternatives). Only getHome should call it.
+  home: "/api/v1/home",
   // Playback verbs (packaged-playback): the read-only descriptor and the
   // single playback mutation (POST /play with {retry:true} re-enqueues a
   // failed packaging run; from_seconds is reserved server-side).
@@ -1247,6 +1306,12 @@ export async function listItems(params: ListItemsParams): Promise<ItemsResponse>
   if (params.top_level !== undefined) {
     qs.set("top_level", "true");
   }
+  if (params.genre) {
+    qs.set("genre", params.genre);
+  }
+  if (params.kind) {
+    qs.set("kind", params.kind);
+  }
   if (params.limit !== undefined) {
     qs.set("limit", String(params.limit));
   }
@@ -1254,6 +1319,16 @@ export async function listItems(params: ListItemsParams): Promise<ItemsResponse>
     qs.set("offset", String(params.offset));
   }
   return apiRequest<ItemsResponse>(`${ENDPOINTS.items}?${qs.toString()}`);
+}
+
+// getLibraryFacets — GET /api/v1/libraries/{id}/facets (facets.go
+// libraryFacets, browse-scale 3.2): the library's facet aggregates in the
+// served order (count desc, value asc), served verbatim. 404 for a library
+// outside the caller's visible set (the visibility conjunct — surfaced by the
+// caller like any canonical error); 503 "unavailable" when the facets closure
+// is unwired (a wiring fact — the chips hide, they never fake counts).
+export async function getLibraryFacets(id: number): Promise<FacetsResponse> {
+  return apiRequest<FacetsResponse>(ENDPOINTS.libraryFacets(id));
 }
 
 // ListProgressParams — the optional GET /progress query knobs. limit: server
@@ -1284,15 +1359,91 @@ export async function listProgress(
   return apiRequest<ProgressListResponse>(path);
 }
 
+// ---- Home continue rail (browse-scale D5/D7) --------------------------------
+//
+// home.go's wire shapes, mirrored verbatim — the SPA renders these served
+// fields and derives NOTHING: no name composition (display_name is served),
+// no next pick (next is served or absent), no duration guess
+// (duration_seconds is served or omitted).
+
+// home.go continueCurrent — one row's resume point. season/episode carry the
+// parsed episode identity when the document has one (omitted for films);
+// duration_seconds is the ffprobe fact or OMITTED — the honest absence a
+// client renders as a bar-less row.
+export interface ContinueCurrent {
+  item_id: string;
+  display_name: string;
+  season?: number;
+  episode?: number;
+  episode_title?: string;
+  position_seconds: number;
+  duration_seconds?: number;
+}
+
+// home.go continueNext — the row's Play-able suggestion: the episode item to
+// deep-link into and the served SxxEyy label (composed server-side from the
+// raw episode facts; the client renders it verbatim). Absent when the row's
+// series has nothing strictly after its highest-started episode — and films
+// never carry it.
+export interface ContinueNext {
+  item_id: string;
+  label: string;
+}
+
+// home.go continueRow — ONE continue rail row. A film or unanchored tv item
+// serves series_id/series_display_name as "" (honest absence, never a
+// fabricated owner) and never carries next; artwork is the query-time
+// composed poster URL (omitempty when nothing composes) — only its served
+// proxy form rides the authenticated byte channel (isServedArtPath).
+export interface ContinueRow {
+  series_id: string;
+  series_display_name: string;
+  library_id: number;
+  library_name: string;
+  artwork?: string;
+  current: ContinueCurrent;
+  next?: ContinueNext;
+}
+
+// home.go homeResponse — the GET /api/v1/home body: ≤50 rows, ordered
+// rec_score desc with the updated_at tiebreak (the /progress contract
+// inherited server-side). Empty array — never null — when the viewer holds
+// no positive progress rows.
+export interface HomeResponse {
+  continue: ContinueRow[];
+}
+
+// getHome — GET /api/v1/home (internal/api/home.go home, browse-scale 3.3).
+// ONE bounded round-trip replacing the home surface's 1+N fan-out; rows are
+// the calling viewer's ledger consumption, visibility-conjunct server-side.
+export async function getHome(): Promise<HomeResponse> {
+  return apiRequest<HomeResponse>(ENDPOINTS.home);
+}
+
 // getSeries — GET /api/v1/series?library={id} (handlers.go listSeries). The
 // library param is REQUIRED (a non-integer library is a 400 bad_request);
 // there are no limit/offset params — the server returns the library's series
 // whole, relative_path-ordered. A series' episodes are a SEPARATE call
 // (getSeriesEpisodes) and are never fetched eagerly per series.
-export async function getSeries(libraryId: number): Promise<SeriesListResponse> {
-  return apiRequest<SeriesListResponse>(
-    `${ENDPOINTS.series}?library=${String(libraryId)}`,
-  );
+//
+// filters (browse-scale 3.2, additive facet filters): the serial grid's
+// genre/kind/status chips ride here — each sent only when selected ("" = no
+// filter server-side; an unknown value serves 200 empty, never an error).
+export async function getSeries(
+  libraryId: number,
+  filters: FacetSelection = {},
+): Promise<SeriesListResponse> {
+  const qs = new URLSearchParams({ library: String(libraryId) });
+  if (filters.genre) {
+    qs.set("genre", filters.genre);
+  }
+  if (filters.kind) {
+    qs.set("kind", filters.kind);
+  }
+  if (filters.status) {
+    qs.set("status", filters.status);
+  }
+  return apiRequest<SeriesListResponse>(`${ENDPOINTS.series}?${qs.toString()}`);
 }
 
 // getSeriesEpisodes — GET /api/v1/series/{id}/episodes (handlers.go
@@ -1302,6 +1453,31 @@ export async function getSeries(libraryId: number): Promise<SeriesListResponse> 
 // body (surfaced as ApiError{code:"not_found"}).
 export async function getSeriesEpisodes(seriesId: string): Promise<ItemsResponse> {
   return apiRequest<ItemsResponse>(ENDPOINTS.seriesEpisodes(seriesId));
+}
+
+// search.go searchResponse — the ONE wire shape of GET /api/v1/search
+// (browse-scale 3.1): the two bounded groups, each entry the SAME grid DTO
+// the /series and /items listings serve (SeriesDTO / ItemDTO). Both arrays
+// are always present — empty when nothing matched, because no match is 200
+// empty, never an error.
+export interface SearchResponse {
+  series: SeriesDTO[];
+  items: ItemDTO[];
+}
+
+// search — GET /api/v1/search?q={q} (search.go search, browse-scale 5.1).
+// `signal` rides the AbortController the palette owns per debounced query:
+// the next keystroke's request aborts the previous in-flight one. 400/500
+// surface as canonical ApiErrors — the palette renders them inline, retry:0
+// (reads never auto-retry).
+export async function search(
+  q: string,
+  signal?: AbortSignal,
+): Promise<SearchResponse> {
+  const qs = new URLSearchParams({ q });
+  return apiRequest<SearchResponse>(`${ENDPOINTS.search}?${qs.toString()}`, {
+    signal,
+  });
 }
 
 // setSeriesTitle — PUT /api/v1/series/{id}/title (titles.go putSeriesTitle,

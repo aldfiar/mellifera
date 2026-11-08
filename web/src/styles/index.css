@@ -593,6 +593,12 @@ body.side-open .app-content {
 .cardact-row:hover {
   background: hsl(var(--accent));
 }
+/* Search palette (browse-scale 5.1): the keyboard-walked row's highlight —
+   the cardact hover tint keyed to a class, because an ↑↓-driven row never
+   hovers. */
+.search-row--active {
+  background: hsl(var(--accent));
+}
 .cardact-foot {
   margin: 4px 6px 2px;
   padding-top: 6px;

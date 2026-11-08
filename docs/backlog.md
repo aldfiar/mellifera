@@ -157,3 +157,25 @@ per-pass `unavailable` stage (B3).
 - **Pairs with** the R-lane lifecycle designs (auto drift re-enrich, deletion
   grace, fair-rotation queue), which rework the same predicate — consider
   folding to avoid a second predicate pass.
+
+## browse-scale follow-ups (GATE 2 flags, 2026-11-08)
+
+Seeded non-blocking at the gate (the change's review.md); design non-goals
+kept visible so the reopening paths stay named:
+
+- Delete dead `web/src/lib/watchedRows.ts` + its test — the last consumer was
+  removed when Home moved onto `GET /home` (task 5.3); the stale comments
+  inside go with it.
+- Fold the `internal/browse` search-index surface into `Service` (future —
+  the package ships 11 top-level exports against the authored ≤8 ceiling;
+  accepted with note at the gate).
+- Fixture extraction from the 977-line `internal/api/browse_scale_joint_test.go`
+  (review hygiene flag, none blocking).
+- `s01e02` grammar test pin (P3) — accepted in the serial grammar, unpinned.
+- `/home` next-pick >50-row edge observation (P3, design-consistent — the
+  server-bounded ≤50 rows keep the pick honest within the served set).
+- Photos are excluded from search v1 (reopening path: the filename as a
+  second match leg); search stays fixed 8+8 with no pagination (`offset` is
+  the named L7-TV seam); no next-up cache — `/home` computes picks live
+  (an index-served next-up would need a progress invalidation that does not
+  exist).

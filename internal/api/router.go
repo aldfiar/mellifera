@@ -144,6 +144,17 @@ type Deps struct {
 	// a no-op), mirroring OnParsersChanged. Keeps api free of enrich imports
 	// (INV2).
 	OnSourceGateChanged func(ctx context.Context, libraryID int64)
+	// OnTitleChange is the title-change invalidation seam (browse-scale 3.4):
+	// invoked after a CONFIRMED display-name write with the entity id whose
+	// composed name may have changed — putTitle on a stored override,
+	// deleteTitle on a clear (the store clear is unconditional, so the
+	// idempotent no-row delete fires too), seriesIdentify after a successful
+	// re-anchor. The cmd-side implementation pokes the browse index so the
+	// affected entries re-derive in ~immediately (the wiring is task 3.5);
+	// the request context detaches cmd-side, the OnProgress idiom. Nil-safe
+	// (a nil closure is a no-op; title persistence is never load-bearing on
+	// it), mirroring OnProgress. Keeps api free of browse imports (INV2).
+	OnTitleChange func(ctx context.Context, entityID string)
 	// PluginConfigs resolves ONE plugin's config bindings across the module
 	// registry (plugin-admin-surfaces D4): one row per module whose config
 	// binds the plugin — as its scanner or as a metadata source — as parallel
@@ -163,6 +174,30 @@ type Deps struct {
 	// ErrUnknownPlugin → 400 at the handler); any other error is a real
 	// failure (→ 500). Nil-safe (503 when nil), mirroring PluginConfigs.
 	PluginLogs func(ctx context.Context, pluginID string) ([]string, error)
+	// LibraryFacets serves one library's facet aggregates (browse-scale 3.2,
+	// library-facets delta): built in cmd/mellifera over browse.Service.Facets
+	// (INV2 — api never imports browse). Parallel slices, the ModuleSources
+	// precedent — the export budget keeps the aggregate shapes unexported, so
+	// the handler assembles the wire from plain slices: keys[i] is the facet
+	// key ("genres"|"kind"|"status") and values[i]/counts[i] are that key's
+	// parallel value/count lists in the index's serving order (count desc,
+	// value asc — the browse-side build's law), served verbatim. A library
+	// with no aggregates (photo library, nothing resolved) arrives as empty
+	// slices — the facet keys honestly absent. Nil-safe (503 when nil),
+	// mirroring Status/Playback.
+	LibraryFacets func(libraryID int64) (keys []string, values [][]string, counts [][]int)
+	// FacetIDs resolves ONE library's facet-filter id sets (browse-scale 3.2,
+	// library-facets delta): which series ids and item ids carry EVERY
+	// supplied facet value (an empty argument = no filter on that key),
+	// resolved cmd-side against the same facet corpus the aggregates count —
+	// the naming resolver's About projection per document — never a second
+	// namespace walk. An unknown value yields an empty set (the unknown-value
+	// law: the handler serves 200 empty, never an error). Parallel returns
+	// keep the two id spaces primitive-typed (budget — see LibraryFacets):
+	// the series listing intersects its rows with seriesIDs, the item listing
+	// with itemIDs. Nil-safe (503 when a filter is requested while nil),
+	// mirroring LibraryFacets.
+	FacetIDs func(ctx context.Context, libraryID int64, genre, kind, status string) (seriesIDs, itemIDs map[string]bool, err error)
 	// RelayClaim is the client-relayed-fetch claim closure (D7): hands the
 	// oldest claimable relay job (pending, or claimed with an expired lease)
 	// to the requesting principal — any authenticated one, admin+client (ruled
@@ -239,6 +274,19 @@ type Deps struct {
 	// degrades to absence), mirroring Pairing. Built in cmd/mellifera over
 	// art.NewService.
 	Art *art.Service
+	// BrowseSearch is the global-search hit closure (browse-scale D7): the
+	// cmd-built browse index answering the RANKED hit ids per group (series,
+	// then items) for one query — ids only, the honesty backstop (D3): every
+	// display byte is composed live api-side from the live rows, so a stale
+	// index can degrade recall but never falsify a name. The groups arrive
+	// already bounded and ranked (tiers, then alphabetical); the handler
+	// applies the caller's visibility conjunct and the optional ?library=/
+	// ?limit= cuts on top. Parallel slices keep the return primitive-typed
+	// (budget — see SourceInventory): api never imports the browse package
+	// (D2 — serve closures only). Nil-safe: a nil closure answers empty
+	// lists, the same honest never-built floor the browse service itself
+	// serves; built in cmd/mellifera over browse.Service.Search (task 3.5).
+	BrowseSearch func(query string) (seriesIDs, itemIDs []string)
 	// WatchDefaults is the auto-next countdown seconds (watch-flow-polish
 	// D1): resolved ONCE at the composition root from
 	// MELLIFERA_AUTO_NEXT_COUNTDOWN_SECONDS (default 10, floored at 1 — a
@@ -342,6 +390,10 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Get("/libraries/{id}", h.getLibrary)
 		r.Get("/libraries/{id}/summary", h.librarySummary)
 		r.Get("/libraries/{id}/folders", h.libraryFolders)
+		// Facets (browse-scale D7): the per-library facet aggregates — the
+		// chip values the SPA renders verbatim. Read-only viewer data, so the
+		// browse group beside the other library views.
+		r.Get("/libraries/{id}/facets", h.libraryFacets)
 		r.Get("/items", h.listItems)
 		r.Get("/items/{id}", h.getItem)
 		// Item media (media-preview): real bytes for the SPA's <img> surfaces —
@@ -375,6 +427,12 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Get("/progress", h.listProgress)
 		r.Get("/progress/{item_id}", h.getProgress)
 		r.Put("/progress/{item_id}", h.putProgress)
+		// Home continue rail (browse-scale D5): the ONE server-composed
+		// round-trip the SPA's home surface renders from — the caller's
+		// progress rows scored through the recs composition, bounded to 50,
+		// each row carrying its series/current/next composition. A viewer
+		// action over its own ledger, so the browse group beside progress.
+		r.Get("/home", h.home)
 		// Item state (collections-ux): the watched-toggle write — a
 		// playback-STATE endpoint named for state so the closed set can grow,
 		// a viewer action exactly like progress, so the browse group beside
@@ -385,6 +443,11 @@ func mountV1Routes(r chi.Router, h *app) {
 		// served verbatim (never env-read here). Read-only viewer data, so
 		// the browse group beside progress.
 		r.Get("/watch-defaults", h.watchDefaults)
+		// Global search (browse-scale D7): the composed-name index answers
+		// the ranked hit ids; rows compose live through namerFor (the D3
+		// backstop). A read-only viewer view, so the browse group beside the
+		// other library views.
+		r.Get("/search", h.search)
 		// Playback-event beacon (tv-playback-unblock D7): the TV's fire-and-
 		// forget failure telemetry — a viewer action, so the browse group
 		// (a pairing-minted client session must reach it). Top-level under

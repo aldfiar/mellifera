@@ -271,6 +271,59 @@ definitions:
       phase:
         type: string
     type: object
+  api.continueCurrent:
+    properties:
+      display_name:
+        type: string
+      duration_seconds:
+        type: integer
+      episode:
+        type: integer
+      episode_title:
+        type: string
+      item_id:
+        type: string
+      position_seconds:
+        type: integer
+      season:
+        type: integer
+    type: object
+  api.continueNext:
+    properties:
+      item_id:
+        type: string
+      label:
+        type: string
+    type: object
+  api.continueRow:
+    properties:
+      artwork:
+        description: |-
+          Artwork is the query-time composed poster URL (artwork): the owning
+          series' for serial rows, the item's own (with the owning-series
+          fallback) for films — resolved over the bounded row set per request,
+          never from a cache of display bytes. Absent (omitempty) when nothing
+          composes — honest absence, never a placeholder.
+        type: string
+      current:
+        $ref: '#/definitions/api.continueCurrent'
+      library_id:
+        type: integer
+      library_name:
+        type: string
+      next:
+        allOf:
+        - $ref: '#/definitions/api.continueNext'
+        description: |-
+          Next is the next-episode offer — omitted (omitempty) when none: films
+          never carry it (an episode concept), and neither does a series whose
+          highest-started episode is also its last, or whose remaining episodes
+          carry no parseable facts.
+      series_display_name:
+        type: string
+      series_id:
+        type: string
+    type: object
   api.createLibraryRequest:
     properties:
       description:
@@ -333,12 +386,42 @@ definitions:
       error:
         $ref: '#/definitions/api.apiError'
     type: object
+  api.facetDTO:
+    properties:
+      key:
+        type: string
+      values:
+        items:
+          $ref: '#/definitions/api.facetValueDTO'
+        type: array
+    type: object
+  api.facetValueDTO:
+    properties:
+      count:
+        type: integer
+      value:
+        type: string
+    type: object
+  api.facetsResponse:
+    properties:
+      facets:
+        items:
+          $ref: '#/definitions/api.facetDTO'
+        type: array
+    type: object
   api.folderDTO:
     properties:
       items:
         type: integer
       path:
         type: string
+    type: object
+  api.homeResponse:
+    properties:
+      continue:
+        items:
+          $ref: '#/definitions/api.continueRow'
+        type: array
     type: object
   api.identifyRequest:
     properties:
@@ -805,6 +888,17 @@ definitions:
         items:
           additionalProperties: {}
           type: object
+        type: array
+    type: object
+  api.searchResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/api.itemDTO'
+        type: array
+      series:
+        items:
+          $ref: '#/definitions/api.seriesDTO'
         type: array
     type: object
   api.seriesDTO:
@@ -2367,6 +2461,21 @@ paths:
       summary: List the enrichment failure ledger
       tags:
       - admin
+  /home:
+    get:
+      operationId: get-home
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.homeResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Continue rail (home)
+      tags:
+      - home
   /items:
     get:
       operationId: list-items
@@ -2394,6 +2503,16 @@ paths:
         in: query
         name: sort
         type: string
+      - description: facet genres filter — only items whose resolved About block carries
+          the value (composes with library/folders/sort/status; unknown value → empty
+          list)
+        in: query
+        name: genre
+        type: string
+      - description: facet kind filter — same law as genre
+        in: query
+        name: kind
+        type: string
       - description: page size (default 50, max 200)
         in: query
         name: limit
@@ -2413,6 +2532,10 @@ paths:
             $ref: '#/definitions/api.errorBody'
         "500":
           description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: List items (optionally filtered by library + status + folder)
@@ -2978,6 +3101,39 @@ paths:
       summary: Preview a plugin's re-enrichment drift for a library
       tags:
       - libraries
+  /libraries/{id}/facets:
+    get:
+      operationId: library-facets
+      parameters:
+      - description: library id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.facetsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: List a library's facet values
+      tags:
+      - libraries
   /libraries/{id}/folders:
     get:
       operationId: library-folders
@@ -3490,6 +3646,39 @@ paths:
       summary: Claim a relay fetch job
       tags:
       - relay
+  /search:
+    get:
+      operationId: search
+      parameters:
+      - description: query text; empty or absent serves both lists empty
+        in: query
+        name: q
+        type: string
+      - description: restrict results to one library id
+        in: query
+        name: library
+        type: integer
+      - description: per-group bound (default 8, max 8 — lowers the bound, never raises
+          it)
+        in: query
+        name: limit
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.searchResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Global grouped search over composed names
+      tags:
+      - search
   /series:
     get:
       operationId: list-series
@@ -3504,6 +3693,19 @@ paths:
         in: query
         name: sort
         type: string
+      - description: facet genres filter — only series whose resolved About block
+          carries the value (composes with library/sort; unknown value → empty list)
+        in: query
+        name: genre
+        type: string
+      - description: facet kind filter — same law as genre
+        in: query
+        name: kind
+        type: string
+      - description: facet status filter — same law as genre
+        in: query
+        name: status
+        type: string
       responses:
         "200":
           description: OK
@@ -3515,6 +3717,10 @@ paths:
             $ref: '#/definitions/api.errorBody'
         "500":
           description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: List a library's series

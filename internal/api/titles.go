@@ -54,7 +54,11 @@ func (a *app) storedTitle(ctx context.Context, entityID string) (string, error) 
 // and a missing or whitespace-only title are 400 bad_request with nothing
 // written. An unknown id surfaces from store as a wrapped sql.ErrNoRows → 404
 // not_found — the store's existence check precedes the upsert, so no row is
-// minted for a ghost entity. The stored title is the request's value as-is
+// minted for a ghost entity. After a successful upsert the Deps.OnTitleChange
+// invalidation seam fires (browse-scale 3.4) — after the store call, before
+// the response write, so a closure observes only confirmed writes; a nil
+// closure is a silent no-op and the response is byte-identical either way.
+// The stored title is the request's value as-is
 // (the store stays value-agnostic; only emptiness is rejected here). The swag
 // annotations live on the four per-route wrappers below — each route needs
 // its own tags and operation id, and one shared body cannot carry both.
@@ -79,6 +83,9 @@ func (a *app) putTitle(w http.ResponseWriter, r *http.Request, kind string) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
+	if a.deps.OnTitleChange != nil {
+		a.deps.OnTitleChange(r.Context(), id)
+	}
 	writeJSON(w, http.StatusOK, titleOverrideDTO{
 		EntityID:  rec.EntityID,
 		Title:     rec.Title,
@@ -89,12 +96,18 @@ func (a *app) putTitle(w http.ResponseWriter, r *http.Request, kind string) {
 // deleteTitle: parse {id} → store.ClearTitleOverride → 204. Idempotent by
 // design: clearing an entity with no override (including one that never
 // existed) deletes nothing and still answers 204 — the store call is an
-// unconditional DELETE over the control table, never a document write.
+// unconditional DELETE over the control table, never a document write. The
+// Deps.OnTitleChange invalidation seam fires on every successful clear —
+// the idempotent no-row delete included, since the clear may have restored
+// a composed name (browse-scale 3.4); nil closure, silent no-op.
 func (a *app) deleteTitle(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := a.deps.Store.ClearTitleOverride(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
+	}
+	if a.deps.OnTitleChange != nil {
+		a.deps.OnTitleChange(r.Context(), id)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

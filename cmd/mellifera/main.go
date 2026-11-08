@@ -42,6 +42,7 @@ import (
 	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/api"
 	"github.com/mellifera/mellifera/internal/art"
+	"github.com/mellifera/mellifera/internal/browse"
 	"github.com/mellifera/mellifera/internal/enrich"
 	"github.com/mellifera/mellifera/internal/identity"
 	"github.com/mellifera/mellifera/internal/module"
@@ -258,13 +259,32 @@ func main() {
 	// constructor call — no DI, no reflect (INV-flat-wiring).
 	enrichQueue = enrich.NewQueue(scanDeps.Enrich, cfg.enrich)
 	fatalOn(enrichQueue.Start(ctx), "start enrich queue")
+
+	// Browse index service (browse-scale D2/D4): the RAM read model over the
+	// cmd-built closure set (newBrowseWiring — the store, the module registry,
+	// and the SAME presentation closure the api Deps carries below). Built
+	// BEFORE the scan Notify closure (the scan-complete fan-out pokes it) and
+	// before api.New (the serve closures ride api.Deps; INV2 — api never
+	// imports browse). Nothing runs here: the janitor's boot pass warms it
+	// synchronously pre-serve, its 60 s tick reconciles, and the pokes below
+	// (scan-complete, gate-flip, title-change) ride the same wake channel.
+	modulePres := newModulePresentationClosure(st, reg, loadedCaps)
+	browseW := newBrowseWiring(st, reg, modulePres)
+	browseSvc := browse.NewService(browseW.Deps)
+
 	// scan hands the library to the queue after persisting items pending. The
 	// closure substitutes the PROCESS ctx (not the per-request scan ctx) so the
 	// queue's derive/feeder outlives the HTTP request — otherwise the feeder
 	// would abort the moment the scan handler returns and never drain
 	// (INV-context-shared: SIGINT/SIGTERM cancels pool + server together).
+	// Scan-complete fan-out (browse-scale D4): the same event pokes the browse
+	// index — a scan adds rows (the epoch's count leg) and advances updated_at
+	// (the content watermark), so a wake runs the pass at once instead of
+	// waiting out the tick. Wake is a non-blocking send on a capacity-1
+	// channel: a scan burst coalesces into one pending pass.
 	scanDeps.Notify = func(_ context.Context, libraryID int64) {
 		enrichQueue.Notify(ctx, libraryID)
+		browseSvc.Wake()
 	}
 	// Deps.Status closure (arch §4.4 best-effort liveness; INV2 anti-corruption
 	// seam — built HERE in cmd/mellifera so api imports neither plugin nor
@@ -393,7 +413,9 @@ func main() {
 		// l6-accounts 10.1): extracted below — the one ResolveGates site that
 		// runs under the REQUEST's Viewer (read from the ctx carrier), with
 		// ModuleSources and every queue/scan/janitor site staying System.
-		ModulePresentation: newModulePresentationClosure(st, reg, loadedCaps),
+		// The browse composer shares this one closure (modulePres above) so
+		// both consumers resolve gates identically.
+		ModulePresentation: modulePres,
 		// Admin sources aggregate (plugin-title-enrichment D6): the three
 		// primitive seams the api handler assembles its read-only inventory
 		// from — the boot-literal catalog above, the registry module list,
@@ -488,8 +510,52 @@ func main() {
 		// source's namespaces re-derive without a rescan. The request-scoped
 		// ctx is substituted with the PROCESS ctx — the same detachment
 		// OnParsersChanged applies (the feeder must outlive the HTTP request).
+		// Gate-flip fan-out (browse-scale D4): the same event pokes the browse
+		// index — a gate flip changes the composition chain with zero row
+		// writes, so without the poke recall for those names would wait out
+		// the full 60 s tick; the poke runs the pass at once (display bytes
+		// never lag either way — the honesty backstop). Q4 ruled the poke
+		// free, so it rides here.
 		OnSourceGateChanged: func(_ context.Context, libraryID int64) {
 			enrichQueue.Notify(ctx, libraryID)
+			browseSvc.Wake()
+		},
+		// Browse-scale serve closures (D3/D7 — the cmd-built seams api cannot
+		// import browse for, INV2): BrowseSearch is the ranked hit-id closure
+		// over the index; LibraryFacets projects the index's per-library
+		// facet aggregates to the parallel-slice wire (the ModuleSources
+		// precedent — the export budget keeps the aggregate shapes
+		// unexported); FacetIDs resolves the facet-filter id sets through the
+		// SAME pass-built composer the aggregates count with (the
+		// whole-library scan, budgeted); OnTitleChange pokes the index so a
+		// confirmed display-name write re-derives immediately (an override
+		// write bumps title_overrides.updated_at, so the epoch trips and the
+		// reconcile is a full rebuild — the poke supplies the latency, the
+		// epoch the correctness). The request ctx is discarded — Wake is a
+		// non-blocking send, nothing outlives the poke.
+		BrowseSearch: func(query string) ([]string, []string) {
+			hits := browseSvc.Search(query)
+			return hits.Series, hits.Items
+		},
+		LibraryFacets: func(libraryID int64) ([]string, [][]string, [][]int) {
+			fs := browseSvc.Facets(strconv.FormatInt(libraryID, 10))
+			keys := make([]string, len(fs))
+			values := make([][]string, len(fs))
+			counts := make([][]int, len(fs))
+			for i, f := range fs {
+				keys[i] = f.Key
+				values[i] = make([]string, len(f.Values))
+				counts[i] = make([]int, len(f.Values))
+				for j, v := range f.Values {
+					values[i][j] = v.Value
+					counts[i][j] = v.Count
+				}
+			}
+			return keys, values, counts
+		},
+		FacetIDs: browseW.FacetIDs,
+		OnTitleChange: func(_ context.Context, _ string) {
+			browseSvc.Wake()
 		},
 		// Client-relayed-fetch (D7): the two relay verbs over the enrich
 		// Relay — direct method values (Relay.Claim / Relay.Ingest align the
@@ -534,6 +600,21 @@ func main() {
 		// derived unapplied-watched queue through the enrich tag resolver. The
 		// wake's write side is notifyRecs, called by the watch detector.
 		janitorTask{name: "recs", interval: recsInterval, wake: recsWake, fn: newRecsSweep(st, reg)},
+		// browse is the search-index task (browse-scale D4, OQ4): the
+		// boot-warm is the same Reconcile pass a tick runs — on the never-built
+		// service it floors to a Build, so the index is warm synchronously
+		// pre-serve — then the 60 s tick reconciles (epoch drift ⇒ full
+		// rebuild; else watermark walk + orphan sweep). The wake's write side
+		// is browseSvc.Wake, poked by the scan-complete and gate-flip fan-outs
+		// and by the api Deps.OnTitleChange seam. browseInterval is a locked
+		// 60 s rule constant; the janitor's interval<=0 law is the task's off
+		// position (no separate warm flag — OQ4).
+		janitorTask{
+			name:     "browse",
+			interval: browseInterval,
+			wake:     browseSvc.WakeChan(),
+			fn:       func(context.Context) { browseSvc.Reconcile() },
+		},
 	)
 	// The watch-ledger backfill (recommendation-sorting follow-up), BEFORE the
 	// boot pass: progress stock that predates the watch detector reconciles
