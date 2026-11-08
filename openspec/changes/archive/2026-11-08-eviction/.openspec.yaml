@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-11-07
+goal: Pack artifacts converge under the budget; a watched library stops holding
+  builds; the TV never hangs on an enqueue that silently dropped

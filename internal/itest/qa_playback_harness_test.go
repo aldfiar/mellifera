@@ -233,7 +233,7 @@ func (w *pbWorld) pbSweep(t *testing.T, enqueue func(string) error) []orchestrat
 			})
 		}
 	}
-	jobs, _ := orchestrator.Frontier(in)
+	jobs, _, _ := orchestrator.Frontier(in)
 	for _, job := range jobs {
 		if err := enqueue(job.ItemID); err != nil {
 			t.Fatalf("sweep enqueue %s: %v", job.ItemID, err)

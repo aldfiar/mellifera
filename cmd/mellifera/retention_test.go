@@ -347,7 +347,7 @@ func TestSweepBudget(t *testing.T) {
 		})
 		cur := budgetBuild(t, root, "itm_a", "cur1")
 		oldDir := budgetBuild(t, root, "itm_a", "old1")
-		sweepBudget(ctx, st, root, dirSize(cur), nil)
+		sweepBudget(ctx, st, root, dirSize(cur), nil, nil)
 		if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
 			t.Fatalf("stale sibling still exists after the budget was met from it alone (stat err %v)", err)
 		}
@@ -379,7 +379,7 @@ func TestSweepBudget(t *testing.T) {
 		cur := budgetBuild(t, root, "itm_cur", "aaa1")
 		noneDir := budgetBuild(t, root, "itm_none", "zzn1")
 		failDir := budgetBuild(t, root, "itm_fail", "zzf1")
-		sweepBudget(ctx, st, root, dirSize(cur), nil)
+		sweepBudget(ctx, st, root, dirSize(cur), nil, nil)
 		for _, p := range []string{noneDir, failDir} {
 			if _, err := os.Stat(p); !os.IsNotExist(err) {
 				t.Fatalf("nameless-doc directory %s still exists after the budget was met from the stale set (stat err %v)", p, err)
@@ -405,7 +405,7 @@ func TestSweepBudget(t *testing.T) {
 		cur := budgetBuild(t, root, "itm_cur", "aaa1")
 		del1 := budgetBuild(t, root, "itm_del", "zzd1")
 		del2 := budgetBuild(t, root, "itm_del", "zzd2")
-		sweepBudget(ctx, st, root, dirSize(cur), nil)
+		sweepBudget(ctx, st, root, dirSize(cur), nil, nil)
 		for _, p := range []string{del1, del2} {
 			if _, err := os.Stat(p); !os.IsNotExist(err) {
 				t.Fatalf("deleted-row directory %s still exists after the budget was met from the stale set (stat err %v)", p, err)
@@ -426,7 +426,7 @@ func TestSweepBudget(t *testing.T) {
 		cur := budgetBuild(t, root, "itm_cur", "aaa1")
 		orph1 := budgetBuild(t, root, "itm_orph", "zzo1")
 		orph2 := budgetBuild(t, root, "itm_orph", "zzo2")
-		sweepBudget(ctx, st, root, dirSize(cur), nil)
+		sweepBudget(ctx, st, root, dirSize(cur), nil, nil)
 		for _, p := range []string{orph1, orph2} {
 			if _, err := os.Stat(p); !os.IsNotExist(err) {
 				t.Fatalf("orphan directory %s still exists after the budget was met from the orphan set (stat err %v)", p, err)

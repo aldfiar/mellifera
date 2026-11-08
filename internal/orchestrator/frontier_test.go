@@ -151,7 +151,7 @@ func TestFrontier(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := Frontier(tc.in)
+			got, _, _ := Frontier(tc.in)
 			ids := make([]string, len(got))
 			for i, j := range got {
 				ids[i] = j.ItemID
@@ -176,7 +176,7 @@ func TestFrontierJobShape(t *testing.T) {
 		Watched: map[string]bool{"w1": true},
 		Now:     testNow,
 	}
-	got, _ := Frontier(in)
+	got, _, _ := Frontier(in)
 	if len(got) != 1 {
 		t.Fatalf("Frontier() = %d jobs, want 1", len(got))
 	}
@@ -184,7 +184,7 @@ func TestFrontierJobShape(t *testing.T) {
 		t.Fatalf("Frontier() job = %+v, want library 7 reason %q", got[0], reasonNext)
 	}
 
-	pilot, _ := Frontier(FrontierIn{Serials: in.Serials, Watched: map[string]bool{}, Now: testNow})
+	pilot, _, _ := Frontier(FrontierIn{Serials: in.Serials, Watched: map[string]bool{}, Now: testNow})
 	if len(pilot) != 1 || pilot[0].ItemID != "w1" || pilot[0].Reason != reasonPilot {
 		t.Fatalf("Frontier() pilot = %+v, want w1/%q", pilot, reasonPilot)
 	}
@@ -211,17 +211,17 @@ func TestFrontierWorkingSet(t *testing.T) {
 		Watched: map[string]bool{"a1": true, "b1": true, "d1": true, "d2": true},
 		Now:     testNow,
 	}
-	jobs, fronted := Frontier(in)
+	jobs, pinned, _ := Frontier(in)
 	if len(jobs) != 0 {
 		t.Fatalf("Frontier() jobs = %v, want none (positions packaged/cooling/gated)", jobs)
 	}
 	want := map[string]bool{"a2": true, "b2": true}
-	if len(fronted) != len(want) {
-		t.Fatalf("Frontier() working set = %v, want %v", fronted, want)
+	if len(pinned) != len(want) {
+		t.Fatalf("Frontier() working set = %v, want %v", pinned, want)
 	}
 	for id := range want {
-		if !fronted[id] {
-			t.Fatalf("Frontier() working set missing %q (got %v)", id, fronted)
+		if !pinned[id] {
+			t.Fatalf("Frontier() working set missing %q (got %v)", id, pinned)
 		}
 	}
 
@@ -231,12 +231,12 @@ func TestFrontierWorkingSet(t *testing.T) {
 		Watched: map[string]bool{"a1": true},
 		Now:     testNow,
 	}
-	clearJobs, clearFronted := Frontier(clear)
+	clearJobs, clearPinned, _ := Frontier(clear)
 	if len(clearJobs) != 1 || clearJobs[0].ItemID != "a2" {
 		t.Fatalf("Frontier() jobs = %v, want [a2]", clearJobs)
 	}
-	if !clearFronted["a2"] {
-		t.Fatalf("Frontier() working set = %v, want a2 (jobs ⊆ working set)", clearFronted)
+	if !clearPinned["a2"] {
+		t.Fatalf("Frontier() working set = %v, want a2 (jobs ⊆ working set)", clearPinned)
 	}
 }
 
@@ -305,4 +305,206 @@ func TestRepacks(t *testing.T) {
 			t.Fatalf("Repacks(nil) = %+v, want empty", got)
 		}
 	})
+}
+
+// TestFrontierBoundedPinSet pins the bounded working set (D1): the pinned
+// prefix walks serials most recently watched first, a stampless serial
+// sorts oldest, and a position that would overflow PinCapBytes ends the
+// walk — later (even cheaper) positions stay unpinned. The pinned set's
+// accumulated bytes never exceed the cap, jobs emit only from pinned
+// positions, and a non-positive cap is unbounded (the zero value's
+// behavior).
+func TestFrontierBoundedPinSet(t *testing.T) {
+	cases := []struct {
+		name       string
+		in         FrontierIn
+		wantPinned []string // exact pinned item set
+		wantJobs   []string // exact job ids in emission order
+	}{
+		{
+			name: "recency_orders_the_walk_most_recent_first",
+			in: FrontierIn{
+				Serials: []Serial{
+					serial(1, ep("old1"), ep("old2")), // stamped two hours ago
+					serial(1, ep("new1"), ep("new2")), // stamped one minute ago
+					serial(1, ep("mid1"), ep("mid2")), // stamped an hour ago
+				},
+				Watched:     map[string]bool{},
+				Now:         testNow,
+				Recency:     map[string]time.Time{"old1": testNow.Add(-2 * time.Hour), "new1": testNow.Add(-time.Minute), "mid1": testNow.Add(-time.Hour)},
+				BuildBytes:  map[string]int64{"old1": 10, "new1": 10, "mid1": 10},
+				PinCapBytes: 1000, // everything fits
+			},
+			wantPinned: []string{"new1", "mid1", "old1"},
+			wantJobs:   []string{"new1", "mid1", "old1"},
+		},
+		{
+			name: "stampless_serial_sorts_oldest_and_is_cap_cut_first",
+			in: FrontierIn{
+				Serials: []Serial{
+					serial(1, ep("fresh1"), ep("fresh2")), // never watched: stampless
+					serial(1, ep("watch1"), ep("watch2")), // stamped
+				},
+				Watched:     map[string]bool{},
+				Now:         testNow,
+				Recency:     map[string]time.Time{"watch1": testNow.Add(-time.Minute)},
+				BuildBytes:  map[string]int64{"fresh1": 10, "watch1": 10},
+				PinCapBytes: 10, // room for exactly the stamped serial
+			},
+			wantPinned: []string{"watch1"},
+			wantJobs:   []string{"watch1"},
+		},
+		{
+			name: "byte_overflow_ends_the_walk",
+			in: FrontierIn{
+				Serials: []Serial{
+					serial(1, ep("big1"), ep("big2")),   // newest, 60 bytes
+					serial(1, ep("over1"), ep("over2")), // 60 more: overflows the cap
+					serial(1, ep("tiny1"), ep("tiny2")), // would fit alone — still unpinned
+				},
+				Watched:     map[string]bool{},
+				Now:         testNow,
+				Recency:     map[string]time.Time{"big1": testNow.Add(-time.Minute), "over1": testNow.Add(-2 * time.Hour), "tiny1": testNow.Add(-3 * time.Hour)},
+				BuildBytes:  map[string]int64{"big1": 60, "over1": 60, "tiny1": 1},
+				PinCapBytes: 100,
+			},
+			wantPinned: []string{"big1"},
+			wantJobs:   []string{"big1"},
+		},
+		{
+			name: "positions_that_exactly_fit_the_cap_stay_pinned",
+			in: FrontierIn{
+				Serials: []Serial{
+					serial(1, ep("fit1"), ep("fit2")),   // 50 bytes
+					serial(1, ep("over1"), ep("over2")), // 50+60 overflows
+				},
+				Watched:     map[string]bool{},
+				Now:         testNow,
+				Recency:     map[string]time.Time{"fit1": testNow.Add(-time.Minute), "over1": testNow.Add(-2 * time.Hour)},
+				BuildBytes:  map[string]int64{"fit1": 50, "over1": 60},
+				PinCapBytes: 50,
+			},
+			wantPinned: []string{"fit1"},
+			wantJobs:   []string{"fit1"},
+		},
+		{
+			name: "non_positive_cap_is_unbounded",
+			in: FrontierIn{
+				Serials: []Serial{
+					serial(1, ep("a1"), ep("a2")),
+					serial(1, ep("b1"), ep("b2")),
+				},
+				Watched:     map[string]bool{},
+				Now:         testNow,
+				BuildBytes:  map[string]int64{"a1": 1000, "b1": 1000},
+				PinCapBytes: 0,
+			},
+			wantPinned: []string{"a1", "b1"},
+			wantJobs:   []string{"a1", "b1"},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			jobs, pinned, _ := Frontier(tc.in)
+			if len(pinned) != len(tc.wantPinned) {
+				t.Fatalf("Frontier() pinned = %v, want exactly %v", pinned, tc.wantPinned)
+			}
+			for _, id := range tc.wantPinned {
+				if !pinned[id] {
+					t.Fatalf("Frontier() pinned missing %q (got %v)", id, pinned)
+				}
+			}
+			var bytes int64
+			for id := range pinned {
+				bytes += tc.in.BuildBytes[id]
+			}
+			if tc.in.PinCapBytes > 0 && bytes > tc.in.PinCapBytes {
+				t.Fatalf("Frontier() pinned bytes = %d, over cap %d", bytes, tc.in.PinCapBytes)
+			}
+			ids := make([]string, len(jobs))
+			for i, j := range jobs {
+				ids[i] = j.ItemID
+			}
+			if len(ids) != len(tc.wantJobs) {
+				t.Fatalf("Frontier() jobs = %v, want %v", ids, tc.wantJobs)
+			}
+			for i := range ids {
+				if ids[i] != tc.wantJobs[i] {
+					t.Fatalf("Frontier() jobs = %v, want %v (emission order)", ids, tc.wantJobs)
+				}
+			}
+		})
+	}
+}
+
+// TestFrontierDemote pins the demotion judgment (D2's policy half): every
+// fully-watched serial's episode ids come back in input order (canonical
+// order within a serial), a mixed serial is never demoted, and the gate
+// holds — a streams-disabled serial's judgment is not this walk's. The
+// executor is the shell's (task 1.2); this is data only.
+func TestFrontierDemote(t *testing.T) {
+	cases := []struct {
+		name       string
+		in         FrontierIn
+		wantDemote []string // exact episode ids, in order
+	}{
+		{
+			name: "fully_watched_serial_demoted_in_canonical_order",
+			in: FrontierIn{
+				Serials: []Serial{serial(1, ep("d1"), ep("d2"), ep("d3"))},
+				Watched: map[string]bool{"d1": true, "d2": true, "d3": true},
+				Now:     testNow,
+			},
+			wantDemote: []string{"d1", "d2", "d3"},
+		},
+		{
+			name: "mixed_serial_never_demoted",
+			in: FrontierIn{
+				Serials: []Serial{serial(1, ep("m1"), ep("m2"), ep("m3"))},
+				Watched: map[string]bool{"m2": true},
+				Now:     testNow,
+			},
+			wantDemote: []string{},
+		},
+		{
+			name: "fully_watched_serials_demote_in_input_order",
+			in: FrontierIn{
+				Serials: []Serial{
+					serial(1, ep("a1"), ep("a2")),
+					serial(1, ep("b1"), ep("b2")), // mixed: fronts b2 instead
+					serial(1, ep("c1"), ep("c2")),
+				},
+				Watched: map[string]bool{"a1": true, "a2": true, "b1": true, "c1": true, "c2": true},
+				Now:     testNow,
+			},
+			wantDemote: []string{"a1", "a2", "c1", "c2"},
+		},
+		{
+			name: "streams_disabled_serial_is_not_demoted",
+			in: FrontierIn{
+				Serials: []Serial{{LibraryID: 2, StreamsEnabled: false, Episodes: []Episode{ep("x1"), ep("x2")}}},
+				Watched: map[string]bool{"x1": true, "x2": true},
+				Now:     testNow,
+			},
+			wantDemote: []string{},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, demote := Frontier(tc.in)
+			if demote == nil {
+				t.Fatal("Frontier() demote = nil, want an empty non-nil slice")
+			}
+			if len(demote) != len(tc.wantDemote) {
+				t.Fatalf("Frontier() demote = %v, want %v", demote, tc.wantDemote)
+			}
+			for i := range tc.wantDemote {
+				if demote[i] != tc.wantDemote[i] {
+					t.Fatalf("Frontier() demote = %v, want %v (input order)", demote, tc.wantDemote)
+				}
+			}
+		})
+	}
 }

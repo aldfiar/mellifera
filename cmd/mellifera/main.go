@@ -357,6 +357,16 @@ func main() {
 	// at runtime (TestDepsIdentityWired pins the assignment).
 	identitySvc := newIdentityService(st)
 
+	// Eviction suppression set (eviction D3): the process-lifetime,
+	// mutex-guarded item-id set of items whose document-named build a policy
+	// eviction took — the sweeps mark it (budget + demotion, one uniform
+	// rule), the frontier consults it (no re-front), the integrity sweep
+	// consults it (no repack churn), and the Deps.Play closure below clears
+	// it on a real play (the re-arm). In-memory by design: a restart clears
+	// the suppression and re-fronts evicted items once — the design's
+	// accepted edge.
+	suppress := newSuppressionSet()
+
 	apiHandler := api.New(api.Deps{
 		AdminToken: cfg.adminToken,
 		Store:      st,
@@ -376,23 +386,14 @@ func main() {
 			return playbackDescriptor(ctx, st, mediaSvc, enrichQueue.EnqueuePack, cfg.optInCodecs, itemID)
 		},
 		// Play verb (D-7 — the ONLY playback mutation): retry re-enqueues a
-		// failed packaging run through the streams lane; fromSeconds is
-		// reserved (a v1 no-op carried through). The failed check reads the
-		// item's stored streams namespace — the lane is its only writer.
-		Play: func(ctx context.Context, itemID string, retry bool, _ *float64) (bool, error) {
-			row, err := st.GetItem(ctx, itemID, access.System())
-			if err != nil {
-				return false, err // sql.ErrNoRows → 404 at the handler
-			}
-			if !retry {
-				// Pack-on-play (D-8): the played item (a movie the frontier
-				// never fronts, or any unpackaged packable item) gets its
-				// packaging enqueued by the play that asked for it; the
-				// direct floor answers everything else. queued=true → 202.
-				return packOnPlay(ctx, st, enrichQueue.EnqueuePack, row, cfg.optInCodecs)
-			}
-			return retryFailedPack(ctx, st, enrichQueue.EnqueuePack, row, cfg.optInCodecs)
-		},
+		// failed packaging run through the streams lane's PREFERRED lane
+		// (eviction D4: EnqueuePackUrgent — the play jumps the shared buffer's
+		// background backlog; every background dispatch keeps the plain
+		// EnqueuePack); fromSeconds is reserved (a v1 no-op carried through).
+		// The closure also carries the eviction re-arm (eviction D3): a real
+		// play clears the item's suppression mark BEFORE it delegates to the
+		// pack decisions (see newPlayClosure).
+		Play: newPlayClosure(st, enrichQueue.EnqueuePackUrgent, cfg.optInCodecs, suppress),
 		// Watch-event seam, fanned out (continue-nextup-media D-1..D-4 +
 		// recommendation-sorting D4): leg 1 is the per-item debounced,
 		// request-detached stop-frame re-grab of the frame-grabber thumbnail —
@@ -575,7 +576,7 @@ func main() {
 	// stream Service's own ValidateBuild method value (the enqueue seam's
 	// func-injection pattern); the budget knob is GiB (default 32; 0 = off —
 	// see loadConfig).
-	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30, cfg.optInCodecs)
+	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30, cfg.optInCodecs, suppress)
 	// artSettle is the registry's art task (artwork): ONE settle+GC pass per
 	// tick — the shared document walk acquires every live non-placeholder
 	// poster URL and reclaims blobs on reference loss. Errors are logged,

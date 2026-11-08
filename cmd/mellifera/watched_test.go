@@ -213,7 +213,7 @@ func TestWatchedSemantics(t *testing.T) {
 			watched := map[string]bool{}
 			eps := projectEpisodes(items, map[string]time.Time{}, false,
 				map[string]float64{"e1": 1700, "e2": 1550, "e3": 1620}, watched)
-			jobs, fronted := orchestrator.Frontier(orchestrator.FrontierIn{
+			jobs, fronted, _ := orchestrator.Frontier(orchestrator.FrontierIn{
 				Serials: []orchestrator.Serial{{LibraryID: 1, StreamsEnabled: true, Episodes: eps}},
 				Watched: watched, Now: time.Now(),
 			})
@@ -231,7 +231,7 @@ func TestWatchedSemantics(t *testing.T) {
 			watched := map[string]bool{}
 			eps := projectEpisodes(items, map[string]time.Time{}, false,
 				map[string]float64{"e1": 1700, "e2": 1550, "e3": 300}, watched)
-			jobs, fronted := orchestrator.Frontier(orchestrator.FrontierIn{
+			jobs, fronted, _ := orchestrator.Frontier(orchestrator.FrontierIn{
 				Serials: []orchestrator.Serial{{LibraryID: 1, StreamsEnabled: true, Episodes: eps}},
 				Watched: watched, Now: time.Now(),
 			})
@@ -253,7 +253,7 @@ func TestWatchedSemantics(t *testing.T) {
 			if watched["e1"] {
 				t.Fatal("60s of 1800s counted watched — any-position>0 still leaks")
 			}
-			jobs, fronted := orchestrator.Frontier(orchestrator.FrontierIn{
+			jobs, fronted, _ := orchestrator.Frontier(orchestrator.FrontierIn{
 				Serials: []orchestrator.Serial{{LibraryID: 1, StreamsEnabled: true, Episodes: eps}},
 				Watched: watched, Now: time.Now(),
 			})
