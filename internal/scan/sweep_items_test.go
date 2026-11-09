@@ -75,7 +75,10 @@ func stampedSweepDoc(t *testing.T, root, rel string, extra map[string]any) json.
 
 // seedSweepItem persists one hand-built item row (the sweep tests seed prior
 // state directly — the sweep judges whatever the store holds).
-func seedSweepItem(t *testing.T, ctx context.Context, s *store.Store, libID int64, root, rel, fileID, status string, doc json.RawMessage) store.Item {
+func seedSweepItem(
+	t *testing.T, ctx context.Context, s *store.Store,
+	libID int64, root, rel, fileID, status string, doc json.RawMessage,
+) store.Item {
 	t.Helper()
 	it := store.Item{
 		ID:            itemID(libID, fileID),
@@ -171,12 +174,25 @@ func TestItemSweepTombsVanishedFiles(t *testing.T) {
 
 	priorGone := sweepItemRow(t, s, libID, "b")
 	priorPresent := sweepItemRow(t, s, libID, "a")
+	assertVanishTombstone(t, s, r, libID, root, goneID, priorGone, priorPresent)
+}
+
+// assertVanishTombstone runs the post-vanish pass and asserts the tombstone
+// law end to end: the vanished item is status "deleted" with its document
+// bytes untouched, the present item is silently untouched, and the
+// watched-ledger row keyed to the vanished id survives the soft tombstone.
+func assertVanishTombstone(
+	t *testing.T, s *store.Store, r *module.Registry, libID int64,
+	root, goneID string, priorGone, priorPresent store.Item,
+) {
+	t.Helper()
+	ctx := context.Background()
 
 	// The file vanishes; the next clean pass re-emits only the present file.
 	if err := os.Remove(filepath.Join(root, "Gone.mkv")); err != nil {
 		t.Fatalf("remove Gone.mkv: %v", err)
 	}
-	res = runSweepScan(t, s, r, libID, epScanner(true,
+	res := runSweepScan(t, s, r, libID, epScanner(true,
 		epSpec{fileID: "a", rel: "Present.mkv", parsedJSON: epParsed},
 	))
 	if res.Persisted != 1 {
@@ -189,16 +205,19 @@ func TestItemSweepTombsVanishedFiles(t *testing.T) {
 		t.Errorf("vanished item status = %q, want deleted (item sweep)", gone.Status)
 	}
 	if !bytes.Equal(priorGone.Document, gone.Document) {
-		t.Errorf("tombstoned document changed:\n prior=%s\n after=%s", priorGone.Document, gone.Document)
+		t.Errorf("tombstoned document changed:\n prior=%s\n after=%s",
+			priorGone.Document, gone.Document)
 	}
 
 	// Present.mkv: silently untouched — status and document identical.
 	present := sweepItemRow(t, s, libID, "a")
 	if present.Status != priorPresent.Status {
-		t.Errorf("present item status = %q, want %q (the sweep never touches a present file)", present.Status, priorPresent.Status)
+		t.Errorf("present item status = %q, want %q (the sweep never touches a present file)",
+			present.Status, priorPresent.Status)
 	}
 	if !bytes.Equal(priorPresent.Document, present.Document) {
-		t.Errorf("present item document changed:\n prior=%s\n after=%s", priorPresent.Document, present.Document)
+		t.Errorf("present item document changed:\n prior=%s\n after=%s",
+			priorPresent.Document, present.Document)
 	}
 
 	// The tombstone is soft: the watched-ledger row survives (the raw
@@ -230,12 +249,13 @@ func TestItemSweepSkipsPresentFiles(t *testing.T) {
 	sweepItemFile(t, root, "One.mkv")
 	sweepItemFile(t, root, "Two.mkv")
 
-	priorOne := seedSweepItem(t, ctx, s, libID, root, "One.mkv", "one", "ready",
+	seedSweepItem(t, ctx, s, libID, root, "One.mkv", "one", "ready",
 		stampedSweepDoc(t, root, "One.mkv", nil))
-	priorTwo := seedSweepItem(t, ctx, s, libID, root, "Two.mkv", "two", "pending",
+	seedSweepItem(t, ctx, s, libID, root, "Two.mkv", "two", "pending",
 		stampedSweepDoc(t, root, "Two.mkv", nil))
-	priorOne = sweepItemRow(t, s, libID, "one") // stored timestamps, not the seed struct
-	priorTwo = sweepItemRow(t, s, libID, "two")
+	// stored timestamps, not the seed struct
+	priorOne := sweepItemRow(t, s, libID, "one")
+	priorTwo := sweepItemRow(t, s, libID, "two")
 
 	res := Result{}
 	if err := sweepItems(ctx, s, libID, &res); err != nil {
@@ -337,10 +357,58 @@ func TestTruncatedStreamSkipsItemSweep(t *testing.T) {
 	// evidence of vanishing.
 	gone := sweepItemRow(t, s, libID, "b")
 	if gone.Status == "deleted" {
-		t.Errorf("vanished item reached deleted on a TRUNCATED stream — the item sweep ran outside the confirmed-clean branch")
+		t.Errorf("vanished item reached deleted on a TRUNCATED stream — " +
+			"the item sweep ran outside the confirmed-clean branch")
 	}
 	if gone.Status != "pending" {
 		t.Errorf("vanished item status = %q, want pending (untouched by the partial pass)", gone.Status)
+	}
+}
+
+// healLeg is one re-observation leg of TestReobservedDeletedItemSelfHeals:
+// the pass's probe/parsed seeds plus the expected outcome for the healed row.
+type healLeg struct {
+	name        string
+	retombstone bool     // flip the row back to deleted before the pass
+	probe       []byte   // the pass's ffprobe bytes
+	parsedJSON  string   // the pass's parsed identity
+	wantStatus  string   // the row's status after the pass
+	wantPresent []string // derived namespaces the healed document must carry
+	wantAbsent  []string // derived namespaces the heal must drop
+}
+
+// runHealLeg runs one re-observation leg and asserts its outcome on the
+// healed row: the status plus which derived namespaces carry and drop.
+func runHealLeg(t *testing.T, s *store.Store, r *module.Registry, libID int64, leg healLeg) {
+	t.Helper()
+	ctx := context.Background()
+	if leg.retombstone {
+		row := sweepItemRow(t, s, libID, "ep")
+		row.Status = "deleted"
+		if err := s.PutItem(ctx, row); err != nil {
+			t.Fatalf("re-tombstone ep: %v", err)
+		}
+	}
+	runSweepScan(t, s, r, libID, epScanner(true,
+		epSpec{fileID: "ep", rel: "Ep.mkv", probe: leg.probe, parsedJSON: leg.parsedJSON}))
+	healed := sweepItemRow(t, s, libID, "ep")
+	if healed.Status != leg.wantStatus {
+		t.Errorf("heal leg %q: status = %q, want %q", leg.name, healed.Status, leg.wantStatus)
+	}
+	// fresh decode per leg — Unmarshal into a non-nil map MERGES
+	var doc map[string]any
+	if err := json.Unmarshal(healed.Document, &doc); err != nil {
+		t.Fatalf("decode healed document: %v", err)
+	}
+	for _, k := range leg.wantPresent {
+		if _, ok := doc[k]; !ok {
+			t.Errorf("heal leg %q: document lost derived namespace %q (carry)", leg.name, k)
+		}
+	}
+	for _, k := range leg.wantAbsent {
+		if _, ok := doc[k]; ok {
+			t.Errorf("heal leg %q: document kept derived namespace %q (drop)", leg.name, k)
+		}
 	}
 }
 
@@ -351,12 +419,17 @@ func TestTruncatedStreamSkipsItemSweep(t *testing.T) {
 // with `streams` dropped per the tier-B carry contract; a changed parsed
 // identity lands "stale" (baseChanged fires before the heal); and a "deleted"
 // item the pass never re-observes keeps "deleted" with no updated_at churn.
-func TestReobservedDeletedItemSelfHeals(t *testing.T) {
+// seedWrongfulTombstone builds the wrongful-tombstone shape the heal legs
+// rescan against: the ghost row (tombstoned, its file gone, never re-observed
+// by any pass below) plus "ep" — persisted pending by a confirmed clean pass
+// with the given probe, then re-tombstoned with its derived namespaces
+// (sources/_view/_provenance — what enrich stamps — plus a `streams`
+// namespace, what packaging stamps) riding the document.
+func seedWrongfulTombstone(t *testing.T, probeA []byte) (*store.Store, *module.Registry, int64, string, store.Item) {
+	t.Helper()
 	s, r, libID, root := setupItemSweepStore(t)
 	ctx := context.Background()
 	sweepItemFile(t, root, "Ep.mkv")
-	probeA := []byte(`{"format":{"duration":"100.0"}}`)
-	probeB := []byte(`{"format":{"duration":"110.0"}}`)
 
 	// The ghost item: tombstoned, its file gone, never re-observed by any pass
 	// below — the sweep's already-deleted skip leg.
@@ -394,56 +467,45 @@ func TestReobservedDeletedItemSelfHeals(t *testing.T) {
 	if err := s.PutItem(ctx, row); err != nil {
 		t.Fatalf("tombstone ep: %v", err)
 	}
+	return s, r, libID, root, ghostBefore
+}
 
-	// Leg 1 — unchanged clean re-scan: the tombstone heals to ready, every
-	// derived namespace carried forward (tier A).
-	runSweepScan(t, s, r, libID, epScanner(true,
-		epSpec{fileID: "ep", rel: "Ep.mkv", probe: probeA, parsedJSON: epParsed}))
-	healed := sweepItemRow(t, s, libID, "ep")
-	if healed.Status != "ready" {
-		t.Errorf("re-observed deleted item status = %q, want ready (self-heal)", healed.Status)
-	}
-	var healedDoc map[string]any
-	if err := json.Unmarshal(healed.Document, &healedDoc); err != nil {
-		t.Fatalf("decode healed document: %v", err)
-	}
-	for _, k := range []string{"sources", "_view", "_provenance", "streams"} {
-		if _, ok := healedDoc[k]; !ok {
-			t.Errorf("healed document lost derived namespace %q (tier A carry)", k)
-		}
-	}
-	healedDoc = nil // fresh decode per leg — Unmarshal into a non-nil map MERGES
+func TestReobservedDeletedItemSelfHeals(t *testing.T) {
+	probeA := []byte(`{"format":{"duration":"100.0"}}`)
+	probeB := []byte(`{"format":{"duration":"110.0"}}`)
+	s, r, libID, _, ghostBefore := seedWrongfulTombstone(t, probeA)
 
-	// Leg 2 — ffprobe-only drift: re-tombstone the healed shape, rescan with a
-	// drifted probe. The heal still lands ready, but `streams` drops (tier B)
-	// while the parsed-keyed namespaces carry.
-	row = sweepItemRow(t, s, libID, "ep")
-	row.Status = "deleted"
-	if err := s.PutItem(ctx, row); err != nil {
-		t.Fatalf("re-tombstone ep: %v", err)
-	}
-	runSweepScan(t, s, r, libID, epScanner(true,
-		epSpec{fileID: "ep", rel: "Ep.mkv", probe: probeB, parsedJSON: epParsed}))
-	healed = sweepItemRow(t, s, libID, "ep")
-	if healed.Status != "ready" {
-		t.Errorf("ffprobe-drift heal status = %q, want ready", healed.Status)
-	}
-	if err := json.Unmarshal(healed.Document, &healedDoc); err != nil {
-		t.Fatalf("decode tier-B document: %v", err)
-	}
-	if _, ok := healedDoc["streams"]; ok {
-		t.Errorf("ffprobe-only drift kept `streams` — the tier-B drop must fire under the heal")
-	}
-	if _, ok := healedDoc["sources"]; !ok {
-		t.Errorf("ffprobe-only drift lost `sources` — tier B drops streams alone")
-	}
-
-	// Leg 3 — parsed identity changed: stale (baseChanged fires before the
-	// heal; a stale row must not mask a changed identity).
-	runSweepScan(t, s, r, libID, epScanner(true,
-		epSpec{fileID: "ep", rel: "Ep.mkv", probe: probeB, parsedJSON: `{"title":"Ep REPACK"}`}))
-	if got := sweepItemRow(t, s, libID, "ep").Status; got != "stale" {
-		t.Errorf("changed-parsed re-scan status = %q, want stale (baseChanged fires first)", got)
+	// The three heal legs, in order: unchanged identity (tier A carry),
+	// ffprobe-only drift (tier B drops streams alone), changed parsed
+	// identity (baseChanged fires before the heal — a stale row must not
+	// mask a changed identity).
+	for _, leg := range []healLeg{
+		{
+			name:        "leg1 unchanged identity carries every derived namespace",
+			probe:       probeA,
+			parsedJSON:  epParsed,
+			wantStatus:  "ready",
+			wantPresent: []string{"sources", "_view", "_provenance", "streams"},
+		},
+		{
+			name:        "leg2 ffprobe-only drift drops streams alone",
+			retombstone: true,
+			probe:       probeB,
+			parsedJSON:  epParsed,
+			wantStatus:  "ready",
+			wantPresent: []string{"sources"},
+			wantAbsent:  []string{"streams"},
+		},
+		{
+			name:       "leg3 changed parsed identity lands stale",
+			probe:      probeB,
+			parsedJSON: `{"title":"Ep REPACK"}`,
+			wantStatus: "stale",
+		},
+	} {
+		t.Run(leg.name, func(t *testing.T) {
+			runHealLeg(t, s, r, libID, leg)
+		})
 	}
 
 	// The ghost keeps "deleted" through every pass — never re-observed, never

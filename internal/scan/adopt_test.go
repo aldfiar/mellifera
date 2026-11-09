@@ -164,6 +164,37 @@ func wantAdoptWatched(t *testing.T, s *store.Store, present, absent string) {
 	}
 }
 
+// runNoCarryEpisodeScenario seeds and runs the episode-shape no-carry case
+// shared by the non-matching-tombstone and empty-parser-title subtests (they
+// differ only in their identity seeds): a live item on a ready series and a
+// tombstoned item on a deleted series, both anchored at (season, episode)
+// with the given parser-composed series titles and item title floors, the
+// dead id holding one stranded progress row (deadProgress) and one ledger
+// row on deadSeries. It asserts the no-carry law: the live item gains
+// nothing and the dead id's stranded stock stays exactly where it was.
+func runNoCarryEpisodeScenario(t *testing.T, s *store.Store, libID int64,
+	season, episode int64,
+	liveSeries, liveParserTitle, liveTitle string,
+	deadSeries, deadParserTitle, deadTitle string, deadProgress int64,
+) {
+	t.Helper()
+	ctx := context.Background()
+	seedAdoptSeries(t, ctx, s, libID, liveSeries, "ready", liveParserTitle)
+	seedAdoptSeries(t, ctx, s, libID, deadSeries, "deleted", deadParserTitle)
+	live := seedAdoptItem(t, ctx, s, libID, liveSeries+"/item.mkv", "ready",
+		episodeDoc(t, liveTitle, liveSeries, &season, &episode))
+	dead := seedAdoptItem(t, ctx, s, libID, deadSeries+"/item.mkv", "deleted",
+		episodeDoc(t, deadTitle, deadSeries, &season, &episode))
+	seedAdoptProgress(t, ctx, s, dead, deadProgress, access.System())
+	seedAdoptWatched(t, ctx, s, dead, libID, deadSeries)
+
+	if err := AdoptStranded(ctx, s, live); err != nil {
+		t.Fatalf("AdoptStranded: %v", err)
+	}
+	wantNoAdoptProgress(t, s, live, access.System())
+	wantAdoptWatched(t, s, dead, live)
+}
+
 // TestAdoptStrandedMovesToIdentityMatch covers the amended D4 carry: a
 // tombstoned sibling whose served identity matches the live item's — episode
 // pairs through the series bridge (equal, non-empty parser-composed series
@@ -211,20 +242,9 @@ func TestAdoptStrandedMovesToIdentityMatch(t *testing.T) {
 
 	t.Run("a non-matching tombstone is untouched", func(t *testing.T) {
 		s, libID := setupAdoptStore(t)
-		seedAdoptSeries(t, ctx, s, libID, "series/jojo", "ready", "JoJo's Bizarre Adventure")
-		seedAdoptSeries(t, ctx, s, libID, "series/other", "deleted", "Other Show")
-		live := seedAdoptItem(t, ctx, s, libID, "live.mkv", "ready",
-			episodeDoc(t, "JoJo E03", "series/jojo", &season, &episode))
-		other := seedAdoptItem(t, ctx, s, libID, "other.mkv", "deleted",
-			episodeDoc(t, "Other Show E03", "series/other", &season, &episode))
-		seedAdoptProgress(t, ctx, s, other, 60, access.System())
-		seedAdoptWatched(t, ctx, s, other, libID, "series/other")
-
-		if err := AdoptStranded(ctx, s, live); err != nil {
-			t.Fatalf("AdoptStranded: %v", err)
-		}
-		wantNoAdoptProgress(t, s, live, access.System())
-		wantAdoptWatched(t, s, other, live)
+		runNoCarryEpisodeScenario(t, s, libID, 1, 3,
+			"series/jojo", "JoJo's Bizarre Adventure", "JoJo E03",
+			"series/other", "Other Show", "Other Show E03", 60)
 	})
 }
 
@@ -348,7 +368,6 @@ func TestAdoptStrandedCrossSeriesNeverCarries(t *testing.T) {
 // stays keyed to the dead id — join-dropped, harmless.
 func TestAdoptStrandedEmptyFloorsNeverMatch(t *testing.T) {
 	ctx := context.Background()
-	season, episode := int64(1), int64(1)
 
 	t.Run("film pair with both title floors empty", func(t *testing.T) {
 		s, libID := setupAdoptStore(t)
@@ -368,19 +387,8 @@ func TestAdoptStrandedEmptyFloorsNeverMatch(t *testing.T) {
 
 	t.Run("episode pair with both series parser titles empty", func(t *testing.T) {
 		s, libID := setupAdoptStore(t)
-		seedAdoptSeries(t, ctx, s, libID, "series/one", "ready", "")
-		seedAdoptSeries(t, ctx, s, libID, "series/two", "deleted", "")
-		live := seedAdoptItem(t, ctx, s, libID, "one/e01.mkv", "ready",
-			episodeDoc(t, "E01", "series/one", &season, &episode))
-		dead := seedAdoptItem(t, ctx, s, libID, "two/e01.mkv", "deleted",
-			episodeDoc(t, "E01", "series/two", &season, &episode))
-		seedAdoptProgress(t, ctx, s, dead, 300, access.System())
-		seedAdoptWatched(t, ctx, s, dead, libID, "series/two")
-
-		if err := AdoptStranded(ctx, s, live); err != nil {
-			t.Fatalf("AdoptStranded: %v", err)
-		}
-		wantNoAdoptProgress(t, s, live, access.System())
-		wantAdoptWatched(t, s, dead, live)
+		runNoCarryEpisodeScenario(t, s, libID, 1, 1,
+			"series/one", "", "E01",
+			"series/two", "", "E01", 300)
 	})
 }
