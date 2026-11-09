@@ -189,10 +189,32 @@ func parseInclude(r *http.Request) (watched bool, bad string) {
 	return watched, bad
 }
 
+// statusDeleted is the tombstone serve law's one api-side hard-coding of a
+// lifecycle literal (tombstone-lifecycle 3.2, the LibrarySummary precedent —
+// libraries.go): the canonical status set lives in internal/enrich, which the
+// api MAY NOT import (INV2), but the serve contract is defined over LIVE
+// items, so the default listing drops deleted rows. An explicit ?status=
+// keeps exact-match semantics — ?status=deleted stays the operator's audit
+// window.
+const statusDeleted = "deleted"
+
 // allFilteredItems reads the FULL filtered item set (D7's score-then-window
 // input): a paging loop over QueryItems' id-ordered pages — the store has no
 // unwindowed read (limit <= 0 returns nil, items.go). The filters are exactly
 // listItems'; the RAM is one library's filtered rows.
+//
+// Tombstone serve law (tombstone-lifecycle 3.2): an EMPTY status maps here —
+// once, at this shared seam — to the active-rows read. The pages come back
+// no-filter (empty status = all statuses is the pinned store invariant) and
+// the walk drops deleted rows before appending, so EVERY caller inherits the
+// default exclusion with no per-caller filtering: listItems' scored branch,
+// its sort=path opt-out (which routes empty-status requests through this walk
+// and cuts its page in Go), and libraryEpisodes' per-series episode facts —
+// the getSeries watched stamp's input, so a vanished episode feeds no fact
+// and stamps no Watched off its dead ledger row. Offsets page over the
+// store's unfiltered batches (the enrich allItems precedent), so the drop
+// never perturbs pagination. An explicit status passes through exact-match
+// untouched.
 func (a *app) allFilteredItems(ctx context.Context, v access.Viewer, libraryID int64, status, pathPrefix string, topLevel bool) ([]store.Item, error) {
 	var out []store.Item
 	for offset := 0; ; offset += itemsPage {
@@ -200,7 +222,15 @@ func (a *app) allFilteredItems(ctx context.Context, v access.Viewer, libraryID i
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, page...)
+		if status == "" {
+			for i := range page {
+				if page[i].Status != statusDeleted {
+					out = append(out, page[i])
+				}
+			}
+		} else {
+			out = append(out, page...)
+		}
 		if len(page) < itemsPage {
 			return out, nil
 		}

@@ -2484,7 +2484,8 @@ paths:
         in: query
         name: library
         type: integer
-      - description: status filter (empty = all)
+      - description: status filter (empty = active items only — the serve law; 'deleted'
+          audits tombstoned rows)
         in: query
         name: status
         type: string

@@ -202,6 +202,12 @@ func (s *Store) ListSeriesIDs(ctx context.Context, libraryID int64, v access.Vie
 // whose library is outside the visible set never surface (an empty result,
 // never an error — even when the passed series row itself sits in a hidden
 // library).
+//
+// Tombstone law (tombstone-lifecycle 3.2, the read-side lifecycle-literal
+// precedent — libraries.go): BOTH backing queries exclude status 'deleted' —
+// episode lists and the next-episode pick drop dead rows. QueryItems itself
+// stays unfiltered (empty status = no filter, the store invariant); the
+// exclusion is THIS read's own contract, not an api-layer post-filter.
 func (s *Store) QueryItemsBySeries(ctx context.Context, sr Series, backing string, v access.Viewer) ([]Item, error) {
 	switch backing {
 	case SeriesBackingFile:
@@ -225,7 +231,7 @@ func (s *Store) queryItemsBySeriesDirectory(ctx context.Context, sr Series, v ac
 	clause, visArgs := visibleWhere(v, "library_id")
 	args := append([]any{sr.LibraryID, utf8.RuneCountInString(prefix), prefix}, visArgs...)
 	rows, err := s.db.QueryContext(ctx,
-		itemColumns+" FROM items WHERE "+andVisible("library_id = ? AND substr(relative_path, 1, ?) = ?", clause)+" ORDER BY relative_path",
+		itemColumns+" FROM items WHERE "+andVisible("library_id = ? AND substr(relative_path, 1, ?) = ? AND status <> 'deleted'", clause)+" ORDER BY relative_path",
 		args...,
 	)
 	if err != nil {
@@ -258,12 +264,13 @@ func (s *Store) queryItemsBySeriesDirectory(ctx context.Context, sr Series, v ac
 }
 
 // queryItemsBySeriesFile matches the single file-backed episode by exact
-// relative_path equality, scoped to the viewer's visible libraries.
+// relative_path equality, scoped to the viewer's visible libraries — and
+// excludes deleted rows (the tombstone law above, the file leg).
 func (s *Store) queryItemsBySeriesFile(ctx context.Context, sr Series, v access.Viewer) ([]Item, error) {
 	clause, visArgs := visibleWhere(v, "library_id")
 	args := append([]any{sr.LibraryID, sr.RelativePath}, visArgs...)
 	rows, err := s.db.QueryContext(ctx,
-		itemColumns+" FROM items WHERE "+andVisible("library_id = ? AND relative_path = ?", clause)+" ORDER BY relative_path",
+		itemColumns+" FROM items WHERE "+andVisible("library_id = ? AND relative_path = ? AND status <> 'deleted'", clause)+" ORDER BY relative_path",
 		args...,
 	)
 	if err != nil {

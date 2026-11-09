@@ -24,6 +24,16 @@ import (
 // the pass yields to ctx between pages.
 const settlePageSize = 500
 
+// statusAll is the settle walk's EXPLICIT all-rows status: QueryItems' empty
+// status is pinned no-filter at the store (tombstone-lifecycle 3.2's preserved
+// invariant), and THIS walk must keep seeing tombstoned rows — the GC union is
+// a MUST-be-true read, so a dead item's artwork is never garbage-collected
+// while dead (self-heal 2.2 or adoption 2.3 finds the poster intact). The
+// named constant pins the posture against the api listing's default
+// exclusion: if the store's empty-status law ever flips, this call site gains
+// a dedicated all-rows reader — it never silently inherits the serve law.
+const statusAll = ""
+
 // missingArtPathPrefix is the settle-side copy of the missing-art prefix
 // rule (artwork): a poster URL whose path lives under a known missing-art
 // asset prefix is the upstream's "no art" placeholder — the settle never
@@ -169,7 +179,10 @@ func (s *Service) walkPosterRows(ctx context.Context) ([]settleRow, error) {
 			}
 			// MUST-be-true read (access.System): a false-empty drops unseen items'
 			// kind-field URLs from the GC union — their live artwork is deleted.
-			page, err := s.st.QueryItems(ctx, lib.ID, "", "", false, settlePageSize, offset, access.System())
+			// statusAll keeps the read ALL-rows explicitly (tombstone-lifecycle
+			// 3.2): tombstoned rows stay in the union, their artwork never GC'd
+			// while dead.
+			page, err := s.st.QueryItems(ctx, lib.ID, statusAll, "", false, settlePageSize, offset, access.System())
 			if err != nil {
 				return nil, fmt.Errorf("art: query items %d: %w", lib.ID, err)
 			}

@@ -36,18 +36,25 @@ const (
 // The persisted doc["streams"] namespace carries only the states above;
 // StatePreparing means the direct floor is not <video>-native but a pack CAN
 // land, StateUnsupported that packaging cannot help. state_reason names why.
+// StateMissing (tombstone-lifecycle D6) means the direct floor's original file
+// is absent on disk — answered by the composition root's one stat, never here
+// (Describe stays fs-free over the document).
 const (
 	StatePreparing   = "preparing"
 	StateUnsupported = "unsupported"
+	StateMissing     = "missing"
 )
 
 // state_reason vocabulary (tv-playback-unblock D1/D3) — a closed set naming
 // why a direct floor is not <video>-playable. Empty string on every other
-// answer (hls, native-container floors, broken builds).
+// answer (hls, native-container floors, broken builds). ReasonFileMissing
+// (tombstone-lifecycle D6) names the absent-original answer; like its state,
+// it is applied by the composition root beside these values.
 const (
 	ReasonNonNativeContainer = "non_native_container"
 	ReasonCodecNotOptedIn    = "codec_not_opted_in"
 	ReasonCodecUnsupported   = "codec_unsupported"
+	ReasonFileMissing        = "file_missing"
 )
 
 // SectionKindChapter is the only section kind produced in v1 (projected from

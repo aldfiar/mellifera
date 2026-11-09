@@ -559,6 +559,12 @@ func TestRunScan_ContextCancellation(t *testing.T) {
 // Notify exactly once AFTER the drain completes. The async drain itself is the
 // queue's job (covered by queue_test.go + the T08 golden).
 func TestRunScan_AsyncEnqueue(t *testing.T) {
+	// The library roots at a real temp dir and the two files exist on disk:
+	// the post-drain item sweep stats each stamped absolute_path, so items
+	// backed by nothing would tombstone in the very pass that persisted them.
+	s, r, libID, root := setupItemSweepStore(t)
+	sweepItemFile(t, root, "Show/S01E01.mkv")
+	sweepItemFile(t, root, "Show/S01E02.mkv")
 	sc := &fakeScanner{
 		endClean: true, // the Notify-fired assertion needs a confirmed clean drain (D4)
 		files: []*scannerv1.DiscoveredFile{
@@ -571,7 +577,6 @@ func TestRunScan_AsyncEnqueue(t *testing.T) {
 		},
 	}
 
-	s, r, libID := setupStore(t)
 	rr := &recordingResolver{scanner: sc}
 	notify := &recordingNotifier{store: s}
 	var enrichCalls int

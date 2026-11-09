@@ -203,7 +203,17 @@ func main() {
 		// per-plugin outbound pacing gate, constructed on the real clock here
 		// in the composition root and injected into the enrich chain; nil
 		// would mean unpaced.
-		Enrich: enrich.Deps{Store: st, Modules: reg, Plugins: mgr, FetchGate: enrich.NewFetchGate()},
+		Enrich: enrich.Deps{Store: st, Modules: reg, Plugins: mgr, FetchGate: enrich.NewFetchGate(),
+			// Adopt (tombstone-lifecycle D4): the enrich settle fires identity
+			// adoption — a tombstoned predecessor's stranded progress/ledger
+			// re-keys onto the settled item within one rescan. Adoption never
+			// fails the settle: every failure here is log-and-skip.
+			Adopt: func(ctx context.Context, itemID string) {
+				if err := scan.AdoptStranded(ctx, st, itemID); err != nil {
+					slog.Warn("scan: identity adoption failed — skipped", "item", itemID, "error", err)
+				}
+			},
+		},
 	}
 
 	// Packaged-playback pack lane (D-3/D-4/D-5): the enrich queue's PackItem

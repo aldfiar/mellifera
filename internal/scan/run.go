@@ -7,7 +7,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -170,9 +173,10 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 	// mid-stream error, or a bare close carrying no terminal confirmation)
 	// records a warning and returns WITHOUT sweeping or notifying (the B7
 	// analog: a half-drained scan never signals the queue). The series sweep
-	// runs in that confirmed-clean branch and NOWHERE else: a scan whose stream
-	// did not drain cleanly must never advance a series row it never observed
-	// to "deleted" (serials-library box 1.6).
+	// and the item sweep run in that confirmed-clean branch and NOWHERE else:
+	// a scan whose stream did not drain cleanly must never advance a series
+	// row it never observed to "deleted" (serials-library box 1.6) nor
+	// tombstone an item it never had the chance to re-check.
 	observed := make(map[string]bool)
 	for {
 		select {
@@ -193,9 +197,14 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 				}
 				// Provably clean drain: sweep the library's series rows that
 				// this pass did not re-observe to "deleted" (vanished/renamed
-				// serial directories), then hand off to the queue.
+				// serial directories), tombstone the items whose source files
+				// vanished from disk (tombstone-lifecycle D1 — disk truth via
+				// one stat per active item), then hand off to the queue.
 				if serr := sweepSeries(ctx, st, libraryID, observed, &res); serr != nil {
 					return finish(res), serr
+				}
+				if ierr := sweepItems(ctx, st, libraryID, &res); ierr != nil {
+					return finish(res), ierr
 				}
 				// Non-blocking handoff to the enrich queue (AC-async / S5).
 				// The queue feeds its own bounded channel; notify does not
@@ -214,11 +223,12 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 	}
 }
 
-// scanStatusDeleted is the lifecycle value the post-drain series sweep writes
-// for a series row that was NOT re-observed this pass (a vanished or renamed
-// serial directory). Like scanStatusPending/scanStatusStale it is owned by
-// internal/enrich (INV-status-owner); scan emits the literal it needs rather
-// than importing enrich's unexported consts.
+// scanStatusDeleted is the lifecycle value the post-drain sweeps write for a
+// row the pass did not re-observe (a vanished or renamed serial directory) or
+// whose source file the disk no longer has (the item sweep's stat miss). Like
+// scanStatusPending/scanStatusStale it is owned by internal/enrich
+// (INV-status-owner); scan emits the literal it needs rather than importing
+// enrich's unexported consts.
 const scanStatusDeleted = "deleted"
 
 // sweepSeries advances every series row of the library that this scan pass did
@@ -251,6 +261,94 @@ func sweepSeries(ctx context.Context, st *store.Store, libraryID int64, observed
 		}
 	}
 	return nil
+}
+
+// itemSweepPageSize is the item sweep's paged-walk page over the library's
+// rows (store QueryItems LIMIT/OFFSET, id-ordered): bounded memory over a
+// bounded row set, and a stable walk — the sweep only mutates a page's status
+// column, never row order or count, so advancing OFFSET cannot skip rows.
+const itemSweepPageSize = 200
+
+// sweepItems tombstones every active item of the library whose source file has
+// vanished from disk (tombstone-lifecycle D1): a paged walk of the library's
+// rows — already-deleted rows skip in-loop without a stat and without any
+// write, so a repeated clean re-scan does not churn their updated_at — then
+// one os.Stat per active item over the document's stamped absolute path
+// (parsed.absolute_path, the assembleBaseDoc stamp and the same channel
+// originalResolver reads to serve /media). The stat decides — disk truth, not
+// the pass's observation set: a vanish between scans is invisible to
+// observation history, while a present file never tombstones no matter how
+// long ago the pass last saw it. A stat miss advances status to
+// scanStatusDeleted via the PutItem upsert with the row's OWN document passed
+// back — soft delete, document bytes untouched, progress and ledger rows
+// preserved for identity adoption and audit. Guards: an absent/unreadable
+// stamp skips with a warning (a missing stamp is an assembly anomaly, never
+// evidence of vanishing — tombstoning on it would mass-delete data); a stat
+// error that is not a clean miss (permission, I/O) also skips with a warning
+// — a transient read failure must not tombstone a file that may be present;
+// a write failure is a per-row soft-fail warning and the sweep continues
+// (AC-6). A cancelled context aborts. Silent on success — warnings ride
+// scan.Result like every soft-fail. The caller runs this ONLY after a
+// provably clean drain — the same gate as sweepSeries, beside which it runs:
+// a stream that ends before completing sweeps neither.
+func sweepItems(ctx context.Context, st *store.Store, libraryID int64, res *Result) error {
+	for offset := 0; ; offset += itemSweepPageSize {
+		// MUST-be-true read (access.System — scan is operator work, never a
+		// principal's view): a scoped window or a false-empty would leave the
+		// sweep blind over rows it must judge; over-inspection is the only
+		// safe direction, and empty status (no-filter) is the store's
+		// documented read — deleted rows skip in-loop below.
+		rows, err := st.QueryItems(ctx, libraryID, "", "", false, itemSweepPageSize, offset, access.System())
+		if err != nil {
+			return fmt.Errorf("scan: item sweep: %w", err)
+		}
+		for _, it := range rows {
+			if it.Status == scanStatusDeleted {
+				continue // already tombstoned: no stat, no write, no updated_at churn
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			abs, ok := stampedAbsolutePath(it.Document)
+			if !ok {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("item sweep %q: no readable absolute_path stamp — skipped", it.RelativePath))
+				continue
+			}
+			if _, serr := os.Stat(abs); serr == nil {
+				continue // present on disk: nothing to do, silent on success
+			} else if !errors.Is(serr, fs.ErrNotExist) {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("item sweep %q: stat %q: %v — skipped", it.RelativePath, abs, serr))
+				continue
+			}
+			it.Status = scanStatusDeleted // soft tombstone: the document bytes pass through untouched
+			if perr := st.PutItem(ctx, it); perr != nil {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("item sweep %q: %v", it.RelativePath, perr))
+				continue
+			}
+		}
+		if len(rows) < itemSweepPageSize {
+			return nil
+		}
+	}
+}
+
+// stampedAbsolutePath reads the parsed.absolute_path stamp assembleBaseDoc put
+// on a document. ok=false when the stamp is absent, unreadable, or empty —
+// the sweep's skip-with-warning condition, never a tombstone basis.
+func stampedAbsolutePath(doc json.RawMessage) (string, bool) {
+	var m map[string]any
+	if len(doc) == 0 || json.Unmarshal(doc, &m) != nil || m == nil {
+		return "", false
+	}
+	parsed, ok := m["parsed"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	p, ok := parsed["absolute_path"].(string)
+	if !ok || p == "" {
+		return "", false
+	}
+	return p, true
 }
 
 // persist identifies one discovered file and routes it by the serial-record
@@ -426,9 +524,9 @@ func nextSeriesState(ctx context.Context, st *store.Store, libraryID int64, rel 
 // (state.go INV-status-owner); scan emits the literals it needs rather than
 // importing enrich's unexported consts (exporting them would breach the enrich
 // <=8 exported-symbol budget). The async worker/queue consume these verbatim;
-// scan produces "ready" ONLY as the nextSeriesState self-heal of a re-observed
-// "deleted" row, and never produces the remaining lifecycle values
-// (failed/parsed/enriched) post-B1.
+// scan produces "ready" ONLY as the nextScanState/nextSeriesState self-heal of
+// a re-observed "deleted" row (tombstone-lifecycle D3), and never produces the
+// remaining lifecycle values (failed/parsed/enriched) post-B1.
 const (
 	scanStatusPending = "pending"
 	scanStatusStale   = "stale"
@@ -440,15 +538,23 @@ const (
 // "pending" for a first scan (no prior row) or an unreadable prior; "stale" for
 // a re-scan whose parsed identity changed (AC-states(c)); and the prior status
 // preserved for any parsed-unchanged re-scan (so a settled/ready item is not
-// regressed back to pending). The comparison runs in two tiers over the prior
-// document vs the refreshed base: tier A keys on parsed alone (parsedSignature)
-// and carries every prior derived namespace forward verbatim (derivedCarry);
-// tier B — parsed equal but ffprobe drifted (baseChanged) — carries the same
-// namespaces MINUS `streams`, because packaging state and artifact pointers key
-// on parsed+ffprobe and the changed media invalidates any packaged artifact.
-// The prior document is loaded exactly once here. A GetItem error is soft
-// (AC-6): it falls back to "pending" — the queue re-derives either way, and a
-// transient read failure must never abort the scan.
+// regressed back to pending) — EXCEPT a prior "deleted": the item sweep's
+// tombstone lifts on re-observation (tombstone-lifecycle D3, the series
+// self-heal's mirror). Without the heal leg the prior-status preservation
+// would keep a restored file dead forever and the offline-root mass tombstone
+// (design R1) would be permanent. The comparison runs in two tiers over the
+// prior document vs the refreshed base: tier A keys on parsed alone
+// (parsedSignature) and carries every prior derived namespace forward verbatim
+// (derivedCarry); tier B — parsed equal but ffprobe drifted (baseChanged) —
+// carries the same namespaces MINUS `streams`, because packaging state and
+// artifact pointers key on parsed+ffprobe and the changed media invalidates
+// any packaged artifact. The heal rides the same tiers: parsed unchanged →
+// "ready" with namespaces carried forward; ffprobe-only drift → "ready" with
+// `streams` dropped; parsed changed → "stale" (baseChanged fires before the
+// heal — a stale row must not mask a changed identity). The prior document is
+// loaded exactly once here. A GetItem error is soft (AC-6): it falls back to
+// "pending" — the queue re-derives either way, and a transient read failure
+// must never abort the scan.
 func nextScanState(ctx context.Context, st *store.Store, libraryID int64, fileID string, refreshed map[string]any, res *Result) (string, map[string]any) {
 	// MUST-be-true read (access.System): a false not-found makes the rescan
 	// treat an existing item as new — status churn plus derived-namespace loss
@@ -461,8 +567,15 @@ func nextScanState(ctx context.Context, st *store.Store, libraryID int64, fileID
 		return scanStatusStale, nil // parsed identity changed: every derived namespace is invalid
 	}
 	// Parsed unchanged: preserve the prior status, carry the derived namespaces
-	// minus `streams` when the ffprobe base also drifted (tier B).
-	return prior.Status, derivedCarry(prior.Document, refreshed, baseChanged(prior.Document, refreshed))
+	// minus `streams` when the ffprobe base also drifted (tier B). A prior
+	// "deleted" heals to "ready": the re-observation is the evidence the file
+	// lives again — a wrongful (offline root, R1) or restored tombstone lifts
+	// on the next healthy rescan (tombstone-lifecycle D3).
+	status := prior.Status
+	if status == scanStatusDeleted {
+		status = scanStatusReady
+	}
+	return status, derivedCarry(prior.Document, refreshed, baseChanged(prior.Document, refreshed))
 }
 
 // parsedSignature projects a document down to its parsed identity — the tier A

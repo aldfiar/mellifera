@@ -1206,24 +1206,29 @@ func (a *app) scanLibrary(w http.ResponseWriter, r *http.Request) {
 
 // listItems: parse {id} + optional ?status=/?path_prefix=/?top_level= +
 // ?sort= + pagination → store items → write itemsResponse. An absent/empty
-// ?status= passes "" so all statuses are returned (INV-empty-all); api does
-// not validate the status set (store/enrich own it — pure delegation). The
-// folder filters are normalized HERE (parsePathFilter) so the store only ever
-// sees a pre-trimmed prefix.
+// ?status= passes "" and serves ACTIVE rows only (the tombstone serve law,
+// tombstone-lifecycle 3.2 — the default exclusion lives inside the shared
+// allFilteredItems walk); an explicit ?status= keeps exact-match semantics
+// (?status=deleted is the operator's audit window). api does not validate the
+// status set (store/enrich own it — pure delegation). The folder filters are
+// normalized HERE (parsePathFilter) so the store only ever sees a
+// pre-trimmed prefix.
 //
 // Ordering (recommendation-sorting D7): the scored default reads the FULL
 // filtered set (allFilteredItems), scores every row via recs over batched
 // facts (recsFactsFor), orders score-desc with the alphabetical floor
 // (scoredServe), and THEN applies offset/limit in the handler — score-then-
-// window, so page 2 can never outrank page 1. ?sort=path restores today's
-// order: QueryItems' id-ordered SQL window, unscored (rec_score omitted).
+// window, so page 2 can never outrank page 1. ?sort=path restores the store's
+// id order, unscored (rec_score omitted) — through the same walk for an
+// empty status (the serve law), and as QueryItems' id-ordered SQL window for
+// an explicit status.
 //
 // @Summary      List items (optionally filtered by library + status + folder)
 // @Tags         items
 // @ID           list-items
 // @Router       /items [get]
 // @Param        library     query int     false "library id filter"
-// @Param        status      query string  false "status filter (empty = all)"
+// @Param        status      query string  false "status filter (empty = active items only — the serve law; 'deleted' audits tombstoned rows)"
 // @Param        path_prefix query string  false "folder prefix filter — only items whose relative_path is under prefix/ (leading/trailing slashes trimmed, '.'/'..' segments rejected)"
 // @Param        top_level   query boolean false "only items with no subfolder in relative_path (conflicts with path_prefix)"
 // @Param        sort        query string  false "sort=path restores id order (default: recommendation score order, rec_score desc)"
@@ -1295,12 +1300,14 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 	// intersection is applied in Go, so a windowed store read would cut the
 	// page before the filter drops rows (D7's score-then-window law, general-
 	// ized to filter-then-window — the design's whole-library raw scan at
-	// filter time, tolerable by budget). The unfiltered sort=path branch
-	// keeps the store's own SQL window.
+	// filter time, tolerable by budget). The tombstone serve law (3.2) rides
+	// the same walk: an EMPTY status reads active rows only — on the scored
+	// default AND the sort=path/photo opt-out alike (the window is then cut
+	// in Go below, in the store's preserved id order). An explicit ?status=
+	// on the opt-out keeps today's exact contract: the store's own id-ordered
+	// SQL window, unscored — the operator's audit window.
 	var items []store.Item
-	if byPath && !facets.any() {
-		// The opt-out keeps today's exact contract: the store's own
-		// id-ordered SQL window, unscored.
+	if byPath && !facets.any() && status != "" {
 		items, err = a.deps.Store.QueryItems(ctx, id, status, pathPrefix, topLevel, limit, offset, v)
 	} else {
 		items, err = a.allFilteredItems(ctx, v, id, status, pathPrefix, topLevel)
@@ -1366,7 +1373,13 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 				dtos[i].Watched = true
 			}
 		}
-		if facets.any() {
+		if facets.any() || status == "" {
+			// A facet-filtered or empty-status request fetched the FULL set
+			// (filter-then-window; the tombstone serve law routes the empty
+			// status through the shared walk), so the page cut happens HERE —
+			// in Go, after the intersection, in the store's preserved order.
+			// A pure explicit-status window keeps its SQL cut: a Go cut here
+			// would re-window an already-windowed page.
 			dtos = cutPage(dtos, offset, limit)
 		}
 	}
@@ -1446,6 +1459,18 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	// The tombstone serve law (tombstone-lifecycle 3.2): the item-detail GET
+	// is the SERVE boundary — a tombstoned row answers the SAME 404 a missing
+	// row does (gone, not forbidden — never 403/410, and indistinguishable
+	// from a row that was never there). store.GetItem itself stays
+	// unfiltered: internal machinery — descriptor reads, adoption, the
+	// re-scan upsert — reads tombstoned rows by design, and the write routes
+	// keep accepting tombstoned ids (PUT /progress/{id}, PUT /items/{id}/state)
+	// — ONLY this route 404s.
+	if it.Status == statusDeleted {
+		writeError(w, http.StatusNotFound, "not_found", "item "+id+" not found", false)
 		return
 	}
 	// Display-naming namer (display-naming 3.1): built off the item's own
@@ -1812,10 +1837,14 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, seriesListResponse{Items: dtos})
 }
 
-// libraryEpisodes reads the library's FULL item set (one batched read — the
-// batched-read rule bars per-series episode queries) and groups the rows by
-// their parsed series anchor: the per-series started/new-episode facts the
-// series scoring composes from.
+// libraryEpisodes reads the library's FULL ACTIVE item set (one batched read —
+// the batched-read rule bars per-series episode queries) and groups the rows
+// by their parsed series anchor: the per-series started/new-episode facts the
+// series scoring composes from. The empty status it passes is the shared
+// walk's tombstone serve seam (tombstone-lifecycle 3.2) — a vanished episode
+// feeds no per-series fact and stamps no Watched off its dead ledger row
+// (list/detail watched-stamp consistency: the item detail 404s, the series
+// list agrees).
 func (a *app) libraryEpisodes(ctx context.Context, v access.Viewer, libraryID int64) (map[string][]store.Item, error) {
 	items, err := a.allFilteredItems(ctx, v, libraryID, "", "", false)
 	if err != nil {

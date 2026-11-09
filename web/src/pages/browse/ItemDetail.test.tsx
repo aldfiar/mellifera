@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -1673,6 +1673,163 @@ describe("ItemDetail — pack-on-play wiring (tv-playback-unblock 4.2)", () => {
     await flush(PREPARING_POLL_INTERVAL_MS * 3);
     expect(getSpy.mock.calls.length).toBeGreaterThan(callsAtPollStart);
     expect(playSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---- File-missing surface (tombstone-lifecycle 4.1) ------------------------
+//
+// A MISSING descriptor answer (state "missing", state_reason "file_missing",
+// play_url emptied — the source file vanished after the last scan, the
+// between-scans window) is NOT a player answer: FileMissingBanner replaces
+// the player with honest wording derived from the served state — no <video>,
+// no retry affordance, no playback-event beacon, no poll. Every other
+// descriptor answer keeps today's surface: a ready direct floor and a
+// complete hls pack still mount the ordinary Player. All seams mocked at the
+// api module; fake timers per the pack-on-play harness above.
+describe("ItemDetail — file-missing surface (tombstone-lifecycle 4.1)", () => {
+  const MISSING_ITEM_ID = "itm_missing_1";
+
+  const MISSING_ITEM: ItemResponse = {
+    item: {
+      ...ITEM_RESPONSE.item,
+      id: MISSING_ITEM_ID,
+      status: "ready",
+      document: {},
+    },
+  };
+
+  const MISSING_PLAYBACK: PlaybackDescriptor = {
+    mode: "direct",
+    state: "missing",
+    state_reason: "file_missing",
+    play_url: "",
+    sections: [],
+  };
+
+  const READY_DIRECT_PLAYBACK: PlaybackDescriptor = {
+    mode: "direct",
+    state: "none",
+    play_url: `/media/${MISSING_ITEM_ID}/original?token=tok`,
+    sections: [],
+  };
+
+  const COMPLETE_HLS_PLAYBACK: PlaybackDescriptor = {
+    mode: "hls",
+    state: "complete",
+    play_url: `/media/${MISSING_ITEM_ID}/abc123/index.m3u8?token=tok`,
+    sections: [],
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // flush/settle — the pack-on-play harness's turns: a fresh render needs
+  // two (the item query, then the descriptor query it arms).
+  async function flush(ms = PREPARING_POLL_INTERVAL_MS): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  async function settle(): Promise<void> {
+    await flush();
+    await flush();
+  }
+
+  function mockMissingItem(): void {
+    vi.spyOn(apiModule, "getItem").mockResolvedValue(MISSING_ITEM);
+    vi.spyOn(apiModule, "getLibrary").mockResolvedValue(LIBRARY_NO_MODULE);
+    // The progress PUT is Player-internal and irrelevant here.
+    vi.spyOn(apiModule, "putProgress").mockResolvedValue({
+      item_id: MISSING_ITEM_ID,
+      position_seconds: 0,
+      updated_at: "",
+    });
+    vi.spyOn(apiModule, "sendPlaybackEvent").mockResolvedValue(undefined);
+  }
+
+  it("missing_state_renders_honest_banner_without_mount", async () => {
+    mockMissingItem();
+    const playSpy = vi
+      .spyOn(apiModule, "playItem")
+      .mockResolvedValue({ queued: true });
+    const sendSpy = vi.spyOn(apiModule, "sendPlaybackEvent");
+    const getSpy = vi
+      .spyOn(apiModule, "getPlayback")
+      .mockResolvedValue({ ...MISSING_PLAYBACK });
+
+    renderAtId(MISSING_ITEM_ID, freshClient());
+    await settle();
+
+    // The honest banner REPLACES the player: wording derived from the
+    // served state (missing + file_missing), no Player region, no <video>.
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(
+      screen.getByText("Файл элемента отсутствует на диске."),
+    ).toBeDefined();
+    expect(
+      screen.getByText(
+        "Файл исчез после последнего сканирования библиотеки — повторное сканирование обновит элемент.",
+      ),
+    ).toBeDefined();
+    expect(screen.queryByRole("region", { name: "Player" })).toBeNull();
+    expect(document.querySelector("video")).toBeNull();
+
+    // No retry affordance of either family — nothing failed that a retry
+    // could fix — and no playback chrome around the banner.
+    expect(
+      screen.queryByRole("button", { name: "Retry packaging" }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Повторить" })).toBeNull();
+    expect(screen.queryByText("Subtitles")).toBeNull();
+    expect(playSpy).not.toHaveBeenCalled();
+
+    // No playback-event beacon and no poll: one descriptor fetch ever.
+    expect(sendSpy).not.toHaveBeenCalled();
+    const calls = getSpy.mock.calls.length;
+    await flush(PREPARING_POLL_INTERVAL_MS * 5);
+    expect(getSpy.mock.calls.length).toBe(calls);
+  });
+
+  it("playable_answers_keep_todays_surface", async () => {
+    // A ready DIRECT floor (state none) still mounts the ordinary player.
+    mockMissingItem();
+    vi.spyOn(apiModule, "getPlayback").mockResolvedValue({
+      ...READY_DIRECT_PLAYBACK,
+    });
+    renderAtId(MISSING_ITEM_ID, freshClient());
+    await settle();
+
+    const playerRegion = screen.getByRole("region", { name: "Player" });
+    expect(playerRegion.querySelector("video")).not.toBeNull();
+    expect(
+      screen.queryByText("Файл элемента отсутствует на диске."),
+    ).toBeNull();
+
+    // The packaged HLS answer (state complete) does too — the new missing
+    // branch must not have disturbed the chain's fallthrough.
+    cleanup();
+    vi.spyOn(apiModule, "getPlayback").mockResolvedValue({
+      ...COMPLETE_HLS_PLAYBACK,
+    });
+    renderAtId(MISSING_ITEM_ID, freshClient());
+    await settle();
+
+    expect(screen.getByRole("region", { name: "Player" })).toBeDefined();
+    expect(
+      screen
+        .getByRole("region", { name: "Player" })
+        .querySelector("video"),
+    ).not.toBeNull();
+    expect(
+      screen.queryByText("Файл элемента отсутствует на диске."),
+    ).toBeNull();
   });
 });
 

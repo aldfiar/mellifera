@@ -291,6 +291,24 @@ values only — existing clients keep working — and the persisted packaging
 namespace never carries the new values: `preparing`/`unsupported` are
 read-side projections, never stored state.
 
+The descriptor SHALL also be honest about a direct floor whose original file
+is absent at descriptor time: when the direct answer's resolved original does
+not exist on disk — one stat over the same resolved path the floor serves
+through, taken where the descriptor is composed, never a re-probe and never a
+stored flag — the state SHALL read `missing` with `state_reason`
+`file_missing`, and the answer SHALL carry NO playable address (the play URL
+field empty or omitted — never a URL that 404s behind a mounted player). The
+check SHALL gate direct answers only: an hls answer's playable truth is its
+published build (whose integrity validation already guards it) and SHALL NOT
+stat the source file — a verified pack stays playable over a stale source.
+`missing` is a read-side projection exactly like `preparing`/`unsupported` —
+never stored state, never written to the packaging namespace — and it carries
+no retry affordance: nothing failed that a retry could fix. The composition
+logs the answer through the same decision-log fields (state and reason
+verbatim). A stale document's absent codec facts (`codecs_src=none`) are NOT
+addressed by this state — the file-missing answer replaces the failed-direct
+chain before any codec judgment matters.
+
 An hls answer SHALL carry the additive `codecs` field — the RFC 6381 codec
 strings of the published pack, video first, then audio in the pack lane's
 rendition order — so a client can ask the device before mounting. The
@@ -324,8 +342,8 @@ a rendition-layout master instead of silently mounting it video-only (its
 native parse renders the video variant alone and never fetches the
 EXT-X-MEDIA audio renditions). The field rides hls answers only — direct
 answers never carry it — and a build predating the layout record SHALL
-answer no `layout` field (fail-open: the client mounts as before; the
-lazy rule-version wave backfills the record on the build's next repack).
+answer no `layout` field (fail-open: the client mounts as before; the lazy
+rule-version wave backfills the record on the build's next repack).
 
 #### Scenario: Retry is the only playback mutation and GET never mutates
 
@@ -341,6 +359,11 @@ lazy rule-version wave backfills the record on the build's next repack).
 
 - **WHEN** the playback descriptor is fetched for an unpackaged Matroska (MKV) item whose classification permits packaging
 - **THEN** the descriptor answers mode `direct`, state `preparing`, `state_reason` `non_native_container`, with the direct floor's play URL still present — and the fetch changed no packaging state
+
+#### Scenario: A vanished file answers missing, never a codec claim
+
+- **WHEN** the playback descriptor is fetched for an unpackaged item whose resolved original file no longer exists on disk
+- **THEN** the answer carries mode `direct`, state `missing`, `state_reason` `file_missing`, and no playable address — not a codec `unsupported`/`failed` claim and not a play URL that would 404 — while an item whose file exists keeps today's answer byte-identical and an hls item with a verified published build answers hls without any source stat
 
 #### Scenario: Packaging-hopeless codec answers unsupported until the knob flips
 

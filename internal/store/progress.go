@@ -148,7 +148,7 @@ ORDER BY p.updated_at DESC, p.item_id`, args...)
 // position_seconds > 0 (zero/absent positions are not "continue" candidates)
 // JOINed to their non-deleted items — rows whose item is gone are skipped, not
 // an error — ordered newest-first (item_id as the deterministic tie-break).
-// The `status <> 'deleted'` literal is the same one read-side carve-out
+// The `status <> 'deleted'` literal is the same read-side carve-out
 // LibrarySummary/LibraryFolders make (INV-value-agnostic-store).
 //
 // v scopes the read per the ledger-read scoping law (ledgerSlotWhere, D7):

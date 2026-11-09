@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-11-09
+goal: "DB rows must not outlive their files: the library surface and playback
+  tell the truth about what exists"

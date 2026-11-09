@@ -275,23 +275,31 @@ export interface ItemsResponse {
 // the direct floor is not natively playable. non_native_container = the
 // container itself is not <video>-native (a pack CAN land — state
 // preparing); codec_not_opted_in / codec_unsupported = the codec is not
-// packaged-in / not packable (state unsupported). A union (not string), the
-// MediaVariant precedent: the SPA's not-playable banner wording derives from
-// these exact values — anything else would render a lie.
+// packaged-in / not packable (state unsupported); file_missing = the
+// resolved source file is absent on disk (tombstone-lifecycle, state
+// missing — the between-scans window, nothing a retry could fix). A union
+// (not string), the MediaVariant precedent: the SPA's not-playable banner
+// wording derives from these exact values — anything else would render a
+// lie.
 export type PlaybackStateReason =
   | "non_native_container"
   | "codec_not_opted_in"
-  | "codec_unsupported";
+  | "codec_unsupported"
+  | "file_missing";
 
 // handlers.go playbackResponse — the ONE wire shape for GET
 // /api/v1/items/{id}/playback (packaged-playback). mode is "direct" | "hls";
 // state is the packaging state "none" | "partial" | "complete" | "failed"
 // plus the honesty states "preparing" | "unsupported" (tv-playback-unblock:
 // the direct floor answers honestly instead of handing over an unplayable
-// original); play_url is the token-carrying /media URL the player opens (the
-// descriptor ALSO sets the cookie-primary media token — the query token in
-// the URL is the cookie-less fallback) and is RETAINED on every answer,
-// disclaimed ones included; sections lists the chapter-kind projections.
+// original) and "missing" (tombstone-lifecycle: the resolved source file is
+// absent on disk — the between-scans window, a read-side projection like the
+// other honesty states, never stored packaging state); play_url is the
+// token-carrying /media URL the player opens (the descriptor ALSO sets the
+// cookie-primary media token — the query token in the URL is the cookie-less
+// fallback) and is RETAINED on every answer, disclaimed ones included —
+// EXCEPT the missing answer, whose play_url is EMPTIED (never a URL that
+// 404s behind a mounted player); sections lists the chapter-kind projections.
 export interface PlaybackSection {
   kind: string; // "chapter" in v1; "marker" reserved, never produced
   start: number;
@@ -315,10 +323,11 @@ export interface PlaybackDescriptor {
   voiceovers?: VoiceoverDTO[];
   // state_reason — the additive honesty reason (tv-playback-unblock,
   // omitempty): present ONLY on the honesty answers — preparing/unsupported,
-  // and the failed answer that carries the non-native floor — and names why
-  // the direct floor is not natively playable. Absent on hls/native answers,
-  // optional in TS like every additive field: absence means "no reason to
-  // surface", never a type hole.
+  // missing (tombstone-lifecycle: file_missing), and the failed answer that
+  // carries the non-native floor — and names why the direct floor is not
+  // natively playable. Absent on hls/native answers, optional in TS like
+  // every additive field: absence means "no reason to surface", never a type
+  // hole.
   state_reason?: PlaybackStateReason;
   // codecs — the additive capability-probe list (playback-capability-gate,
   // omitempty): the pack's decoded codec names, video FIRST then audio in
