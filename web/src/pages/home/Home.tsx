@@ -322,14 +322,16 @@ function ContinueRail(): ReactElement {
       <h2 className="text-lg font-semibold">Continue</h2>
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {rows.map((row) => (
-          <ContinueCard key={row.current.item_id} row={row} />
+          <ContinueCard key={row.series_id || row.current?.item_id} row={row} />
         ))}
       </ul>
     </section>
   );
 }
 
-// ContinueCard — one served row: the artwork preview when the row serves the
+// ContinueCard — one served row, BRANCHED on the wire's `current` (D9 — the
+// client derives nothing; both branches render the served fields verbatim).
+// RESUME CARD (current present): the artwork preview when the row serves the
 // poster's PROXY form (isServedArtPath — a raw remote URL, an unmaterialized
 // winner's transient, is never fetched; absent artwork keeps the badge-only
 // card, never a broken image), the served series name + the served current
@@ -339,9 +341,59 @@ function ContinueRail(): ReactElement {
 // label verbatim as the row's next-episode affordance deep-linking into
 // next.item_id — the client composed neither label nor pick; its absence
 // renders no affordance. Play deep-links into the current item detail.
+// ANCHOR CARD (current absent — the omitempty field is GONE from the wire,
+// never null): the position is spent, so no position label, no percent bar,
+// no Play-into-current — the served series display_name promotes to the
+// title slot and the served Next chip IS the card's primary play affordance,
+// deep-linking next.item_id, over the same isServedArtPath artwork rule and
+// the served library label.
 function ContinueCard(props: { row: ContinueRow }): ReactElement {
   const { row } = props;
   const cur = row.current;
+  const artSrc = useArtworkObjectUrl(
+    isServedArtPath(row.artwork) ? row.artwork : null,
+  );
+
+  // The anchor branch. The wire never serves this shape without a next
+  // offer (homeEntities drops a caught-up entity with nothing strictly
+  // after its frontier), but the honest render of the type's honest
+  // absence is the bare series card — never a fabricated link.
+  if (!cur) {
+    return (
+      <li className="flex h-full flex-col gap-2 rounded-md border p-3">
+        {row.next ? (
+          <Link
+            to={`/items/${row.next.item_id}`}
+            aria-label={`Play ${row.series_display_name}`}
+            className="flex flex-1 flex-col gap-2 rounded-md hover:bg-accent"
+          >
+            {isServedArtPath(row.artwork) ? <CardPreview src={artSrc} /> : null}
+            <span className="text-sm font-medium">
+              {row.series_display_name}
+            </span>
+            <span className="mt-auto flex items-center justify-end">
+              <span className="chip">Next {row.next.label}</span>
+            </span>
+          </Link>
+        ) : (
+          <span className="flex flex-1 flex-col gap-2">
+            {isServedArtPath(row.artwork) ? <CardPreview src={artSrc} /> : null}
+            <span className="text-sm font-medium">
+              {row.series_display_name}
+            </span>
+          </span>
+        )}
+        {row.library_name ? (
+          <span className="text-xs text-muted-foreground">
+            {row.library_name}
+          </span>
+        ) : null}
+      </li>
+    );
+  }
+
+  // The resume branch — today's card verbatim: nothing about a
+  // current-carrying row's render changes.
   const title = cur.display_name;
   const percent =
     cur.duration_seconds !== undefined
@@ -350,9 +402,6 @@ function ContinueCard(props: { row: ContinueRow }): ReactElement {
           Math.round((cur.position_seconds / cur.duration_seconds) * 100),
         )
       : null;
-  const artSrc = useArtworkObjectUrl(
-    isServedArtPath(row.artwork) ? row.artwork : null,
-  );
 
   return (
     <li className="flex h-full flex-col gap-2 rounded-md border p-3">

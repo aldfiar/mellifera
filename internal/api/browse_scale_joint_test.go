@@ -797,7 +797,11 @@ func TestBrowseScaleJoint(t *testing.T) {
 		}
 		var ariaRow, hiddenRow *continueRow
 		for i := range hr.Continue {
-			switch hr.Continue[i].Current.ItemID {
+			cur := hr.Continue[i].Current
+			if cur == nil {
+				continue // an anchor card — no resume body to key on
+			}
+			switch cur.ItemID {
 			case fx.ep1.ID:
 				ariaRow = &hr.Continue[i]
 			case fx.hiddenEp.ID:
@@ -811,7 +815,7 @@ func TestBrowseScaleJoint(t *testing.T) {
 			ariaRow.LibraryID != fx.libFix || ariaRow.LibraryName != "Fixture" {
 			t.Fatalf("aria row header = %+v, want the composed «Ария» over Fixture", ariaRow)
 		}
-		cur := ariaRow.Current
+		cur := rowCurrent(t, *ariaRow)
 		if cur.Display != "Ария · S01E01" || cur.Season == nil || *cur.Season != 1 ||
 			cur.Episode == nil || *cur.Episode != 1 || cur.EpisodeTitle != "Эпизод один" ||
 			cur.PositionSeconds != 500 || cur.DurationSeconds == nil || *cur.DurationSeconds != 1235 {
@@ -820,7 +824,7 @@ func TestBrowseScaleJoint(t *testing.T) {
 		if ariaRow.Next == nil || ariaRow.Next.ItemID != fx.ep2.ID || ariaRow.Next.Label != "S01E02" {
 			t.Fatalf("aria next = %+v, want %q S01E02", ariaRow.Next, fx.ep2.ID)
 		}
-		if hiddenRow.Next != nil || hiddenRow.Current.DurationSeconds != nil {
+		if hiddenRow.Next != nil || rowCurrent(t, *hiddenRow).DurationSeconds != nil {
 			t.Fatalf("hidden row = %+v, want no next and no duration (honest absence)", hiddenRow)
 		}
 	})
@@ -866,7 +870,7 @@ func TestBrowseScaleJoint(t *testing.T) {
 		if err := json.Unmarshal(body, &deniedHome); err != nil {
 			t.Fatalf("decode denied homeResponse: %v", err)
 		}
-		if len(deniedHome.Continue) != 1 || deniedHome.Continue[0].Current.ItemID != fx.hiddenEp.ID {
+		if len(deniedHome.Continue) != 1 || rowCurrent(t, deniedHome.Continue[0]).ItemID != fx.hiddenEp.ID {
 			t.Fatalf("denied home rows = %+v, want only the hidden episode", deniedHome.Continue)
 		}
 		for _, leak := range []string{fx.aria.ID, fx.ep1.ID, fx.ep2.ID, "Ария", "aria-1999", "Fixture"} {

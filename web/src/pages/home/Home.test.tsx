@@ -60,11 +60,15 @@ function item(
 // parsed S01E05 identity), a composed display name, a 1488s position over a
 // 2400s duration (62%) and the next offer; overrides strip any of them to
 // the honest absence shapes (a film row: no series, no season/episode, no
-// duration, no next).
+// duration, no next). `anchor: true` builds the ANCHOR-CARD shape — the
+// `current` KEY omitted (omitempty: gone from the served bytes, never
+// null), the same field presence the Go route probe pins on
+// TestHomeRoute/watched_series_serves_anchor_card.
 function row(overrides: {
   itemId?: string;
   display?: string;
   series?: string;
+  seriesId?: string;
   season?: number;
   episode?: number;
   episodeTitle?: string;
@@ -73,6 +77,7 @@ function row(overrides: {
   libraryName?: string;
   artwork?: string;
   next?: { item_id: string; label: string } | null;
+  anchor?: boolean;
 }): ContinueRow {
   // The parsed episode identity: S01E05 for the default serial row, the
   // overridden pair when one is given, ABSENT for a film row (a series-less
@@ -84,26 +89,37 @@ function row(overrides: {
         ? { season: 1, episode: 5 }
         : {};
   return {
-    series_id: overrides.series !== undefined && overrides.series !== "" ? "ser_2_show" : "",
+    series_id:
+      overrides.seriesId ??
+      (overrides.series !== undefined && overrides.series !== ""
+        ? "ser_2_show"
+        : ""),
     series_display_name: overrides.series ?? "",
     library_id: 2,
     library_name: overrides.libraryName ?? "serials",
     ...(overrides.artwork !== undefined ? { artwork: overrides.artwork } : {}),
-    current: {
-      item_id: overrides.itemId ?? "itm_2_ep5",
-      display_name: overrides.display ?? "Very Cold Show · S01E05",
-      ...identity,
-      ...(overrides.episodeTitle !== undefined
-        ? { episode_title: overrides.episodeTitle }
-        : {}),
-      position_seconds: overrides.position ?? 1488,
-      ...(overrides.duration !== undefined
-        ? { duration_seconds: overrides.duration }
-        : {}),
-    },
     ...(overrides.next !== undefined && overrides.next !== null
       ? { next: overrides.next }
       : {}),
+    // The anchor shape: `current` OMITTED — the key itself gone from the
+    // fixture object, the exact bytes JSON.parse hands the SPA (never a
+    // null placeholder).
+    ...(overrides.anchor
+      ? {}
+      : {
+          current: {
+            item_id: overrides.itemId ?? "itm_2_ep5",
+            display_name: overrides.display ?? "Very Cold Show · S01E05",
+            ...identity,
+            ...(overrides.episodeTitle !== undefined
+              ? { episode_title: overrides.episodeTitle }
+              : {}),
+            position_seconds: overrides.position ?? 1488,
+            ...(overrides.duration !== undefined
+              ? { duration_seconds: overrides.duration }
+              : {}),
+          },
+        }),
   };
 }
 
@@ -400,6 +416,130 @@ describe("Home — Continue rail (the single /home request)", () => {
     ).toBeNull();
     expect(
       within(rail).getByRole("link", { name: "Play Very Cold Show · S01E08" }).querySelector("img"),
+    ).toBeNull();
+  });
+
+  // The anchor-card case (home-rail 2.1). The it() title is load-bearing and
+  // whitespace-free: the change's qa: joint cites this exact node and the
+  // gate re-runs it by name. The fixture mirrors the Go wire bytes 1:1 —
+  // TestHomeRoute/watched_series_serves_anchor_card: the `current` key GONE
+  // (never null), the series fields, artwork, and next offer present.
+  it("renders-anchor-card-current-absent", async () => {
+    // The React-key law's only DOM-side observable is the duplicate-key
+    // warning (console.error); the spy makes the no-collision assertion bite
+    // — the realistic regression (keying on current?.item_id alone) keys
+    // every anchor row `undefined` and fires exactly this warning.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubObjectUrls();
+    const spy = fetchWith({
+      "/api/v1/home": () =>
+        Promise.resolve(
+          jsonResponse(200, {
+            continue: [
+              // Anchor A: the fully-watched series — series name, library,
+              // proxy artwork, the next offer; NO current (the spent
+              // position, gone from the wire).
+              row({
+                anchor: true,
+                series: "Watched",
+                seriesId: "ser_watched",
+                libraryName: "Recs",
+                artwork: "/api/v1/art/object/art_watched",
+                next: { item_id: "itm_w_s02e02", label: "S02E02" },
+              }),
+              // Anchor B: a DIFFERENT caught-up series — the key law's
+              // no-collision half: two anchor rows key on their distinct
+              // series_id, never colliding.
+              row({
+                anchor: true,
+                series: "Also Done",
+                seriesId: "ser_also",
+                next: { item_id: "itm_a_s05e01", label: "S05E01" },
+              }),
+              // The film row — the key law's other half: series_id honestly
+              // empty, so the key falls to current?.item_id.
+              row({
+                itemId: "itm_9_film",
+                series: "",
+                display: "Film Nine",
+                position: 600,
+                duration: 1200,
+                libraryName: "films",
+              }),
+            ],
+          }),
+        ),
+      "/api/v1/art/object/": () =>
+        Promise.resolve(
+          new Response("jpeg-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+        ),
+      "/api/v1/libraries": () =>
+        Promise.resolve(jsonResponse(200, { items: [lib(2, "serial", "serials")] })),
+      "/api/v1/libraries/2/summary": () =>
+        Promise.resolve(jsonResponse(200, { library_id: 2, items: 4, updated_at: "" })),
+      "/api/v1/items?library=2": () =>
+        Promise.resolve(jsonResponse(200, { items: [] })),
+    });
+    renderHome();
+
+    const rail = await screen.findByRole("region", { name: "Continue" });
+
+    // THE key law: series_id || current?.item_id — three distinct keys, and
+    // no duplicate-key warning. The anchors also prove the old
+    // row.current.item_id deref is gone: a crash here fails the render.
+    expect(
+      errorSpy.mock.calls.some((args) =>
+        args.some((a) => String(a).includes("same key")),
+      ),
+    ).toBe(false);
+
+    // Served order verbatim; the anchor cards' primary (only) links deep-
+    // link NEXT.item_ID — the Next chip IS the primary play affordance —
+    // while the film keeps its Play-into-current exactly as today.
+    const links = within(rail)
+      .getAllByRole("link")
+      .map((l) => l.getAttribute("aria-label"));
+    expect(links).toEqual(["Play Watched", "Play Also Done", "Play Film Nine"]);
+    expect(
+      within(rail).getByRole("link", { name: "Play Watched" }).getAttribute("href"),
+    ).toBe("/items/itm_w_s02e02");
+    expect(
+      within(rail).getByRole("link", { name: "Play Also Done" }).getAttribute("href"),
+    ).toBe("/items/itm_a_s05e01");
+    expect(
+      within(rail).getByRole("link", { name: "Play Film Nine" }).getAttribute("href"),
+    ).toBe("/items/itm_9_film");
+
+    // The anchor card's body: the series name promoted to the title slot
+    // (rendered exactly ONCE — no series-label + title doubling), the served
+    // Next chip verbatim, the served library label on the card — and NO
+    // position label, NO percent, NO Play-into-current.
+    const anchorText =
+      within(rail).getByRole("link", { name: "Play Watched" }).textContent ?? "";
+    expect(anchorText.match(/Watched/g)).toHaveLength(1);
+    expect(anchorText).toContain("Next S02E02");
+    expect(anchorText).not.toMatch(/%/);
+    expect(anchorText).not.toMatch(/\d:\d\d/);
+    expect(within(rail).getByText("Recs")).toBeDefined();
+
+    // NO percent bar on either anchor: the film's bar is the rail's ONLY
+    // role=img (the artwork img carries alt="" and stays out of the role
+    // query) — the honest absence, never a fake bar.
+    expect(within(rail).getAllByRole("img")).toHaveLength(1);
+    expect(screen.getByRole("img", { name: "50% watched" })).toBeDefined();
+    // The film's resume render is untouched: served title verbatim.
+    expect(within(rail).getByText("Film Nine")).toBeDefined();
+
+    // Artwork through the existing isServedArtPath rule: anchor A's proxy
+    // URL is the ONE byte fetch; anchor B's absent artwork keeps the
+    // badge-only card.
+    const withArt = within(rail).getByRole("link", { name: "Play Watched" });
+    await waitFor(() => expect(withArt.querySelector("img")).not.toBeNull());
+    expect(
+      spy.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/api/v1/art/object/")),
+    ).toEqual(["/api/v1/art/object/art_watched"]);
+    expect(
+      within(rail).getByRole("link", { name: "Play Also Done" }).querySelector("img"),
     ).toBeNull();
   });
 });
