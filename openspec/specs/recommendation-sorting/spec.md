@@ -282,8 +282,12 @@ grids, the continue rail, and next up only.
 
 The home continue rail SHALL be served by `GET /api/v1/home` — rows composed
 server-side in one round-trip and ordered recommendation score descending
-then `updated_at` descending, the same contract the `/progress` listing
-serves — superseding the home surface's client-side derivation over the
+then `updated_at` descending — the same comparator the `/progress` listing
+applies, computed at ENTITY grain: a touched series scores ONCE through the
+series scorer (its grouped episode facts unioned with the series' touched
+progress rows), film and tv items score through the item scorer, and one
+card serves per entity (the per-series grain the home-continue spec owns).
+This supersedes the home surface's client-side derivation over the
 `/progress` listing (the watch page's `nextEpisodeAfter` derivation is
 untouched). The `/progress` route itself keeps its contract unchanged
 (additive `rec_score`, scored order, `sort=recent` opt-out); this requirement

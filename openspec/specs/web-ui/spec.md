@@ -727,11 +727,15 @@ name composition, or carry per-surface copies of either chain: the home
 surface's per-series episode fan-out (`GET /series/{id}/episodes` per started
 series), the client started-series grouping, and the `module_id === "tv"`
 gate are removed from it — films surface as continue rows without a next
-offer. Each row keeps a Play affordance for its current item with the same
-navigation the Continue cards use today. The home surface SHALL render the
-shared empty state when the `/home` response carries no rows. The watch
-page's next-episode derivation is a different surface and is untouched by
-this requirement.
+offer. A row carrying `current` keeps a Play affordance for its current item
+with the same navigation the Continue cards use today; a row WITHOUT
+`current` — the caught-up series' anchor card — renders NO position, percent
+bar, or Play-into-current affordance: the series' served `display_name`
+promotes to the title slot and the served next affordance IS the card's
+primary play affordance, navigating to `next.item_id`. The home surface SHALL
+render the shared empty state when the `/home` response carries no rows. The
+watch page's next-episode derivation is a different surface and is untouched
+by this requirement.
 
 #### Scenario: Continue renders in-progress items with progress
 
@@ -786,6 +790,16 @@ this requirement.
 - **THEN** the first row shows the served label navigating to `next.item_id`
   and the second renders no next affordance — the client composed neither
   label nor pick
+
+#### Scenario: Anchor card renders the series as the primary affordance
+
+- **WHEN** the home response carries an anchor card — a caught-up series
+  whose row omits `current` — beside resume rows that carry `current`
+- **THEN** the anchor card shows the series' served `display_name` in the
+  title slot, its artwork, and the served next label as the card's primary
+  play affordance navigating to `next.item_id`, with no position, percent
+  bar, or Play-into-current affordance, while the resume rows render exactly
+  as before
 
 #### Scenario: Empty home is a shared empty state
 
@@ -2405,8 +2419,10 @@ Sites: the per-series episode cards and the collection item-flow cards
 the series DTO's `watched`), the film/tv item grid's cards (ItemGrid — TV
 mode is the same grids under the html.tv CSS layer), and the element page
 heading beside the served display name. Continue-rail rows render no mark —
-watched rows are withdrawn from EACH viewer's rail by that viewer's own
-state (another user's watch never removes a row from a viewer's rail).
+the rail composes at entity grain server-side and never renders a raw watched
+progress row: watched elements reach the rail only through that composition
+(a caught-up series' anchor card offering its next unwatched episode), and
+another user's watch never changes a viewer's rail.
 
 On exactly three mounted surfaces — the collection's item cards
 (MovieCard-hosted movie and episode cards in the item flow and the
@@ -2457,8 +2473,12 @@ edges) is untouched by the toggle.
 
 #### Scenario: The Continue rail hides served-watched rows
 
-- **WHEN** Home fetches progress with `include=watched` and the response carries rows both with and without `watched: true`
-- **THEN** the Continue rail renders only the unwatched rows, and the Next-up derivation still anchors from every served row (a fully-watched series still surfaces its next unwatched episode)
+- **WHEN** the `/home` response composes a caught-up series — every touched
+  progress row ledgered-watched — beside in-progress rows
+- **THEN** the Continue rail renders no watched progress row as a resume
+  point: the caught-up series surfaces ONE anchor card (series name, artwork,
+  its next unwatched episode) with no resume body — a fully-watched series
+  still surfaces its next unwatched episode
 
 #### Scenario: Watch state follows the viewer
 
