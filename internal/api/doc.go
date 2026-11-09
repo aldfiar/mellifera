@@ -28,7 +28,7 @@
 // requireRole (Task 04/08). RoleClient is minted by device pairing (the
 // Deps.Pairing LookupToken branch in authMiddleware).
 //
-// # Public API (8 symbols — at the 8-symbol target)
+// # Public API (12 symbols — WARN band per the check.sh count)
 //
 //   - Deps: the collaborators + admin token New wires into the router (now
 //     including the Playback and Play playback-verb closures, D-7).
@@ -50,10 +50,13 @@
 //   - INV1: PURE DELEGATION. Each handler is parse → ONE domain call → write. No
 //     branching, no orchestration. funlen ≤60, gocognit ≤15 (golangci-lint).
 //   - INV2: api MAY import internal/store, internal/scan, internal/pairing,
-//     and stdlib + chi. It
-//     MAY NOT import internal/plugin, internal/enrich, internal/module, or
-//     internal/web (api talks to enrich/plugin only via the Deps.Status
-//     closure — contracts.md §10 import map; web composes api, never the
+//     internal/access, internal/identity, internal/art, internal/naming,
+//     internal/recs, internal/refusal, and internal/relay, plus stdlib +
+//     chi. It
+//     MAY NOT import internal/plugin, internal/enrich, internal/module,
+//     internal/browse, or
+//     internal/web (api talks to enrich/plugin only through Deps func
+//     closures — contracts.md §10 import map; web composes api, never the
 //     reverse).
 //   - INV3: Principal is a TYPE (not a bool gate). Handlers read it via the
 //     unexported context helper; RoleClient is minted by device pairing
@@ -66,7 +69,9 @@
 //     exported seam-input structs (PluginHealth/EnrichStats) which are the wire
 //     shape for /admin/status. The wire envelope (statusResponse) stays
 //     unexported (ai-architecture §2 corollary; no shared mutable types).
-//   - INV5: 8 exported symbols (Deps, Principal, New, Role, AdminStatus,
-//     PluginHealth, EnrichStats, Playback). Handlers, DTOs, the middleware,
-//     and IsAdmin are unexported or methods (excluded from the count).
+//   - INV5: 12 exported symbols (WARN band): Deps, Principal, New, Role,
+//     AdminStatus, PluginHealth, EnrichStats, Playback, ReenrichResult,
+//     EnrichPreview, ParserBinding, ModulePresentation. Handlers, DTOs,
+//     the middleware, and IsAdmin are unexported or methods (excluded from
+//     the count).
 package api
