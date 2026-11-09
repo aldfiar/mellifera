@@ -306,7 +306,14 @@ definitions:
           composes — honest absence, never a placeholder.
         type: string
       current:
-        $ref: '#/definitions/api.continueCurrent'
+        allOf:
+        - $ref: '#/definitions/api.continueCurrent'
+        description: |-
+          Current is the row's resume point, built ONLY from the entity's
+          resume-max row — present iff that pick resolves (a touched row that is
+          not watched-ledgered). ABSENT on an anchor card: every touched row
+          ledgered means the position is spent, and omitempty takes the field
+          GONE from the wire — never null, never a zero-value resume point.
       library_id:
         type: integer
       library_name:

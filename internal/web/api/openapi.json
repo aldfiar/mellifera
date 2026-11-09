@@ -4666,7 +4666,12 @@
                     "type": "string"
                 },
                 "current": {
-                    "$ref": "#/definitions/api.continueCurrent"
+                    "description": "Current is the row's resume point, built ONLY from the entity's\nresume-max row — present iff that pick resolves (a touched row that is\nnot watched-ledgered). ABSENT on an anchor card: every touched row\nledgered means the position is spent, and omitempty takes the field\nGONE from the wire — never null, never a zero-value resume point.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/api.continueCurrent"
+                        }
+                    ]
                 },
                 "library_id": {
                     "type": "integer"

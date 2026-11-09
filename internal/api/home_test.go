@@ -25,28 +25,13 @@ import (
 // duration floor, query-time artwork, and the invisible-library posture —
 // all over the real router wiring and a real store.
 
-// newHomeAPI is the home fixture: the newRecsAPI shape plus the title walk
-// (TitleSources — the leg the ChainMutes floor shows through names) and the
-// Art service (the query-time artwork leg composes instead of degrading).
-func newHomeAPI(t *testing.T) (http.Handler, *store.Store, int64) {
+// homeTestApp is the app every home fixture mounts: the real store, the Art
+// service (the query-time artwork leg composes instead of degrading), and
+// the gate-resolved title walk (TitleSources — the leg the ChainMutes floor
+// shows through names).
+func homeTestApp(t *testing.T, st *store.Store) *app {
 	t.Helper()
-	st := openAPIStore(t)
-	libID, err := st.CreateLibrary(context.Background(), "serial", "/media/home", "Recs")
-	if err != nil {
-		t.Fatalf("CreateLibrary: %v", err)
-	}
-	// The see-all admin scope (ledger slot 0 — the slot the fixture's
-	// access.System() writes stamp).
-	h := homeRouter(t, st, access.Admin())
-	return h, st, libID
-}
-
-// homeRouter builds the REAL mountV1Routes wiring behind a synthetic client
-// principal carrying the given viewer (the handlers_viewer_test seam — the
-// carrier viewerFor memoizes, so the scope flows through every handler).
-func homeRouter(t *testing.T, st *store.Store, v access.Viewer) http.Handler {
-	t.Helper()
-	h := &app{deps: Deps{
+	return &app{deps: Deps{
 		AdminToken: adminToken,
 		Store:      st,
 		Art:        art.NewService(st, t.TempDir()),
@@ -57,11 +42,49 @@ func homeRouter(t *testing.T, st *store.Store, v access.Viewer) http.Handler {
 			}, nil
 		},
 	}}
+}
+
+// mountHomeApp wraps an app in the REAL mountV1Routes wiring behind a
+// synthetic client principal carrying the given viewer (the
+// handlers_viewer_test seam — the carrier viewerFor memoizes, so the scope
+// flows through every handler).
+func mountHomeApp(t *testing.T, a *app, v access.Viewer) http.Handler {
+	t.Helper()
 	r := chi.NewRouter()
 	r.Use(principalInjector(RoleClient))
 	r.Use(principalViewerInjector(v))
-	r.Route("/api/v1", func(r chi.Router) { mountV1Routes(r, h) })
+	r.Route("/api/v1", func(r chi.Router) { mountV1Routes(r, a) })
 	return r
+}
+
+// newHomeAPI is the home route fixture: one serial library over the
+// homeTestApp wiring, mounted for the see-all admin scope (ledger slot 0 —
+// the slot the fixture's access.System() writes stamp).
+func newHomeAPI(t *testing.T) (http.Handler, *store.Store, int64) {
+	t.Helper()
+	a, st, libID := newHomeApp(t)
+	return mountHomeApp(t, a, access.Admin()), st, libID
+}
+
+// homeRouter builds the REAL mountV1Routes wiring behind a synthetic client
+// principal carrying the given viewer.
+func homeRouter(t *testing.T, st *store.Store, v access.Viewer) http.Handler {
+	t.Helper()
+	return mountHomeApp(t, homeTestApp(t, st), v)
+}
+
+// newHomeApp is the home entity-layer fixture: the same Deps newHomeAPI
+// mounts plus its library, UNMOUNTED — the entity-grain subtests drive the
+// layer directly (the served route stays on today's composition until the
+// rewire task).
+func newHomeApp(t *testing.T) (*app, *store.Store, int64) {
+	t.Helper()
+	st := openAPIStore(t)
+	libID, err := st.CreateLibrary(context.Background(), "serial", "/media/home", "Recs")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	return homeTestApp(t, st), st, libID
 }
 
 // homeSeriesDoc is a series document with the namespace's synopsis group,
@@ -123,22 +146,59 @@ func putProgress(t *testing.T, st *store.Store, itemID string, pos int64) {
 	time.Sleep(2 * time.Millisecond)
 }
 
-// rowWireCurrent re-marshals one row's current block and reports whether
-// duration_seconds is on the wire (the omitempty observability probe).
-func rowHasDuration(t *testing.T, row continueRow) bool {
+// rowWire re-marshals one row and decodes the SERVED bytes into a raw key
+// map — the omitempty observability probe: a field absent from the struct's
+// bytes is GONE from the wire (omitempty), never null.
+func rowWire(t *testing.T, row continueRow) map[string]json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(row)
 	if err != nil {
 		t.Fatalf("marshal row: %v", err)
 	}
-	var wire struct {
-		Current map[string]any `json:"current"`
-	}
+	var wire map[string]json.RawMessage
 	if err := json.Unmarshal(b, &wire); err != nil {
 		t.Fatalf("unmarshal row: %v", err)
 	}
-	_, has := wire.Current["duration_seconds"]
-	return has
+	return wire
+}
+
+// rowWireCurrent returns one row's decoded current block and whether the
+// key exists in the served bytes at all — the seam the duration and
+// anchor-card pins read (the bool is the raw-byte probe: absent ≠ null).
+func rowWireCurrent(t *testing.T, row continueRow) (map[string]any, bool) {
+	t.Helper()
+	raw, has := rowWire(t, row)["current"]
+	if !has {
+		return nil, false
+	}
+	var cur map[string]any
+	if err := json.Unmarshal(raw, &cur); err != nil {
+		t.Fatalf("unmarshal current: %v", err)
+	}
+	return cur, true
+}
+
+// rowHasDuration reports whether duration_seconds is on the wire (the
+// omitempty observability probe; a current-absent row has no duration).
+func rowHasDuration(t *testing.T, row continueRow) bool {
+	t.Helper()
+	cur, has := rowWireCurrent(t, row)
+	if !has {
+		return false
+	}
+	_, ok := cur["duration_seconds"]
+	return ok
+}
+
+// rowCurrent returns one row's resume body, failing when absent — the
+// resume rows these subtests read always carry it (an anchor card omits
+// current; those pins probe the raw wire instead).
+func rowCurrent(t *testing.T, row continueRow) *continueCurrent {
+	t.Helper()
+	if row.Current == nil {
+		t.Fatalf("current absent on row %+v, want a resume body", row)
+	}
+	return row.Current
 }
 
 // wantNext asserts one row's next offer (item id + label) or its absence.
@@ -156,6 +216,35 @@ func wantNext(t *testing.T, row continueRow, wantID, wantLabel string) {
 	if row.Next.ItemID != wantID || row.Next.Label != wantLabel {
 		t.Fatalf("next = %s (%s), want %s (%s)", row.Next.ItemID, row.Next.Label, wantID, wantLabel)
 	}
+}
+
+// ledgerItem writes the watched-ledger row beside a positive progress row —
+// the detector's exact fact pair (the watch reached completion, the position
+// row stays).
+func ledgerItem(t *testing.T, st *store.Store, itemID string, lib int64) {
+	t.Helper()
+	if err := st.InsertWatched(context.Background(), itemID, lib, "", time.Now().UTC(), access.System()); err != nil {
+		t.Fatalf("InsertWatched %s: %v", itemID, err)
+	}
+}
+
+// homeEntitiesFor drives the entity layer over the fixture store — the
+// composition the route rewire (1.2) will consume: recsFactsFor →
+// homeEntities → scoreHomeEntities → orderHomeEntities.
+func homeEntitiesFor(t *testing.T, a *app) []homeEntity {
+	t.Helper()
+	v := access.Admin()
+	facts, err := a.recsFactsFor(context.Background(), v)
+	if err != nil {
+		t.Fatalf("recsFactsFor: %v", err)
+	}
+	ents, namers, err := a.homeEntities(context.Background(), v, facts)
+	if err != nil {
+		t.Fatalf("homeEntities: %v", err)
+	}
+	scoreHomeEntities(ents, facts, namers)
+	orderHomeEntities(ents)
+	return ents
 }
 
 func TestHomeRoute(t *testing.T) {
@@ -192,16 +281,15 @@ func TestHomeRoute(t *testing.T) {
 		// recency slot it would hold under a pure recency rail; then the 49
 		// NEWEST plain rows, newest first (the recency tiebreak at the same
 		// score tier).
-		if got := hr.Continue[0].Current.ItemID; got != tagged.ID {
+		if got := rowCurrent(t, hr.Continue[0]).ItemID; got != tagged.ID {
 			t.Fatalf("first row = %s, want the scored %s", got, tagged.ID)
 		}
 		for i, row := range hr.Continue[1:] {
 			want := fmt.Sprintf("itm_h_%02d", 53-i)
-			if row.Current.ItemID != want {
-				t.Fatalf("row %d = %s, want the recency tiebreak order %s", i+1, row.Current.ItemID, want)
-			}
-			if row.Current.PositionSeconds != 100 {
-				t.Fatalf("row %d position = %d, want 100", i+1, row.Current.PositionSeconds)
+			if cur := rowCurrent(t, row); cur.ItemID != want {
+				t.Fatalf("row %d = %s, want the recency tiebreak order %s", i+1, cur.ItemID, want)
+			} else if cur.PositionSeconds != 100 {
+				t.Fatalf("row %d position = %d, want 100", i+1, cur.PositionSeconds)
 			}
 		}
 	})
@@ -253,17 +341,18 @@ func TestHomeRoute(t *testing.T) {
 		// (the source title beats the _view floor), the raw pair serves,
 		// the episode's own convention title rides the metadata projection,
 		// the ffprobe duration rounds to whole seconds.
-		if row.Current.Display != "The Decision" {
-			t.Fatalf("display = %q, want the title-walk name", row.Current.Display)
+		cur := rowCurrent(t, row)
+		if cur.Display != "The Decision" {
+			t.Fatalf("display = %q, want the title-walk name", cur.Display)
 		}
-		if row.Current.Season == nil || *row.Current.Season != 2 || row.Current.Episode == nil || *row.Current.Episode != 3 {
-			t.Fatalf("season/episode = %v/%v, want 2/3", row.Current.Season, row.Current.Episode)
+		if cur.Season == nil || *cur.Season != 2 || cur.Episode == nil || *cur.Episode != 3 {
+			t.Fatalf("season/episode = %v/%v, want 2/3", cur.Season, cur.Episode)
 		}
-		if row.Current.EpisodeTitle != "The Decision" {
-			t.Fatalf("episode_title = %q, want the convention projection's title", row.Current.EpisodeTitle)
+		if cur.EpisodeTitle != "The Decision" {
+			t.Fatalf("episode_title = %q, want the convention projection's title", cur.EpisodeTitle)
 		}
-		if row.Current.DurationSeconds == nil || *row.Current.DurationSeconds != 1235 {
-			t.Fatalf("duration_seconds = %v, want 1235 (1234.6 rounded)", row.Current.DurationSeconds)
+		if cur.DurationSeconds == nil || *cur.DurationSeconds != 1235 {
+			t.Fatalf("duration_seconds = %v, want 1235 (1234.6 rounded)", cur.DurationSeconds)
 		}
 		// The pick: the lowest (season, episode) strictly after the highest
 		// STARTED one — S02E04, the unstarted episode.
@@ -271,8 +360,8 @@ func TestHomeRoute(t *testing.T) {
 		// The honest absence: no ffprobe fact — the field is OMITTED, not
 		// zero, never guessed.
 		barLess := hr.Continue[1]
-		if barLess.Current.ItemID != film.ID {
-			t.Fatalf("second row = %s, want %s", barLess.Current.ItemID, film.ID)
+		if rowCurrent(t, barLess).ItemID != film.ID {
+			t.Fatalf("second row = %s, want %s", rowCurrent(t, barLess).ItemID, film.ID)
 		}
 		if rowHasDuration(t, barLess) {
 			t.Fatal("duration_seconds on the wire for a fact-less item — the honest omission broke")
@@ -368,13 +457,13 @@ func TestHomeRoute(t *testing.T) {
 		// empty, no next — it surfaces as a continue row without a next
 		// offer.
 		doneRow := hr.Continue[0]
-		if doneRow.Current.ItemID != fin.ID || doneRow.SeriesID == "" {
-			t.Fatalf("first row = %s (series %q), want the series' last episode", doneRow.Current.ItemID, doneRow.SeriesID)
+		if rowCurrent(t, doneRow).ItemID != fin.ID || doneRow.SeriesID == "" {
+			t.Fatalf("first row = %s (series %q), want the series' last episode", rowCurrent(t, doneRow).ItemID, doneRow.SeriesID)
 		}
 		wantNext(t, doneRow, "", "")
 		filmRow := hr.Continue[1]
-		if filmRow.Current.ItemID != film.ID {
-			t.Fatalf("second row = %s, want the film", filmRow.Current.ItemID)
+		if rowCurrent(t, filmRow).ItemID != film.ID {
+			t.Fatalf("second row = %s, want the film", rowCurrent(t, filmRow).ItemID)
 		}
 		if filmRow.SeriesID != "" || filmRow.SeriesDisplay != "" {
 			t.Fatalf("film series fields = (%q,%q), want the honest empty floors", filmRow.SeriesID, filmRow.SeriesDisplay)
@@ -460,8 +549,8 @@ func TestHomeRoute(t *testing.T) {
 		if len(hr.Continue) != 1 {
 			t.Fatalf("denied rows = %d, want exactly the granted library's 1", len(hr.Continue))
 		}
-		if hr.Continue[0].LibraryID != libA || hr.Continue[0].Current.ItemID != "itm_h_sa" {
-			t.Fatalf("denied row = (%d,%s), want only libA's row", hr.Continue[0].LibraryID, hr.Continue[0].Current.ItemID)
+		if hr.Continue[0].LibraryID != libA || rowCurrent(t, hr.Continue[0]).ItemID != "itm_h_sa" {
+			t.Fatalf("denied row = (%d,%s), want only libA's row", hr.Continue[0].LibraryID, rowCurrent(t, hr.Continue[0]).ItemID)
 		}
 		// The granted viewer holds both grants: both rows serve.
 		granted := homeRouter(t, st, access.User(42, []int64{libA, libB}, nil))
@@ -473,10 +562,646 @@ func TestHomeRoute(t *testing.T) {
 		}
 		got := map[int64]string{}
 		for _, row := range hr2.Continue {
-			got[row.LibraryID] = row.Current.ItemID
+			got[row.LibraryID] = rowCurrent(t, row).ItemID
 		}
 		if got[libA] != "itm_h_sa" || got[libB] != "itm_h_sb" {
 			t.Fatalf("granted rows = %v, want both libraries' rows", got)
 		}
+	})
+
+	// The entity-grain pins (home-rail task 1.1): the layer below drives
+	// the composition the route rewire (1.2) will consume — the served
+	// route above still runs today's per-row composition, so these
+	// subtests pin the entity layer directly over the real store.
+
+	t.Run("entity_grain_grouping_and_folds", func(t *testing.T) {
+		a, st, lib := newHomeApp(t)
+		show := seedRecsSeries(t, st, lib, "show", homeSeriesDoc("Show", "", ""))
+		e1 := seedRecsItem(t, st, lib, "itm_g_e1", "show/e1.mkv", homeEpisodeDoc("show", 1, 1, "", nil, ""), time.Time{})
+		e2 := seedRecsItem(t, st, lib, "itm_g_e2", "show/e2.mkv", homeEpisodeDoc("show", 1, 2, "", nil, ""), time.Time{})
+		film := seedRecsItem(t, st, lib, "itm_g_film", "film.mkv", map[string]any{}, time.Time{})
+		putProgress(t, st, e1.ID, 100)
+		putProgress(t, st, e2.ID, 100)
+		ledgerItem(t, st, e2.ID, lib)
+		putProgress(t, st, film.ID, 300)
+
+		ents := homeEntitiesFor(t, a)
+		if len(ents) != 2 {
+			t.Fatalf("entities = %d, want 2 (one per touched series, one per fact-less film)", len(ents))
+		}
+		var serial, filmEnt *homeEntity
+		for i := range ents {
+			if ents[i].film {
+				filmEnt = &ents[i]
+			} else {
+				serial = &ents[i]
+			}
+		}
+		// ONE entity for the multi-row series: grouping by
+		// (libraryID, seriesPath), served-series resolution stamped.
+		if serial == nil {
+			t.Fatal("no serial entity for the touched series")
+		}
+		if !serial.served || serial.sr.ID != show.ID || serial.id != show.ID || serial.path != "show" {
+			t.Fatalf("serial entity = served:%v sr:%s id:%s path:%s, want the resolved series",
+				serial.served, serial.sr.ID, serial.id, serial.path)
+		}
+		// Started-max spans ALL touched rows INCLUDING the ledgered one (D3)
+		// — the next pick's anchor; resume-max skips it (the skip-ahead shape).
+		if serial.startS != 1 || serial.startE != 2 {
+			t.Fatalf("started-max = (%d,%d), want (1,2) — the ledgered row counts", serial.startS, serial.startE)
+		}
+		if !serial.hasResume || serial.resume.ItemID != e1.ID || serial.resumeS != 1 || serial.resumeE != 1 {
+			t.Fatalf("resume-max = (%v,%d,%d), want e1 (1,1) — the highest-started NON-ledgered row",
+				serial.resume.ItemID, serial.resumeS, serial.resumeE)
+		}
+		// The ONE pre-cut episode read (D7), carried for scoring and the
+		// composer; both touched rows carried beside it.
+		if len(serial.eps) != 2 || len(serial.touched) != 2 {
+			t.Fatalf("eps/touched = %d/%d, want 2/2", len(serial.eps), len(serial.touched))
+		}
+		// The fact-less row stays the per-item film entity (Q1).
+		if filmEnt == nil {
+			t.Fatal("no film entity for the fact-less row")
+		}
+		if filmEnt.path != "" || !filmEnt.film || filmEnt.served {
+			t.Fatalf("film entity flags = path:%q film:%v served:%v, want the Q1 fallback",
+				filmEnt.path, filmEnt.film, filmEnt.served)
+		}
+		if filmEnt.id != film.ID || filmEnt.resumeItem.ID != film.ID || !filmEnt.hasResume {
+			t.Fatalf("film entity body = id:%s resume:%v, want the row itself", filmEnt.id, filmEnt.resumeItem.ID)
+		}
+	})
+
+	t.Run("serve_law_survival", func(t *testing.T) {
+		// Caught-up-without-next: every touched row ledgered and nothing
+		// strictly after the started-max — NO entity, never an empty
+		// anchor, never a rewatch offer.
+		a, st, lib := newHomeApp(t)
+		seedRecsSeries(t, st, lib, "done", homeSeriesDoc("Done", "", ""))
+		fin := seedRecsItem(t, st, lib, "itm_v_fin", "done/e9.mkv", homeEpisodeDoc("done", 1, 9, "", nil, ""), time.Time{})
+		putProgress(t, st, fin.ID, 100)
+		ledgerItem(t, st, fin.ID, lib)
+		if ents := homeEntitiesFor(t, a); len(ents) != 0 {
+			t.Fatalf("entities = %d, want 0 (caught-up-without-next drops)", len(ents))
+		}
+
+		// Ledgered frontier WITH a later episode: the entity survives as
+		// the anchor — served, NO resume body, survival computed from the
+		// SAME pick (homeNextPick over the carried eps) the composer serves.
+		a2, st2, lib2 := newHomeApp(t)
+		show2 := seedRecsSeries(t, st2, lib2, "front", homeSeriesDoc("Front", "", ""))
+		watched := seedRecsItem(t, st2, lib2, "itm_v_w", "front/e1.mkv", homeEpisodeDoc("front", 1, 1, "", nil, ""), time.Time{})
+		seedRecsItem(t, st2, lib2, "itm_v_n", "front/e2.mkv", homeEpisodeDoc("front", 1, 2, "", nil, ""), time.Time{})
+		putProgress(t, st2, watched.ID, 100)
+		ledgerItem(t, st2, watched.ID, lib2)
+		ents := homeEntitiesFor(t, a2)
+		if len(ents) != 1 {
+			t.Fatalf("entities = %d, want 1 (the ledgered frontier anchors)", len(ents))
+		}
+		if e := ents[0]; !e.served || e.sr.ID != show2.ID || e.hasResume || e.startS != 1 || e.startE != 1 {
+			t.Fatalf("anchor entity = served:%v sr:%s resume:%v started:(%d,%d), want served, no resume, (1,1)",
+				e.served, e.sr.ID, e.hasResume, e.startS, e.startE)
+		}
+
+		// Ledgered film/tv item: NO entity — the position is spent and it
+		// has no next concept.
+		a3, st3, lib3 := newHomeApp(t)
+		lf := seedRecsItem(t, st3, lib3, "itm_v_film", "film.mkv", map[string]any{}, time.Time{})
+		putProgress(t, st3, lf.ID, 300)
+		ledgerItem(t, st3, lf.ID, lib3)
+		if ents := homeEntitiesFor(t, a3); len(ents) != 0 {
+			t.Fatalf("entities = %d, want 0 (a ledgered film drops)", len(ents))
+		}
+	})
+
+	t.Run("resolution_failure_floors_to_per_item", func(t *testing.T) {
+		a, st, lib := newHomeApp(t)
+		// Missing series: the parsed anchor matches no SeriesByPath row.
+		miss := seedRecsItem(t, st, lib, "itm_r_miss", "nowhere/e1.mkv", homeEpisodeDoc("nowhere", 1, 1, "", nil, ""), time.Time{})
+		putProgress(t, st, miss.ID, 100)
+		// Tombstoned series: the row resolves but is deleted — the join's
+		// skip case floors the same way.
+		seedRecsSeries(t, st, lib, "gone", homeSeriesDoc("Gone", "", ""))
+		tomb := seedRecsItem(t, st, lib, "itm_r_tomb", "gone/e1.mkv", homeEpisodeDoc("gone", 1, 1, "", nil, ""), time.Time{})
+		putProgress(t, st, tomb.ID, 100)
+		if err := st.PutSeries(context.Background(), store.Series{
+			ModuleID: "serial", LibraryID: lib, RelativePath: "gone",
+			Document: recsDoc(t, homeSeriesDoc("Gone", "", "")), SchemaVersion: 1, Status: "deleted",
+		}); err != nil {
+			t.Fatalf("tombstone gone: %v", err)
+		}
+
+		ents := homeEntitiesFor(t, a)
+		if len(ents) != 2 {
+			t.Fatalf("entities = %d, want 2 (both floors survive per-item)", len(ents))
+		}
+		for _, ent := range ents {
+			// The honest floor: NO series identity fabricated, no next
+			// concept, the ordering id floors to the resume body's itm_ id.
+			if ent.film || ent.served || ent.sr.ID != "" || ent.id != ent.resumeItem.ID || len(ent.eps) != 0 {
+				t.Fatalf("floored entity = film:%v served:%v sr:%q id:%s eps:%d, want the per-item honest floor",
+					ent.film, ent.served, ent.sr.ID, ent.id, len(ent.eps))
+			}
+		}
+	})
+
+	t.Run("entity_scoring_union_and_shapes", func(t *testing.T) {
+		// Drift (D5/Q2): the touched row's parsed anchor names a series
+		// whose eps listing — the path-prefix read — does NOT carry the
+		// touched item; the union keeps the resume tier on the entity.
+		a, st, lib := newHomeApp(t)
+		seedRecsSeries(t, st, lib, "show", recsSeriesDoc("Show"))
+		drift := seedRecsItem(t, st, lib, "itm_u_drift", "other/drift.mkv", homeEpisodeDoc("show", 1, 1, "", nil, ""), time.Time{})
+		putProgress(t, st, drift.ID, 100)
+		ents := homeEntitiesFor(t, a)
+		if len(ents) != 1 || !ents[0].served {
+			t.Fatalf("entities = %+v, want one served serial entity", ents)
+		}
+		if ents[0].score != 1000 {
+			t.Fatalf("drift score = %v, want 1000 — the union holds the resume tier", ents[0].score)
+		}
+
+		// The score-shape pin (D5/Q3): BOTH forms asserted for a
+		// single-row series, NEVER their equality. The scoreSeries form —
+		// a served single-row series with a fresh unstarted sibling —
+		// carries the +500 NewEpisode divergence on top of the resume tier.
+		a2, st2, lib2 := newHomeApp(t)
+		seedRecsSeries(t, st2, lib2, "fresh", recsSeriesDoc("Fresh"))
+		ep := seedRecsItem(t, st2, lib2, "itm_u_e1", "fresh/e1.mkv", homeEpisodeDoc("fresh", 1, 1, "", nil, ""), time.Time{})
+		seedRecsItem(t, st2, lib2, "itm_u_e2", "fresh/e2.mkv", homeEpisodeDoc("fresh", 1, 2, "", nil, ""), time.Time{})
+		putProgress(t, st2, ep.ID, 100)
+		freshEnts := homeEntitiesFor(t, a2)
+		if len(freshEnts) != 1 || !freshEnts[0].served || freshEnts[0].score != 1500 {
+			t.Fatalf("scoreSeries-form entity = %+v score %v, want one served entity at 1500",
+				freshEnts, freshEnts[0].score)
+		}
+
+		// The scoreItems form — the SAME single-row shape, floored
+		// (unresolvable series) — scores the plain resume tier over the
+		// resume body item; asserted on its own, never against the form
+		// above.
+		a3, st3, lib3 := newHomeApp(t)
+		flop := seedRecsItem(t, st3, lib3, "itm_u_flop", "nowhere/e1.mkv", homeEpisodeDoc("nowhere", 1, 1, "", nil, ""), time.Time{})
+		putProgress(t, st3, flop.ID, 100)
+		floored := homeEntitiesFor(t, a3)
+		if len(floored) != 1 || floored[0].served || floored[0].score != 1000 {
+			t.Fatalf("scoreItems-form entity = %+v score %v, want one floored entity at 1000",
+				floored, floored[0].score)
+		}
+
+		// Films score through scoreItems over the item's OWN document —
+		// the learned tag weight rides the item genres on top of the
+		// resume tier.
+		a4, st4, lib4 := newHomeApp(t)
+		tagged := seedRecsItem(t, st4, lib4, "itm_u_tag", "tagged.mkv", map[string]any{
+			"sources": map[string]any{recsMetaNS: map[string]any{"description": "d", "genres": []string{"action"}}},
+		}, time.Time{})
+		if err := st4.ApplyTagWeights(context.Background(), []string{"action"}, time.Now().UTC()); err != nil {
+			t.Fatalf("ApplyTagWeights: %v", err)
+		}
+		putProgress(t, st4, tagged.ID, 300)
+		filmEnts := homeEntitiesFor(t, a4)
+		if len(filmEnts) != 1 || !filmEnts[0].film || filmEnts[0].score != 1002 {
+			t.Fatalf("film entity = %+v score %v, want one film entity at 1002 (resume 1000 + action 2)",
+				filmEnts, filmEnts[0].score)
+		}
+	})
+
+	t.Run("entity_ordering_law", func(t *testing.T) {
+		// The comparator pinned purely (D6): score desc, then the entity's
+		// max touched-row updated_at desc, then the ser_/itm_ id floor —
+		// total and deterministic.
+		ents := []homeEntity{
+			{id: "itm_ord_c", score: 1000, updated: "2026-11-01T00:00:00Z"},
+			{id: "ser_1_ab", score: 1500, updated: "2026-11-01T00:00:00Z"},
+			{id: "itm_ord_a", score: 1000, updated: "2026-11-02T00:00:00Z"},
+			{id: "itm_ord_b", score: 1000, updated: "2026-11-01T00:00:00Z"},
+		}
+		orderHomeEntities(ents)
+		got := make([]string, len(ents))
+		for i, e := range ents {
+			got[i] = e.id
+		}
+		wantIDs(t, got, "ser_1_ab", "itm_ord_a", "itm_ord_b", "itm_ord_c")
+
+		// Behaviorally over the store: two plain films tie at the resume
+		// tier — the recency leg (the later progress stamp) serves first.
+		a, st, lib := newHomeApp(t)
+		old := seedRecsItem(t, st, lib, "itm_ord_old", "old.mkv", map[string]any{}, time.Time{})
+		recent := seedRecsItem(t, st, lib, "itm_ord_new", "new.mkv", map[string]any{}, time.Time{})
+		putProgress(t, st, old.ID, 100)
+		putProgress(t, st, recent.ID, 100)
+		served := homeEntitiesFor(t, a)
+		if len(served) != 2 || served[0].id != recent.ID || served[1].id != old.ID {
+			t.Fatalf("served = (%s,%s), want the recency tiebreak (%s,%s)",
+				served[0].id, served[1].id, recent.ID, old.ID)
+		}
+	})
+
+	// The route-level entity-grain pins (home-rail task 1.2): the served
+	// route now runs the entity composition the subtests above drove
+	// directly — one card per touched entity, current present ONLY from the
+	// resume-max row (absent — gone from the wire — on anchor cards), the
+	// ≤50 bound counting cards, one score space ordering both.
+
+	t.Run("watched_series_serves_anchor_card", func(t *testing.T) {
+		// AC-2: a fully-ledgered series with a later episode serves ONE row
+		// — the anchor card — with current ABSENT on the wire (omitempty:
+		// the field is gone from the served bytes, never null) and the
+		// series fields, artwork, and next offer present.
+		h, st, lib := newHomeAPI(t)
+		sr := seedRecsSeries(t, st, lib, "watched", homeSeriesDoc("Watched", "", "https://img.example/watched.jpg"))
+		done := seedRecsItem(t, st, lib, "itm_a_done", "watched/e1.mkv", homeEpisodeDoc("watched", 1, 1, "", nil, ""), time.Time{})
+		later := seedRecsItem(t, st, lib, "itm_a_next", "watched/e2.mkv", homeEpisodeDoc("watched", 1, 2, "", nil, ""), time.Time{})
+		putProgress(t, st, done.ID, 100)
+		ledgerItem(t, st, done.ID, lib)
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		hr := decodeHome(t, resp)
+		if len(hr.Continue) != 1 {
+			t.Fatalf("rows = %d, want 1 (the anchor card)", len(hr.Continue))
+		}
+		row := hr.Continue[0]
+		if row.Current != nil {
+			t.Fatalf("current = %+v, want nil — the position is spent", row.Current)
+		}
+		if _, has := rowWire(t, row)["current"]; has {
+			t.Fatal("current key on the served bytes for a fully-ledgered series — the omitempty law broke (gone, never null)")
+		}
+		if row.SeriesID != sr.ID || row.SeriesDisplay != "Watched" || row.LibraryID != lib || row.LibraryName != "Recs" {
+			t.Fatalf("anchor header = (%q,%q,%d,%q), want the resolved series over Recs", row.SeriesID, row.SeriesDisplay, row.LibraryID, row.LibraryName)
+		}
+		if row.Artwork != "https://img.example/watched.jpg" {
+			t.Fatalf("anchor artwork = %q, want the composed series poster", row.Artwork)
+		}
+		wantNext(t, row, later.ID, "S01E02")
+	})
+
+	t.Run("skip_ahead_resumes_below_the_ledger", func(t *testing.T) {
+		// D3's skip-ahead shape through the route: E04 in progress, E05
+		// watched to the end — the resume body is E04 (the highest-started
+		// NON-ledgered row) and next is strictly after the LEDGERED
+		// started-max (S01E06), never the spent E05.
+		h, st, lib := newHomeAPI(t)
+		seedRecsSeries(t, st, lib, "skip", homeSeriesDoc("Skip", "", ""))
+		e4 := seedRecsItem(t, st, lib, "itm_s_e4", "skip/e4.mkv", homeEpisodeDoc("skip", 1, 4, "", nil, ""), time.Time{})
+		e5 := seedRecsItem(t, st, lib, "itm_s_e5", "skip/e5.mkv", homeEpisodeDoc("skip", 1, 5, "", nil, ""), time.Time{})
+		e6 := seedRecsItem(t, st, lib, "itm_s_e6", "skip/e6.mkv", homeEpisodeDoc("skip", 1, 6, "", nil, ""), time.Time{})
+		putProgress(t, st, e4.ID, 50)
+		putProgress(t, st, e5.ID, 100)
+		ledgerItem(t, st, e5.ID, lib)
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		hr := decodeHome(t, resp)
+		if len(hr.Continue) != 1 {
+			t.Fatalf("rows = %d, want 1", len(hr.Continue))
+		}
+		row := hr.Continue[0]
+		cur := rowCurrent(t, row)
+		if cur.ItemID != e4.ID {
+			t.Fatalf("resume = %s, want the in-progress E04", cur.ItemID)
+		}
+		if cur.Season == nil || *cur.Season != 1 || cur.Episode == nil || *cur.Episode != 4 {
+			t.Fatalf("season/episode = %v/%v, want 1/4", cur.Season, cur.Episode)
+		}
+		wantNext(t, row, e6.ID, "S01E06")
+	})
+
+	t.Run("caught_up_without_next_serves_nothing", func(t *testing.T) {
+		// AC-5/AC-6 at the route: a caught-up series (every touched row
+		// ledgered, nothing strictly after) serves NO row — no empty anchor,
+		// no rewatch offer — and a ledgered film/tv item serves no card.
+		h, st, lib := newHomeAPI(t)
+		seedRecsSeries(t, st, lib, "done", homeSeriesDoc("Done", "", ""))
+		fin := seedRecsItem(t, st, lib, "itm_c_fin", "done/e9.mkv", homeEpisodeDoc("done", 1, 9, "", nil, ""), time.Time{})
+		film := seedRecsItem(t, st, lib, "itm_c_film", "film.mkv", map[string]any{}, time.Time{})
+		putProgress(t, st, fin.ID, 100)
+		ledgerItem(t, st, fin.ID, lib)
+		putProgress(t, st, film.ID, 300)
+		ledgerItem(t, st, film.ID, lib)
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		hr := decodeHome(t, resp)
+		if len(hr.Continue) != 0 {
+			t.Fatalf("rows = %+v, want none — the finale lie and the spent film drop", hr.Continue)
+		}
+	})
+
+	t.Run("ledgered_frontier_serves_last_known_state", func(t *testing.T) {
+		// A fully-ledgered frontier anchors honestly: the started-max spans
+		// the LEDGERED rows (the last-known position — E02 here), so the
+		// next offer lands strictly after it (E03), never the spent E02
+		// itself, and current stays absent.
+		h, st, lib := newHomeAPI(t)
+		sr := seedRecsSeries(t, st, lib, "front", homeSeriesDoc("Front", "", ""))
+		e1 := seedRecsItem(t, st, lib, "itm_f_e1", "front/e1.mkv", homeEpisodeDoc("front", 1, 1, "", nil, ""), time.Time{})
+		e2 := seedRecsItem(t, st, lib, "itm_f_e2", "front/e2.mkv", homeEpisodeDoc("front", 1, 2, "", nil, ""), time.Time{})
+		e3 := seedRecsItem(t, st, lib, "itm_f_e3", "front/e3.mkv", homeEpisodeDoc("front", 1, 3, "", nil, ""), time.Time{})
+		putProgress(t, st, e1.ID, 100)
+		ledgerItem(t, st, e1.ID, lib)
+		putProgress(t, st, e2.ID, 100)
+		ledgerItem(t, st, e2.ID, lib)
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		hr := decodeHome(t, resp)
+		if len(hr.Continue) != 1 {
+			t.Fatalf("rows = %d, want 1", len(hr.Continue))
+		}
+		row := hr.Continue[0]
+		if row.SeriesID != sr.ID {
+			t.Fatalf("series_id = %q, want the frontier series", row.SeriesID)
+		}
+		if _, has := rowWire(t, row)["current"]; has {
+			t.Fatal("current on the wire for a fully-ledgered frontier — the honest last-known state broke")
+		}
+		wantNext(t, row, e3.ID, "S01E03")
+	})
+
+	t.Run("resume_outranks_saturated_anchor", func(t *testing.T) {
+		// AC-8's dominance law in ONE score space: a saturated anchor —
+		// new-episode 500 + a tag component at the 400 cap = 900 — still
+		// ranks below a plain tag-less resume (the 1000 floor). Tag
+		// affinity can never buy its way past a resume point: weight 399
+		// drives the one tag's contribution to the exact cap.
+		h, st, lib := newHomeAPI(t)
+		seedRecsSeries(t, st, lib, "plain", recsSeriesDoc("Plain"))
+		resumed := seedRecsItem(t, st, lib, "itm_o_res", "plain/e1.mkv", homeEpisodeDoc("plain", 1, 1, "", nil, ""), time.Time{})
+		seedRecsSeries(t, st, lib, "hot", recsSeriesDoc("Hot", "action"))
+		seen := seedRecsItem(t, st, lib, "itm_o_seen", "hot/e1.mkv", homeEpisodeDoc("hot", 1, 1, "", nil, ""), time.Time{})
+		fresh := seedRecsItem(t, st, lib, "itm_o_fresh", "hot/e2.mkv", homeEpisodeDoc("hot", 1, 2, "", nil, ""), time.Time{})
+		putProgress(t, st, resumed.ID, 100)
+		putProgress(t, st, seen.ID, 100)
+		ledgerItem(t, st, seen.ID, lib)
+		for i := 0; i < 399; i++ {
+			if err := st.ApplyTagWeights(context.Background(), []string{"action"}, time.Now().UTC()); err != nil {
+				t.Fatalf("ApplyTagWeights: %v", err)
+			}
+		}
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		hr := decodeHome(t, resp)
+		if len(hr.Continue) != 2 {
+			t.Fatalf("rows = %d, want 2", len(hr.Continue))
+		}
+		if got := rowCurrent(t, hr.Continue[0]).ItemID; got != resumed.ID {
+			t.Fatalf("first row = %s, want the plain resume — 1000 outranks the 900 saturated anchor", got)
+		}
+		anchor := hr.Continue[1]
+		if anchor.SeriesID == "" {
+			t.Fatalf("anchor series_id = %q, want the hot series", anchor.SeriesID)
+		}
+		if _, has := rowWireCurrent(t, anchor); has {
+			t.Fatal("current on the anchor card — the saturated anchor must serve the anchor shape")
+		}
+		wantNext(t, anchor, fresh.ID, "S01E02")
+	})
+
+	t.Run("resume_tiers_1500_over_1000", func(t *testing.T) {
+		// AC-8's context bonus inside the resume tier: two resumes, the one
+		// carrying a fresh unstarted sibling (InProgress 1000 + NewEpisode
+		// 500) outranks the plain one (1000).
+		h, st, lib := newHomeAPI(t)
+		seedRecsSeries(t, st, lib, "bubbling", recsSeriesDoc("Bubbling"))
+		watched15 := seedRecsItem(t, st, lib, "itm_t_15a", "bubbling/e1.mkv", homeEpisodeDoc("bubbling", 1, 1, "", nil, ""), time.Time{})
+		fresh15 := seedRecsItem(t, st, lib, "itm_t_15b", "bubbling/e2.mkv", homeEpisodeDoc("bubbling", 1, 2, "", nil, ""), time.Time{})
+		seedRecsSeries(t, st, lib, "flat", recsSeriesDoc("Flat"))
+		watched10 := seedRecsItem(t, st, lib, "itm_t_10", "flat/e1.mkv", homeEpisodeDoc("flat", 1, 1, "", nil, ""), time.Time{})
+		putProgress(t, st, watched15.ID, 100)
+		putProgress(t, st, watched10.ID, 100)
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		hr := decodeHome(t, resp)
+		if len(hr.Continue) != 2 {
+			t.Fatalf("rows = %d, want 2", len(hr.Continue))
+		}
+		if got := rowCurrent(t, hr.Continue[0]).ItemID; got != watched15.ID {
+			t.Fatalf("first row = %s, want the 1500 resume", got)
+		}
+		wantNext(t, hr.Continue[0], fresh15.ID, "S01E02")
+		if got := rowCurrent(t, hr.Continue[1]).ItemID; got != watched10.ID {
+			t.Fatalf("second row = %s, want the plain 1000 resume", got)
+		}
+		wantNext(t, hr.Continue[1], "", "")
+	})
+
+	t.Run("entity_grain_bound_cut_counts_cards", func(t *testing.T) {
+		// AC-7: the ≤50 bound counts CARDS — a three-row series eats ONE
+		// slot, and the cut lands on whole entities: the oldest film drops
+		// whole, never one of the series' rows.
+		h, st, lib := newHomeAPI(t)
+		sr := seedRecsSeries(t, st, lib, "boxed", homeSeriesDoc("Boxed", "", ""))
+		eps := make([]store.Item, 0, 3)
+		for i := 1; i <= 3; i++ {
+			eps = append(eps, seedRecsItem(t, st, lib, fmt.Sprintf("itm_b_e%d", i),
+				fmt.Sprintf("boxed/e%d.mkv", i), homeEpisodeDoc("boxed", 1, int64(i), "", nil, ""), time.Time{}))
+		}
+		films := make([]store.Item, 0, 50)
+		for i := 0; i < 50; i++ {
+			films = append(films, seedRecsItem(t, st, lib, fmt.Sprintf("itm_b_f%02d", i),
+				fmt.Sprintf("f%02d.mkv", i), map[string]any{}, time.Time{}))
+		}
+		for _, f := range films {
+			putProgress(t, st, f.ID, 100)
+		}
+		// The series' rows stamped LAST — its ONE entity holds the newest
+		// recency slot and must never be the cut's victim.
+		for _, ep := range eps {
+			putProgress(t, st, ep.ID, 100)
+		}
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		hr := decodeHome(t, resp)
+		// 51 entities → the bound cuts exactly ONE whole entity: the oldest
+		// film.
+		if len(hr.Continue) != 50 {
+			t.Fatalf("rows = %d, want 50 — the bound counts cards", len(hr.Continue))
+		}
+		seriesRows, filmRows := 0, 0
+		dropped := true
+		for _, row := range hr.Continue {
+			if row.SeriesID == sr.ID {
+				seriesRows++
+				continue
+			}
+			filmRows++
+			if rowCurrent(t, row).ItemID == films[0].ID {
+				dropped = false
+			}
+		}
+		if seriesRows != 1 {
+			t.Fatalf("series rows = %d, want exactly 1 — the multi-row series eats ONE slot", seriesRows)
+		}
+		if filmRows != 49 {
+			t.Fatalf("film rows = %d, want 49", filmRows)
+		}
+		if !dropped {
+			t.Fatal("the oldest film survived the cut — the whole-entity cut broke")
+		}
+	})
+
+	t.Run("entity_tiebreak_recency_then_id", func(t *testing.T) {
+		// D6's comparator through the route: four plain resumes tie at the
+		// resume tier — recency (the later progress stamp) orders the first
+		// pair, and the id floor orders the pair pinned to ONE stamp (the
+		// raw UPDATE writes the tie the store's own write cannot).
+		h, st, lib := newHomeAPI(t)
+		oldFilm := seedRecsItem(t, st, lib, "itm_x_old", "old.mkv", map[string]any{}, time.Time{})
+		recentFilm := seedRecsItem(t, st, lib, "itm_x_new", "new.mkv", map[string]any{}, time.Time{})
+		tieA := seedRecsItem(t, st, lib, "itm_x_a", "a.mkv", map[string]any{}, time.Time{})
+		tieB := seedRecsItem(t, st, lib, "itm_x_b", "b.mkv", map[string]any{}, time.Time{})
+		putProgress(t, st, oldFilm.ID, 100)
+		putProgress(t, st, recentFilm.ID, 100)
+		putProgress(t, st, tieA.ID, 100)
+		putProgress(t, st, tieB.ID, 100)
+		for _, id := range []string{tieA.ID, tieB.ID} {
+			if _, err := st.DB().ExecContext(context.Background(),
+				`UPDATE playback_progress SET updated_at = ? WHERE item_id = ?`,
+				"2020-01-01T00:00:00Z", id); err != nil {
+				t.Fatalf("pin tie stamp %s: %v", id, err)
+			}
+		}
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		hr := decodeHome(t, resp)
+		if len(hr.Continue) != 4 {
+			t.Fatalf("rows = %d, want 4", len(hr.Continue))
+		}
+		got := make([]string, len(hr.Continue))
+		for i, row := range hr.Continue {
+			got[i] = rowCurrent(t, row).ItemID
+		}
+		wantIDs(t, got, recentFilm.ID, oldFilm.ID, tieA.ID, tieB.ID)
+	})
+
+	t.Run("drift_union_holds_resume_tier_through_route", func(t *testing.T) {
+		// D5/Q2 through the route: the touched row's parsed anchor names a
+		// series its eps listing (the path-prefix read) does not carry —
+		// the union keeps the resume tier (≥1000) on the entity, which the
+		// route can only surface as ordering: the drifted resume outranks a
+		// fresh anchor (the 500 tier; no tags on either side).
+		h, st, lib := newHomeAPI(t)
+		show := seedRecsSeries(t, st, lib, "show", recsSeriesDoc("Show"))
+		drift := seedRecsItem(t, st, lib, "itm_d_drift", "other/drift.mkv", homeEpisodeDoc("show", 1, 1, "", nil, ""), time.Time{})
+		seedRecsSeries(t, st, lib, "anchor", recsSeriesDoc("Anchor"))
+		seen := seedRecsItem(t, st, lib, "itm_d_seen", "anchor/e1.mkv", homeEpisodeDoc("anchor", 1, 1, "", nil, ""), time.Time{})
+		fresh := seedRecsItem(t, st, lib, "itm_d_fresh", "anchor/e2.mkv", homeEpisodeDoc("anchor", 1, 2, "", nil, ""), time.Time{})
+		putProgress(t, st, drift.ID, 100)
+		putProgress(t, st, seen.ID, 100)
+		ledgerItem(t, st, seen.ID, lib)
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		hr := decodeHome(t, resp)
+		if len(hr.Continue) != 2 {
+			t.Fatalf("rows = %d, want 2", len(hr.Continue))
+		}
+		driftRow := hr.Continue[0]
+		if got := rowCurrent(t, driftRow).ItemID; got != drift.ID {
+			t.Fatalf("first row = %s, want the drifted resume — the union held the resume tier", got)
+		}
+		if driftRow.SeriesID != show.ID {
+			t.Fatalf("drift series_id = %q, want the resolved show", driftRow.SeriesID)
+		}
+		// The eps listing missed the drifted item: no next candidate — the
+		// honest absence beside the alive resume.
+		wantNext(t, driftRow, "", "")
+		anchor := hr.Continue[1]
+		if anchor.SeriesID == "" {
+			t.Fatalf("anchor series_id = %q, want the anchor series", anchor.SeriesID)
+		}
+		wantNext(t, anchor, fresh.ID, "S01E02")
+	})
+
+	t.Run("resume_row_byte_parity", func(t *testing.T) {
+		// AC-4: a resume row marshals EXACTLY today's shape — every member
+		// in the wire order the SPA reads, current present (a value, never
+		// null) in its slot beside the series block and the next offer.
+		// No poster on the fixture: artwork composes absent (the omitempty
+		// floor) here — the composed-poster VALUE is serial_row's and the
+		// anchor card's pin — and a remote URL would fire the art service's
+		// detached background fetch against this test's temp dir (the
+		// pre-existing TempDir-cleanup race serial_row already carries).
+		h, st, lib := newHomeAPI(t)
+		sr := seedRecsSeries(t, st, lib, "parity", homeSeriesDoc("Parity", "", ""))
+		ep := seedRecsItem(t, st, lib, "itm_p_e1", "parity/e1.mkv",
+			homeEpisodeDoc("parity", 2, 3, "", map[string]any{"format": map[string]any{"duration": "1234.6"}}, "The Wall"), time.Time{})
+		epNext := seedRecsItem(t, st, lib, "itm_p_e2", "parity/e2.mkv", homeEpisodeDoc("parity", 2, 4, "", nil, ""), time.Time{})
+		putProgress(t, st, ep.ID, 500)
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		hr := decodeHome(t, resp)
+		if len(hr.Continue) != 1 {
+			t.Fatalf("rows = %d, want 1", len(hr.Continue))
+		}
+		b, err := json.Marshal(hr.Continue[0])
+		if err != nil {
+			t.Fatalf("marshal served row: %v", err)
+		}
+		want := fmt.Sprintf(`{"series_id":%q,"series_display_name":"Parity","library_id":%d,"library_name":"Recs",`+
+			`"current":{"item_id":%q,"display_name":"The Wall","season":2,"episode":3,"episode_title":"The Wall","position_seconds":500,"duration_seconds":1235},`+
+			`"next":{"item_id":%q,"label":"S02E04"}}`, sr.ID, lib, ep.ID, epNext.ID)
+		if string(b) != want {
+			t.Fatalf("resume row bytes drifted off today's shape:\n got %s\nwant %s", b, want)
+		}
+	})
+
+	t.Run("score_shape_forms_both_served", func(t *testing.T) {
+		// D5/Q3 through the route: BOTH score-shape forms live in one rail —
+		// the scoreSeries form (a served single-row series whose fresh
+		// sibling carries the +500 divergence) and the scoreItems form (the
+		// same single-row shape floored to the per-item entity) — each
+		// asserted on its own served place, never asserted equal.
+		h, st, lib := newHomeAPI(t)
+		seedRecsSeries(t, st, lib, "fresh", recsSeriesDoc("Fresh"))
+		freshEp := seedRecsItem(t, st, lib, "itm_q_fe1", "fresh/e1.mkv", homeEpisodeDoc("fresh", 1, 1, "", nil, ""), time.Time{})
+		freshNext := seedRecsItem(t, st, lib, "itm_q_fe2", "fresh/e2.mkv", homeEpisodeDoc("fresh", 1, 2, "", nil, ""), time.Time{})
+		floored := seedRecsItem(t, st, lib, "itm_q_flop", "nowhere/e1.mkv", homeEpisodeDoc("nowhere", 1, 1, "", nil, ""), time.Time{})
+		film := seedRecsItem(t, st, lib, "itm_q_film", "film.mkv", map[string]any{}, time.Time{})
+		putProgress(t, st, freshEp.ID, 100)
+		putProgress(t, st, floored.ID, 100)
+		putProgress(t, st, film.ID, 100)
+
+		resp := doRequest(t, h, http.MethodGet, "/api/v1/home", "", adminToken)
+		defer resp.Body.Close()
+		hr := decodeHome(t, resp)
+		if len(hr.Continue) != 3 {
+			t.Fatalf("rows = %d, want 3", len(hr.Continue))
+		}
+		// Form 1 (scoreSeries): the fresh sibling bubbles its series to the
+		// top — 1500 over the resume tier.
+		first := hr.Continue[0]
+		if first.SeriesID == "" || rowCurrent(t, first).ItemID != freshEp.ID {
+			t.Fatalf("first row = %+v, want the fresh series' resume", first)
+		}
+		wantNext(t, first, freshNext.ID, "S01E02")
+		// Form 2 (scoreItems): the floored entity and the plain film tie at
+		// the resume tier — recency orders them (the film stamped last), and
+		// the floored row keeps its series-less facts: no series identity,
+		// the raw pair, no next.
+		if got := rowCurrent(t, hr.Continue[1]).ItemID; got != film.ID {
+			t.Fatalf("second row = %s, want the newer film of the tied pair", got)
+		}
+		third := hr.Continue[2]
+		cur := rowCurrent(t, third)
+		if cur.ItemID != floored.ID || third.SeriesID != "" || third.SeriesDisplay != "" {
+			t.Fatalf("third row = %+v, want the floored entity's honest per-item shape", third)
+		}
+		if cur.Season == nil || *cur.Season != 1 || cur.Episode == nil || *cur.Episode != 1 {
+			t.Fatalf("floored season/episode = %v/%v, want the raw parsed pair", cur.Season, cur.Episode)
+		}
+		wantNext(t, third, "", "")
 	})
 }

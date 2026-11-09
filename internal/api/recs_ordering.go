@@ -19,6 +19,8 @@ package api
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"sort"
 	"time"
@@ -500,6 +502,232 @@ func (a *app) scoreProgress(ctx context.Context, v access.Viewer, rows []store.P
 // carries the series row the store read needs; a series row that is gone
 // reports not-started — honest absence, the same floor ItemTags serves for
 // the identical loss.
+// homeEntity is ONE continue-rail entity at entity grain (home-rail design
+// §Interfaces): a touched series — its started-max over ALL touched progress
+// rows (ledgered included), its resume-max row (the highest-started
+// NON-ledgered one), its max touched-row updated_at, the pre-cut episode
+// rows (D7 — read once here, carried so scoring AND the composer never
+// re-read), and the two honest floors (Q1's parsed-fact fallback, D2's
+// resolution floor) — or a per-item film/tv entity. The carried fields are
+// the state the scoreHomeEntities/orderHomeEntities seams and the composer
+// consume; change them only together with design §Interfaces.
+type homeEntity struct {
+	libID int64
+	// path is the parsed series anchor; "" marks the Q1 film fallback (the
+	// row's document parses no episode facts — the per-item film entity).
+	path string
+	// film is Q1's parsed-episode-film flag; served is D2's resolution flag
+	// (the series row present AND not a tombstone). A fact-carrying entity
+	// with served=false is the D2 honest floor: per-item, series fields
+	// empty, no next — resolution failure never fabricates a series card.
+	film   bool
+	served bool
+	sr     store.Series
+	// id is the ordering law's floor: the ser_ id for a served serial
+	// entity, the resume body's itm_ id otherwise.
+	id string
+	// startS/startE is the started-max over ALL touched rows (ledgered
+	// included) — the next pick's anchor. resume/resumeItem is the
+	// highest-started NON-ledgered touched row (hasResume false = every
+	// touched row ledgered — the anchor-card case); resumeS/resumeE is its
+	// parsed pair.
+	startS, startE   int64
+	hasResume        bool
+	resume           store.PlaybackProgress
+	resumeItem       store.Item
+	resumeS, resumeE int64
+	// updated is the entity's max touched-row updated_at (the recency
+	// tiebreak), compared lexically — the same RFC3339Nano stamp the
+	// store's read serves.
+	updated string
+	// touched is the entity's touched item rows (the walk's GetItem reads);
+	// eps is the series' full episode rows — ONE pre-cut QueryItemsBySeries
+	// (D7), read BEFORE the bound cut so the +500 NewEpisode tier that
+	// orders the cut is scorable.
+	touched []store.Item
+	eps     []store.Item
+	score   float64
+}
+
+// homeEntities derives the rail's entities from the caller's FULL
+// positive-progress set (D1 — no input withdrawal): ONE GetItem walk over
+// facts.rows (the walk scoreProgress runs), episode-fact grouping by
+// (libraryID, seriesPath), the per-series started-max/resume-max folds, ONE
+// pre-cut QueryItemsBySeries per served series (D7), and the serve law (D2)
+// computed from the SAME pick result the composer serves — survival iff an
+// in-progress touched row exists (the resume-max) OR homeNextPick finds a
+// next after the started-max. Rows without parseable episode facts stay
+// per-item film entities (Q1); unresolvable or tombstoned series floor to
+// the per-item honest entity; ledgered film/tv items drop (their position is
+// spent and they have no next concept); caught-up-without-next drops. A row
+// whose item vanished between the ledger read and the walk is skipped — the
+// homeRows posture. The namers are built ONCE per distinct library here and
+// returned shared (D7 — kills the double namerFor): scoring and the composer
+// consume the same map.
+func (a *app) homeEntities(ctx context.Context, v access.Viewer, f recsFacts) ([]homeEntity, map[int64]naming.Namer, error) {
+	type entKey struct {
+		lib  int64
+		path string
+	}
+	byKey := make(map[entKey]*homeEntity)
+	var ents []*homeEntity
+	for _, row := range f.rows {
+		it, err := a.deps.Store.GetItem(ctx, row.ItemID, v)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue // gone between reads — the row serves nothing
+			}
+			return nil, nil, err
+		}
+		path, s, e, ok := naming.EpisodeFacts(naming.DocMap(it.Document))
+		if !ok {
+			// Q1: the per-item film entity — dropped entirely when
+			// ledgered (a completed watch has no resume and no next).
+			if f.completed(it.ID) {
+				continue
+			}
+			ents = append(ents, &homeEntity{
+				libID: it.LibraryID, film: true, id: it.ID,
+				hasResume: true, resume: row, resumeItem: it,
+				updated: row.UpdatedAt, touched: []store.Item{it},
+			})
+			continue
+		}
+		ent := byKey[entKey{it.LibraryID, path}]
+		if ent == nil {
+			ent = &homeEntity{libID: it.LibraryID, path: path}
+			byKey[entKey{it.LibraryID, path}] = ent
+			ents = append(ents, ent)
+		}
+		// Started-max spans ALL touched rows, ledgered included (D3) —
+		// the next pick's anchor.
+		if s > ent.startS || (s == ent.startS && e > ent.startE) {
+			ent.startS, ent.startE = s, e
+		}
+		// Resume-max is the highest-started NON-ledgered row (D3) — the
+		// skip-ahead case keeps it strictly below the started-max.
+		if !f.completed(it.ID) {
+			if !ent.hasResume || s > ent.resumeS || (s == ent.resumeS && e > ent.resumeE) {
+				ent.hasResume = true
+				ent.resume, ent.resumeItem = row, it
+				ent.resumeS, ent.resumeE = s, e
+			}
+		}
+		if row.UpdatedAt > ent.updated {
+			ent.updated = row.UpdatedAt
+		}
+		ent.touched = append(ent.touched, it)
+	}
+	// Namers once per distinct library across ALL entities (D7 — films
+	// score through them too), then resolution, the pre-cut eps reads, and
+	// the serve law.
+	namers := make(map[int64]naming.Namer, len(ents))
+	for _, ent := range ents {
+		if _, has := namers[ent.libID]; has {
+			continue
+		}
+		// 10.4: the scored composition's namer walk floors past this
+		// viewer's muted sources (v is homeEntities' caller viewer).
+		n, err := a.namerFor(ctx, ent.libID, v.ChainMutes)
+		if err != nil {
+			return nil, nil, err
+		}
+		namers[ent.libID] = n
+	}
+	out := make([]homeEntity, 0, len(ents))
+	for _, ent := range ents {
+		if ent.film {
+			out = append(out, *ent)
+			continue
+		}
+		n := namers[ent.libID]
+		cand, resolved := n.SeriesByPath[ent.path]
+		if !resolved || cand.Status == "deleted" {
+			// D2 floor: the per-item honest entity — series fields empty,
+			// no next concept; all-ledgered drops with it.
+			if !ent.hasResume {
+				continue
+			}
+			ent.id = ent.resumeItem.ID
+			out = append(out, *ent)
+			continue
+		}
+		ent.served, ent.sr, ent.id = true, cand, cand.ID
+		eps, err := a.deps.Store.QueryItemsBySeries(ctx, cand, seriesBacking(cand.Document), v)
+		if err != nil {
+			return nil, nil, err
+		}
+		ent.eps = eps
+		// The serve law (D2) from the SAME pick the composer serves.
+		if _, _, next := homeNextPick(eps, ent.startS, ent.startE); ent.hasResume || next {
+			out = append(out, *ent)
+		}
+	}
+	return out, namers, nil
+}
+
+// scoreHomeEntities scores each entity IN PLACE through the EXISTING scorers
+// (D5): a served serial entity through scoreSeries fed an eps map UNIONED
+// with the entity's touched items (Q2 — zero extra reads, and the resume
+// ≥1000 tier holds even under document drift, a touched row whose parsed
+// anchor moved and that the raw eps list therefore misses; the residual
+// inherited-grid corner — an eps row with a foreign parsed anchor — is
+// documented, wire honesty unaffected); a film or floored entity through
+// scoreItems over its resume body item (today's per-item shape — Q1's
+// fallback never fabricates series identity, so it never scores as one).
+// The namers are homeEntities' map, built once and shared downstream (D7).
+func scoreHomeEntities(ents []homeEntity, f recsFacts, namers map[int64]naming.Namer) {
+	for i := range ents {
+		ent := &ents[i]
+		n := namers[ent.libID]
+		if ent.served {
+			eps := map[string][]store.Item{ent.sr.RelativePath: unionTouched(ent.eps, ent.touched)}
+			scores, _ := scoreSeries(n, []store.Series{ent.sr}, eps, f)
+			ent.score = scores[0]
+			continue
+		}
+		ent.score = scoreItems(n, []store.Item{ent.resumeItem}, f, nil)[0]
+	}
+}
+
+// unionTouched folds the entity's touched items into its raw eps list
+// (D5/Q2): eps first in the store's order, then touched rows the list does
+// not already carry (the drift case) — id-deduped, order stable.
+func unionTouched(eps, touched []store.Item) []store.Item {
+	seen := make(map[string]bool, len(eps)+len(touched))
+	out := make([]store.Item, 0, len(eps)+len(touched))
+	for _, it := range eps {
+		if !seen[it.ID] {
+			seen[it.ID] = true
+			out = append(out, it)
+		}
+	}
+	for _, it := range touched {
+		if !seen[it.ID] {
+			seen[it.ID] = true
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// orderHomeEntities reorders the entities into the rail's served order
+// (D6): score descending, then the entity's max touched-row updated_at
+// descending — recency, compared lexically over the same RFC3339Nano stamps
+// the store's own read serves — then the ser_/itm_ id floor. The comparator
+// is total, so the unstable sort is deterministic.
+func orderHomeEntities(ents []homeEntity) {
+	sort.Slice(ents, func(i, j int) bool {
+		if ents[i].score != ents[j].score {
+			return ents[i].score > ents[j].score
+		}
+		if ents[i].updated != ents[j].updated {
+			return ents[i].updated > ents[j].updated
+		}
+		return ents[i].id < ents[j].id
+	})
+}
+
 func (a *app) seriesStartedFact(ctx context.Context, v access.Viewer, n naming.Namer, path string, f recsFacts) (bool, error) {
 	sr, ok := n.SeriesByPath[path]
 	if !ok {

@@ -1404,13 +1404,21 @@ export interface ContinueNext {
 // fabricated owner) and never carries next; artwork is the query-time
 // composed poster URL (omitempty when nothing composes) — only its served
 // proxy form rides the authenticated byte channel (isServedArtPath).
+// current is the row's resume point, OPTIONAL (home.go's
+// *continueCurrent + omitempty): present iff the entity's resume-max pick
+// resolves (a touched row that is not watched-ledgered). When every touched
+// row is ledgered the position is spent — the key is GONE from the served
+// bytes (never null, never a zero-value resume point) and the row is the
+// ANCHOR CARD: the series fields, artwork, and next offer alone, the served
+// series display_name the title slot and the next affordance the primary
+// one.
 export interface ContinueRow {
   series_id: string;
   series_display_name: string;
   library_id: number;
   library_name: string;
   artwork?: string;
-  current: ContinueCurrent;
+  current?: ContinueCurrent;
   next?: ContinueNext;
 }
 

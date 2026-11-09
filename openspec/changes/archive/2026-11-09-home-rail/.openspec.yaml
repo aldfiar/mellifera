@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-11-08
+goal: Watched rows never render as resume points; recommendations derive from
+  progress data
