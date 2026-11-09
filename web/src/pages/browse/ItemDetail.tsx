@@ -587,14 +587,15 @@ function ItemLoadedView(props: {
 
   // watchReady — the watch view is live: the video lane mounts its Player
   // (the descriptor resolved into a playable answer — hls or a natively
-  // playable direct floor). The preparing/unsupported/stall states replace
-  // the player with their own surfaces, so the keyboard listener and the
-  // legend gate OFF there — no player, no transport surface to drive.
+  // playable direct floor). The preparing/unsupported/missing/stall states
+  // replace the player with their own surfaces, so the keyboard listener and
+  // the legend gate OFF there — no player, no transport surface to drive.
   const watchReady =
     isVideoItem(item) &&
     descriptor !== undefined &&
     !descriptorPreparing &&
     descriptor.state !== "unsupported" &&
+    descriptor.state !== "missing" &&
     !stalled;
 
   const mediaStage = hero !== null ? (
@@ -605,33 +606,37 @@ function ItemLoadedView(props: {
     />
   ) : null;
   // The media stage (tv-playback-unblock): an unsupported descriptor renders
-  // the honest reason banner, a preparing one the Preparing surface — both
-  // REPLACE the player attach (no <video>, no raw-original src, never a bare
-  // spinner); only a playable answer mounts the Player.
+  // the honest reason banner, a missing one the file-missing banner
+  // (tombstone-lifecycle — the served state names a vanished file; nothing
+  // failed that a retry could fix), a preparing one the Preparing surface —
+  // all REPLACE the player attach (no <video>, no raw-original src, never a
+  // bare spinner); only a playable answer mounts the Player.
   const player = !isVideoItem(item) || descriptor === undefined
     ? null
     : descriptor.state === "unsupported"
       ? <UnsupportedBanner reason={descriptor.state_reason} />
-      : descriptorPreparing
-        ? (
-            <PreparingSurface
-              deferred={packDeferred}
-              stalled={stalled}
-              onRetry={() => playPack.mutate()}
-              retrying={playPack.isPending}
+      : descriptor.state === "missing"
+        ? <FileMissingBanner reason={descriptor.state_reason} />
+        : descriptorPreparing
+          ? (
+              <PreparingSurface
+                deferred={packDeferred}
+                stalled={stalled}
+                onRetry={() => playPack.mutate()}
+                retrying={playPack.isPending}
+              />
+            )
+          : (
+            <Player
+              itemId={item.id}
+              descriptor={descriptor}
+              onRetry={() => playRetry.mutate()}
+              retrying={playRetry.isPending}
+              subtitleTrackUrl={subtitleTrack.url}
+              voiceoverTrack={voiceover}
+              poster={hasFrameGrabberThumb(doc) ? hero : null}
             />
-          )
-        : (
-          <Player
-            itemId={item.id}
-            descriptor={descriptor}
-            onRetry={() => playRetry.mutate()}
-            retrying={playRetry.isPending}
-            subtitleTrackUrl={subtitleTrack.url}
-            voiceoverTrack={voiceover}
-            poster={hasFrameGrabberThumb(doc) ? hero : null}
-          />
-        );
+          );
   const watchControls =
     watchReady && descriptor ? (
       <TrackControls
@@ -1704,6 +1709,43 @@ function UnsupportedBanner(props: {
       </p>
       <p className="text-xs text-muted-foreground">
         {unsupportedReasonText(props.reason)}
+      </p>
+    </div>
+  );
+}
+
+// missingReasonText — the file-missing banner's wording, derived from the
+// descriptor's state_reason (tombstone-lifecycle: honest about what the
+// server answered — never invented). Takes a plain string so a divergent
+// server vocabulary lands in the honest fallback, not a type hole.
+function missingReasonText(reason: string | undefined): string {
+  switch (reason) {
+    case "file_missing":
+      return "Файл исчез после последнего сканирования библиотеки — повторное сканирование обновит элемент.";
+    default:
+      return "Элемент нельзя воспроизвести: его файл недоступен.";
+  }
+}
+
+// FileMissingBanner — the file-missing honest state (tombstone-lifecycle):
+// the descriptor answered state "missing" — the item's source file vanished
+// after the last scan (the between-scans window). The banner names the
+// served state; NO player attach, NO <video>, NO retry affordance (nothing
+// failed that a retry could fix), NO playback-event beacon and no polling
+// ride this state — the page stays explorable.
+function FileMissingBanner(props: {
+  reason?: PlaybackStateReason;
+}): ReactElement {
+  return (
+    <div
+      role="alert"
+      className="flex min-h-40 flex-col items-center justify-center gap-2 rounded-lg border bg-card p-6 text-center"
+    >
+      <p className="text-sm font-medium">
+        Файл элемента отсутствует на диске.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {missingReasonText(props.reason)}
       </p>
     </div>
   );

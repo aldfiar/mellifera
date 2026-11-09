@@ -163,11 +163,12 @@ func (s *Store) DeleteLibrary(ctx context.Context, id int64) error {
 // (the RFC3339Nano TEXT as persisted; "" when the library has no items). A
 // missing library yields a wrapped sql.ErrNoRows (the api layer maps it to 404).
 //
-// The `status <> 'deleted'` exclusion is the one read-side hard-coding of a
-// lifecycle literal in store: the canonical status set lives in internal/enrich
-// (INV-value-agnostic-store), but the summary contract is defined over
-// non-deleted items and store cannot import enrich (INV5). Every other row
-// counts regardless of lifecycle state.
+// The `status <> 'deleted'` exclusion is a read-side hard-coding of a
+// lifecycle literal in store (tombstone-lifecycle 3.2 extended the same law
+// shape to QueryItemsBySeries): the canonical status set lives in
+// internal/enrich (INV-value-agnostic-store), but the summary contract is
+// defined over non-deleted items and store cannot import enrich (INV5).
+// Every other row counts regardless of lifecycle state.
 //
 // v scopes the read: a library outside the viewer's visible set reads exactly
 // like a missing library (wrapped sql.ErrNoRows — hidden ≡ not-found).

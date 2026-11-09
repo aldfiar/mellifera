@@ -65,6 +65,17 @@ type Deps struct {
 	// operator kill switch). Wired flat in cmd/mellifera beside FetchGate
 	// (an &enrich.Relay literal).
 	Relay *Relay
+	// Adopt is the identity-adoption hook (tombstone-lifecycle D4): fired in
+	// the ITEM lane's workItem after the run settles beside persistRow —
+	// never for __streams__ rows (dispatched by workStreams) or series rows.
+	// A freshly settled item's served identity facts (_view title floor,
+	// episode namespaces) exist only after the parser chain settles the
+	// document, so THIS fire is what re-keys a tombstoned predecessor's
+	// stranded progress/ledger onto the new item within ONE rescan. Nil-safe:
+	// nil (sync runs, existing compositions) means adoption disabled — every
+	// existing Deps construction site keeps compiling and behaves
+	// identically. Wired flat in cmd/mellifera to scan.AdoptStranded.
+	Adopt func(ctx context.Context, itemID string)
 }
 
 // Result is the outcome of enriching one item: how many sources were attempted,

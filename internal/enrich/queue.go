@@ -313,21 +313,36 @@ func uniqueItems(tasks []queueTask) []string {
 	return out
 }
 
-// worker is one pool goroutine. The loop selects over BOTH lanes in ONE
-// blocking select, the urgent case first and the shared case second, with no
-// default fallthrough: the preferred lane's play packs dispatch ahead of any
-// buffered background work, and a worker parked in the select wakes directly
-// on an urgent arrival (the idle-queue invariant, D4 — the old non-blocking
-// urgent pre-check plus a bare shared receive parked the worker where an
-// urgent send could not wake it, the joint 5.1 finding). Background work
-// never enters the urgent lane (EnqueuePack vs EnqueuePackUrgent), so the
-// preference cannot starve the shared dispatch. The driver honors ctx
-// per-source (a cancelled ctx hard-aborts the in-flight row to failed, then
-// the loop continues draining both lanes' remaining buffered tasks until
-// Stop's closes end them).
+// worker is one pool goroutine. Each turn first tries a NON-BLOCKING urgent
+// receive (select with default): when the preferred lane holds a ready task
+// it dispatches ahead of any buffered background work — deterministically,
+// which the blocking select alone cannot guarantee (Go picks randomly among
+// ready cases, the TestUrgentLanePreferred flake D7 pins). With no urgent
+// task ready it falls back to the blocking two-case select over BOTH lanes,
+// urgent first: a worker parked there wakes directly on an urgent arrival
+// (the idle-queue invariant, D4 — the old non-blocking urgent pre-check plus
+// a bare shared receive parked the worker where an urgent send could not wake
+// it, the joint 5.1 finding). Background work never enters the urgent lane
+// (EnqueuePack vs EnqueuePackUrgent), so the preference cannot starve the
+// shared dispatch. The driver honors ctx per-source (a cancelled ctx
+// hard-aborts the in-flight row to failed, then the loop continues draining
+// both lanes' remaining buffered tasks until Stop's closes end them).
 func (q *Queue) worker(ctx context.Context) {
 	defer q.wg.Done()
 	for {
+		// Priority try-receive: a ready urgent task dispatches before the
+		// shared lane is ever consulted. An urgent-closed read here is
+		// Stop's close — drain the shared buffer, then exit (the same
+		// close branch the blocking select below holds).
+		select {
+		case t, ok := <-q.urgent:
+			if !ok {
+				q.drainShared(ctx)
+				return
+			}
+			q.dispatch(ctx, t)
+		default:
+		}
 		select {
 		case t, ok := <-q.urgent:
 			if !ok {
@@ -392,8 +407,9 @@ type task = queueTask
 // order (element-pages 3.1: the chain is the enrichment queue priority; absent
 // chain = config order). Items add one input the chain does not have: the
 // element-attached plugins (item_parsers, element-pages D-4) under the SAME
-// predicate (pendingExtras). It reads items and series rows (all statuses; the
-// predicate filters) + the attachments + the ledger; it never touches a queue
+// predicate (pendingExtras). It reads the library's LIVE rows only (the
+// allItems/allSeries walks post-filter deleted rows — D4 amendment (iii)) +
+// the attachments + the ledger; it never touches a queue
 // table (INV-derived-not-stored). Parameterized SQL only.
 func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask, error) {
 	items, err := q.allItems(ctx, libraryID)
@@ -548,8 +564,22 @@ func (q *Queue) pendingExtras(
 }
 
 // allItems paginates QueryItems across ALL statuses (empty status = no filter)
-// for a library, so the derivation predicate owns the status-set filter (pending,
-// failed, stale, etc. all carry pending work and are naturally re-derived).
+// for a library, then post-filters to LIVE rows only (tombstone-lifecycle D4
+// amendment (iii), the ruled re-dispatch seam): a deleted row is never derived,
+// never dispatched, never stripped — dead rows have nothing to enrich, a
+// self-healed row (status ready after the re-scan upsert) re-enters on the very
+// next walk, and the reenrich exclusion protects self-heal's namespace
+// carry-forward from a strip. The store's no-filter invariant is untouched —
+// the exclusion is queue-side; pending/failed/stale/ready all pass unchanged.
+// The filter does not perturb pagination: offsets page over the store's
+// unfiltered batches, survivors are appended per batch.
+//
+// Layering (tombstone-lifecycle 3.2): empty status = no-filter at the STORE
+// read, everywhere; the DEFAULT EXCLUSION on listings lives at the API layer
+// (the shared allFilteredItems walk, internal/api/recs_ordering.go). The
+// derive predicate never needs deleted rows — a dead row has no document
+// work — so this walk's queue-side post-filter and the api serve law
+// compose without either touching the store contract.
 func (q *Queue) allItems(ctx context.Context, libraryID int64) ([]store.Item, error) {
 	var out []store.Item
 	for offset := 0; ; offset += deriveBatch {
@@ -557,7 +587,11 @@ func (q *Queue) allItems(ctx context.Context, libraryID int64) ([]store.Item, er
 		if err != nil {
 			return nil, fmt.Errorf("enrich: derive items lib %d: %w", libraryID, err)
 		}
-		out = append(out, batch...)
+		for _, it := range batch {
+			if it.Status != statusDeleted {
+				out = append(out, it)
+			}
+		}
 		if len(batch) < deriveBatch {
 			return out, nil
 		}
@@ -565,15 +599,23 @@ func (q *Queue) allItems(ctx context.Context, libraryID int64) ([]store.Item, er
 }
 
 // allSeries loads a library's series rows across ALL statuses (empty status =
-// no filter) — the second derivation source (serials-library D5). Series counts
-// are small (one row per serial directory), so a single QuerySeries call is the
-// intended granularity.
+// no filter) — the second derivation source (serials-library D5) — then
+// post-filters to LIVE rows only under the same seam law as allItems: a
+// tombstoned series row is never derived, never dispatched, never stripped.
+// Series counts are small (one row per serial directory), so a single
+// QuerySeries call is the intended granularity.
 func (q *Queue) allSeries(ctx context.Context, libraryID int64) ([]store.Series, error) {
 	rows, err := q.deps.Store.QuerySeries(ctx, libraryID, "", access.System())
 	if err != nil {
 		return nil, fmt.Errorf("enrich: derive series lib %d: %w", libraryID, err)
 	}
-	return rows, nil
+	live := make([]store.Series, 0, len(rows))
+	for _, sr := range rows {
+		if sr.Status != statusDeleted {
+			live = append(live, sr)
+		}
+	}
+	return live, nil
 }
 
 // fetchFailureIndex reads the ledger once (terminal-only, small) for the
@@ -732,6 +774,20 @@ func (q *Queue) workItem(ctx context.Context, rowID string) {
 	}
 	status = q.settle(ctx, gated, extras, doc, rowID, status)
 	q.persistRow(ctx, row, status, doc)
+	if row.series == nil && row.status != statusDeleted && q.deps.Adopt != nil {
+		// Identity adoption (tombstone-lifecycle D4): fired beside the settle,
+		// after persistRow — the served identity facts (_view title floor,
+		// episode namespaces) are durably in the store only now. ITEM lane
+		// only: __streams__ rows dispatch to workStreams, series rows (the
+		// serial seam) skip the guard — the hook reads the ITEMS table.
+		// Live-status guard (D4 amendment ruling (i), defense-in-depth behind
+		// the derive-walk exclusion): a dead row's settle never fires — its
+		// retained stock must survive, and AdoptStranded would otherwise match
+		// the row against itself and destroy it (the 2.4 red evidence).
+		// Adoption never fails the row's settle: every failure inside the hook
+		// (and its wiring) is log-and-skip, the fire carries no error.
+		q.deps.Adopt(ctx, rowID)
+	}
 	if row.series != nil && len(dr.episodeRuns) > 0 {
 		// A series run that returned episode-title entries routes them onto the
 		// series' episode documents (episode-titles D5) — after the run's own

@@ -24,6 +24,7 @@ import {
   type ListEnrichFailuresParams,
   type ListItemsParams,
   type PlaybackDescriptor,
+  type PlaybackStateReason,
 } from "@/lib/api";
 import { DEVICE_TOKEN_KEY, setDeviceToken, setToken, TOKEN_KEY } from "@/lib/auth";
 
@@ -674,6 +675,39 @@ describe("playback descriptor + beacon client (tv-playback-unblock)", () => {
     );
     const hls = await getPlayback("itm_7_abc");
     expect(hls.state_reason).toBeUndefined();
+  });
+
+  it("file_missing_is_a_union_member", async () => {
+    // The tombstone-lifecycle missing answer parses VERBATIM: state
+    // "missing", state_reason "file_missing", and the play_url EMPTIED —
+    // the one answer that carries no playable address (never a URL that
+    // 404s behind a mounted player).
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        mode: "direct",
+        state: "missing",
+        state_reason: "file_missing",
+        play_url: "",
+        sections: [],
+      }),
+    );
+
+    const out: PlaybackDescriptor = await getPlayback("itm_7_abc");
+    expect(out.state).toBe("missing");
+    expect(out.state_reason).toBe("file_missing");
+    expect(out.play_url).toBe("");
+
+    // Union membership, never a string cast: "file_missing" is a member of
+    // the PlaybackStateReason union (the annotation is compile-checked — a
+    // non-member literal here fails tsc), and the parsed answer's reason is
+    // one of the served vocabulary values at runtime.
+    const reasons: PlaybackStateReason[] = [
+      "non_native_container",
+      "codec_not_opted_in",
+      "codec_unsupported",
+      "file_missing",
+    ];
+    expect(reasons).toContain(out.state_reason);
   });
 
   it("getPlayback parses the codec list verbatim on hls answers; absent stays absent (playback-capability-gate)", async () => {

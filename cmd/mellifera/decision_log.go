@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/mellifera/mellifera/internal/access"
@@ -64,6 +65,27 @@ func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.S
 	// build while the repack runs.
 	legacyRepackOnPlay(enqueue, doc, itemID, optInCodecs)
 	mode, state, playURL, sections, voiceovers, stateReason, codecs, codecsSrc, layout := mediaSvc.Describe(itemID, doc)
+	// File-missing projection (tombstone-lifecycle D6): the direct floor's
+	// playable truth is the source file, so a direct answer stats the resolved
+	// original — the same parsed.absolute_path stamp originalResolver and the
+	// scan sweep read — and a stat-miss retires the play URL (never hand the
+	// player an address that 404s into a codec lie). hls answers never stat:
+	// their playable truth is the published build (ValidateBuild already
+	// guards its integrity), so a verified pack stays playable over a stale
+	// source. An absent/unreadable stamp cannot answer either way — the gate
+	// stands down and today's descriptor serves (the /media 404 backstop
+	// remains). Read-side only, like preparing/unsupported: the state is never
+	// written to the packaging namespace, and the check is a single stat — no
+	// re-probe, no ffprobe.
+	if mode == stream.ModeDirect {
+		if p, ok := stampedOriginalPath(doc); ok {
+			if _, statErr := os.Stat(p); statErr != nil {
+				state = stream.StateMissing
+				stateReason = stream.ReasonFileMissing
+				playURL = ""
+			}
+		}
+	}
 	token, _ := mediaSvc.Issue(itemID, time.Now()) // cookie-primary delivery
 	logPlaybackDecision(itemID, mode, state,
 		playbackDecisionReason(mode, state, stateReason, streamCooldowns(ctx, st)[itemID], time.Now()), codecsSrc)
@@ -82,8 +104,10 @@ func playbackDescriptor(ctx context.Context, st *store.Store, mediaSvc *stream.S
 
 // playbackDecisionReason resolves the decision line's reason (D8): an hls
 // answer logs `packaged` too — the log reads as a complete decision record,
-// not a failure-only one. A direct answer names the first live gate: a
-// pack-failed ledger row still gating the item (`cooldown` — retry later),
+// not a failure-only one. A direct answer names the first live gate: the
+// file-missing projection (tombstone-lifecycle D6 — nothing failed that a
+// retry could fix, so it beats even a live cooldown), else a pack-failed
+// ledger row still gating the item (`cooldown` — retry later),
 // else the failed run itself (`failed` — retry now), else the descriptor's
 // honesty reason for the not-<video>-native floor (Describe's stateReason),
 // else `unpackaged` — a plain floor awaiting or skipping its pack.
@@ -91,6 +115,8 @@ func playbackDecisionReason(mode, state, stateReason string, coolUntil, now time
 	switch {
 	case mode == stream.ModeHls:
 		return reasonPackaged
+	case state == stream.StateMissing:
+		return stateReason // ReasonFileMissing rides through verbatim
 	case coolUntil.After(now):
 		return reasonCooldown
 	case state == stream.StateFailed:
@@ -100,6 +126,21 @@ func playbackDecisionReason(mode, state, stateReason string, coolUntil, now time
 	default:
 		return reasonUnpackaged
 	}
+}
+
+// stampedOriginalPath reads the parsed.absolute_path stamp assembleBaseDoc
+// puts on every scanned item (scan D-6) — the SAME file-location channel
+// originalResolver (main.go) and the scan sweep read, never a second path
+// derivation. ok is false for any absent/unreadable or empty stamp: the
+// caller's stat gate then cannot answer and stands down (the /media handler's
+// own resolver miss answers 404 as before).
+func stampedOriginalPath(doc map[string]any) (string, bool) {
+	parsed, ok := doc["parsed"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	p, ok := parsed["absolute_path"].(string)
+	return p, ok && p != ""
 }
 
 // logPlaybackDecision emits the ONE decision line (D8's pinned shape,
