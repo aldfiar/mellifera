@@ -10,7 +10,10 @@ import type {
   PluginAdminPlugin,
 } from "@/lib/api";
 import { getAdminPluginLogs, getAdminPlugins } from "@/lib/api";
-import { BindingOptionsEditor } from "@/components/admin/BindingOptionsEditor";
+import {
+  BindingOptionsEditor,
+  OPTION_WORDS,
+} from "@/components/admin/BindingOptionsEditor";
 import AdminTabs from "@/pages/admin/AdminTabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -343,15 +346,14 @@ function kindWord(kind: string): string {
 }
 
 // OPTION_WORDS — the known-key presentation vocabulary (plugin-options-ui
-// D4): keys a plugin actually produces render as words on metadata
+// D4), imported from the editor component: ONE vocabulary, one home (the
+// GATE-2 FLAG-1 dedup — the words layer and the editor's editable set must
+// never drift). Keys a plugin actually produces render as words on metadata
 // bindings, values verbatim; everything else stays behind the raw
 // disclosure. The shipped vocabulary is `language` — the one key with a
 // live producer (the tmdb bindings' options); it grows only when a plugin
 // actually declares a key (poster_dir was surveyed and dropped — no live
 // producer).
-const OPTION_WORDS: Record<string, string> = {
-  language: "Язык",
-};
 
 // optionWords — the metadata bindings' words entries: [label, served value]
 // pairs for every recognized key whose served value is a string (the live
