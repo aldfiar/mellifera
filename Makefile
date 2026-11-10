@@ -36,9 +36,9 @@ check:
 # tv-parser (the first metadata_source plugin) in T06; image-enricher (EXIF
 # via the system exiftool subprocess) in B2/Task 06; the serial trio
 # (serial-scanner, serial-parser, frame-grabber) in serials-library; the
-# shikimori metadata source in enrichment — the registry seeds all six
-# modules, so a fresh-checkout `go test .` (whose startServer harness
-# launches the default bin/ paths) needs all seven plugins built here.
+# shikimori + tmdb metadata sources in enrichment — the registry seeds all
+# six modules, so a fresh-checkout `go test .` (whose startServer harness
+# launches the default bin/ paths) needs all eight plugins built here.
 build-plugin:
 	CGO_ENABLED=0 go build -o bin/base-scanner ./plugins/base-scanner
 	CGO_ENABLED=0 go build -o bin/tv-parser ./plugins/tv-parser
@@ -47,6 +47,7 @@ build-plugin:
 	CGO_ENABLED=0 go build -o bin/serial-parser ./plugins/serial-parser
 	CGO_ENABLED=0 go build -o bin/frame-grabber ./plugins/frame-grabber
 	CGO_ENABLED=0 go build -o bin/shikimori ./plugins/shikimori
+	CGO_ENABLED=0 go build -o bin/tmdb ./plugins/tmdb
 
 # web-build: regenerate the embedded web artifacts (OpenAPI spec + the React
 # SPA build). DEV/CI-ONLY — the same kind of regen step as `proto` (buf) and

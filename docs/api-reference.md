@@ -3,7 +3,7 @@
 > Scope: the current HTTP edge of the single Go binary. Grounded in
 > `internal/api/{router,handlers,playback,playback_events,parsers,middleware}.go`,
 > `internal/web/{web,swagger}.go`, `internal/stream/{doc,describe,codecs,pack,master}.go`,
-> `internal/refusal`, `internal/enrich/state.go`, and `cmd/mellifera/main.go`. Authoritative design:
+> `internal/refusal`, `internal/enrich/state.go`, `internal/api/{identify,source_admin,plugin_admin}.go`, and `cmd/mellifera/main.go`. Authoritative design:
 > `docs/architecture.md` (§2 protos, §3.1 document model, §7.3 restart, §9.1
 > schema, §11.5 Principal, §11.6 errors); behavioral requirements:
 > `openspec/specs/` (scan-library, plugin-pipeline, async-enrichment,
@@ -21,7 +21,11 @@
 > `device-cannot-decode` beacon); re-actualized 2026-11-01 for
 > pack-manifest-audio (the play URL now serves a lane-composed RFC 8216
 > master playlist — video variants under `rend0/` — and the legacy
-> read-side codecs composition); the per-feature records live in git history
+> read-side codecs composition); **partially re-actualized 2026-11-10 for
+> tmdb-enrichment** (the two new routes + the aggregate's secret verdicts/
+> redaction only — the file's total-path reconciliation is a separately
+> seeded docs pass; the committed openapi carries 69 paths while §2's
+> narrative still lags); the per-feature records live in git history
 > and `openspec/changes/archive/`.
 
 ## 1. Surfaces and authentication
@@ -58,11 +62,14 @@ endpoints, `GET /admin/status`). Handlers never fork on `Role`.
 All routes are mounted under `/api/v1` (`internal/api/router.go`) — 17 paths
 (18 registrations: `HEAD /items/{id}/media` is served beside its GET). Handlers
 are pure delegation: parse → call ONE domain function → write the response
-(ai-arch §3). Four handlers read cmd-built closures instead of domain packages
+(ai-arch §3). Several handlers read cmd-built closures instead of domain packages
 (the INV2 anti-corruption seams, each nil-safe with a defined degradation):
 `Status` (`/admin/status`, nil → `503`), `Playback`/`Play` (packaged-playback,
 nil → `503`), `ModulePresentation` (nil → the `module` block is omitted), and
-`PluginCapabilities` (nil → parser validation is skipped).
+`PluginCapabilities` (nil → parser validation is skipped); tmdb-enrichment adds
+the source-search/identify trio and the module-binding-options write (below —
+all nil-safe Deps closures, the unconfigured-source classification riding the
+`internal/sourcestate` sentinel leaf).
 
 ### `POST /api/v1/libraries` — create a library
 
@@ -206,6 +213,34 @@ are identical to `PUT`. Success: `200 OK` with `{"parsers":[]}`.
 Behavior requirements: `openspec/specs/parser-display/spec.md` (attachments
 follow the item's identity — they survive id-preserving re-scans and die with
 a re-identified item).
+
+### `PUT /api/v1/items/{id}/identify` — re-anchor an item's identity (admin-only)
+
+tmdb-enrichment: the series identify override generalized over ANY item row
+(films are items in tv libraries — the same identify overlay picks the
+candidate). Body mirrors `PUT /series/{id}/identify` byte-for-byte:
+
+```json
+{ "source_id": "tmdb", "external_id": "12345" }
+```
+
+Both fields are required non-empty strings. The action runs under the row's
+own lease: it OVERWRITES the item document's `identifiers.<source_id>_id`
+with the picked id, strips ONLY that source's namespace (`identifiers` and
+every other plugin's namespace untouched), clears the source's ledger
+cooldown for the row, and notifies the library so the next derivation run
+fetches BY the picked id. Success: `202 Accepted` with
+`{"queued":true,"stripped":2,"deferred":0}` — `queued` reports the anchor
+write + strip landing, `stripped` the rows re-deriving now, `deferred` the
+lease-held rows that kept their namespace (a deferred answer wrote NOTHING).
+After a successful re-anchor the title-invalidation seam fires with the item
+id (the anchor may rename the composed display name). Errors — nothing is
+written on any of them: `404` unknown item; `400` unknown or non-search
+source, empty field, or malformed body; `503 unavailable` for an
+UNCONFIGURED source (its declared required secrets resolve from no binding
+options — the dormant tmdb state; deliberately NOT `502 upstream_error`,
+which names the upstream itself); `500 internal_error` otherwise; `503` nil
+closure. Behavior: `openspec/specs/async-enrichment/spec.md`.
 
 ### `GET /api/v1/items/{id}/media` — serve the item's media bytes
 
@@ -389,6 +424,45 @@ enrich-queue counters (`pending`/`in_flight`/`done`/`failed`), RFC3339
 timestamped at the edge. Returns `503` when the snapshot is unavailable. The
 closure is the anti-corruption seam that keeps `internal/api` free of
 plugin/enrich imports.
+
+### `PUT /api/v1/admin/modules/{module_id}/sources/{plugin_id}/options` — write one module binding's options (admin-only)
+
+tmdb-enrichment (the plugin-admin delta's write endpoint): the store-backed
+home the SERVER-mode auth resolution reads binding secrets from. Body:
+
+```json
+{ "options": { "api_key": "…", "language": "ru-RU" } }
+```
+
+`options` must be a present, valid JSON OBJECT (a missing, malformed, or
+non-object body is `400`). Success: `204 No Content` — exactly that module
+binding's options JSON is replaced inside the module row's stored config
+(schema_version and every sibling binding byte-untouched; the registry's
+in-memory cache refreshes in the same call). Errors: `404` unknown module id;
+`400` a plugin the module does not bind as a metadata source; `503` nil
+closure; other closure errors `500`. The write WAKES NOTHING — dormancy is
+judged read-time, so the next derivation run picks up the new options (a
+newly configured SERVER source starts enriching without a scan or notify; a
+stripped one goes dormant). Options are stored VERBATIM — secret redaction is
+serve-side (see the aggregate note below). Behavior:
+`openspec/specs/plugin-admin/spec.md`.
+
+> **`GET /api/v1/admin/plugins` (the plugins aggregate) — tmdb-enrichment
+> delta.** Each METADATA binding row (keyed by module id — the row whose
+> config SERVER-mode dormancy is judged from) gains an ADDITIVE
+> `required_secrets` verdicts object: the secret names the plugin's handshake
+> declares, each mapped to whether a value resolves from THAT binding's
+> options (`{"api_key": true}` — the operator-visible "needs config" state).
+> Verdicts are PER BINDING: a plugin bound by two modules (tmdb binds the tv
+> module at priority 3 and the serial module at priority 4) renders each
+> binding's own verdicts, and a plugin row carries NO single provided-bool.
+> Serve-side redaction rides the same verdicts: the binding options JSON the
+> aggregate serves OMITS every secret-named key entirely (presence lives in
+> the verdicts, never in the served bytes), ordinary keys verbatim; a
+> non-object payload serves verbatim rather than lying. Plugins without
+> handshake declarations keep today's row shape byte-identically. The
+> endpoint stays read-only. (This reference's per-route reconciliation of the
+> remaining admin/browse surfaces is a separately seeded docs pass.)
 
 ## 3. Error model
 

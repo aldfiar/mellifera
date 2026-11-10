@@ -246,6 +246,30 @@ func hasMetadataCapability(caps []sdk.Capability, capabilityID string) bool {
 	return false
 }
 
+// RequiredSecrets returns the secret names the plugin declared on its
+// metadata_source capability in the RETAINED handshake response (proto field
+// 6, e.g. ["api_key"]). Capability routing stays core-authored (the Load-time
+// caps decide what the core binds); this reads the plugin's own declaration —
+// the config surface that drives server-side secret resolution for SERVER-mode
+// enrichment. An unknown plugin, a plugin with no metadata capability, or
+// declarations without the field yield an empty slice — never an error.
+func (m *Manager) RequiredSecrets(pluginID string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.plugins[pluginID]
+	if !ok || e.handshake == nil {
+		return nil
+	}
+	var secrets []string
+	for _, decl := range e.handshake.Capabilities {
+		if decl.GetType() != "metadata_source" {
+			continue
+		}
+		secrets = append(secrets, decl.GetRequiredSecrets()...)
+	}
+	return secrets
+}
+
 // errNotLoaded is the sentinel returned by Status/Stop for an unknown plugin.
 func notLoadedErr(pluginID string) error {
 	return fmt.Errorf("plugin: %q not loaded", pluginID)

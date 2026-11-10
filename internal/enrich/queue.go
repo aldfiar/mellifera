@@ -24,6 +24,11 @@ import (
 // (tv-parser) and SERVER are server-runnable and therefore queued.
 const authModeClient = "CLIENT"
 
+// authModeServer is the AuthMode of bindings that authenticate core-side from
+// the binding's Options JSON (tmdb-enrichment D2/D3) — the mode whose
+// queueability carries the required-secrets-resolved conjunct (queueable).
+const authModeServer = "SERVER"
+
 // §4.4 zero-value defaults. A zero QueueConfig is filled to these by NewQueue.
 const (
 	defaultWorkers       = 4
@@ -453,7 +458,7 @@ func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask
 		}
 		doc := decodeDoc(it.Document)
 		gated := ResolveGates(mod, prefsFor(mod.ID), libraryID)
-		chainPending := pendingSources(chainOrderedSources(gated, chain), doc, it.ID, idx, nowt)
+		chainPending := pendingSources(chainOrderedSources(gated, chain), doc, it.ID, idx, nowt, q.deps.RequiredSecrets)
 		for _, pluginID := range chainPending {
 			tasks = append(tasks, queueTask{rowID: it.ID, pluginID: pluginID})
 		}
@@ -465,7 +470,7 @@ func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask
 			continue // module unresolvable -> row not derivable (soft)
 		}
 		gated := ResolveGates(mod, prefsFor(mod.ID), libraryID)
-		for _, pluginID := range pendingSources(chainOrderedSources(gated, chain), decodeDoc(sr.Document), sr.ID, idx, nowt) {
+		for _, pluginID := range pendingSources(chainOrderedSources(gated, chain), decodeDoc(sr.Document), sr.ID, idx, nowt, q.deps.RequiredSecrets) {
 			tasks = append(tasks, queueTask{rowID: sr.ID, pluginID: pluginID})
 		}
 	}
@@ -506,13 +511,15 @@ func chainOrderedSources(srcs []module.MetadataSourceBinding, chain []string) []
 
 // pendingSources is the shared per-row derivation predicate: the plugin ids of
 // the given (chain-ordered) metadata sources that still have pending work for
-// the row — queueable (D-Q1), namespace absent (not done), not in
-// ledger-cooldown. The SAME predicate runs over items and series rows; nothing
-// here names a media type (INV-media-type-agnostic).
-func pendingSources(srcs []module.MetadataSourceBinding, doc map[string]any, rowID string, idx failureIndex, nowt time.Time) []string {
+// the row — queueable (D-Q1 + tmdb-enrichment D3's required-secrets conjunct),
+// namespace absent (not done), not in ledger-cooldown. The SAME predicate runs
+// over items and series rows; nothing here names a media type
+// (INV-media-type-agnostic). requiredSecrets is the Deps.RequiredSecrets
+// closure (nil-safe — see queueable).
+func pendingSources(srcs []module.MetadataSourceBinding, doc map[string]any, rowID string, idx failureIndex, nowt time.Time, requiredSecrets func(pluginID string) []string) []string {
 	out := make([]string, 0)
 	for _, src := range srcs {
-		if !queueable(src) || hasNamespace(doc, src.PluginID) {
+		if !queueable(src, requiredSecrets) || hasNamespace(doc, src.PluginID) {
 			continue
 		}
 		if inCooldown(idx, rowID, src.PluginID, nowt) {
@@ -552,7 +559,7 @@ func (q *Queue) pendingExtras(
 		if _, taken := queued[src.PluginID]; taken {
 			continue // already derived via the chain this pass
 		}
-		if !queueable(src) || hasNamespace(doc, src.PluginID) {
+		if !queueable(src, q.deps.RequiredSecrets) || hasNamespace(doc, src.PluginID) {
 			continue
 		}
 		if inCooldown(idx, itemID, src.PluginID, nowt) {
@@ -628,10 +635,23 @@ func (q *Queue) fetchFailureIndex(ctx context.Context) (failureIndex, error) {
 	return buildFailureIndex(rows), nil
 }
 
-// queueable is the D-Q1 source predicate: Enabled and not CLIENT-only. Empty
-// (tv-parser, local) and SERVER sources are server-runnable and therefore queued.
-func queueable(src module.MetadataSourceBinding) bool {
-	return src.Enabled && src.AuthMode != authModeClient
+// queueable is the D-Q1 source predicate: Enabled and not CLIENT-only, and —
+// tmdb-enrichment D3 — a SERVER binding whose plugin declares required secrets
+// its Options JSON does not fully resolve is DORMANT: it derives no work (no
+// ledger row, no retry churn). The resolution reuses serverAuth exactly
+// (chain.go); a binding with no declared names, or any non-SERVER source, is
+// unaffected. requiredSecrets is the Deps.RequiredSecrets closure (nil-safe:
+// nil declares no plugin's secrets — every existing source byte-identical).
+func queueable(src module.MetadataSourceBinding, requiredSecrets func(pluginID string) []string) bool {
+	if !src.Enabled || src.AuthMode == authModeClient {
+		return false
+	}
+	if src.AuthMode == authModeServer {
+		if _, resolved := serverAuth(src, requiredSecrets); !resolved {
+			return false
+		}
+	}
+	return true
 }
 
 // hasNamespace reports whether the source already wrote its namespace (done).
@@ -826,7 +846,7 @@ func (q *Queue) settle(ctx context.Context, mod module.Module, extras []module.M
 	if err != nil {
 		return status
 	}
-	if !allSourcesTerminal(idx, mod, extras, doc, itemID, now()) {
+	if !allSourcesTerminal(idx, mod, extras, doc, itemID, now(), q.deps.RequiredSecrets) {
 		return status
 	}
 	return advance(status, evSettled) // enriched -> ready

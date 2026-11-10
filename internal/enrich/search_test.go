@@ -5,6 +5,7 @@ package enrich
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
+	"github.com/mellifera/mellifera/internal/sourcestate"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
@@ -761,5 +763,165 @@ func TestSearchRelayNonNetworkUnchanged(t *testing.T) {
 				t.Fatal("a non-network failure must not enqueue a relay job")
 			}
 		})
+	}
+}
+
+// TestSearchSourceResolvesServerSecrets pins the search-executor law (task
+// 6.3 — the 5.1 QA joint defect): a configured SERVER source's search spec
+// executes with the plugin's binding secrets resolved EXACTLY like the
+// derivation chain (resolveServerSecrets — the sourceConfigured iteration
+// with the values retained), so the upstream sees the substituted key instead
+// of the live defect's answer — a spec-class "redacted_ref variables are
+// unsupported server-side" failure surfacing as a 502 despite
+// sourceConfigured passing.
+func TestSearchSourceResolvesServerSecrets(t *testing.T) {
+	ctx := context.Background()
+	var seenQuery string
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		seenQuery = "seen" // the fact a request ARRIVED is the pin; the URL assertion rides the plan test below
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(live.Close)
+
+	src := &searchSrc{
+		spec: &metadatav1.RequestSpec{
+			Method: "GET", UrlTemplate: live.URL + "/search?query={query}&api_key={api_key}",
+			Variables: map[string]*metadatav1.VariableValue{
+				"query":   stringVar("aria"),
+				"api_key": redactedRefVar("server:api_key"),
+			},
+		},
+		cands: []*metadatav1.SearchCandidate{{ExternalId: "378", Title: "Aria the Animation", Kind: "tv"}},
+	}
+	s, reg := queueTestStore(t)
+	if err := reg.SetBindingOptions(ctx, "tv", "tmdb", json.RawMessage(`{"api_key":"sekrit"}`)); err != nil {
+		t.Fatalf("SetBindingOptions: %v", err)
+	}
+	q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredTmdb}, QueueConfig{})
+	q.resolve = mapResolver{"tmdb": src}.resolver()
+
+	cands, err := q.SearchSource(ctx, "tmdb", "aria", "")
+	if err != nil {
+		t.Fatalf("SearchSource (configured SERVER): %v", err) // the live defect failed right here, spec-class
+	}
+	if len(cands) != 1 || cands[0]["external_id"] != "378" {
+		t.Fatalf("candidates = %v, want the one converted candidate", cands)
+	}
+	if seenQuery == "" {
+		t.Fatal("the upstream never saw a request; the resolved secret must serve the fetch core-side")
+	}
+}
+
+// TestSearchRelayPlanCarriesResolvedSecrets pins the relay seam (task 6.3
+// fold (a) — client-relayed-fetch's server-authored rule at search, the law
+// the 5.1 relay leg proved for derivation plans): the plan a relayed search
+// job stores is built with the SAME resolved secrets the direct fetch used —
+// the claiming client executes a fully-substituted URL with no placeholder
+// and no {server:...} ref — and the done job's stored response still feeds
+// SearchResults.
+func TestSearchRelayPlanCarriesResolvedSecrets(t *testing.T) {
+	ctx := context.Background()
+	src := &relaySearchSrc{searchSrc: searchSrc{
+		spec: &metadatav1.RequestSpec{
+			Method: "GET", UrlTemplate: "http://127.0.0.1:1/search?query={query}&api_key={api_key}",
+			Variables: map[string]*metadatav1.VariableValue{
+				"query":   stringVar("aria"),
+				"api_key": redactedRefVar("server:api_key"),
+			},
+		},
+		cands: []*metadatav1.SearchCandidate{{ExternalId: "378", Title: "Aria the Animation", Kind: "tv"}},
+	}}
+	s, reg := queueTestStore(t)
+	if err := reg.SetBindingOptions(ctx, "tv", "tmdb", json.RawMessage(`{"api_key":"sekrit"}`)); err != nil {
+		t.Fatalf("SetBindingOptions: %v", err)
+	}
+	q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredTmdb}, QueueConfig{})
+	q.resolve = mapResolver{"tmdb": src}.resolver()
+	r := &Relay{Store: s}
+	q.deps.Relay = r
+
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			job, found, err := r.Claim(context.Background(), "test-principal", access.System())
+			if err != nil {
+				t.Errorf("relay claim: %v", err)
+				return
+			}
+			if found {
+				if job.Purpose != relayPurposeSearch || job.RowID != "" || job.PluginID != "tmdb" {
+					t.Errorf("search job identity: purpose=%q row=%q plugin=%q", job.Purpose, job.RowID, job.PluginID)
+					return
+				}
+				if len(job.Plan) != 1 {
+					t.Errorf("plan len = %d, want the one spec", len(job.Plan))
+					return
+				}
+				if want := "http://127.0.0.1:1/search?query=aria&api_key=sekrit"; job.Plan[0].URL != want {
+					t.Errorf("plan url = %q, want fully substituted %q (server-authored, no placeholder)", job.Plan[0].URL, want)
+					return
+				}
+				if err := r.Ingest(context.Background(), job.ID, "test-principal", relay.RelayResult{
+					HTTPStatus: 200,
+					Headers:    map[string]string{"Content-Type": "application/json"},
+					Body:       []byte(`[]`),
+				}); err != nil {
+					t.Errorf("relay ingest: %v", err)
+				}
+				return
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+			if time.Now().After(deadline) {
+				t.Error("the search job never became claimable")
+				return
+			}
+		}
+	}()
+
+	cands, err := q.SearchSource(ctx, "tmdb", "aria", "")
+	if err != nil {
+		t.Fatalf("SearchSource over the relay: %v", err)
+	}
+	if len(cands) != 1 || cands[0]["external_id"] != "378" {
+		t.Fatalf("candidates = %v, want the stored response's conversion", cands)
+	}
+	if f := src.fetched(); f == nil || !f.GetFetched().GetFetched() {
+		t.Fatalf("SearchResults fed %v, want the stored response", f)
+	}
+}
+
+// TestSearchSourceRedactedRefAnswersUnconfigured pins the classification fold
+// (task 6.3 fold (b) — 3.4's 503 law): a CONFIGURED source whose search spec
+// still fails on a redacted_ref (a client:-scoped ref — Mode B — never
+// resolves server-side, even with the binding's secrets in hand) answers
+// ErrUnconfiguredSource, never a raw upstream-shaped failure — the fetch
+// never left the spec, so the upstream did not fail — and no relay job
+// enqueues (spec class is never relay-eligible).
+func TestSearchSourceRedactedRefAnswersUnconfigured(t *testing.T) {
+	ctx := context.Background()
+	s, reg := queueTestStore(t)
+	if err := reg.SetBindingOptions(ctx, "tv", "tmdb", json.RawMessage(`{"api_key":"sekrit"}`)); err != nil {
+		t.Fatalf("SetBindingOptions: %v", err)
+	}
+	src := &searchSrc{spec: &metadatav1.RequestSpec{
+		Method: "GET", UrlTemplate: "http://127.0.0.1:1/search?token={token}",
+		Variables: map[string]*metadatav1.VariableValue{"token": redactedRefVar("client:token")},
+	}}
+	q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredTmdb}, QueueConfig{})
+	q.resolve = mapResolver{"tmdb": src}.resolver()
+	q.deps.Relay = &Relay{Store: s}
+
+	_, err := q.SearchSource(ctx, "tmdb", "aria", "")
+	if !errors.Is(err, sourcestate.ErrUnconfiguredSource) {
+		t.Fatalf("err = %v, want ErrUnconfiguredSource (the 503 law, never a raw 502)", err)
+	}
+	if _, found := relayClaim(t, s); found {
+		t.Fatal("a redacted_ref failure must never enqueue a relay job")
 	}
 }

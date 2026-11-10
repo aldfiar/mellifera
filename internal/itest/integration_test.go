@@ -148,6 +148,17 @@ func shikimoriBin(t *testing.T, tmp string) string {
 	return buildBinary(t, tmp, "itest-shikimori", "./plugins/shikimori")
 }
 
+// tmdbBin builds the tmdb metadata plugin once per tmp and returns its path.
+// The server loads it unconditionally beside the other metadata plugins
+// (MELLIFERA_TMDB, enrichment) — a launch without the env fatals on the
+// repo-relative bin/ default resolved from the server process's cwd, so every
+// server-start helper pins it (or supplies its own binary through the qa
+// harness's bins.tmdb, which the fallback must never override).
+func tmdbBin(t *testing.T, tmp string) string {
+	t.Helper()
+	return buildBinary(t, tmp, "itest-tmdb", "./plugins/tmdb")
+}
+
 // writeFixtures builds the TV fixture tree under a temp dir and returns its root.
 // Three real (ffmpeg-generated) media files exercise TV parsing, the Cyrillic
 // path, and resolution/release-group stripping; one zero-byte file drives the
@@ -241,6 +252,7 @@ func startServer(t *testing.T, serverBin, scannerBin, tvParserBin, imageEnricher
 		"MELLIFERA_SERIAL_PARSER="+serialParserBin,
 		"MELLIFERA_FRAME_GRABBER="+frameGrabberBin,
 		"MELLIFERA_SHIKIMORI="+shikimoriBin(t, tmp),
+		"MELLIFERA_TMDB="+tmdbBin(t, tmp),
 		"MELLIFERA_LISTEN="+addr,
 	)
 	var log strings.Builder

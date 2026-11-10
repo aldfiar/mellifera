@@ -698,6 +698,7 @@ func TestQAMediaDataJoint(t *testing.T) {
 			{ID: "serial-parser", Enabled: true},
 			{ID: "frame-grabber", Enabled: true},
 			{ID: qaMediaPlugin, Enabled: true},
+			{ID: "tmdb", Enabled: true},
 		}
 		if len(lib.Module.SourceChain) != len(wantChain) {
 			t.Fatalf("served source_chain = %v, want %v", lib.Module.SourceChain, wantChain)

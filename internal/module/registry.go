@@ -4,9 +4,12 @@
 package module
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/mellifera/mellifera/internal/store"
 )
@@ -15,6 +18,12 @@ import (
 // unexported so the public symbol count stays at the contracts.md §6 six; the
 // in-package test asserts via errors.Is.
 var errNotFound = fmt.Errorf("module not found")
+
+// errUnknownSource marks a pluginID the module does NOT bind as a metadata
+// source — the 400 half of SetBindingOptions' refusal pair (an unknown module
+// id is the 404 half and wraps errNotFound). Distinct sentinel so a caller can
+// tell the two refusals apart via errors.Is without parsing error text.
+var errUnknownSource = fmt.Errorf("not a bound metadata source")
 
 // seedCreatedAt is a fixed epoch timestamp for the bootstrap TV module row. A
 // constant (rather than time.Now) avoids importing the time package, which is
@@ -55,10 +64,36 @@ const upgradeSerialConfigV3SQL = `UPDATE modules
   SET config_json = ?, schema_version = 3, updated_at = ?
   WHERE id = 'serial' AND schema_version < 3`
 
+// upgradeSerialConfigV4SQL promotes an existing serial row from config v3 to
+// v4 (tmdb-enrichment D7): the same guarded-UPDATE pattern as the v2/v3
+// upgrades — INSERT OR IGNORE never rewrites an existing row, so the tmdb
+// binding ships as this schema-guarded UPDATE, idempotent and scoped to the
+// serial row alone (no other module row is touched). Open runs it AFTER the
+// v3 upgrade, so a pre-shikimori v1 row passes through all three and lands
+// on v4.
+const upgradeSerialConfigV4SQL = `UPDATE modules
+  SET config_json = ?, schema_version = 4, updated_at = ?
+  WHERE id = 'serial' AND schema_version < 4`
+
 // listModulesSQL reads the enabled modules in id order so List is deterministic
 // without a Go-side sort (which would need an unallowed import).
 const listModulesSQL = `SELECT id, media_type, config_json, schema_version
   FROM modules WHERE enabled = 1 ORDER BY id`
+
+// selectModuleRowSQL reads one module row's raw config plus its media type and
+// schema version — SetBindingOptions' read-before-write. The raw config_json is
+// the splice input (the in-memory cache carries no raw bytes), and media_type /
+// schema_version re-feed parseModule for the cache refresh; schema_version is
+// read, never written.
+const selectModuleRowSQL = `SELECT media_type, schema_version, config_json
+  FROM modules WHERE id = ?`
+
+// setBindingOptionsSQL is the ONE guarded UPDATE of the Registry's write path:
+// scoped by id to the single module row and rewriting config_json ONLY —
+// schema_version, media_type, enabled and the timestamps are untouched (the
+// same guard shape as the schema-upgrade UPDATEs, minus the version bump,
+// which an options edit must never cause).
+const setBindingOptionsSQL = `UPDATE modules SET config_json = ? WHERE id = ?`
 
 // tvConfigJSON is the architecture §2.4.1 TV module config, as JSON. The
 // metadata_sources chain is now modeled into Module.MetadataSources: tv-parser
@@ -166,6 +201,13 @@ const imageConfigJSON = `{
   ]
 }`
 
+// PluginIDTmdb is the canonical plugin id of the TMDB metadata_source, declared
+// once in the config home (the serial seed below already names it in its
+// binding list) so orchestrator code references the id by symbol instead of
+// carrying the quoted literal — the AC-4 config-driven-core probe forbids
+// media literals outside internal/module (tmdb-enrichment 7.2).
+const PluginIDTmdb = "tmdb"
+
 // serialConfigJSON is the serials-library module config, as JSON — a CONFIG
 // ENTITY (INV1/INV2) mirroring the tv seed shape. It binds serial-scanner
 // (scanner) with the structure knob "series-directories" (design.md §Interfaces
@@ -178,7 +220,13 @@ const imageConfigJSON = `{
 // block's item_name — the per-episode element naming template
 // "{title} · S{season}E{episode}" (U+00B7 separator, byte-matching the SPA
 // compose) — the first display key parseModule modeled (decoded verbatim into
-// Module.ItemName). display_name carries Russian first-class (arch §1.2).
+// Module.ItemName). Schema v4 (tmdb-enrichment D7) binds tmdb (priority 4,
+// SERVER auth — the core-resolved store api key) after shikimori: like the tv
+// seed's tmdb slot it declares no display_fields (unloaded seeded slot groups
+// render their pill only), and it contributes the description/cast/episode
+// groups only — the display block stays byte-unchanged, shikimori keeps
+// naming both title/rating priority lists.
+// display_name carries Russian first-class (arch §1.2).
 // The display block is the module's first (mirroring the tv keys):
 // language_preference is RU-first, and shikimori is the only external
 // title/rating source, so it solely names both priority lists — since
@@ -191,9 +239,10 @@ const imageConfigJSON = `{
 // composite, resolved label-aware in the renderer; frame-grabber's fields
 // resolve from its namespace), identity_fields per module (episode names the
 // episode-name slot case).
+
 const serialConfigJSON = `{
   "id": "serial",
-  "schema_version": 3,
+  "schema_version": 4,
   "display_name": {"ru": "Сериалы (каталоги)", "en": "Serial Libraries"},
   "media_type": "serial",
   "identity_fields": ["title", "season", "episode"],
@@ -223,6 +272,11 @@ const serialConfigJSON = `{
       "priority": 3, "enabled": true,
       "display_fields": ["title", "kind", "status", "episodes", "score", "aired_on"],
       "options": {}
+    },
+    {
+      "plugin_id": "tmdb", "capability_id": "default",
+      "priority": 4, "enabled": true, "auth_mode": "SERVER",
+      "options": {}
     }
   ],
   "display": {
@@ -234,9 +288,16 @@ const serialConfigJSON = `{
 }`
 
 // Registry is the in-memory cache of module configs, loaded once at Open.
+// Since SetBindingOptions (the first mutation path) the ordered/byID maps are
+// guarded by mu: Get/List take the read side, the write path takes the write
+// side and refreshes both under it — the maps are built in Open before the
+// Registry escapes, so until the first write they are effectively immutable,
+// and readers keep their exact cache-only behavior.
 type Registry struct {
+	mu      sync.RWMutex
 	ordered []Module
 	byID    map[string]Module
+	s       *store.Store // the write path's database handle (captured at Open)
 }
 
 // Module is one module config entity. media_type is a string the core carries
@@ -308,11 +369,11 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 		return nil, fmt.Errorf("module: seed image: %w", err)
 	}
 	// Third idempotent seed: the serial module (serial-scanner + serial-parser +
-	// frame-grabber + shikimori, serials-library design.md §Interfaces §8 —
-	// mirrors the tv seed shape). INSERT OR IGNORE keeps the tv/image rows
+	// frame-grabber + shikimori + tmdb, serials-library design.md §Interfaces §8
+	// — mirrors the tv seed shape). INSERT OR IGNORE keeps the tv/image rows
 	// byte-identical and Open safe to run repeatedly.
 	if _, err := db.ExecContext(ctx, seedModulesSQL,
-		"serial", "serial", serialConfigJSON, 3, 1, seedCreatedAt, seedCreatedAt,
+		"serial", "serial", serialConfigJSON, 4, 1, seedCreatedAt, seedCreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("module: seed serial: %w", err)
 	}
@@ -329,13 +390,20 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	if _, err := db.ExecContext(ctx, upgradeSerialConfigV3SQL, serialConfigJSON, seedCreatedAt); err != nil {
 		return nil, fmt.Errorf("module: upgrade serial v3: %w", err)
 	}
+	// v3→v4 promotion for stores seeded before the tmdb binding existed
+	// (tmdb-enrichment D7): the same guarded-UPDATE chain step, run after the
+	// v3 promotion so a pre-shikimori v1 row passes through all three upgrades
+	// and lands on v4.
+	if _, err := db.ExecContext(ctx, upgradeSerialConfigV4SQL, serialConfigJSON, seedCreatedAt); err != nil {
+		return nil, fmt.Errorf("module: upgrade serial v4: %w", err)
+	}
 	rows, err := db.QueryContext(ctx, listModulesSQL)
 	if err != nil {
 		return nil, fmt.Errorf("module: load: %w", err)
 	}
 	defer rows.Close()
 
-	r := &Registry{byID: make(map[string]Module)}
+	r := &Registry{s: s, byID: make(map[string]Module)}
 	for rows.Next() {
 		var (
 			id            string
@@ -360,8 +428,11 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 }
 
 // Get returns the cached module by id (cache-only — pure). An unknown id yields
-// a wrapped errNotFound (no nil dereference).
+// a wrapped errNotFound (no nil dereference). The read side of mu: safe
+// concurrent with SetBindingOptions' write-side cache refresh.
 func (r *Registry) Get(moduleID string) (Module, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	m, ok := r.byID[moduleID]
 	if !ok {
 		return Module{}, fmt.Errorf("module %q: %w", moduleID, errNotFound)
@@ -370,11 +441,82 @@ func (r *Registry) Get(moduleID string) (Module, error) {
 }
 
 // List returns a defensive copy of all enabled modules in id order
-// (cache-only — pure).
+// (cache-only — pure). The read side of mu: safe concurrent with
+// SetBindingOptions' write-side cache refresh.
 func (r *Registry) List() ([]Module, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]Module, len(r.ordered))
 	copy(out, r.ordered)
 	return out, nil
+}
+
+// SetBindingOptions rewrites ONE metadata-source binding's options inside a
+// module row's config_json — the Registry's FIRST mutation path. The raw row
+// is read, only the target binding's options value span is spliced (schema
+// and every sibling binding byte-untouched), one guarded UPDATE persists it,
+// and the in-memory cache is refreshed under the SAME write lock in the SAME
+// call — so derivation, the chain, and api handlers reading through Get/List
+// see the new options immediately, with no unsynchronized map access (a
+// lock-free refresh here would be a fatal concurrent-map error under live
+// traffic).
+//
+// Refusals: unknown module id → wrapped errNotFound (api maps 404); a plugin
+// the module does not bind as a metadata_source → wrapped errUnknownSource
+// (api maps 400). Options are stored verbatim — serve-side redaction is the
+// api's concern, not the store's.
+func (r *Registry) SetBindingOptions(ctx context.Context, moduleID, pluginID string, options json.RawMessage) error {
+	if !json.Valid(options) {
+		return fmt.Errorf("module %q source %q options: not valid JSON", moduleID, pluginID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Read-before-write from the row itself (the cache carries no raw config
+	// bytes). The row must exist: the unknown-module refusal.
+	var (
+		mediaType     string
+		schemaVersion int
+		config        []byte
+	)
+	err := r.s.DB().QueryRowContext(ctx, selectModuleRowSQL, moduleID).
+		Scan(&mediaType, &schemaVersion, &config)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("module %q: %w", moduleID, errNotFound)
+		}
+		return fmt.Errorf("module %q: load row: %w", moduleID, err)
+	}
+
+	// Splice: rewrite ONLY the target binding's options value inside the raw
+	// config. An unbound plugin is refused here, before anything is written.
+	config, err = rewriteBindingOptions(config, pluginID, options)
+	if err != nil {
+		return fmt.Errorf("module %q source %q: %w", moduleID, pluginID, err)
+	}
+
+	res, err := r.s.DB().ExecContext(ctx, setBindingOptionsSQL, config, moduleID)
+	if err != nil {
+		return fmt.Errorf("module %q: update config: %w", moduleID, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n != 1 {
+		return fmt.Errorf("module %q: update config: %d rows affected, want 1", moduleID, n)
+	}
+
+	// Refresh the cache under the same lock the write holds: re-parse the
+	// rewritten config and swap both indexes' entry for this module.
+	m, err := parseModule(moduleID, mediaType, schemaVersion, config)
+	if err != nil {
+		return err
+	}
+	r.byID[moduleID] = m
+	for i := range r.ordered {
+		if r.ordered[i].ID == moduleID {
+			r.ordered[i] = m
+			break
+		}
+	}
+	return nil
 }
 
 // IdentityFields returns a defensive copy of the module's declared
@@ -417,6 +559,131 @@ func copyFields(src []string) []string {
 	out := make([]string, len(src))
 	copy(out, src)
 	return out
+}
+
+// rewriteBindingOptions returns config with ONLY the options value of the
+// metadata_sources binding whose plugin_id matches pluginID replaced by
+// options. A byte-offset walk (json.Decoder.InputOffset) locates the exact
+// value span to splice, so schema_version, the display block, and every
+// sibling binding are copied byte-identical — a whole-document re-marshal
+// would compact whitespace and reorder keys, touching bytes it must not.
+// A config with no such metadata_source binding yields errUnknownSource
+// (wrapped — the caller decides the wire shape).
+func rewriteBindingOptions(config []byte, pluginID string, options []byte) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(config))
+	if tok, err := dec.Token(); err != nil {
+		return nil, fmt.Errorf("walk config: %w", err)
+	} else if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, fmt.Errorf("walk config: not a JSON object")
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("walk config: %w", err)
+		}
+		if keyTok.(string) != "metadata_sources" {
+			// Skip any other top-level key (RawMessage decode consumes the
+			// whole value without modeling it).
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return nil, fmt.Errorf("walk config: %w", err)
+			}
+			continue
+		}
+		if _, err := dec.Token(); err != nil { // the '['
+			return nil, fmt.Errorf("walk config: %w", err)
+		}
+		for dec.More() {
+			elemStart := dec.InputOffset()
+			// The offset after the previous element parks on the separator
+			// (',', whitespace) rather than the element's own '{' — advance to
+			// the brace so the element span handed to the splice is exact.
+			for elemStart < int64(len(config)) &&
+				(isJSONSpace(config[elemStart]) || config[elemStart] == ',') {
+				elemStart++
+			}
+			var probe struct {
+				PluginID string `json:"plugin_id"`
+			}
+			if err := dec.Decode(&probe); err != nil {
+				return nil, fmt.Errorf("walk config: metadata_source element: %w", err)
+			}
+			elemEnd := dec.InputOffset()
+			if probe.PluginID != pluginID {
+				continue
+			}
+			out, err := spliceOptionsValue(config, elemStart, elemEnd, options)
+			if err != nil {
+				return nil, fmt.Errorf("walk config: metadata_source %q: %w", pluginID, err)
+			}
+			return out, nil
+		}
+		// The chain exists but binds no such plugin: the 400 refusal.
+		return nil, errUnknownSource
+	}
+	// No metadata_sources key at all: the module binds nothing — same refusal.
+	return nil, errUnknownSource
+}
+
+// isJSONSpace reports whether b is JSON insignificant whitespace.
+func isJSONSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+// spliceOptionsValue replaces the options value inside the JSON object spanning
+// config[objStart:objEnd] with options. A missing options key is legal config
+// shape in principle, so the new pair is appended before the object's closing
+// brace rather than refused.
+func spliceOptionsValue(config []byte, objStart, objEnd int64, options []byte) ([]byte, error) {
+	obj := config[objStart:objEnd]
+	dec := json.NewDecoder(bytes.NewReader(obj))
+	if tok, err := dec.Token(); err != nil {
+		return nil, err
+	} else if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, fmt.Errorf("binding is not a JSON object")
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		// InputOffset parks just after the key token — before the colon — so
+		// the value's first byte is found by skipping whitespace, the ':', and
+		// whitespace again.
+		rel := dec.InputOffset()
+		for rel < int64(len(obj)) && isJSONSpace(obj[rel]) {
+			rel++
+		}
+		if rel >= int64(len(obj)) || obj[rel] != ':' {
+			return nil, fmt.Errorf("binding key %v: no colon follows", keyTok)
+		}
+		rel++
+		for rel < int64(len(obj)) && isJSONSpace(obj[rel]) {
+			rel++
+		}
+		valStart := rel
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return nil, err
+		}
+		valEnd := dec.InputOffset() // end of the value token
+		if keyTok.(string) != "options" {
+			continue
+		}
+		out := make([]byte, 0, len(config)-int(valEnd-valStart)+len(options))
+		out = append(out, config[:objStart+valStart]...)
+		out = append(out, options...)
+		out = append(out, config[objStart+valEnd:]...)
+		return out, nil
+	}
+	// No options key: append `"options": <value>` before the closing brace.
+	insert := objStart + int64(len(obj)) - 1 // the '}' byte
+	out := make([]byte, 0, len(config)+len(options)+len(`,"options": `))
+	out = append(out, config[:insert]...)
+	out = append(out, `, "options": `...)
+	out = append(out, options...)
+	out = append(out, config[insert:]...)
+	return out, nil
 }
 
 // parseModule decodes a config_json blob into a Module, extracting the scanner

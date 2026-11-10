@@ -313,9 +313,12 @@ func TestSeriesLedgerAndRestart(t *testing.T) {
 	ctx := context.Background()
 
 	// Derivation covers BOTH rows under the identical predicates: three queueable
-	// sources each (serial seed v2 added the shikimori slot) -> six pending
-	// tasks.
-	q := NewQueue(Deps{Store: s, Modules: reg}, fastQueueCfg())
+	// sources each (serial seed v2 added the shikimori slot; tmdb-enrichment's
+	// v4 slot is DORMANT — requiredTmdb declares api_key and the stock seed's
+	// SERVER binding carries no api_key option, D3) -> six pending tasks. The
+	// closure is the production shape (main.go wires Manager.RequiredSecrets);
+	// the nil Deps default would queue tmdb (see unconfigured_test.go).
+	q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredTmdb}, fastQueueCfg())
 	tasks, err := q.deriveLibrary(ctx, 1)
 	if err != nil {
 		t.Fatalf("deriveLibrary: %v", err)

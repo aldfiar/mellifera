@@ -14,6 +14,7 @@ import (
 
 	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
+	"github.com/mellifera/mellifera/internal/sourcestate"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 )
@@ -46,6 +47,62 @@ const relaySearchBudget = 60 * time.Second
 // package clock, never by out-waiting this interval.
 const relaySearchPollInterval = 250 * time.Millisecond
 
+// resolveServerSecrets resolves the plugin's binding secrets through the ONE
+// serverAuth iteration over its module bindings (chain.go — no divergent
+// resolution): a SERVER binding whose declared secrets all resolve against its
+// Options JSON answers (values, true); anything else answers (nil, false).
+// The vacuous cases keep the pre-SERVER shape — a nil Deps.RequiredSecrets or
+// a plugin declaring no names answers (nil, true), every existing source
+// byte-identical. The FIRST resolving binding wins: the interactive search is
+// a source-level action and the picked id re-derives wherever a configured
+// binding serves the row. Its two consumers share the answer, so they can
+// never disagree about "configured": sourceConfigured keeps only the boolean
+// (the pre-action check), SearchSource retains the values as the substitution
+// input for its fetch AND its relay plan (client-relayed-fetch's
+// server-authored rule — a relayed search job must never carry a
+// {server:...} placeholder).
+func (q *Queue) resolveServerSecrets(pluginID string) (map[string]string, bool) {
+	if q.deps.RequiredSecrets == nil {
+		return nil, true
+	}
+	if len(q.deps.RequiredSecrets(pluginID)) == 0 {
+		return nil, true
+	}
+	if q.deps.Modules == nil {
+		return nil, false
+	}
+	mods, err := q.deps.Modules.List()
+	if err != nil {
+		return nil, false
+	}
+	for _, mod := range mods {
+		for _, src := range mod.MetadataSources {
+			if src.PluginID != pluginID {
+				continue
+			}
+			if secrets, ok := serverAuth(src, q.deps.RequiredSecrets); ok {
+				return secrets, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// sourceConfigured runs the interactive producers' pre-action required-secrets
+// check (tmdb-enrichment D3): the plugin is configured when its declared
+// required secrets resolve against at least one of its module bindings'
+// Options JSON. The resolution is resolveServerSecrets — the same serverAuth
+// iteration (chain.go) whose values SearchSource's fetch and relay plan
+// consume — so the meaning of "resolved" is byte-identical with the
+// derivation conjunct, the chain's own auth leg, and the search executor. One
+// declaring binding resolving is enough; a plugin whose every binding (or no
+// binding at all) leaves a declared name unresolved is UNCONFIGURED and the
+// producers answer ErrUnconfiguredSource.
+func (q *Queue) sourceConfigured(pluginID string) bool {
+	_, ok := q.resolveServerSecrets(pluginID)
+	return ok
+}
+
 // relayStateClaimed names the state a live claim stamps (the store's one
 // conditional UPDATE writes it; relay.go names only the states IT moves —
 // done|failed). The search poll reads it to observe an abandoned lease.
@@ -55,9 +112,12 @@ const relayStateClaimed = "claimed"
 // (identify-match-override): resolve the typed client (the same accessor the
 // chain uses — an unknown plugin errors from the manager), SearchSpecs, execute
 // the returned spec through the queue's own FetchGate (the interactive search
-// shares the plugin's anonymous-tier budget with sweeps), SearchResults, and
-// return the candidates as primitive maps keyed by the convention field names
-// (proto → map at the RPC boundary; an absent optional is absent from the map).
+// shares the plugin's anonymous-tier budget with sweeps) with the plugin's
+// resolved binding secrets (resolveServerSecrets — the chain's serverAuth
+// iteration — so a SERVER spec executes instead of failing spec-class on its
+// redacted_ref), SearchResults, and return the candidates as primitive maps
+// keyed by the convention field names (proto → map at the RPC boundary; an
+// absent optional is absent from the map).
 // A source without search surfaces sdk.ErrSearchUnsupported — direct for an
 // in-process impl, re-wrapped for the gRPC seam where a plugin's plain error
 // arrives carrying the sentinel text.
@@ -68,6 +128,10 @@ const relayStateClaimed = "claimed"
 // polling the job within the budget, before answering — the poll lives here,
 // inside the closure, so the api endpoint and this signature stay
 // byte-identical (D8). Every other failure keeps today's immediate answer.
+// An UNCONFIGURED source (tmdb-enrichment D3 — the plugin declares required
+// secrets no binding resolves) answers ErrUnconfiguredSource BEFORE
+// SearchSpecs executes: the search would be a doomed anonymous fetch, so the
+// pre-check (sourceConfigured) answers the typed sentinel instead.
 func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) ([]map[string]any, error) {
 	if q.resolve == nil {
 		return nil, errors.New("enrich: search: no plugin resolver")
@@ -76,12 +140,30 @@ func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) 
 	if err != nil {
 		return nil, err
 	}
+	if !q.sourceConfigured(pluginID) { // D3: dormant — never a doomed fetch
+		return nil, sourcestate.ErrUnconfiguredSource
+	}
+	// The executor resolves the plugin's binding secrets exactly like the
+	// derivation chain (resolveServerSecrets — the serverAuth iteration) and
+	// passes them to BOTH consumers below: fetchSource substitutes server
+	// refs core-side, and the relay plan is built server-authored. A source
+	// the pre-check called configured whose spec still fails on a redacted_ref
+	// (a client:-scoped ref — Mode B — or a name outside the resolved binding)
+	// is NOT an upstream failure: the fetch never left the spec, so the D3/3.4
+	// law answers ErrUnconfiguredSource, never a raw 502 upstream_error.
+	secrets, configured := q.resolveServerSecrets(pluginID)
+	if !configured { // D3: dormant — never a doomed fetch
+		return nil, sourcestate.ErrUnconfiguredSource
+	}
 	specs, err := md.SearchSpecs(ctx, &metadatav1.SearchSpecsRequest{Query: query, Kind: kind})
 	if err != nil {
 		return nil, searchSentinel(err)
 	}
-	body, status, headers, err := fetchSource(ctx, q.deps.FetchGate, pluginID, specs.GetSpec())
+	body, status, headers, err := fetchSource(ctx, q.deps.FetchGate, pluginID, specs.GetSpec(), secrets)
 	if err != nil {
+		if errors.Is(err, errRedactedRef) { // 3.4's 503 law — the upstream did not fail
+			return nil, fmt.Errorf("enrich: search fetch: %w", sourcestate.ErrUnconfiguredSource)
+		}
 		// Ruled OQ-6 (D8): a NETWORK-class fetch rides the relay — the job
 		// enqueues for the plugin and this closure holds and polls it. Every
 		// other condition keeps today's immediate answer bit-for-bit: relay
@@ -89,7 +171,7 @@ func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) 
 		// class, a dying context (no durable relay state off a dead request),
 		// or a plan that will not build.
 		if q.deps.Relay != nil && ctx.Err() == nil && classifyFetchError(err) == fetchClassNetwork {
-			if plan := buildPlan(specs.GetSpec(), nil); plan != nil {
+			if plan := buildPlan(specs.GetSpec(), nil, secrets); plan != nil {
 				return q.searchOverRelay(ctx, md, pluginID, query, kind, plan, err)
 			}
 		}
@@ -269,7 +351,11 @@ func candidateMap(c *metadatav1.SearchCandidate) map[string]any {
 // next pass fetches BY the picked id and rebuilds the namespace fresh. Title
 // namespaces and title_overrides are untouched throughout. An unknown plugin or
 // series errors before anything is written; a lease-held row reports
-// (queued=false, deferred=1) with the document byte-identical.
+// (queued=false, deferred=1) with the document byte-identical. An UNCONFIGURED
+// source (tmdb-enrichment D3) errors before anything is written too — before
+// the lease, even: an anchor this dormant source can never re-derive must
+// never land, so the pre-check (sourceConfigured) answers
+// ErrUnconfiguredSource with the document byte-identical.
 func (q *Queue) IdentifySeries(ctx context.Context, seriesID, pluginID, externalID string) (queued bool, stripped, deferred int, err error) {
 	if externalID == "" {
 		return false, 0, 0, errEmptyExternalID
@@ -279,6 +365,9 @@ func (q *Queue) IdentifySeries(ctx context.Context, seriesID, pluginID, external
 			return false, 0, 0, err
 		}
 	}
+	if !q.sourceConfigured(pluginID) { // D3: never write-then-dormant
+		return false, 0, 0, sourcestate.ErrUnconfiguredSource
+	}
 	if !q.leases.acquire(seriesID, identifyOwner, q.cfg.LeaseTTL) {
 		return false, 0, 1, nil // a worker owns the row: nothing written, retry later
 	}
@@ -287,22 +376,8 @@ func (q *Queue) IdentifySeries(ctx context.Context, seriesID, pluginID, external
 		q.leases.release(seriesID)
 		return false, 0, 0, fmt.Errorf("enrich: identify: load series: %w", err)
 	}
-	doc := decodeDoc(sr.Document)
-	ids, _ := doc["identifiers"].(map[string]any)
-	if ids == nil {
-		ids = map[string]any{}
-	}
-	// The anchor rides identifiers NUMERICALLY when the pick parses as an
-	// integer — every current external id does, and the plugins' Match reads
-	// existing ids numerically (intField); a non-numeric pick stores verbatim.
-	if n, perr := strconv.ParseInt(externalID, 10, 64); perr == nil {
-		ids[pluginID+"_id"] = n
-	} else {
-		ids[pluginID+"_id"] = externalID
-	}
-	doc["identifiers"] = ids
-	docBytes, merr := json.Marshal(doc) // a map of strings/maps never fails
-	if merr != nil {                    // keep the prior document on the impossible error
+	docBytes, merr := identifyAnchor(decodeDoc(sr.Document), pluginID, externalID)
+	if merr != nil { // keep the prior document on the impossible error
 		q.leases.release(seriesID)
 		return false, 0, 0, fmt.Errorf("enrich: identify: encode: %w", merr)
 	}
@@ -311,5 +386,84 @@ func (q *Queue) IdentifySeries(ctx context.Context, seriesID, pluginID, external
 	q.leases.release(seriesID)
 
 	stripped, deferred, err = q.ReenrichSource(ctx, sr.LibraryID, pluginID, seriesID)
+	return true, stripped, deferred, err
+}
+
+// identifyAnchor writes the picked anchor into a document's identifiers — the
+// anchor law BOTH identify actions share (the series action and the row-generic
+// IdentifyItem, tmdb-enrichment D5): identifiers.<pluginID>_id is OVERWRITTEN
+// (no tombstone: the core-side identifiers write is enrichment D-4's
+// precedent), riding identifiers NUMERICALLY when the pick parses as an
+// integer — every current external id does, and the plugins' Match reads
+// existing ids numerically (intField) — verbatim otherwise. Returns the
+// marshaled document; a map of strings/maps never fails (the callers keep the
+// prior document on the impossible error).
+func identifyAnchor(doc map[string]any, pluginID, externalID string) (json.RawMessage, error) {
+	ids, _ := doc["identifiers"].(map[string]any)
+	if ids == nil {
+		ids = map[string]any{}
+	}
+	if n, perr := strconv.ParseInt(externalID, 10, 64); perr == nil {
+		ids[pluginID+"_id"] = n
+	} else {
+		ids[pluginID+"_id"] = externalID
+	}
+	doc["identifiers"] = ids
+	return json.Marshal(doc)
+}
+
+// IdentifyItem is the series identify law generalized over ANY queue row
+// (tmdb-enrichment D5 — films are items in tv libraries): the same pre-action
+// ordering (empty-pick guard, the resolver's unknown-source check, the D3
+// sourceConfigured check), the same row lease, then loadRow — the
+// item/series-agnostic loader, so an id naming a series row re-anchors it too —
+// writing identifiers.<pluginID>_id OVERWRITING the previous anchor via the
+// shared identifyAnchor. The row's own persist sink lands the write (PutItem vs
+// PutSeries is loadRow's already), and the SAME explicit strip ReenrichSource
+// runs for exactly this row: it purges the plugin's namespace/_provenance/_view
+// WITHOUT touching identifiers (the anchor survives) or another plugin's
+// namespace, clears the plugin's ledger row (the explicit-action cooldown
+// bypass), flips the row to pending, and notifies the library so the next pass
+// fetches BY the picked id and rebuilds the namespace fresh. Title namespaces
+// and title_overrides are untouched throughout.
+//
+// A lease-held row reports (queued=false, deferred=1) with the document
+// byte-identical; an unknown plugin errors before anything is written; an
+// unknown row surfaces the loader's sql.ErrNoRows (%w-preserved — the api maps
+// 404); an UNCONFIGURED source (tmdb-enrichment D3) errors before anything is
+// written too — before the lease, even: an anchor this dormant source can never
+// re-derive must never land, so the pre-check (sourceConfigured) answers
+// ErrUnconfiguredSource with the document byte-identical.
+func (q *Queue) IdentifyItem(ctx context.Context, itemID, pluginID, externalID string) (queued bool, stripped, deferred int, err error) {
+	if externalID == "" {
+		return false, 0, 0, errEmptyExternalID
+	}
+	if q.resolve != nil { // an unknown source errors before the write (the manager's accessor)
+		if _, err = q.resolve(pluginID, metadataCapabilityID); err != nil {
+			return false, 0, 0, err
+		}
+	}
+	if !q.sourceConfigured(pluginID) { // D3: never write-then-dormant
+		return false, 0, 0, sourcestate.ErrUnconfiguredSource
+	}
+	if !q.leases.acquire(itemID, identifyOwner, q.cfg.LeaseTTL) {
+		return false, 0, 1, nil // a worker owns the row: nothing written, retry later
+	}
+	row, err := q.loadRow(ctx, itemID)
+	if err != nil {
+		q.leases.release(itemID)
+		// a gone row surfaces the loader's sql.ErrNoRows, %w-preserved for the
+		// api's 404; any other read failure carries it verbatim.
+		return false, 0, 0, fmt.Errorf("enrich: identify: load row: %w", err)
+	}
+	docBytes, merr := identifyAnchor(decodeDoc(row.doc), pluginID, externalID)
+	if merr != nil { // keep the prior document on the impossible error
+		q.leases.release(itemID)
+		return false, 0, 0, fmt.Errorf("enrich: identify: encode: %w", merr)
+	}
+	row.persist(ctx, row.status, docBytes)
+	q.leases.release(itemID)
+
+	stripped, deferred, err = q.ReenrichSource(ctx, row.libraryID, pluginID, row.id)
 	return true, stripped, deferred, err
 }

@@ -470,6 +470,74 @@ func TestMetadataSource_Accessor(t *testing.T) {
 	var _ sdk.MetadataSource = md
 }
 
+// handshakePluginClient overrides only the Handshake response of the fake
+// plugin client, so a fake-launched entry can RETAIN arbitrary capability
+// declarations without a subprocess.
+type handshakePluginClient struct {
+	fakePluginClient
+	hs *pluginv1.HandshakeResponse
+}
+
+func (c handshakePluginClient) Handshake(context.Context, *pluginv1.HandshakeRequest, ...grpc.CallOption) (*pluginv1.HandshakeResponse, error) {
+	return c.hs, nil
+}
+
+// TestManagerRequiredSecrets proves the RequiredSecrets accessor: declared
+// metadata_source secret names are returned, and unknown plugin / no metadata
+// capability / declarations without the field all yield an empty slice —
+// never an error.
+func TestManagerRequiredSecrets(t *testing.T) {
+	start := func(t *testing.T, id string, caps []sdk.Capability, hs *pluginv1.HandshakeResponse) *Manager {
+		t.Helper()
+		m := Open(testDeps())
+		m.launchFn = func(context.Context, *pluginEntry) (*runningPlugin, error) {
+			return &runningPlugin{metadata: mockMetadata{}, pconn: handshakePluginClient{hs: hs}, exited: func() bool { return false }, kill: func() {}}, nil
+		}
+		if err := m.Load(id, "/bin/true", caps); err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if err := m.Start(context.Background(), id); err != nil {
+			t.Fatalf("Start %s: %v", id, err)
+		}
+		t.Cleanup(func() { _ = m.Stop(context.Background(), id) })
+		return m
+	}
+
+	withSecrets := start(t, "tmdb", metadataCap("default"), &pluginv1.HandshakeResponse{
+		PluginId: "tmdb",
+		Capabilities: []*pluginv1.CapabilityDeclaration{
+			{Type: "metadata_source", Id: "default", RequiredSecrets: []string{"api_key"}},
+			{Type: "scanner", Id: "default"},
+		},
+	})
+	withoutSecrets := start(t, "bare", metadataCap("default"), &pluginv1.HandshakeResponse{
+		PluginId: "bare",
+		Capabilities: []*pluginv1.CapabilityDeclaration{
+			{Type: "metadata_source", Id: "default"},
+		},
+	})
+	scannerOnly := start(t, "scan", scannerCap("default"), &pluginv1.HandshakeResponse{
+		PluginId: "scan",
+		Capabilities: []*pluginv1.CapabilityDeclaration{
+			{Type: "scanner", Id: "default", RequiredSecrets: []string{"api_key"}},
+		},
+	})
+
+	got := withSecrets.RequiredSecrets("tmdb")
+	if len(got) != 1 || got[0] != "api_key" {
+		t.Fatalf("RequiredSecrets(tmdb) = %v, want [api_key]", got)
+	}
+	if got := withoutSecrets.RequiredSecrets("bare"); len(got) != 0 {
+		t.Fatalf("RequiredSecrets(bare) = %v, want empty", got)
+	}
+	if got := scannerOnly.RequiredSecrets("scan"); len(got) != 0 {
+		t.Fatalf("scanner-only secrets must not surface: %v", got)
+	}
+	if got := withSecrets.RequiredSecrets("unknown"); len(got) != 0 {
+		t.Fatalf("RequiredSecrets(unknown) = %v, want empty", got)
+	}
+}
+
 // TestClientPluginSet proves B2/INV-caps-driven/INV-ac3-base-scanner: the
 // client PluginSet is built ONLY from declared capabilities, one adapter per
 // type, and base-scanner's scanner-only set is byte-for-byte {scanner: ScannerPlugin{}}.

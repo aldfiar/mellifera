@@ -497,6 +497,46 @@ func TestReconstructBase(t *testing.T) {
 	})
 }
 
+// TestReconstructBaseCarriesSeriesSeason pins tmdb-enrichment addendum 7: the
+// serial-parser namespace's season fact is stamped onto the Match input's
+// parsed Struct when present and >0 — a positive season lands, a marker
+// (non-numeric), zero, or absent value leaves the parsed fact unset.
+func TestReconstructBaseCarriesSeriesSeason(t *testing.T) {
+	t.Run("season_2_stamps", func(t *testing.T) {
+		doc := map[string]any{
+			"sources": map[string]any{"serial-parser": map[string]any{"season": float64(2)}},
+		}
+		f := reconstructBase(doc).GetParsed().GetFields()
+		if got := f["season"].GetNumberValue(); got != 2 {
+			t.Fatalf("parsed season = %v, want 2 (the anchored series plan's season fact)", got)
+		}
+	})
+	t.Run("marker_leaves_unstamped", func(t *testing.T) {
+		doc := map[string]any{
+			"sources": map[string]any{"serial-parser": map[string]any{"season": "S02"}},
+		}
+		f := reconstructBase(doc).GetParsed().GetFields()
+		if _, ok := f["season"]; ok {
+			t.Fatalf("parsed season stamped from a non-numeric marker value, want unset")
+		}
+	})
+	t.Run("zero_leaves_unstamped", func(t *testing.T) {
+		doc := map[string]any{
+			"sources": map[string]any{"serial-parser": map[string]any{"season": float64(0)}},
+		}
+		f := reconstructBase(doc).GetParsed().GetFields()
+		if _, ok := f["season"]; ok {
+			t.Fatalf("parsed season stamped from a zero value, want unset")
+		}
+	})
+	t.Run("absent_leaves_unstamped", func(t *testing.T) {
+		f := reconstructBase(map[string]any{}).GetParsed().GetFields()
+		if _, ok := f["season"]; ok {
+			t.Fatalf("parsed season stamped without a serial-parser namespace, want unset")
+		}
+	})
+}
+
 // TestReconstructBase_DrivesMatch drives the reconstructed base through a fake
 // source's Match (the worker's per-item path), asserting Match received the
 // parsed Struct reconstructed from the persisted doc (S7 joint).

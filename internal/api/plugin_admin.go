@@ -24,9 +24,12 @@ const (
 // pluginAdminBinding is one module binding row of one plugin's config block
 // (plugin-admin-surfaces): module_id binds kind ("scanner" | "metadata").
 // Metadata rows additionally carry the chain priority, the config-enabled
-// flag (pre-gate), the auth mode, and the declared display fields; every row
-// carries the binding's options JSON verbatim. The raw fields are embedded
-// bytes, never re-marshaled — api never parses config semantics (INV4).
+// flag (pre-gate), the auth mode, the declared display fields, and the
+// required-secrets verdicts; every row carries the binding's options JSON
+// with declared secret names redacted out (tmdb-enrichment 3.3 — no
+// declarations serves the stored bytes verbatim). The raw fields are
+// embedded bytes, never re-marshaled when unredacted — api never parses
+// config semantics beyond the redaction key set (INV4).
 type pluginAdminBinding struct {
 	ModuleID      string          `json:"module_id"`
 	Kind          string          `json:"kind"`
@@ -35,6 +38,14 @@ type pluginAdminBinding struct {
 	AuthMode      string          `json:"auth_mode,omitempty"`
 	DisplayFields json.RawMessage `json:"display_fields,omitempty"`
 	Options       json.RawMessage `json:"options,omitempty"`
+	// RequiredSecrets is the additive per-binding verdicts object (tmdb-
+	// enrichment 3.3): the plugin's declared secret names mapped to whether
+	// THIS binding's options provide each (per-binding options make
+	// per-binding verdicts — a plugin bound by two modules renders its own
+	// verdicts per row, and the plugin row itself carries no single verdict).
+	// Omitted entirely when the plugin declares no secrets — today's row
+	// shape, byte-identical.
+	RequiredSecrets map[string]bool `json:"required_secrets,omitempty"`
 }
 
 // pluginAdminEffective is one plugin's module-scope enabled verdicts (the
@@ -279,7 +290,7 @@ func (a *app) renderPlugins(ctx context.Context, agg pluginAdminAggregate) []plu
 			row.Health = &health
 		}
 		row.Effective = pluginModuleVerdicts(agg, id)
-		row.Config = pluginBindings(agg.configs[id])
+		row.Config = pluginBindings(id, agg.configs[id], a.deps.RequiredSecretsStatus)
 		out = append(out, row)
 	}
 	return out
@@ -307,19 +318,28 @@ func pluginModuleVerdicts(agg pluginAdminAggregate, pluginID string) *pluginAdmi
 
 // pluginBindings renders the parallel-slice answer into one binding row per
 // index: metadata rows carry the chain priority, config-enabled flag, auth
-// mode, and declared display fields; every row carries its options verbatim
-// ("" → omitted; the bytes are never re-marshaled, INV4).
-func pluginBindings(cfg pluginConfigBindings) []pluginAdminBinding {
+// mode, declared display fields, and the per-binding required-secrets
+// verdicts (tmdb-enrichment 3.3 — no declarations or a nil closure → the
+// field is omitted, today's shape); every row carries its options with the
+// declared secret names redacted ("" → omitted; ordinary keys verbatim,
+// INV4).
+func pluginBindings(pluginID string, cfg pluginConfigBindings, secrets func(moduleID, pluginID string) map[string]bool) []pluginAdminBinding {
 	out := make([]pluginAdminBinding, 0, len(cfg.moduleIDs))
 	for i, moduleID := range cfg.moduleIDs {
 		binding := pluginAdminBinding{ModuleID: moduleID, Kind: cfg.kinds[i]}
-		if cfg.options[i] != "" {
-			binding.Options = json.RawMessage(cfg.options[i])
-		}
 		if cfg.kinds[i] == bindingKindScanner {
+			if cfg.options[i] != "" {
+				binding.Options = json.RawMessage(cfg.options[i])
+			}
 			out = append(out, binding)
 			continue
 		}
+		var verdicts map[string]bool
+		if secrets != nil {
+			verdicts = secrets(moduleID, pluginID)
+		}
+		binding.RequiredSecrets = verdicts
+		binding.Options = redactBindingOptions(cfg.options[i], verdicts)
 		priority, enabled := cfg.priorities[i], cfg.enabled[i]
 		binding.Priority = &priority
 		binding.Enabled = &enabled
@@ -328,6 +348,42 @@ func pluginBindings(cfg pluginConfigBindings) []pluginAdminBinding {
 			binding.DisplayFields = json.RawMessage(cfg.displayFields[i])
 		}
 		out = append(out, binding)
+	}
+	return out
+}
+
+// redactBindingOptions serves ONE metadata binding's options with the
+// plugin's declared secret names omitted (tmdb-enrichment 3.3 serve-side
+// redaction: presence lives in the verdicts, never in the bytes). Empty
+// options stay omitted; no declarations (a nil/empty verdicts map) or a key
+// miss serve the stored bytes verbatim — today's shape, byte-identical.
+// Declared keys are spliced out via an object decode (the write endpoint
+// stores object JSON); ordinary keys ride through untouched — any non-object
+// payload cannot be key-redacted, so it serves verbatim rather than lying.
+func redactBindingOptions(raw string, secretNames map[string]bool) json.RawMessage {
+	if raw == "" || len(secretNames) == 0 {
+		if raw == "" {
+			return nil
+		}
+		return json.RawMessage(raw)
+	}
+	var opts map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &opts); err != nil {
+		return json.RawMessage(raw)
+	}
+	redacted := false
+	for name := range secretNames {
+		if _, ok := opts[name]; ok {
+			delete(opts, name)
+			redacted = true
+		}
+	}
+	if !redacted {
+		return json.RawMessage(raw)
+	}
+	out, err := json.Marshal(opts)
+	if err != nil {
+		return json.RawMessage(raw)
 	}
 	return out
 }

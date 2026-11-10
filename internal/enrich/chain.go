@@ -5,6 +5,7 @@ package enrich
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -76,13 +77,17 @@ func (sc *relayScope) handOff(ctx context.Context, src module.MetadataSourceBind
 // buildPlan renders the run's whole request plan — the primary first, then
 // the extras positionally, the same alignment Convert's FetchedResponse[]
 // consumes — into the store's PlanSpec boundary (the enqueue/consult wire
-// shape). Every URL is fully substituted: the descriptor is server-authored,
-// the client never sees a template or a placeholder. A spec that fails
-// validation yields nil (the relay path skips: consult and handoff — the
-// normal fetch fails with the same spec-class error, today's behavior). The
-// marshaler over the result is deterministic, so the rebuilt plan
-// byte-compares against a stored job's plan (Consult's match).
-func buildPlan(primary *metadatav1.RequestSpec, extras []*metadatav1.RequestSpec) []relay.PlanSpec {
+// shape). Every URL is fully substituted through the same resolveVariables
+// seam as the fetch (tmdb-enrichment D4): a server-scoped secret ref resolves
+// from secrets so the descriptor is server-authored (client-relayed-fetch's
+// rule — the client never sees a template, a placeholder, or a {server:...}
+// ref). The variadic form keeps every existing call shape byte-identical —
+// absent/nil keeps the pre-SERVER behavior (any redacted_ref yields nil). A
+// spec that fails validation yields nil (the relay path skips: consult and
+// handoff — the normal fetch fails with the same spec-class error, today's
+// behavior). The marshaler over the result is deterministic, so the rebuilt
+// plan byte-compares against a stored job's plan (Consult's match).
+func buildPlan(primary *metadatav1.RequestSpec, extras []*metadatav1.RequestSpec, secrets ...map[string]string) []relay.PlanSpec {
 	specs := make([]*metadatav1.RequestSpec, 0, 1+len(extras))
 	if primary != nil {
 		specs = append(specs, primary)
@@ -90,7 +95,7 @@ func buildPlan(primary *metadatav1.RequestSpec, extras []*metadatav1.RequestSpec
 	specs = append(specs, extras...)
 	out := make([]relay.PlanSpec, 0, len(specs))
 	for _, spec := range specs {
-		values, err := resolveVariables(spec.GetVariables())
+		values, err := resolveVariables(spec.GetVariables(), secretArg(secrets))
 		if err != nil {
 			return nil
 		}
@@ -162,10 +167,16 @@ type sourceResult struct {
 // scope is the deferred-handoff scope (nil = relay disabled): the call site
 // owns the relay policy (client-relayed-fetch D4) — consult before fetching,
 // and a network-class failure (primary OR extra) hands the whole plan to the
-// relay and ends the run deferred. On any per-source failure the chain
-// soft-fails (AC-6); only a cancelled context is a hard failure (handled by
-// Enrich).
-func runSource(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate, scope *relayScope) sourceResult {
+// relay and ends the run deferred. requiredSecrets is the Deps.RequiredSecrets
+// closure (nil-safe: nil names no plugin's secrets — every existing source
+// byte-identical): a SERVER binding whose declared names all resolve against
+// its Options JSON runs the mode-only SERVER AuthContext (tmdb-enrichment
+// D4/flag 3 — the values NEVER ride to the plugin, substitution stays
+// core-side) and resolves server-scoped refs in the fetch and the relay plan;
+// otherwise the empty AuthContext of today, and any redacted_ref stays the
+// spec-class errRedactedRef. On any per-source failure the chain soft-fails
+// (AC-6); only a cancelled context is a hard failure (handled by Enrich).
+func runSource(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate, scope *relayScope, requiredSecrets func(pluginID string) []string) sourceResult {
 	start := stamp()
 	if !src.Enabled {
 		return sourceResult{kind: outcomeSkipped, pluginID: src.PluginID, startedAt: start, finishedAt: stamp()}
@@ -185,10 +196,11 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 	if !matchRes.GetApplies() { // B3: not an error — record a skipped stage, continue
 		return sourceResult{kind: outcomeSkipped, pluginID: src.PluginID, startedAt: start, finishedAt: stamp()}
 	}
+	secrets, server := serverAuth(src, requiredSecrets) // D4: values stay core-side; the plugin learns the MODE only
 	buildRes, err := md.BuildRequest(ctx, &metadatav1.BuildRequestRequest{
-		Query: matchRes.GetQuery(), ModuleType: mod.MediaType, Auth: &commonv1.AuthContext{},
+		Query: matchRes.GetQuery(), ModuleType: mod.MediaType, Auth: authContext(server),
 	})
-	if err != nil { // BuildRequest receives an EMPTY AuthContext (D-7: Mode B is unbuilt)
+	if err != nil { // BuildRequest receives an EMPTY AuthContext unless the SERVER binding fully resolved (D-7/D4)
 		return failOutcome(src, start, "build_request", err)
 	}
 	var raw []byte
@@ -198,7 +210,7 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 	var plan []relay.PlanSpec                                                   // the whole request plan, held while the relay can act on it
 	if spec := buildRes.GetSpec(); spec != nil && spec.GetUrlTemplate() != "" { // no url template: local source, nothing to fetch
 		if scope.enabled() { // D4: the call site owns the relay policy — fetchSource stays a pure executor
-			plan = buildPlan(spec, buildRes.GetExtraSpecs())
+			plan = buildPlan(spec, buildRes.GetExtraSpecs(), secrets)
 			if plan != nil { // a spec-validation failure skips the relay path entirely
 				// Consult BEFORE fetching (D4): a done, unconsumed,
 				// plan-matched job feeds its stored response in exactly as a
@@ -211,7 +223,7 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 			}
 		}
 		if executor == "" {
-			raw, httpStatus, respHeaders, err = fetchSource(ctx, gate, src.PluginID, spec)
+			raw, httpStatus, respHeaders, err = fetchSource(ctx, gate, src.PluginID, spec, secrets)
 			if err != nil {
 				if sr, handed := scope.handOff(ctx, src, start, err.Error(), classifyFetchError(err), plan); handed {
 					return sr // the run ends deferred — neither failed nor succeeded (D4)
@@ -226,7 +238,7 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 	// exception at the call site (D4): a NETWORK-class extra failure defers
 	// the whole plan when the relay is live — fetchExtras' entries carry only
 	// free text, so the machine classes ride positionally beside them.
-	extraResponses, extraClasses := fetchExtras(ctx, gate, src.PluginID, buildRes.GetExtraSpecs())
+	extraResponses, extraClasses := fetchExtras(ctx, gate, src.PluginID, buildRes.GetExtraSpecs(), secrets)
 	for i, class := range extraClasses {
 		if class != fetchClassNetwork {
 			continue
@@ -272,6 +284,68 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 		executor:        executor,
 		startedAt:       start, finishedAt: stamp(),
 	}
+}
+
+// serverAuth resolves a SERVER binding's declared secrets against its Options
+// JSON (tmdb-enrichment D2/D4). The NAMES come from the plugin's handshake via
+// the Deps.RequiredSecrets closure (nil-safe: nil names none); the VALUES come
+// from the binding's options keys — the store-backed secret home. When the
+// binding is SERVER and every declared name resolves, it answers (values,
+// true): the run gets the mode-only SERVER AuthContext and the substitution
+// input for fetch and relay plan. Otherwise it answers (nil, false) — today's
+// empty AuthContext, and any redacted_ref in the spec stays the spec-class
+// errRedactedRef. A SERVER binding whose plugin declares no secrets answers
+// (nil, true): vacuously resolved, mode-only auth, empty substitution input.
+// An unresolvable declared name is NOT an error here — the run proceeds
+// unauthed exactly as today; dormancy (deriving no work at all) is the
+// derivation/interactive pre-checks' concern (design D3).
+func serverAuth(src module.MetadataSourceBinding, requiredSecrets func(pluginID string) []string) (map[string]string, bool) {
+	if src.AuthMode != "SERVER" {
+		return nil, false
+	}
+	var names []string
+	if requiredSecrets != nil {
+		names = requiredSecrets(src.PluginID)
+	}
+	if len(names) == 0 {
+		return nil, true
+	}
+	opts := optionStrings(src.Options)
+	secrets := make(map[string]string, len(names))
+	for _, name := range names {
+		value, ok := opts[name]
+		if !ok {
+			return nil, false
+		}
+		secrets[name] = value
+	}
+	return secrets, true
+}
+
+// authContext is the BuildRequest auth (tmdb-enrichment flag 3): mode-only
+// SERVER when the binding resolved — secret VALUES never enter the plugin
+// process, substitution happens core-side at resolveVariables — and the empty
+// AuthContext of today otherwise (byte-identical for every existing source).
+func authContext(server bool) *commonv1.AuthContext {
+	if server {
+		return &commonv1.AuthContext{Mode: commonv1.AuthContext_SERVER}
+	}
+	return &commonv1.AuthContext{}
+}
+
+// optionStrings reads a binding's Options JSON object as a string map (D2:
+// the options keys are the secret homes beside any ordinary config keys). A
+// nil/empty payload or a non-object (or non-string-valued) one answers nil —
+// nothing resolves from it.
+func optionStrings(raw json.RawMessage) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var opts map[string]string
+	if err := json.Unmarshal(raw, &opts); err != nil {
+		return nil
+	}
+	return opts
 }
 
 // existingIDsStruct reads doc.identifiers into the Match.existing_ids anchor

@@ -903,6 +903,69 @@
                 }
             }
         },
+        "/admin/modules/{module_id}/sources/{plugin_id}/options": {
+            "put": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Replace a module binding's options JSON",
+                "operationId": "admin-module-source-options",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "module id",
+                        "name": "module_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "plugin id",
+                        "name": "plugin_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "options to write",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.moduleBindingOptionsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "options written"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/admin/pairings": {
             "get": {
                 "tags": [
@@ -2103,6 +2166,71 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/identify": {
+            "put": {
+                "tags": [
+                    "items"
+                ],
+                "summary": "Re-anchor an item's identity to a picked metadata match",
+                "operationId": "item-identify",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "item id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "source_id + external_id, both required",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.identifyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/api.identifyResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "$ref": "#/definitions/api.errorBody"
                         }
@@ -5105,6 +5233,17 @@
                 }
             }
         },
+        "api.moduleBindingOptionsRequest": {
+            "type": "object",
+            "properties": {
+                "options": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
         "api.pairCreateResponse": {
             "type": "object",
             "properties": {
@@ -5254,6 +5393,13 @@
                 },
                 "priority": {
                     "type": "integer"
+                },
+                "required_secrets": {
+                    "description": "RequiredSecrets is the additive per-binding verdicts object (tmdb-\nenrichment 3.3): the plugin's declared secret names mapped to whether\nTHIS binding's options provide each (per-binding options make\nper-binding verdicts — a plugin bound by two modules renders its own\nverdicts per row, and the plugin row itself carries no single verdict).\nOmitted entirely when the plugin declares no secrets — today's row\nshape, byte-identical.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
                 }
             }
         },

@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-11-09
+goal: Enrich film and serial items with TMDB metadata (RU-first) via a new
+  metadata-source plugin; fold the serial follow-up (season fetches + episode
+  names/overviews) into this change

@@ -15,6 +15,7 @@ import (
 
 	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/naming"
+	"github.com/mellifera/mellifera/internal/sourcestate"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -239,6 +240,82 @@ func (a *app) adminSourcePatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, sourcePatchResponse{Queued: queued})
+}
+
+// moduleBindingOptionsRequest is the body of PUT
+// /admin/modules/{module_id}/sources/{plugin_id}/options: the replacement
+// options JSON for exactly that binding, stored verbatim by the registry
+// (api never parses config semantics — INV4; secret redaction is the
+// aggregate's serve-side concern, 3.3).
+type moduleBindingOptionsRequest struct {
+	Options json.RawMessage `json:"options"`
+}
+
+// adminModuleBindingOptions: PUT /admin/modules/{module_id}/sources/
+// {plugin_id}/options — the plugin-admin delta's write endpoint (tmdb-
+// enrichment 3.2): replaces ONE module binding's options JSON through
+// Deps.SetModuleBindingOptions (cmd-wired over Registry.SetBindingOptions),
+// leaving every sibling binding byte-untouched and refreshing the registry
+// cache in the same call. The write wakes nothing — dormancy is read-time;
+// the next derivation run reads the new options (per-binding SERVER secrets
+// included) without a scan or notify. Validation-first (the adminSourcePatch
+// order): a malformed body, a missing options, non-object options, or
+// options that are not valid JSON answer 400 with nothing written; an
+// unknown module is 404 and a plugin the module does not bind as a metadata
+// source is 400 — both classified through the api-local sentinels the cmd
+// closure wraps (errors.Is). Any closure nil → 503 (the adminSources
+// posture); any other closure error is a real failure → 500.
+//
+// @Summary     Replace a module binding's options JSON
+// @Tags        admin
+// @ID          admin-module-source-options
+// @Router      /admin/modules/{module_id}/sources/{plugin_id}/options [put]
+// @Param       module_id path string                       true "module id"
+// @Param       plugin_id path string                       true "plugin id"
+// @Param       request   body moduleBindingOptionsRequest  true "options to write"
+// @Success     204 "options written"
+// @Failure     400 {object} errorBody
+// @Failure     404 {object} errorBody
+// @Failure     500 {object} errorBody
+// @Failure     503 {object} errorBody
+func (a *app) adminModuleBindingOptions(w http.ResponseWriter, r *http.Request) {
+	if a.deps.SetModuleBindingOptions == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "module options endpoint disabled", false)
+		return
+	}
+	var req moduleBindingOptionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON body", false)
+		return
+	}
+	if len(req.Options) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "options is required", false)
+		return
+	}
+	if !json.Valid(req.Options) {
+		writeError(w, http.StatusBadRequest, "bad_request", "options must be valid JSON", false)
+		return
+	}
+	var shape map[string]any
+	if err := json.Unmarshal(req.Options, &shape); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "options must be a JSON object", false)
+		return
+	}
+	moduleID := chi.URLParam(r, "module_id")
+	pluginID := chi.URLParam(r, "plugin_id")
+	if err := a.deps.SetModuleBindingOptions(r.Context(), moduleID, pluginID, req.Options); err != nil {
+		switch {
+		case errors.Is(err, sourcestate.ErrUnknownModule):
+			writeError(w, http.StatusNotFound, "not_found", "module "+moduleID+" not found", false)
+		case errors.Is(err, ErrUnknownPlugin):
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"module "+moduleID+" does not bind "+strconv.Quote(pluginID)+" as a metadata source", false)
+		default:
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // libraryGateTarget validates the shared path of both library-scope gate

@@ -19,9 +19,10 @@ import (
 // over them (the openRegistry posture of the module package's own tests — the
 // closure/store/registry joint runs on real instances, never a fake). The
 // registry auto-seeds the tv/image/serial module configs, so the serial
-// module's three-source chain (serial-parser, frame-grabber, shikimori — all
-// enabled at seed) is the real served shape, and loadedCaps names all three
-// metadata plugins as loaded (the refresh filter sees them all).
+// module's four-source chain (serial-parser, frame-grabber, shikimori, tmdb —
+// all enabled at seed) is the real served shape, and loadedCaps names all four
+// metadata plugins as loaded (the refresh filter sees them all — tmdb rides
+// title_source_priority too once a config names it, so the fixture loads it).
 func chainMuteFixture(t *testing.T) (func(context.Context, string, int64) (api.ModulePresentation, error), *store.Store, *module.Registry) {
 	t.Helper()
 	ctx := context.Background()
@@ -38,6 +39,7 @@ func chainMuteFixture(t *testing.T) (func(context.Context, string, int64) (api.M
 		"serial-parser": {"metadata_source"},
 		"frame-grabber": {"metadata_source"},
 		"shikimori":     {"metadata_source"},
+		"tmdb":          {"metadata_source"},
 	})
 	return closure, st, reg
 }
@@ -64,7 +66,7 @@ func TestChainMuteClosure(t *testing.T) {
 	closure, st, reg := chainMuteFixture(t)
 	ctx := context.Background()
 	const libID = int64(7)
-	const mutedSource = "shikimori" // serial chain: serial-parser, frame-grabber, shikimori
+	const mutedSource = "shikimori" // serial chain: serial-parser, frame-grabber, shikimori, tmdb
 
 	// Baseline on the bare context (NO stashed viewer — access.FromContext
 	// reads the zero Viewer): the full chain, all sources enabled, the loaded
@@ -73,12 +75,13 @@ func TestChainMuteClosure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("closure(bare ctx): %v", err)
 	}
-	if len(bare.SourceChain) != 3 {
-		t.Fatalf("bare source_chain = %d entries, want 3", len(bare.SourceChain))
+	if len(bare.SourceChain) != 4 {
+		t.Fatalf("bare source_chain = %d entries, want 4", len(bare.SourceChain))
 	}
-	if bare.SourceChain[0].ID != "serial-parser" || bare.SourceChain[1].ID != "frame-grabber" || bare.SourceChain[2].ID != mutedSource {
-		t.Fatalf("bare source_chain order = %v/%v/%v, want serial-parser/frame-grabber/shikimori",
-			bare.SourceChain[0].ID, bare.SourceChain[1].ID, bare.SourceChain[2].ID)
+	if bare.SourceChain[0].ID != "serial-parser" || bare.SourceChain[1].ID != "frame-grabber" ||
+		bare.SourceChain[2].ID != mutedSource || bare.SourceChain[3].ID != "tmdb" {
+		t.Fatalf("bare source_chain order = %v/%v/%v/%v, want serial-parser/frame-grabber/shikimori/tmdb",
+			bare.SourceChain[0].ID, bare.SourceChain[1].ID, bare.SourceChain[2].ID, bare.SourceChain[3].ID)
 	}
 	for _, src := range bare.SourceChain {
 		if !src.Enabled {
@@ -134,8 +137,8 @@ func TestChainMuteClosure(t *testing.T) {
 		if err != nil {
 			t.Fatalf("closure(%s viewer): %v", name, err)
 		}
-		if gotChain := chainEnabled(p); len(gotChain) != 3 {
-			t.Fatalf("%s source_chain = %d entries, want 3", name, len(gotChain))
+		if gotChain := chainEnabled(p); len(gotChain) != 4 {
+			t.Fatalf("%s source_chain = %d entries, want 4", name, len(gotChain))
 		} else {
 			for id, enabled := range gotChain {
 				if !enabled {

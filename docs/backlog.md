@@ -9,27 +9,22 @@ description. The openspec artifacts (proposal, spec deltas, tasks, design) are
 authored at propose time and pass GATE 1 (human approval) before any code —
 this file holds the outline, never a pre-created change.
 
-## B3 — external TMDB enricher + AuthContext/secrets
+## B3 remainder — kinopoisk CLIENT-mode + `_view` arbitration
 
-The seeded `tmdb` slot in the `tv` module's metadata chain is SERVER-mode but
-no plugin fills it: items settle `ready` with a recorded `unavailable` stage
-each pass. B3 makes external enrichment real.
+**The TMDB half SHIPPED 2026-11-10** (`tmdb-enrichment` — the `plugins/tmdb`
+subprocess filling the seeded tv priority-3 + serial priority-4 SERVER slots,
+handshake-declared `required_secrets`, the `server:`-scoped redacted-ref
+substitution at the executor seam, unconfigured dormancy, `PUT /items/{id}/identify`).
+What remains of the original B3 brief:
 
-- **Real HTTP fetch** in a `metadata_source` plugin's `BuildRequest` →
-  `Convert` (the tmdb plugin), filling the seeded `tmdb` SERVER slot
-  (`internal/module/registry.go`).
-- **Secrets at the handshake**: plugins declare `required_secrets`; the core
-  injects an `AuthContext{SERVER}` into the chain Query (the `CLIENT` mode
-  counterpart stays Mode-B — user-credential flows are a separate track).
-- **Upstream discipline**: rate-limit handling, response caching, and soft-fail
-  on upstream errors (an unreachable TMDB degrades exactly like a missing
-  exiftool/ffprobe today — per-source soft-fail, never an aborted scan).
-- **`_view` arbitration**: today `_view` is last-writer; multiple real sources
-  (tv-parser + tmdb) need the arbitration rule.
-- **Queue unchanged**: a SERVER source is queued per D-Q1 (`AuthMode !=
-  "CLIENT"`); loading the plugin later re-derives `ready` items (namespace
-  absent + not in cooldown) without regressing them.
-- `kinopoisk` remains CLIENT-mode (excluded from the background queue).
+- **`kinopoisk` remains CLIENT-mode** (excluded from the background queue) —
+  the user-credential Mode-B flows are a separate track; no plugin fills the
+  seeded kinopoisk slot.
+- **`_view` arbitration**: today `_view` is still last-writer; multiple real
+  sources (tv-parser + shikimori + tmdb) need the arbitration rule.
+- **Upstream discipline beyond the shipped FetchGate pacing** (response
+  caching; richer backoff shapes) — the light `min_interval_ms` pacing and
+  per-source soft-fail shipped with the plugin.
 
 ## B3b — external image enrichers + RAW discovery + generated columns
 
@@ -179,3 +174,54 @@ kept visible so the reopening paths stay named:
   the named L7-TV seam); no next-up cache — `/home` computes picks live
   (an index-served next-up would need a progress invalidation that does not
   exist).
+
+## tmdb-enrichment follow-ups (GATE 2 flags, 2026-11-10)
+
+Seeded non-blocking at the gate (the change's review.md):
+
+- **Standing export-budget pressure (load-bearing).** `internal/api` and
+  `internal/enrich` both sit AT 12 counted exports (`check.sh` stage 2: warn
+  >8, fail >12 — measured post-redesign; both were pushed to 13 by this
+  change's own sentinels and re-greened by the `internal/sourcestate`
+  re-homing, not by a split). Any FUTURE top-level export in either package
+  FAILS the gate until one genuinely splits or new surface lands in a leaf.
+  **Counter caveat**: the stage-2 counter sees only keyword-led single-line
+  declarations — entries inside a grouped `var (`/`const (` block are
+  invisible to it (the api-local `ErrUnconfiguredSource` twin hides there
+  today). Regrouping visible declarations into a block is counter-gaming,
+  NOT a sanctioned escape — redesign remains the gate law.
+- **P4 (optional): unify the api-local `ErrUnconfiguredSource` twin into
+  `sourcestate.ErrUnconfiguredSource`** and collapse cmd's same-value
+  translation hops (the three closures currently `errors.Is` the shared
+  leaf and re-wrap into the api twin — one value would do). Deliberately not
+  done in-change: the twin is budget-invisible and unifying it is not what
+  the arithmetic required; the leaf + twin split is the documented exception.
+- **P3: `SearchSource` double-resolves secrets** — the interactive search
+  walks the plugin's module bindings TWICE per call: the `sourceConfigured`
+  pre-check, then `resolveServerSecrets` (and the derivation chain resolves
+  the same bindings again per work item); one shared resolution home would
+  do.
+- **P3: a mixed-type options object marks EVERY secret unprovided →
+  dormant.** Both sides unmarshal the binding options into
+  `map[string]string` (`enrich.optionStrings` for the dormancy conjunct; the
+  cmd verdict closure for the aggregate) — one non-string value anywhere in
+  the object fails the whole unmarshal, so even string-valued secrets read
+  unprovided and the binding goes dormant. Consistent on BOTH sides (the
+  aggregate verdict and the derivation conjunct agree), and the served
+  redaction can't leak anything — but an operator who set one key to an
+  object sees every verdict false with no why. Consistency note only.
+- **Pre-existing seeds riding along** (surfaced by the change, pre-dating
+  it): `kinopoisk` is seeded in the registry but has no `sourceCatalog` row
+  (the tmdb twin of this gap was fixed in-change; kinopoisk's is untouched);
+  `GET /items?library=` does not list serial-module series records (series
+  live on the `/series` surfaces only); non-2xx upstream bodies reach the
+  plugin's `Convert` unclassified (the core hands the payload through; the
+  plugin converts what it can — no upstream-status taxonomy).
+- **Comment staleness (two notes, docs-adjacent).** `internal/api/source_admin.go`
+  (~:264): the options-handler docstring says "both classified through the
+  api-local sentinels" — post-redesign only the unbound-plugin half is
+  api-local; the unknown-module half classifies through the SHARED
+  `sourcestate.ErrUnknownModule`. `cmd/mellifera/main.go`: the three
+  unconfigured-closure doc comments still say "the enrich-side sentinel" —
+  their `errors.Is` operands are now the sourcestate-qualified shared leaf
+  (`sourcestate.ErrUnconfiguredSource`), not an enrich-package symbol.
