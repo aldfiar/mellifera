@@ -14,8 +14,10 @@ import Plugins from "@/pages/admin/Plugins";
 // Plugins.tsx -> getAdminPlugins / getAdminPluginLogs -> Go
 // /api/v1/admin/plugins[/{plugin_id}/logs] (plugin_admin.go). Mock seam idiom
 // (Sources.test.tsx): the page-level fetchers are spied at the api.ts export.
-// The surface is READ-ONLY, so the write fetchers are spied too — to prove
-// nothing ever leaves the page.
+// The surface is read-only outside the binding options editor — the page's
+// ONE sanctioned write (plugin-options-ui 2.3, design D1) — so the write
+// fetchers are spied too, to prove nothing ever leaves the page outside the
+// editor flow.
 
 function fakePlugin(overrides: Partial<PluginAdminPlugin>): PluginAdminPlugin {
   return {
@@ -98,17 +100,19 @@ describe("Plugins — admin surface (plugin-admin-surfaces)", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
-  it("renders status and config per plugin in human words and issues no write", async () => {
+  it("renders status and config per plugin in human words and issues no write outside the editor flow", async () => {
     // The scenario probe 85b1963591d79139: each loaded plugin renders its
     // name, the colored status (the served health state + served module
     // verdicts — never resolved client-side), capability chips, and its
     // config bindings in words with the options JSON verbatim behind a
-    // disclosure — and the page issues no write.
+    // disclosure — and the page issues no write outside the editor flow
+    // (the write-spy law, plugin-options-ui 2.3).
     vi.spyOn(apiModule, "getAdminPlugins").mockResolvedValue({
       plugins: [SERVING, FAILED],
     });
     const patchSpy = vi.spyOn(apiModule, "patchAdminSource");
     const putSpy = vi.spyOn(apiModule, "putLibrarySource");
+    const putOptionsSpy = vi.spyOn(apiModule, "putAdminModuleSourceOptions");
     const delSpy = vi.spyOn(apiModule, "deleteLibrarySource");
     const logsSpy = vi.spyOn(apiModule, "getAdminPluginLogs");
 
@@ -139,6 +143,13 @@ describe("Plugins — admin surface (plugin-admin-surfaces)", () => {
       within(row).getByText(/"base_url": "https:\/\/shikimori\.one"/),
     ).toBeDefined();
 
+    // The Edit affordance rides METADATA bindings only (design D5) — the
+    // serial metadata binding carries one; the click-through lives in the
+    // editor-flow case below.
+    expect(
+      within(row).getByRole("button", { name: "options serial" }),
+    ).toBeDefined();
+
     // The failed plugin: red Failed with the served message inline.
     const failedRow = container.querySelector(
       'tr[data-plugin-id="frame-grabber"]',
@@ -149,9 +160,11 @@ describe("Plugins — admin surface (plugin-admin-surfaces)", () => {
     // No verdicts served → no enablement word; no bindings → the empty state.
     expect(within(failedRow).getByText("No bindings")).toBeDefined();
 
-    // READ-ONLY: no write left the surface, and logs were not fetched eagerly.
+    // No write left the page outside the editor flow, and logs were not
+    // fetched eagerly.
     expect(patchSpy).not.toHaveBeenCalled();
     expect(putSpy).not.toHaveBeenCalled();
+    expect(putOptionsSpy).not.toHaveBeenCalled();
     expect(delSpy).not.toHaveBeenCalled();
     expect(logsSpy).not.toHaveBeenCalled();
   });
@@ -210,6 +223,284 @@ describe("Plugins — admin surface (plugin-admin-surfaces)", () => {
     ) as HTMLElement;
     expect(within(off).getByText("Not reporting")).toBeDefined();
     expect(off.querySelector('[data-status="off"]')).not.toBeNull();
+  });
+
+  it("renders the «Требует настройки» badge on a metadata binding with an unprovided secret", async () => {
+    // plugin-options-ui 2.1: the needs-config badge reads the SERVED
+    // per-binding required_secrets verdicts — one provided:false secret on a
+    // metadata binding badges that binding and only that binding.
+    vi.spyOn(apiModule, "getAdminPlugins").mockResolvedValue({
+      plugins: [
+        fakePlugin({
+          plugin_id: "tmdb",
+          name: "TMDB",
+          effective: { modules: { films: true } },
+          config: [
+            {
+              module_id: "films",
+              kind: "metadata",
+              priority: 1,
+              enabled: true,
+              auth_mode: "NONE",
+              options: { language: "ru" },
+              required_secrets: { api_key: false },
+            },
+            {
+              module_id: "serials",
+              kind: "metadata",
+              priority: 2,
+              enabled: true,
+              auth_mode: "NONE",
+              options: { language: "ru" },
+              required_secrets: { api_key: true },
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = renderPlugins(freshClient());
+    await waitFor(() =>
+      expect(container.querySelector('tr[data-plugin-id="tmdb"]')).not.toBeNull(),
+    );
+    const row = container.querySelector('tr[data-plugin-id="tmdb"]') as HTMLElement;
+
+    // The badge renders — the destructive variant, once for the unprovided
+    // binding and never for the all-provided sibling.
+    const badges = within(row).getAllByText("Требует настройки");
+    expect(badges).toHaveLength(1);
+    expect(badges[0].className).toContain("bg-destructive");
+  });
+
+  it("renders no badge when every verdict is provided or the field is absent", async () => {
+    // All-provided verdicts badge nothing; absence (no declarations —
+    // scanner rows never carry the field) badges nothing either.
+    vi.spyOn(apiModule, "getAdminPlugins").mockResolvedValue({
+      plugins: [
+        SERVING, // binding without required_secrets — the absent-field case
+        fakePlugin({
+          plugin_id: "tmdb",
+          name: "TMDB",
+          effective: { modules: { films: true } },
+          config: [
+            {
+              module_id: "films",
+              kind: "metadata",
+              priority: 1,
+              enabled: true,
+              auth_mode: "NONE",
+              required_secrets: { api_key: true, language: true },
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = renderPlugins(freshClient());
+    await waitFor(() =>
+      expect(container.querySelector(ROW_SEL)).not.toBeNull(),
+    );
+
+    expect(
+      within(container as HTMLElement).queryByText("Требует настройки"),
+    ).toBeNull();
+  });
+
+  it("renders known option keys as words with served values on a metadata binding", async () => {
+    // The words layer (plugin-options-ui D4): the recognized `language` key
+    // presents inline with the served value verbatim; non-string values
+    // (the live include_image_types array) and unknown keys stay untouched
+    // behind the raw-JSON disclosure.
+    vi.spyOn(apiModule, "getAdminPlugins").mockResolvedValue({
+      plugins: [
+        fakePlugin({
+          config: [
+            {
+              module_id: "serial",
+              kind: "metadata",
+              priority: 1,
+              enabled: true,
+              auth_mode: "NONE",
+              options: {
+                language: "ru",
+                include_image_types: ["poster", "still"],
+                base_url: "https://shikimori.one",
+              },
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = renderPlugins(freshClient());
+    await waitFor(() =>
+      expect(container.querySelector(ROW_SEL)).not.toBeNull(),
+    );
+    const row = container.querySelector(ROW_SEL) as HTMLElement;
+
+    // The words line, served value verbatim.
+    expect(within(row).getByText(/Язык: ru/)).toBeDefined();
+    // INV-verbatim-payload: the array and the unknown key stay behind the
+    // raw disclosure, pretty-printed exactly as served.
+    const optionsDetails = row.querySelector("details");
+    expect(optionsDetails).not.toBeNull();
+    const pre = optionsDetails?.querySelector("pre")?.textContent ?? "";
+    expect(pre).toContain('"include_image_types": [');
+    expect(pre).toContain('"poster"');
+    expect(pre).toContain('"base_url": "https://shikimori.one"');
+  });
+
+  it("keeps vocabulary-unknown option keys disclosure-only", async () => {
+    // A key outside the presentation vocabulary renders no words line — the
+    // raw disclosure stays the only render.
+    vi.spyOn(apiModule, "getAdminPlugins").mockResolvedValue({
+      plugins: [SERVING], // options: { base_url, lang } — both unknown keys
+    });
+
+    const { container } = renderPlugins(freshClient());
+    await waitFor(() =>
+      expect(container.querySelector(ROW_SEL)).not.toBeNull(),
+    );
+    const row = container.querySelector(ROW_SEL) as HTMLElement;
+
+    expect(within(row).queryByText(/Язык/)).toBeNull();
+    expect(row.querySelector("details")).not.toBeNull();
+    const pre = row.querySelector("details pre")?.textContent ?? "";
+    expect(pre).toContain('"base_url": "https://shikimori.one"');
+  });
+
+  it("keeps a scanner binding's options disclosure-only", async () => {
+    // Scanner rows never carry verdicts and never enter the words layer —
+    // even a recognized key stays behind the disclosure (the surveyor's Q2
+    // fold).
+    vi.spyOn(apiModule, "getAdminPlugins").mockResolvedValue({
+      plugins: [
+        fakePlugin({
+          plugin_id: "tv-parser",
+          name: "TV parser",
+          health: undefined,
+          effective: undefined,
+          config: [
+            {
+              module_id: "tv",
+              kind: "scanner",
+              enabled: true,
+              auth_mode: "NONE",
+              options: { language: "ru" },
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = renderPlugins(freshClient());
+    await waitFor(() =>
+      expect(
+        container.querySelector('tr[data-plugin-id="tv-parser"]'),
+      ).not.toBeNull(),
+    );
+    const row = container.querySelector(
+      'tr[data-plugin-id="tv-parser"]',
+    ) as HTMLElement;
+
+    expect(within(row).queryByText(/Язык/)).toBeNull();
+    // D5: scanner bindings carry no edit affordance at all — the endpoint
+    // refuses them, so no Edit button exists on the row.
+    expect(within(row).queryByRole("button", { name: "options tv" })).toBeNull();
+    expect(row.querySelector("details")).not.toBeNull();
+    const pre = row.querySelector("details pre")?.textContent ?? "";
+    expect(pre).toContain('"language": "ru"');
+  });
+
+  it("the editor flow: saving writes the composed body, closes the dialog, and re-reads the aggregate", async () => {
+    // plugin-options-ui 2.3's click-through: Edit opens the
+    // BindingOptionsEditor (the page's ONE sanctioned write); saving calls
+    // putAdminModuleSourceOptions once with the composed body, closes the
+    // dialog, and the ["admin-plugins"] invalidation re-reads the aggregate
+    // so the badge updates from the SERVER (the Sources GateToggle law) —
+    // never from the write's body.
+    const options = {
+      language: "ru",
+      include_image_types: ["poster", "still"],
+    };
+    const binding = {
+      module_id: "films",
+      kind: "metadata",
+      priority: 1,
+      enabled: true,
+      auth_mode: "NONE",
+      options,
+    };
+    const before = fakePlugin({
+      plugin_id: "tmdb",
+      name: "TMDB",
+      effective: { modules: { films: true } },
+      config: [{ ...binding, required_secrets: { api_key: false } }],
+    });
+    const after = fakePlugin({
+      plugin_id: "tmdb",
+      name: "TMDB",
+      effective: { modules: { films: true } },
+      config: [{ ...binding, required_secrets: { api_key: true } }],
+    });
+    const pluginsSpy = vi
+      .spyOn(apiModule, "getAdminPlugins")
+      .mockResolvedValueOnce({ plugins: [before] })
+      .mockResolvedValue({ plugins: [after] });
+    const putSpy = vi
+      .spyOn(apiModule, "putAdminModuleSourceOptions")
+      .mockResolvedValue(undefined);
+
+    const { container } = renderPlugins(freshClient());
+    await waitFor(() =>
+      expect(
+        container.querySelector('tr[data-plugin-id="tmdb"]'),
+      ).not.toBeNull(),
+    );
+
+    // Pre-save: the unprovided verdict owns the badge.
+    let row = container.querySelector(
+      'tr[data-plugin-id="tmdb"]',
+    ) as HTMLElement;
+    expect(within(row).getByText("Требует настройки")).toBeDefined();
+
+    // Edit opens the editor in its DialogShell.
+    fireEvent.click(within(row).getByRole("button", { name: "options films" }));
+    expect(await screen.findByRole("dialog")).toBeDefined();
+
+    // Edit the recognized option, enter the missing secret.
+    fireEvent.change(screen.getByLabelText("Язык"), {
+      target: { value: "en" },
+    });
+    fireEvent.change(screen.getByLabelText("api_key"), {
+      target: { value: "sk-typed" },
+    });
+    fireEvent.click(screen.getByText("Сохранить"));
+
+    // Exactly ONE write, with the composed body: the edited entry as
+    // entered, untouched keys carried verbatim, only the non-empty secret
+    // input.
+    await waitFor(() => expect(putSpy).toHaveBeenCalledTimes(1));
+    const [moduleId, pluginId, body] = putSpy.mock.calls[0];
+    expect(moduleId).toBe("films");
+    expect(pluginId).toBe("tmdb");
+    expect(body).toEqual({
+      language: "en",
+      include_image_types: ["poster", "still"],
+      api_key: "sk-typed",
+    });
+
+    // The 204 closes the dialog (dialog REMOVAL through the parent-owned
+    // overlay state) and the aggregate re-reads from the server — the badge
+    // clears from the SERVED verdicts, never from the write's body.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(pluginsSpy).toHaveBeenCalledTimes(2));
+    row = container.querySelector(
+      'tr[data-plugin-id="tmdb"]',
+    ) as HTMLElement;
+    await waitFor(() =>
+      expect(within(row).queryByText("Требует настройки")).toBeNull(),
+    );
   });
 
   it("the «Ошибки» column reads the served count — 0 muted and unlinked, positive a click-through", async () => {
