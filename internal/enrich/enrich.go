@@ -65,6 +65,14 @@ type Deps struct {
 	// operator kill switch). Wired flat in cmd/mellifera beside FetchGate
 	// (an &enrich.Relay literal).
 	Relay *Relay
+	// RequiredSecrets reports the secret NAMES a plugin's handshake declares
+	// (tmdb-enrichment D2/D4: cmd wires it from plugin.Manager.RequiredSecrets).
+	// The VALUES never ride through it — runSource resolves them against the
+	// binding's Options JSON core-side. Nil-safe: nil (sync runs, existing
+	// compositions) means every binding's required set is empty — every
+	// existing source byte-identical. Consumed by runSource's auth-context leg
+	// (and by derivation's queueability conjunct — design D3).
+	RequiredSecrets func(pluginID string) []string
 	// Adopt is the identity-adoption hook (tombstone-lifecycle D4): fired in
 	// the ITEM lane's workItem after the run settles beside persistRow —
 	// never for __streams__ rows (dispatched by workStreams) or series rows.
@@ -132,7 +140,7 @@ func enrichDoc(ctx context.Context, resolve metadataResolver, mod module.Module,
 		if err := ctx.Err(); err != nil {
 			return doc, statusFailed, res, hardError(doc, err)
 		}
-		sr := runSource(ctx, resolve, src, mod, base, doc, nil, nil) // sync path: no gate, no relay scope (unpaced, relay disabled)
+		sr := runSource(ctx, resolve, src, mod, base, doc, nil, nil, nil) // sync path: no gate, no relay scope, no required-secrets closure (unpaced, relay disabled, legacy empty AuthContext)
 		res.Stages++
 		res.Warnings = append(res.Warnings, sr.warnings...)
 		switch sr.kind {

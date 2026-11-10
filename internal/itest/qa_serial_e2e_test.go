@@ -808,6 +808,15 @@ func TestQASerial_JointLibraryE2E(t *testing.T) {
 type qaSerialServerBins struct {
 	server, baseScanner, tvParser, imageEnricher string
 	serialScanner, serialParser, frameGrabber    string
+	// tmdb + tmdbUpstream are the tmdb joint's seam (tmdb-enrichment 5.1):
+	// the plugin binary path and the stubbed upstream origin the plugin
+	// bakes into every fetch template (MELLIFERA_TMDB /
+	// MELLIFERA_TMDB_UPSTREAM — the shikimori pair's exact precedent). An
+	// empty field leaves that env line unset: the tmdb slot then stays
+	// unconfigured in the running server (its required secret resolves
+	// against no binding — dormant), which is exactly the pre-existing
+	// joints' behavior, byte-identical.
+	tmdb, tmdbUpstream string
 }
 
 // qaSerialStartServer mirrors the shipped startServer harness but points ALL
@@ -833,6 +842,12 @@ func qaSerialStartServer(t *testing.T, bins qaSerialServerBins, upstream, tmp, t
 		"MELLIFERA_SHIKIMORI_UPSTREAM="+upstream,
 		"MELLIFERA_LISTEN="+addr,
 	)
+	if bins.tmdb != "" { // the tmdb joint loads the plugin only when pinned (5.1)
+		srv.Env = append(srv.Env, "MELLIFERA_TMDB="+bins.tmdb)
+	}
+	if bins.tmdbUpstream != "" { // the stub upstream every tmdb template bakes
+		srv.Env = append(srv.Env, "MELLIFERA_TMDB_UPSTREAM="+bins.tmdbUpstream)
+	}
 	var log strings.Builder
 	srv.Stdout = &log
 	srv.Stderr = &log

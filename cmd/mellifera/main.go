@@ -114,6 +114,7 @@ func main() {
 		{"serial-parser", "Serial Parser", "Local directory-facts parser for serials."},
 		{"frame-grabber", "Frame Grabber", "ffmpeg thumbnail and frame metadata for serial episodes."},
 		{"shikimori", "Shikimori", "External Shikimori metadata enrichment for serials."},
+		{"tmdb", "TMDB", "External TMDB metadata enrichment for tv and serial libraries."},
 	}
 	// pluginIDs is the canonical set of plugin IDs loaded + started below AND
 	// iterated by the Deps.Status closure — derived from sourceCatalog so the
@@ -195,6 +196,15 @@ func main() {
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
 	})
 
+	// tmdb is the second EXTERNAL metadata_source (tmdb-enrichment: the
+	// tv-module chain's priority-3 slot and the serial seed v4's priority-4
+	// slot, priorities set by the module seeds). Same dev-mode pattern +
+	// capability declaration as shikimori; its SERVER-mode api key arrives
+	// through the binding's options JSON (D2), never an env var.
+	loadPlugin("tmdb", cfg.tmdbPath, []sdk.Capability{
+		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
+	})
+
 	scanDeps := scan.Deps{
 		Store:   st,
 		Modules: reg,
@@ -204,6 +214,12 @@ func main() {
 		// in the composition root and injected into the enrich chain; nil
 		// would mean unpaced.
 		Enrich: enrich.Deps{Store: st, Modules: reg, Plugins: mgr, FetchGate: enrich.NewFetchGate(),
+			// RequiredSecrets (tmdb-enrichment D2/D4 — box 2.4's threading):
+			// the plugin-declared secret NAMES off the retained handshake,
+			// consumed core-side by runSource's SERVER auth leg and
+			// derivation's queueability conjunct. Values never ride through
+			// it — they resolve against the binding's Options JSON.
+			RequiredSecrets: mgr.RequiredSecrets,
 			// Adopt (tombstone-lifecycle D4): the enrich settle fires identity
 			// adoption — a tombstoned predecessor's stranded progress/ledger
 			// re-keys onto the settled item within one rescan. Adoption never
@@ -501,6 +517,10 @@ func main() {
 		// closure). Same INV2 seam.
 		SearchSource:   newSearchClosure(enrichQueue, reg, loadedCaps),
 		IdentifySeries: newIdentifyClosure(ctx, reg, enrichQueue, loadedCaps),
+		// Item identify (tmdb-enrichment): the same re-anchor seam over the
+		// item row space — films are items, the same translation + process-ctx
+		// detachment as the series closure above.
+		IdentifyItem: newItemIdentifyClosure(ctx, reg, enrichQueue, loadedCaps),
 		// Plugin admin surfaces (plugin-admin-surfaces): the config-binding
 		// flatten over the module registry (options verbatim as raw JSON —
 		// api never parses config semantics, INV4) and the log tail
@@ -508,6 +528,17 @@ func main() {
 		// canonical loaded set, for the unknown-plugin verdict.
 		PluginConfigs: newPluginConfigsClosure(reg, loadedCaps),
 		PluginLogs:    newPluginLogsClosure(mgr, loadedCaps),
+		// Binding-options write (tmdb-enrichment 3.2, the plugin-admin
+		// delta): the ONE module-config mutation the operator surface owns —
+		// Registry.SetBindingOptions behind the unknown-module/unbound-plugin
+		// classification the api sentinels need (INV2 seam, the
+		// newSearchClosure pattern).
+		SetModuleBindingOptions: newModuleBindingOptionsClosure(reg),
+		// Per-binding required-secrets verdicts (tmdb-enrichment 3.3, the
+		// plugin-admin delta): Manager.RequiredSecrets' handshake declaration
+		// composed against THAT module binding's options — the aggregate's
+		// additive required_secrets verdicts + serve-side redaction feed.
+		RequiredSecretsStatus: newRequiredSecretsClosure(mgr, reg),
 		// Parser wake (enrichment D-6): a successful parser attach/clear fires
 		// the queue's Notify so the changed parsers re-derive at once. The
 		// request-scoped ctx is substituted with the PROCESS ctx — the same
@@ -693,6 +724,7 @@ type config struct {
 	serialParserPath  string
 	frameGrabberPath  string
 	shikimoriPath     string
+	tmdbPath          string
 	listenAddr        string
 	webDev            bool
 	enrich            enrich.QueueConfig
@@ -748,6 +780,7 @@ func loadConfig() config {
 		serialParserPath:  envOr("MELLIFERA_SERIAL_PARSER", "bin/serial-parser"),
 		frameGrabberPath:  envOr("MELLIFERA_FRAME_GRABBER", "bin/frame-grabber"),
 		shikimoriPath:     envOr("MELLIFERA_SHIKIMORI", "bin/shikimori"),
+		tmdbPath:          envOr("MELLIFERA_TMDB", "bin/tmdb"),
 		listenAddr:        envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
 		// webDev=true loosens the SPA cache headers (no-cache everywhere) so the
 		// Vite dev proxy :5173 can hot-reload alongside this server. Default
@@ -1147,9 +1180,14 @@ func hasMetadataBinding(reg *module.Registry, pluginID string) bool {
 // (unlike the re-anchoring identify, a search notifies nothing). Validation
 // mirrors newReenrichClosure: an unknown plugin (not loaded, or no module
 // binds it as a metadata_source) is rejected with the api sentinel BEFORE the
-// queue is asked. The queue's error returns verbatim — SearchSource already
-// re-wraps the gRPC text seam into sdk.ErrSearchUnsupported, which the
-// handler classifies directly (no api-local translation export; D7 cap).
+// queue is asked. The queue's error translates at this seam: an unconfigured
+// (dormant, tmdb-enrichment D3) source — the enrich-side sentinel, which the
+// api package must never see (INV2) — is re-wrapped into the api-local twin
+// (the ErrUnknownPlugin pattern above) so the handler's errors.Is classifies
+// it 503 unavailable, never 502 upstream_error. SearchSource already re-wraps
+// the gRPC text seam into sdk.ErrSearchUnsupported, which the handler
+// classifies directly (no api-local translation export; D7 cap); every other
+// queue error returns verbatim.
 func newSearchClosure(
 	q *enrich.Queue, reg *module.Registry, loadedPlugins map[string][]string,
 ) func(context.Context, string, string, string) ([]map[string]any, error) {
@@ -1157,7 +1195,11 @@ func newSearchClosure(
 		if _, loaded := loadedPlugins[pluginID]; !loaded || !hasMetadataBinding(reg, pluginID) {
 			return nil, fmt.Errorf("search %q: %w", pluginID, api.ErrUnknownPlugin)
 		}
-		return q.SearchSource(ctx, pluginID, query, kind)
+		cands, err := q.SearchSource(ctx, pluginID, query, kind)
+		if errors.Is(err, enrich.ErrUnconfiguredSource) {
+			return nil, fmt.Errorf("search %q: %w", pluginID, api.ErrUnconfiguredSource)
+		}
+		return cands, err
 	}
 }
 
@@ -1168,7 +1210,12 @@ func newSearchClosure(
 // this boundary (the newReenrichClosure detachment). Unknown-plugin
 // validation runs BEFORE any write (the spec: nothing is written on the
 // error paths); an unknown series surfaces as the store's sql.ErrNoRows,
-// preserved for the handler's 404.
+// preserved for the handler's 404. An unconfigured (dormant, tmdb-enrichment
+// D3) source — the enrich-side sentinel the api package must never see
+// (INV2) — translates into the api-local twin here (the ErrUnknownPlugin
+// pattern above; 4.3's item-identify closure carries the same translation),
+// so the handler answers 503 unavailable instead of a 500 on an identify the
+// queue refused before any write.
 func newIdentifyClosure(
 	procCtx context.Context, reg *module.Registry, q *enrich.Queue,
 	loadedPlugins map[string][]string,
@@ -1177,7 +1224,40 @@ func newIdentifyClosure(
 		if _, loaded := loadedPlugins[pluginID]; !loaded || !hasMetadataBinding(reg, pluginID) {
 			return false, 0, 0, fmt.Errorf("identify %q: %w", pluginID, api.ErrUnknownPlugin)
 		}
-		return q.IdentifySeries(procCtx, seriesID, pluginID, externalID)
+		queued, stripped, deferred, err := q.IdentifySeries(procCtx, seriesID, pluginID, externalID)
+		if errors.Is(err, enrich.ErrUnconfiguredSource) {
+			return false, 0, 0, fmt.Errorf("identify %q: %w", pluginID, api.ErrUnconfiguredSource)
+		}
+		return queued, stripped, deferred, err
+	}
+}
+
+// newItemIdentifyClosure builds the api Deps.IdentifyItem seam (tmdb-
+// enrichment, the async-enrichment delta): the series re-anchor generalized
+// over ANY row (films are items in tv libraries), riding Queue.IdentifyItem
+// on the PROCESS ctx — the same detachment as newIdentifyClosure (the write
+// ends in a queue Notify whose feeder must outlive the HTTP request).
+// Unknown-plugin validation runs BEFORE any write (nothing is written on the
+// error paths); an unknown item surfaces as the store's sql.ErrNoRows,
+// PRESERVED through this seam (%w wrap, never masked) for the handler's 404.
+// An unconfigured (dormant, tmdb-enrichment D3) source — the enrich-side
+// sentinel the api package must never see (INV2) — translates into the
+// api-local twin exactly like newIdentifyClosure, so the handler answers
+// 503 unavailable instead of a 500 on an identify the queue refused before
+// any write.
+func newItemIdentifyClosure(
+	procCtx context.Context, reg *module.Registry, q *enrich.Queue,
+	loadedPlugins map[string][]string,
+) func(context.Context, string, string, string) (bool, int, int, error) {
+	return func(_ context.Context, itemID, pluginID, externalID string) (bool, int, int, error) {
+		if _, loaded := loadedPlugins[pluginID]; !loaded || !hasMetadataBinding(reg, pluginID) {
+			return false, 0, 0, fmt.Errorf("identify %q: %w", pluginID, api.ErrUnknownPlugin)
+		}
+		queued, stripped, deferred, err := q.IdentifyItem(procCtx, itemID, pluginID, externalID)
+		if errors.Is(err, enrich.ErrUnconfiguredSource) {
+			return false, 0, 0, fmt.Errorf("identify %q: %w", pluginID, api.ErrUnconfiguredSource)
+		}
+		return queued, stripped, deferred, err
 	}
 }
 
@@ -1384,6 +1464,73 @@ func newPluginLogsClosure(mgr *plugin.Manager, loadedPlugins map[string][]string
 			return nil, fmt.Errorf("plugin logs %q: %w", pluginID, err)
 		}
 		return lines, nil
+	}
+}
+
+// newModuleBindingOptionsClosure builds the api Deps.SetModuleBindingOptions
+// seam (tmdb-enrichment 3.2, the plugin-admin delta's write endpoint): the
+// operator's options write delegating to Registry.SetBindingOptions on the
+// request ctx — the write is synchronous store+cache, nothing needs to
+// outlive the answer (the newSearchClosure posture). The registry's refusal
+// sentinels are unexported, so the classification happens HERE, at
+// construction: an unknown module id (reg.Get misses) wraps
+// api.ErrUnknownModule (→ 404 at the handler) and a plugin the module does
+// not bind as a metadata_source wraps api.ErrUnknownPlugin (→ 400), the
+// %w pattern (INV2 — api never imports internal/module to classify itself).
+// Validation-first mirroring the handler contract: a refusal answers before
+// SetBindingOptions runs, so nothing is written on the error paths; any
+// SetBindingOptions error on a validated pair is a real failure (→ 500).
+func newModuleBindingOptionsClosure(reg *module.Registry) func(context.Context, string, string, json.RawMessage) error {
+	return func(ctx context.Context, moduleID, pluginID string, options json.RawMessage) error {
+		m, err := reg.Get(moduleID)
+		if err != nil {
+			return fmt.Errorf("module options %q: %w", moduleID, api.ErrUnknownModule)
+		}
+		for _, src := range m.MetadataSources {
+			if src.PluginID == pluginID {
+				return reg.SetBindingOptions(ctx, moduleID, pluginID, options)
+			}
+		}
+		return fmt.Errorf("module options %q source %q: %w", moduleID, pluginID, api.ErrUnknownPlugin)
+	}
+}
+
+// newRequiredSecretsClosure builds the api Deps.RequiredSecretsStatus seam
+// (tmdb-enrichment 3.3, the plugin-admin delta): Manager.RequiredSecrets'
+// retained-handshake declaration composed against THAT module binding's
+// options — a declared name is provided iff its key exists in the binding's
+// Options JSON (presence, never non-emptiness; per-binding options make
+// per-binding verdicts, so the tv and serial bindings of one plugin can
+// disagree). An unknown module or an unbound plugin carries no options:
+// every declared name reads unprovided. A plugin declaring no secrets yields
+// a nil map — the api row keeps today's shape byte-identically. INV2 seam:
+// api never imports internal/plugin or internal/module, so the composition
+// lives here.
+func newRequiredSecretsClosure(mgr *plugin.Manager, reg *module.Registry) func(moduleID, pluginID string) map[string]bool {
+	return func(moduleID, pluginID string) map[string]bool {
+		names := mgr.RequiredSecrets(pluginID)
+		if len(names) == 0 {
+			return nil
+		}
+		var options json.RawMessage
+		if m, err := reg.Get(moduleID); err == nil {
+			for _, src := range m.MetadataSources {
+				if src.PluginID == pluginID {
+					options = src.Options
+					break
+				}
+			}
+		}
+		var opts map[string]string
+		if len(options) > 0 {
+			_ = json.Unmarshal(options, &opts)
+		}
+		out := make(map[string]bool, len(names))
+		for _, name := range names {
+			_, provided := opts[name]
+			out[name] = provided
+		}
+		return out
 	}
 }
 

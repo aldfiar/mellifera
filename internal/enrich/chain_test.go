@@ -42,14 +42,14 @@ func deadUpstream(t *testing.T) *metadatav1.RequestSpec {
 // given relay scope, returning the raw outcome triple.
 func runDeferred(src *planSource, sc *relayScope) (sourceResult, string, int) {
 	mod := module.Module{ID: "serial", MediaType: "serial", MetadataSources: []module.MetadataSourceBinding{binding("plan", 1, true)}}
-	return runSourceRetryable(context.Background(), resolverOf(src, nil), binding("plan", 1, true), mod, &scannerv1.IdentifyResult{}, map[string]any{}, nil, sc, 3, time.Millisecond)
+	return runSourceRetryable(context.Background(), resolverOf(src, nil), binding("plan", 1, true), mod, &scannerv1.IdentifyResult{}, map[string]any{}, nil, sc, nil, 3, time.Millisecond)
 }
 
 // runScopedSource drives one bare runSource (no retry loop, no gate) over the
 // plan source under the given relay scope.
 func runScopedSource(src *planSource, sc *relayScope) sourceResult {
 	mod := module.Module{ID: "serial", MediaType: "serial"}
-	return runSource(context.Background(), resolverOf(src, nil), binding("plan", 1, true), mod, &scannerv1.IdentifyResult{}, map[string]any{}, nil, sc)
+	return runSource(context.Background(), resolverOf(src, nil), binding("plan", 1, true), mod, &scannerv1.IdentifyResult{}, map[string]any{}, nil, sc, nil)
 }
 
 // relayConsumed reads the consumed flag straight off the job row (the S10

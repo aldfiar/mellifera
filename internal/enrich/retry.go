@@ -44,9 +44,9 @@ const (
 // maxAttempts/backoff are split out of QueueConfig (Task 05) so this file
 // compiles standalone before queue.go lands; the dispatch passes cfg.MaxAttempts
 // and cfg.Backoff at the call site (spec out_of_scope blesses this split).
-// doc, gate, and scope pass through to runSource (identity anchor, fetch
-// pacing, relay scope).
-func runSourceRetryable(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate, scope *relayScope, maxAttempts int, backoff time.Duration) (sourceResult, string, int) {
+// doc, gate, scope, and requiredSecrets pass through to runSource (identity
+// anchor, fetch pacing, relay scope, the SERVER auth leg).
+func runSourceRetryable(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate, scope *relayScope, requiredSecrets func(pluginID string) []string, maxAttempts int, backoff time.Duration) (sourceResult, string, int) {
 	// sr defaults to a NON-success kind so an early ctx-cancel (before any attempt
 	// runs) is never mistaken for outcomeSucceeded — whose iota is the zero value 0.
 	sr := sourceResult{kind: outcomeFailed, pluginID: src.PluginID}
@@ -54,7 +54,7 @@ func runSourceRetryable(ctx context.Context, resolve metadataResolver, src modul
 		if err := ctx.Err(); err != nil {
 			return sr, "", attempt - 1 // B7: ctx abort, ledgerStatus="", attempts = how far it got
 		}
-		sr = runSource(ctx, resolve, src, mod, base, doc, gate, scope)
+		sr = runSource(ctx, resolve, src, mod, base, doc, gate, scope, requiredSecrets)
 		switch sr.kind {
 		case outcomeSucceeded:
 			if len(sr.namespace) == 0 {

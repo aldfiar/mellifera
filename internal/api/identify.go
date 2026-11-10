@@ -46,9 +46,12 @@ type identifyResult struct {
 // binds it as a metadata source) → ErrUnknownPlugin → 400; a source without
 // search → the SDK's ErrSearchUnsupported → 400 with the canonical
 // search_unsupported
-// code; a failed upstream fetch → 502 upstream_error with retry disabled.
-// Missing or whitespace-only query → 400 before the closure runs; nil
-// closure → 503.
+// code; a source whose required secrets resolve against no binding
+// (dormant, tmdb-enrichment D3 — the cmd closure wraps the enrich-side
+// sentinel into the api-local ErrUnconfiguredSource) → 503 unavailable
+// with the missing-config reason; a failed upstream fetch → 502
+// upstream_error with retry disabled. Missing or whitespace-only query →
+// 400 before the closure runs; nil closure → 503.
 //
 // @Summary      Search a metadata source interactively
 // @Tags         admin
@@ -87,6 +90,13 @@ func (a *app) sourceSearch(w http.ResponseWriter, r *http.Request) {
 		// no cmd-side translation hop.
 		writeError(w, http.StatusBadRequest, "search_unsupported", "source "+pluginID+" does not support search", false)
 		return
+	case errors.Is(err, ErrUnconfiguredSource):
+		// An unconfigured (dormant, tmdb-enrichment D3) source is the
+		// deployment's missing configuration, not an upstream failure —
+		// the nil-closure 503 shape, the reason carrying the missing-config
+		// meaning (NOT 502 upstream_error, which names the upstream itself).
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "source "+pluginID+" unconfigured: required secrets missing from the binding options", false)
+		return
 	default:
 		// A failed upstream fetch is the source's (third party's) failure —
 		// the canonical inline error with retry disabled (the anonymous tier
@@ -111,8 +121,11 @@ func (a *app) sourceSearch(w http.ResponseWriter, r *http.Request) {
 // closure, before the response write (browse-scale 3.4); nil closure, silent
 // no-op. Unknown
 // series → 404 (the store's sql.ErrNoRows, preserved through the closure);
-// unknown source → 400 (ErrUnknownPlugin); an empty source_id/external_id or
-// a malformed body → 400 before the closure runs; nil closure → 503.
+// unknown source → 400 (ErrUnknownPlugin); an unconfigured (dormant) source
+// → 503 unavailable with the missing-config reason (ErrUnconfiguredSource,
+// the cmd closure's %w translation of the enrich-side sentinel); an empty
+// source_id/external_id or a malformed body → 400 before the closure runs;
+// nil closure → 503.
 //
 // @Summary      Re-anchor a series' identity to a picked metadata match
 // @Tags         series
@@ -154,12 +167,96 @@ func (a *app) seriesIdentify(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrUnknownPlugin):
 		writeError(w, http.StatusBadRequest, "bad_request", "unknown plugin "+req.SourceID, false)
 		return
+	case errors.Is(err, ErrUnconfiguredSource):
+		// Dormant source (tmdb-enrichment D3): the nil-closure 503 shape,
+		// the reason carrying the missing-config meaning — and crucially
+		// BEFORE the write would ever classify as an upstream/internal
+		// failure; nothing is written on this path (the queue's pre-action
+		// check answers the sentinel before any anchor lands).
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "source "+req.SourceID+" unconfigured: required secrets missing from the binding options", false)
+		return
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
 	if a.deps.OnTitleChange != nil {
 		a.deps.OnTitleChange(r.Context(), seriesID)
+	}
+	writeJSON(w, http.StatusAccepted, identifyResult{Queued: queued, Stripped: stripped, Deferred: deferred})
+}
+
+// itemIdentify is the series override generalized over ANY row (tmdb-
+// enrichment, the async-enrichment delta): the same identifyRequest/
+// identifyResult wire as seriesIdentify byte-for-byte — films are items in
+// tv libraries, and the operator picks the candidate in the same identify
+// overlay. The closure writes the picked id into the ITEM document's
+// identifiers.<source_id>_id, strips the source's namespace, clears the
+// source's ledger cooldown for the row, and notifies the library so the next
+// derivation run fetches BY the picked id; a lease-held row is reported
+// deferred with nothing written. After a successful re-anchor the
+// Deps.OnTitleChange invalidation seam fires with the ITEM id — after the
+// closure, before the response write (browse-scale 3.4); nil closure, silent
+// no-op. Unknown item → 404 (the store's sql.ErrNoRows, preserved through
+// the closure); unknown/non-search source → 400 (ErrUnknownPlugin); an
+// unconfigured (dormant) source → 503 unavailable with the missing-config
+// reason (ErrUnconfiguredSource, the cmd closure's %w translation of the
+// enrich-side sentinel); an empty source_id/external_id or a malformed body
+// → 400 before the closure runs; nil closure → 503.
+//
+// @Summary      Re-anchor an item's identity to a picked metadata match
+// @Tags         items
+// @ID           item-identify
+// @Router       /items/{id}/identify [put]
+// @Param        id      path string             true "item id"
+// @Param        request body identifyRequest   true "source_id + external_id, both required"
+// @Success      202 {object} identifyResult
+// @Failure      400 {object} errorBody
+// @Failure      401 {object} errorBody
+// @Failure      404 {object} errorBody
+// @Failure      500 {object} errorBody
+// @Failure      503 {object} errorBody
+func (a *app) itemIdentify(w http.ResponseWriter, r *http.Request) {
+	var req identifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON body", false)
+		return
+	}
+	if req.SourceID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "source_id is required", false)
+		return
+	}
+	if req.ExternalID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "external_id is required", false)
+		return
+	}
+	if a.deps.IdentifyItem == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "identify endpoint disabled", false)
+		return
+	}
+	itemID := chi.URLParam(r, "id")
+	queued, stripped, deferred, err := a.deps.IdentifyItem(r.Context(), itemID, req.SourceID, req.ExternalID)
+	switch {
+	case err == nil:
+	case errors.Is(err, sql.ErrNoRows):
+		writeError(w, http.StatusNotFound, "not_found", "item "+itemID+" not found", false)
+		return
+	case errors.Is(err, ErrUnknownPlugin):
+		writeError(w, http.StatusBadRequest, "bad_request", "unknown plugin "+req.SourceID, false)
+		return
+	case errors.Is(err, ErrUnconfiguredSource):
+		// Dormant source (tmdb-enrichment D3): the nil-closure 503 shape,
+		// the reason carrying the missing-config meaning — and crucially
+		// BEFORE the write would ever classify as an upstream/internal
+		// failure; nothing is written on this path (the queue's pre-action
+		// check answers the sentinel before any anchor lands).
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "source "+req.SourceID+" unconfigured: required secrets missing from the binding options", false)
+		return
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	if a.deps.OnTitleChange != nil {
+		a.deps.OnTitleChange(r.Context(), itemID)
 	}
 	writeJSON(w, http.StatusAccepted, identifyResult{Queued: queued, Stripped: stripped, Deferred: deferred})
 }

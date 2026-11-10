@@ -5,6 +5,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -106,6 +107,16 @@ type Deps struct {
 	// sql.ErrNoRows preserved (→ 404 at the handler). Nil-safe (503 when
 	// nil), mirroring Reenrich.
 	IdentifySeries func(ctx context.Context, seriesID, pluginID, externalID string) (queued bool, stripped, deferred int, err error)
+	// IdentifyItem is the series re-anchor closure generalized over ANY row
+	// (tmdb-enrichment, the async-enrichment delta): writes the picked
+	// external id into the ITEM document's identifiers, strips the source's
+	// namespace, clears the source's ledger cooldown for the row, and
+	// notifies the library so the next derivation run fetches BY the picked
+	// id — a lease-held row reports deferred with nothing written. Unknown
+	// plugin errors (wrapping ErrUnknownPlugin); an unknown item errors with
+	// the store's sql.ErrNoRows preserved (→ 404 at the handler). Nil-safe
+	// (503 when nil), mirroring IdentifySeries.
+	IdentifyItem func(ctx context.Context, itemID, pluginID, externalID string) (queued bool, stripped, deferred int, err error)
 	// SourceInventory is the admin-sources boot-literal inventory closure
 	// (plugin-title-enrichment D6): the plugin ids the process booted with,
 	// in boot order, each with its operator-facing display name and
@@ -174,6 +185,30 @@ type Deps struct {
 	// ErrUnknownPlugin → 400 at the handler); any other error is a real
 	// failure (→ 500). Nil-safe (503 when nil), mirroring PluginConfigs.
 	PluginLogs func(ctx context.Context, pluginID string) ([]string, error)
+	// SetModuleBindingOptions is the plugin-admin delta's write closure
+	// (tmdb-enrichment 3.2): replaces ONE module binding's options JSON via
+	// Registry.SetBindingOptions (INV2 — api never imports internal/module;
+	// cmd wraps the registry's unexported refusals into the api-local
+	// ErrUnknownModule/ErrUnknownPlugin sentinels via %w, the newSearchClosure
+	// pattern). Options ride as raw JSON and are stored verbatim — serve-side
+	// redaction is the aggregate's concern (3.3), not the write's. The write
+	// wakes nothing: dormancy is read-time, the next derivation reads the new
+	// options through the refreshed registry cache. Nil-safe (503 when nil),
+	// mirroring PluginLogs.
+	SetModuleBindingOptions func(ctx context.Context, moduleID, pluginID string, options json.RawMessage) error
+	// RequiredSecretsStatus is the plugin-admin delta's per-binding verdict
+	// closure (tmdb-enrichment 3.3): the plugin's declared secret names, each
+	// mapped to whether THAT module binding's options provide a value — cmd
+	// composes Manager.RequiredSecrets (the retained handshake declaration)
+	// against the registry binding's Options JSON, presence-judged (a name is
+	// provided iff its key exists; non-emptiness is never judged). The
+	// aggregate renders the map as the metadata binding's additive
+	// required_secrets verdicts and omits every named key from the served
+	// options (serve-side redaction — presence lives in the verdicts, never
+	// in the bytes). An empty/nil map is "the plugin declares no secrets":
+	// the row serves today's shape byte-identically. A nil closure degrades
+	// the same way (no verdicts, options verbatim) — nil-safe, cmd wires it.
+	RequiredSecretsStatus func(moduleID, pluginID string) map[string]bool
 	// LibraryFacets serves one library's facet aggregates (browse-scale 3.2,
 	// library-facets delta): built in cmd/mellifera over browse.Service.Facets
 	// (INV2 — api never imports browse). Parallel slices, the ModuleSources
@@ -559,11 +594,14 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Post("/admin/sources/preview", h.adminSourcePreview)
 		// Identify overlay (identify-match-override): the interactive source
 		// search passthrough (a read — but operator tooling, so the admin
-		// group beside /admin/sources) and the series re-anchor write (202;
-		// the strip + re-derive run under the row's lease). Both are
-		// Deps-closure endpoints (nil-safe, cmd-wired).
+		// group beside /admin/sources) and the re-anchor write (202; the
+		// strip + re-derive run under the row's lease) over BOTH row spaces —
+		// the series space and, since tmdb-enrichment, the item space (films
+		// are items in tv libraries). All are Deps-closure endpoints
+		// (nil-safe, cmd-wired).
 		r.Get("/admin/sources/{plugin_id}/search", h.sourceSearch)
 		r.Put("/series/{id}/identify", h.seriesIdentify)
+		r.Put("/items/{id}/identify", h.itemIdentify)
 		// Plugin admin surfaces (plugin-admin-surfaces): the read-only
 		// loaded-plugin aggregate — boot inventory, health snapshot,
 		// capability chips, module-scope effective verdicts, config bindings —
@@ -572,6 +610,16 @@ func mountV1Routes(r chi.Router, h *app) {
 		// /admin/sources.
 		r.Get("/admin/plugins", h.adminPlugins)
 		r.Get("/admin/plugins/{plugin_id}/logs", h.adminPluginLogs)
+		// Binding-options write (tmdb-enrichment, the plugin-admin delta):
+		// PUT {"options": {...}} replaces exactly that module binding's
+		// options JSON in the store-backed module config — the SERVER-mode
+		// auth resolution's home (the per-binding secrets an operator
+		// configures here). Validation-first (unknown module 404, unbound
+		// plugin / malformed body 400, nothing written on error); the write
+		// wakes nothing — dormancy is read-time, the next derivation reads
+		// the new options. A Deps-closure endpoint (nil-safe, cmd-wired), so
+		// the admin group beside the aggregate it configures.
+		r.Put("/admin/modules/{module_id}/sources/{plugin_id}/options", h.adminModuleBindingOptions)
 		r.Get("/admin/status", h.adminStatus)
 		// Device-pairing admin surface (device-pairing D2): the operator
 		// review of pending pairing requests (list/approve/deny) and the

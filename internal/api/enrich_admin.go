@@ -33,6 +33,15 @@ var (
 	// ErrUnknownRows: one or more row_ids do not exist in the library →
 	// 404 not_found. Row identity is the opaque string id (itm_/ser_).
 	ErrUnknownRows = errors.New("unknown rows")
+	// ErrUnconfiguredSource: the source's declared required secrets resolve
+	// against no module binding's Options JSON, so the source is DORMANT
+	// (tmdb-enrichment D3) → 503 unavailable on the interactive endpoints
+	// (sourceSearch/seriesIdentify), never 502 upstream_error (that code
+	// means the upstream itself failed). api-local twin of the enrich-side
+	// sentinel — api imports no enrich package (INV2); cmd's SearchSource/
+	// IdentifySeries closures translate between the two via %w (the
+	// ErrUnknownPlugin pattern) so this var is what errors.Is hits.
+	ErrUnconfiguredSource = errors.New("source unconfigured: required secrets missing from the binding options")
 )
 
 // ReenrichResult is the wire shape AND the Deps.Reenrich seam-input shape of

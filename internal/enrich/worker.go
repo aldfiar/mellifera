@@ -132,6 +132,17 @@ func exhaustedDoublings(priorAttempts, maxAttempts int) int {
 // seek to a fraction of the probe-reported duration so short files still yield
 // a frame). The fact is advisory — sources that never read it are unaffected,
 // and a missing/unparseable probe simply leaves it absent.
+//
+// When the document carries a committed source namespace season fact
+// (doc["sources"] — seriesSeason reads it namespace-agnostically, serial-parser
+// first, the same law the episode-titles router uses), the season is surfaced
+// as parsed season (tmdb-enrichment addendum 7: the serial-parser writes season
+// ONLY into its document namespace, but the anchored series plan keys the
+// season fetch on the parsed fact — without this stamp an anchored series query
+// carries {tmdb_id} alone and silently degrades to the movie path). The fact is
+// stamped only when present and >0 (the parser's marker law); a marker-only,
+// zero, or absent value leaves the parsed fact unset, and sources that never
+// read it are unaffected.
 func reconstructBase(doc map[string]any) *scannerv1.IdentifyResult {
 	st, err := toStruct(doc["parsed"]) // nil -> &structpb.Struct{} (empty)
 	if st == nil {
@@ -143,6 +154,12 @@ func reconstructBase(doc map[string]any) *scannerv1.IdentifyResult {
 			st.Fields = make(map[string]*structpb.Value, 1)
 		}
 		st.Fields["probe_duration_seconds"] = structpb.NewNumberValue(dur)
+	}
+	if season, ok := seriesSeason(doc); ok && season > 0 {
+		if st.Fields == nil {
+			st.Fields = make(map[string]*structpb.Value, 1)
+		}
+		st.Fields["season"] = structpb.NewNumberValue(float64(season))
 	}
 	return &scannerv1.IdentifyResult{Parsed: st}
 }
@@ -306,13 +323,13 @@ func (q *Queue) driveSources(
 			res.err = err
 			return res
 		}
-		if !queueable(src) || hasNamespace(doc, src.PluginID) {
+		if !queueable(src, q.deps.RequiredSecrets) || hasNamespace(doc, src.PluginID) {
 			continue
 		}
 		if inCooldown(idx, rowID, src.PluginID, nowt) {
 			continue
 		}
-		sr, ledgerStatus, attempts := runSourceRetryable(ctx, q.resolve, src, mod, base, doc, q.deps.FetchGate, sc, q.cfg.MaxAttempts, q.cfg.Backoff)
+		sr, ledgerStatus, attempts := runSourceRetryable(ctx, q.resolve, src, mod, base, doc, q.deps.FetchGate, sc, q.deps.RequiredSecrets, q.cfg.MaxAttempts, q.cfg.Backoff)
 		*status = advanceForSource(*status, sr.kind, &res.begun)
 		appendStage(doc, sr, *status)
 		q.applyOutcome(ctx, rowID, src.PluginID, idx, sr, ledgerStatus, attempts)
@@ -401,10 +418,14 @@ func (q *Queue) applyOutcome(
 // attempted-this-run-but-produced-no-work (an unavailable/skipped _stages entry).
 // When true, the item has no pending work and may settle to ready (arch §4.4). A
 // source with neither a namespace, a ledger row, nor a recorded attempt still has
-// genuine pending work and must not settle.
-func allSourcesTerminal(idx failureIndex, mod module.Module, extras []module.MetadataSourceBinding, doc map[string]any, rowID string, nowt time.Time) bool {
+// genuine pending work and must not settle. The queueable predicate is the
+// derivation's own (D-Q1 + tmdb-enrichment D3) — a DORMANT source (an
+// unconfigured SERVER binding derives no work, so it can never produce a
+// namespace, ledger row, or attempt) must never block settling, so the
+// requiredSecrets closure rides through unchanged (nil-safe — see queueable).
+func allSourcesTerminal(idx failureIndex, mod module.Module, extras []module.MetadataSourceBinding, doc map[string]any, rowID string, nowt time.Time, requiredSecrets func(pluginID string) []string) bool {
 	for _, src := range append(mod.MetadataSources, extras...) {
-		if !queueable(src) {
+		if !queueable(src, requiredSecrets) {
 			continue
 		}
 		if hasNamespace(doc, src.PluginID) || inCooldown(idx, rowID, src.PluginID, nowt) {
