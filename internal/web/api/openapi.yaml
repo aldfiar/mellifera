@@ -619,6 +619,13 @@ definitions:
       token:
         type: string
     type: object
+  api.moduleBindingOptionsRequest:
+    properties:
+      options:
+        items:
+          type: integer
+        type: array
+    type: object
   api.pairCreateResponse:
     properties:
       code:
@@ -717,6 +724,18 @@ definitions:
         type: array
       priority:
         type: integer
+      required_secrets:
+        additionalProperties:
+          type: boolean
+        description: |-
+          RequiredSecrets is the additive per-binding verdicts object (tmdb-
+          enrichment 3.3): the plugin's declared secret names mapped to whether
+          THIS binding's options provide each (per-binding options make
+          per-binding verdicts — a plugin bound by two modules renders its own
+          verdicts per row, and the plugin row itself carries no single verdict).
+          Omitted entirely when the plugin declares no secrets — today's row
+          shape, byte-identical.
+        type: object
     type: object
   api.pluginAdminEffective:
     properties:
@@ -1767,6 +1786,48 @@ paths:
       summary: Remove a member user from a group
       tags:
       - admin
+  /admin/modules/{module_id}/sources/{plugin_id}/options:
+    put:
+      operationId: admin-module-source-options
+      parameters:
+      - description: module id
+        in: path
+        name: module_id
+        required: true
+        type: string
+      - description: plugin id
+        in: path
+        name: plugin_id
+        required: true
+        type: string
+      - description: options to write
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.moduleBindingOptionsRequest'
+      responses:
+        "204":
+          description: options written
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Replace a module binding's options JSON
+      tags:
+      - admin
   /admin/pairings:
     get:
       operationId: admin-pairings
@@ -2572,6 +2633,49 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: Get a single item with its full document
+      tags:
+      - items
+  /items/{id}/identify:
+    put:
+      operationId: item-identify
+      parameters:
+      - description: item id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: source_id + external_id, both required
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.identifyRequest'
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/api.identifyResult'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Re-anchor an item's identity to a picked metadata match
       tags:
       - items
   /items/{id}/media:
