@@ -243,3 +243,13 @@ Seeded non-blocking at the gate (the change's review.md FLAG dispositions):
   `components/admin/`** — the page sits at ~539 lines vs the generic 500
   limit (the web convention overrides the baseline for now; noted at the
   gate).
+
+## fix-trash-rerename follow-ups (GATE 2 flags, 2026-11-10)
+
+Seeded non-blocking at the gate (the change's review.md FLAG dispositions):
+
+- **P3: fixture-hoisting pass in `cmd/mellifera/retention_test.go`** — the
+  repro test's `trashSeed`/`trashBuild`/`trashBackdate` helpers near-copy
+  `TestSweepRetention`'s closures; reuse required a package-level hoist
+  touching tests outside the fix's scope, so it was deferred. Hoist the
+  shared fixtures on the file's next touch.
