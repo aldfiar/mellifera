@@ -14,6 +14,7 @@ import (
 
 	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
+	"github.com/mellifera/mellifera/internal/sourcestate"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 )
@@ -31,16 +32,6 @@ const identifyOwner = "identify"
 // errEmptyExternalID guards the identify anchor against an empty pick (the api
 // validates too; the queue refuses before touching the row).
 var errEmptyExternalID = errors.New("enrich: identify: empty external_id")
-
-// ErrUnconfiguredSource is the typed enrich-side sentinel (tmdb-enrichment
-// D3): the plugin declares required secrets that no binding's Options JSON
-// resolves, so the source is DORMANT — derivation derives no work for it and
-// the interactive producers answer this instead of a doomed fetch
-// (SearchSource) or a written-then-dormant identify (IdentifySeries). The
-// api-local twin (task 3.4 — the api imports no enrich package) and cmd's
-// %w translation between the two (newSearchClosure/newIdentifyClosure) are
-// the INV2 seam; this package declares only its own half.
-var ErrUnconfiguredSource = errors.New("enrich: source unconfigured: required secrets missing from the binding options")
 
 // relaySearchBudget is the search poll's give-up budget (ruled OQ-6, D8): a
 // held search request waits at most this long for its relay job to reach a
@@ -150,7 +141,7 @@ func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) 
 		return nil, err
 	}
 	if !q.sourceConfigured(pluginID) { // D3: dormant — never a doomed fetch
-		return nil, ErrUnconfiguredSource
+		return nil, sourcestate.ErrUnconfiguredSource
 	}
 	// The executor resolves the plugin's binding secrets exactly like the
 	// derivation chain (resolveServerSecrets — the serverAuth iteration) and
@@ -162,7 +153,7 @@ func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) 
 	// law answers ErrUnconfiguredSource, never a raw 502 upstream_error.
 	secrets, configured := q.resolveServerSecrets(pluginID)
 	if !configured { // D3: dormant — never a doomed fetch
-		return nil, ErrUnconfiguredSource
+		return nil, sourcestate.ErrUnconfiguredSource
 	}
 	specs, err := md.SearchSpecs(ctx, &metadatav1.SearchSpecsRequest{Query: query, Kind: kind})
 	if err != nil {
@@ -171,7 +162,7 @@ func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) 
 	body, status, headers, err := fetchSource(ctx, q.deps.FetchGate, pluginID, specs.GetSpec(), secrets)
 	if err != nil {
 		if errors.Is(err, errRedactedRef) { // 3.4's 503 law — the upstream did not fail
-			return nil, fmt.Errorf("enrich: search fetch: %w", ErrUnconfiguredSource)
+			return nil, fmt.Errorf("enrich: search fetch: %w", sourcestate.ErrUnconfiguredSource)
 		}
 		// Ruled OQ-6 (D8): a NETWORK-class fetch rides the relay — the job
 		// enqueues for the plugin and this closure holds and polls it. Every
@@ -375,7 +366,7 @@ func (q *Queue) IdentifySeries(ctx context.Context, seriesID, pluginID, external
 		}
 	}
 	if !q.sourceConfigured(pluginID) { // D3: never write-then-dormant
-		return false, 0, 0, ErrUnconfiguredSource
+		return false, 0, 0, sourcestate.ErrUnconfiguredSource
 	}
 	if !q.leases.acquire(seriesID, identifyOwner, q.cfg.LeaseTTL) {
 		return false, 0, 1, nil // a worker owns the row: nothing written, retry later
@@ -453,7 +444,7 @@ func (q *Queue) IdentifyItem(ctx context.Context, itemID, pluginID, externalID s
 		}
 	}
 	if !q.sourceConfigured(pluginID) { // D3: never write-then-dormant
-		return false, 0, 0, ErrUnconfiguredSource
+		return false, 0, 0, sourcestate.ErrUnconfiguredSource
 	}
 	if !q.leases.acquire(itemID, identifyOwner, q.cfg.LeaseTTL) {
 		return false, 0, 1, nil // a worker owns the row: nothing written, retry later

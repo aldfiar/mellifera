@@ -15,6 +15,7 @@ import (
 
 	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/naming"
+	"github.com/mellifera/mellifera/internal/sourcestate"
 	"github.com/mellifera/mellifera/internal/store"
 )
 
@@ -241,14 +242,6 @@ func (a *app) adminSourcePatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sourcePatchResponse{Queued: queued})
 }
 
-// ErrUnknownModule marks a module id the module registry does not carry —
-// the options-write route's 404 half. Api-local on purpose (the
-// ErrUnknownPlugin precedent): INV2 keeps api from importing internal/module,
-// so cmd's SetModuleBindingOptions closure wraps the registry's unexported
-// refusals into THESE sentinels via %w and the handler classifies with
-// errors.Is — no error-text parsing, the distinct-sentinel discipline.
-var ErrUnknownModule = errors.New("unknown module")
-
 // moduleBindingOptionsRequest is the body of PUT
 // /admin/modules/{module_id}/sources/{plugin_id}/options: the replacement
 // options JSON for exactly that binding, stored verbatim by the registry
@@ -312,7 +305,7 @@ func (a *app) adminModuleBindingOptions(w http.ResponseWriter, r *http.Request) 
 	pluginID := chi.URLParam(r, "plugin_id")
 	if err := a.deps.SetModuleBindingOptions(r.Context(), moduleID, pluginID, req.Options); err != nil {
 		switch {
-		case errors.Is(err, ErrUnknownModule):
+		case errors.Is(err, sourcestate.ErrUnknownModule):
 			writeError(w, http.StatusNotFound, "not_found", "module "+moduleID+" not found", false)
 		case errors.Is(err, ErrUnknownPlugin):
 			writeError(w, http.StatusBadRequest, "bad_request",

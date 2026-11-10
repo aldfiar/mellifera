@@ -18,6 +18,7 @@ import (
 
 	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/relay"
+	"github.com/mellifera/mellifera/internal/sourcestate"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
@@ -917,7 +918,7 @@ func TestSearchSourceRedactedRefAnswersUnconfigured(t *testing.T) {
 	q.deps.Relay = &Relay{Store: s}
 
 	_, err := q.SearchSource(ctx, "tmdb", "aria", "")
-	if !errors.Is(err, ErrUnconfiguredSource) {
+	if !errors.Is(err, sourcestate.ErrUnconfiguredSource) {
 		t.Fatalf("err = %v, want ErrUnconfiguredSource (the 503 law, never a raw 502)", err)
 	}
 	if _, found := relayClaim(t, s); found {

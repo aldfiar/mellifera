@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/mellifera/mellifera/internal/sourcestate"
 )
 
 // moduleOptionsCall records one Deps.SetModuleBindingOptions invocation.
@@ -33,10 +35,11 @@ func fakeModuleBindingOptions(err error, calls *[]moduleOptionsCall) func(contex
 // /admin/modules/{module_id}/sources/{plugin_id}/options wire contract
 // (tmdb-enrichment 3.2, the plugin-admin delta's write endpoint): 204 on a
 // landing write with the route params and the options JSON passed to the
-// closure verbatim, 404 from ErrUnknownModule (wrapped — the errors.Is
-// mapping), 400 from ErrUnknownPlugin (a plugin the module does not bind as
-// a metadata source), 503 when the closure is nil, and 400 on a malformed
-// body / missing options / non-object options with the closure never called.
+// closure verbatim, 404 from sourcestate.ErrUnknownModule (wrapped — the
+// errors.Is mapping), 400 from ErrUnknownPlugin (a plugin the module does
+// not bind as a metadata source), 503 when the closure is nil, and 400 on a
+// malformed body / missing options / non-object options with the closure
+// never called.
 func TestModuleOptionsRoute(t *testing.T) {
 	st := openAPIStore(t)
 
@@ -67,7 +70,7 @@ func TestModuleOptionsRoute(t *testing.T) {
 			name:        "unknown_module_is_404_not_found",
 			path:        "/api/v1/admin/modules/ghost/sources/tmdb/options",
 			body:        `{"options":{}}`,
-			optsErr:     fmt.Errorf("module %q: %w", "ghost", ErrUnknownModule),
+			optsErr:     fmt.Errorf("module %q: %w", "ghost", sourcestate.ErrUnknownModule),
 			wantStatus:  http.StatusNotFound,
 			wantErrCode: "not_found",
 			wantCalled:  true,

@@ -14,6 +14,7 @@ import (
 
 	"github.com/mellifera/mellifera/internal/access"
 	"github.com/mellifera/mellifera/internal/module"
+	"github.com/mellifera/mellifera/internal/sourcestate"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/pkg/sdk"
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
@@ -112,7 +113,7 @@ func TestSearchSourceUnconfiguredSentinel(t *testing.T) {
 	q.resolve = mapResolver{"tmdb": src}.resolver()
 
 	_, err := q.SearchSource(ctx, "tmdb", "aria", "")
-	if !errors.Is(err, ErrUnconfiguredSource) {
+	if !errors.Is(err, sourcestate.ErrUnconfiguredSource) {
 		t.Fatalf("err = %v, want ErrUnconfiguredSource", err)
 	}
 	if errors.Is(err, sdk.ErrSearchUnsupported) {
@@ -159,7 +160,7 @@ func TestIdentifySeriesUnconfiguredWritesNothing(t *testing.T) {
 
 	q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredTmdb}, QueueConfig{})
 	queued, stripped, deferred, err := q.IdentifySeries(ctx, serID, "tmdb", "12345")
-	if !errors.Is(err, ErrUnconfiguredSource) {
+	if !errors.Is(err, sourcestate.ErrUnconfiguredSource) {
 		t.Fatalf("err = %v, want ErrUnconfiguredSource", err)
 	}
 	if queued || stripped != 0 || deferred != 0 {

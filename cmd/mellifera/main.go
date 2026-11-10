@@ -50,6 +50,7 @@ import (
 	"github.com/mellifera/mellifera/internal/pairing"
 	"github.com/mellifera/mellifera/internal/plugin"
 	"github.com/mellifera/mellifera/internal/scan"
+	"github.com/mellifera/mellifera/internal/sourcestate"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
 	"github.com/mellifera/mellifera/internal/web"
@@ -1196,7 +1197,7 @@ func newSearchClosure(
 			return nil, fmt.Errorf("search %q: %w", pluginID, api.ErrUnknownPlugin)
 		}
 		cands, err := q.SearchSource(ctx, pluginID, query, kind)
-		if errors.Is(err, enrich.ErrUnconfiguredSource) {
+		if errors.Is(err, sourcestate.ErrUnconfiguredSource) {
 			return nil, fmt.Errorf("search %q: %w", pluginID, api.ErrUnconfiguredSource)
 		}
 		return cands, err
@@ -1225,7 +1226,7 @@ func newIdentifyClosure(
 			return false, 0, 0, fmt.Errorf("identify %q: %w", pluginID, api.ErrUnknownPlugin)
 		}
 		queued, stripped, deferred, err := q.IdentifySeries(procCtx, seriesID, pluginID, externalID)
-		if errors.Is(err, enrich.ErrUnconfiguredSource) {
+		if errors.Is(err, sourcestate.ErrUnconfiguredSource) {
 			return false, 0, 0, fmt.Errorf("identify %q: %w", pluginID, api.ErrUnconfiguredSource)
 		}
 		return queued, stripped, deferred, err
@@ -1254,7 +1255,7 @@ func newItemIdentifyClosure(
 			return false, 0, 0, fmt.Errorf("identify %q: %w", pluginID, api.ErrUnknownPlugin)
 		}
 		queued, stripped, deferred, err := q.IdentifyItem(procCtx, itemID, pluginID, externalID)
-		if errors.Is(err, enrich.ErrUnconfiguredSource) {
+		if errors.Is(err, sourcestate.ErrUnconfiguredSource) {
 			return false, 0, 0, fmt.Errorf("identify %q: %w", pluginID, api.ErrUnconfiguredSource)
 		}
 		return queued, stripped, deferred, err
@@ -1474,7 +1475,7 @@ func newPluginLogsClosure(mgr *plugin.Manager, loadedPlugins map[string][]string
 // outlive the answer (the newSearchClosure posture). The registry's refusal
 // sentinels are unexported, so the classification happens HERE, at
 // construction: an unknown module id (reg.Get misses) wraps
-// api.ErrUnknownModule (→ 404 at the handler) and a plugin the module does
+// sourcestate.ErrUnknownModule (→ 404 at the handler) and a plugin the module does
 // not bind as a metadata_source wraps api.ErrUnknownPlugin (→ 400), the
 // %w pattern (INV2 — api never imports internal/module to classify itself).
 // Validation-first mirroring the handler contract: a refusal answers before
@@ -1484,7 +1485,7 @@ func newModuleBindingOptionsClosure(reg *module.Registry) func(context.Context, 
 	return func(ctx context.Context, moduleID, pluginID string, options json.RawMessage) error {
 		m, err := reg.Get(moduleID)
 		if err != nil {
-			return fmt.Errorf("module options %q: %w", moduleID, api.ErrUnknownModule)
+			return fmt.Errorf("module options %q: %w", moduleID, sourcestate.ErrUnknownModule)
 		}
 		for _, src := range m.MetadataSources {
 			if src.PluginID == pluginID {
