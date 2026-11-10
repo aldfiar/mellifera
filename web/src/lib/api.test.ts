@@ -16,6 +16,7 @@ import {
   hasOriginalFile,
   listEnrichFailures,
   listItems,
+  putAdminModuleSourceOptions,
   revokeDevice,
   sendPlaybackEvent,
   startPairing,
@@ -826,5 +827,66 @@ describe("playback descriptor + beacon client (tv-playback-unblock)", () => {
       sendPlaybackEvent("itm_7_abc", "direct", "stalled", "preparing_stall", "poll window exhausted"),
     ).resolves.toBeUndefined();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("admin module binding options — plugin-options-ui (putAdminModuleSourceOptions <-> Go /admin/modules/{module_id}/sources/{plugin_id}/options)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("PUTs the composed options body to the module-source route (module_id before plugin_id) and resolves void on a 204", async () => {
+    setToken("t1");
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(
+      putAdminModuleSourceOptions("mod_tmdb", "plg_tmdb", {
+        language: "ru",
+        include_image_types: ["poster", "backdrop"],
+      }),
+    ).resolves.toBeUndefined();
+
+    const [path, init] = fetchSpy.mock.calls[0]!;
+    expect(path).toBe("/api/v1/admin/modules/mod_tmdb/sources/plg_tmdb/options");
+    expect(init?.method).toBe("PUT");
+    const headers = init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer t1");
+    expect(headers["Content-Type"]).toBe("application/json");
+    // the composed body rides wrapped — {"options": options} verbatim,
+    // PRE-stringified (apiRequestVoid does not stringify)
+    expect(JSON.parse(init?.body as string)).toEqual({
+      options: {
+        language: "ru",
+        include_image_types: ["poster", "backdrop"],
+      },
+    });
+  });
+
+  it("surfaces a canonical error body as ApiError (the unbound-or-malformed 400 class)", async () => {
+    setToken("t1");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(400, {
+        error: {
+          code: "bad_request",
+          message: "plugin not bound as a metadata source of this module",
+          retryable: false,
+        },
+      }),
+    );
+
+    const caught = await putAdminModuleSourceOptions("mod_tmdb", "plg_x", {
+      language: "ru",
+    }).catch((e: unknown) => e);
+    expect(caught).toBeInstanceOf(ApiError);
+    const err = caught as ApiError;
+    expect(err.status).toBe(400);
+    expect(err.code).toBe("bad_request");
+    expect(err.message).toBe("plugin not bound as a metadata source of this module");
   });
 });

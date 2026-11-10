@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -10,6 +10,7 @@ import type {
   PluginAdminPlugin,
 } from "@/lib/api";
 import { getAdminPluginLogs, getAdminPlugins } from "@/lib/api";
+import { BindingOptionsEditor } from "@/components/admin/BindingOptionsEditor";
 import AdminTabs from "@/pages/admin/AdminTabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -26,8 +27,9 @@ import {
 // Plugins — the Plugins admin surface (/admin/plugins, plugin-admin-surfaces)
 // beside Collections (/admin) and Sources (/admin/sources). One row per loaded
 // plugin in boot order: display name + description, capability chips, the
-// colored STATUS (green/red/gray), and its config bindings rendered
-// READ-ONLY in human words.
+// colored STATUS (green/red/gray), and its config bindings rendered in
+// human words (read-only except the per-binding options editor — the
+// INV-no-writes note below).
 //
 // Wire contract (plugin_admin.go, mirrored verbatim — INV-verbatim-payload):
 //  - the status cell consumes the SERVED health state and the SERVED module
@@ -47,6 +49,16 @@ import {
 //    joined — with the raw options JSON folded behind a disclosure,
 //    pretty-printed exactly as served (raw JSON on the wire, never
 //    interpreted here).
+//  - a metadata binding whose served required_secrets verdicts carry at
+//    least one provided:false secret renders the destructive «Требует
+//    настройки» badge; all-provided verdicts and absent verdicts (no
+//    declarations — scanner rows never carry the field) render none.
+//  - the options words layer runs on METADATA bindings only: the known-key
+//    presentation vocabulary (language → «Язык») renders served values
+//    verbatim for string-valued entries; non-string values and unknown keys
+//    stay behind the raw-JSON disclosure untouched. Scanner rows keep
+//    today's disclosure-only render. INV-verbatim-payload holds — the SPA
+//    interprets no config semantics.
 //  - the last-logs view fetches GET /admin/plugins/{plugin_id}/logs ON
 //    DEMAND per plugin when its view opens — never eagerly for every plugin
 //    — and renders the bounded tail oldest-first (in-memory: a server
@@ -57,8 +69,15 @@ import {
 //    ledger is the normal state), any positive count a click-through to
 //    the plugin's failures page (/admin/plugins/:pluginId/failures).
 //
-// INV-no-writes: the page has no write affordance anywhere — Sources keeps
-// the gate toggles. INV-no-mutation-retry: every read is retry:0 — canonical
+// INV-no-writes (amended deliberately, plugin-options-ui design D1): the
+// page still resolves nothing client-side and now carries exactly ONE
+// sanctioned write — the per-binding options editor (BindingOptionsEditor,
+// mounted on METADATA bindings only; scanner bindings keep no edit
+// affordance — the endpoint refuses them, design D5). Everything else stays
+// read-only (Sources keeps the gate toggles). The editor's mutation is
+// retry:0 and its success invalidates ["admin-plugins"] so verdicts and
+// badges re-read from the server — never from the write's body (the Sources
+// GateToggle law). INV-no-mutation-retry: every read is retry:0 — canonical
 // errors surface inline and the operator re-clicks.
 export default function Plugins(): ReactElement {
   const plugins = useQuery({
@@ -178,6 +197,7 @@ function PluginRow(props: {
                   key={`${b.module_id}-${b.kind}`}
                   binding={b}
                   verdict={p.effective?.modules?.[b.module_id]}
+                  pluginId={p.plugin_id}
                 />
               ))
             )}
@@ -322,25 +342,78 @@ function kindWord(kind: string): string {
   return words[kind] ?? kind;
 }
 
-// Binding — one config binding row, read-only and in words: module, kind,
-// priority, the EFFECTIVE enablement word (the served module verdict when
-// one exists — the resolved gate — else the binding's own enabled flag),
-// colored the same green/gray as the status; auth mode shows when it is not
-// NONE; the display fields join into one muted line; the raw options JSON
-// folds behind a disclosure, pretty-printed verbatim (INV-verbatim payload —
-// the SPA still interprets nothing).
+// OPTION_WORDS — the known-key presentation vocabulary (plugin-options-ui
+// D4): keys a plugin actually produces render as words on metadata
+// bindings, values verbatim; everything else stays behind the raw
+// disclosure. The shipped vocabulary is `language` — the one key with a
+// live producer (the tmdb bindings' options); it grows only when a plugin
+// actually declares a key (poster_dir was surveyed and dropped — no live
+// producer).
+const OPTION_WORDS: Record<string, string> = {
+  language: "Язык",
+};
+
+// optionWords — the metadata bindings' words entries: [label, served value]
+// pairs for every recognized key whose served value is a string (the live
+// include_image_types array and any unknown key stay behind the raw
+// disclosure). Null when nothing presents — the binding renders
+// disclosure-only. `options` travels as raw JSON (typed `unknown`), so the
+// shape is checked before the entries are read.
+function optionWords(options: unknown): [string, string][] | null {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    return null;
+  }
+  const words: [string, string][] = [];
+  for (const [key, value] of Object.entries(options)) {
+    const label = OPTION_WORDS[key];
+    if (label !== undefined && typeof value === "string") {
+      words.push([label, value]);
+    }
+  }
+  return words.length > 0 ? words : null;
+}
+
+// Binding — one config binding row, in words: module, kind, priority, the
+// EFFECTIVE enablement word (the served module verdict when one exists — the
+// resolved gate — else the binding's own enabled flag), colored the same
+// green/gray as the status; auth mode shows when it is not NONE; the display
+// fields join into one muted line; the raw options JSON folds behind a
+// disclosure, pretty-printed verbatim (INV-verbatim payload — the SPA still
+// interprets nothing). A metadata binding with at least one unprovided
+// secret (a served required_secrets verdict reading false) renders the
+// destructive «Требует настройки» badge; on metadata bindings the words
+// layer presents recognized string-valued options inline above the
+// disclosure — scanner rows stay disclosure-only.
+//
+// The Edit affordance (plugin-options-ui 2.3, design D1/D5) rides METADATA
+// bindings only: the button is the returnFocusRef target of the
+// BindingOptionsEditor it opens — the page's ONE sanctioned write. Scanner
+// bindings carry neither button nor editor (the endpoint refuses them).
+// The overlay state is parent-owned per binding: onClose flips `editing`,
+// so a closed editor is dialog REMOVAL, never a static-open shell.
 function Binding(props: {
   binding: PluginAdminBinding;
   verdict?: boolean;
+  pluginId: string;
 }): ReactElement {
   const b = props.binding;
   const on = props.verdict !== undefined ? props.verdict : b.enabled;
+  const needsConfig =
+    b.kind === "metadata" &&
+    Object.values(b.required_secrets ?? {}).some((provided) => !provided);
+  const words = b.kind === "metadata" ? optionWords(b.options) : null;
+  const editable = b.kind === "metadata";
+  const [editing, setEditing] = useState(false);
+  const editRef = useRef<HTMLButtonElement | null>(null);
 
   return (
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span className="font-mono text-xs">{b.module_id}</span>
         <span className="text-xs text-muted-foreground">{kindWord(b.kind)}</span>
+        {needsConfig ? (
+          <Badge variant="destructive">Требует настройки</Badge>
+        ) : null}
         {b.priority !== undefined ? (
           <span className="text-xs text-muted-foreground">#{b.priority}</span>
         ) : null}
@@ -359,6 +432,18 @@ function Binding(props: {
           <span className="text-xs text-muted-foreground">
             auth: {b.auth_mode}
           </span>
+        ) : null}
+        {editable ? (
+          <Button
+            ref={editRef}
+            size="sm"
+            variant="outline"
+            className="ml-auto h-6 px-2 text-xs"
+            aria-label={`options ${b.module_id}`}
+            onClick={() => setEditing(true)}
+          >
+            Edit
+          </Button>
         ) : null}
       </div>
       {b.display_fields !== undefined && b.display_fields !== null ? (
@@ -379,6 +464,15 @@ function Binding(props: {
           </details>
         )
       ) : null}
+      {words ? (
+        <span className="text-xs" data-option-words>
+          {words.map(([label, value]) => (
+            <span key={label} className="mr-2">
+              {label}: {value}
+            </span>
+          ))}
+        </span>
+      ) : null}
       {b.options !== undefined && b.options !== null ? (
         <details className="text-xs">
           <summary className="cursor-pointer text-muted-foreground">
@@ -388,6 +482,16 @@ function Binding(props: {
             {JSON.stringify(b.options, null, 2)}
           </pre>
         </details>
+      ) : null}
+      {editable ? (
+        <BindingOptionsEditor
+          moduleId={b.module_id}
+          pluginId={props.pluginId}
+          binding={b}
+          open={editing}
+          onClose={() => setEditing(false)}
+          returnFocusRef={editRef}
+        />
       ) : null}
     </div>
   );
