@@ -51,13 +51,23 @@
 //     branching, no orchestration. funlen ≤60, gocognit ≤15 (golangci-lint).
 //   - INV2: api MAY import internal/store, internal/scan, internal/pairing,
 //     internal/access, internal/identity, internal/art, internal/naming,
-//     internal/recs, internal/refusal, and internal/relay, plus stdlib +
-//     chi. It
+//     internal/recs, internal/refusal, internal/relay, and
+//     internal/sourcestate, plus stdlib + chi. It
 //     MAY NOT import internal/plugin, internal/enrich, internal/module,
 //     internal/browse, or
 //     internal/web (api talks to enrich/plugin only through Deps func
 //     closures — contracts.md §10 import map; web composes api, never the
-//     reverse).
+//     reverse). internal/sourcestate is the one leaf exception: a
+//     stdlib-only shared-contract package (the pkg/sdk precedent) carrying
+//     the source-state sentinels — sourcestate.ErrUnknownModule is the
+//     module-options wrap's 404 operand (classified here directly), while
+//     the unconfigured-source classification keeps its OWN api-local
+//     ErrUnconfiguredSource twin (the grouped var block in enrich_admin.go)
+//     beside ErrUnknownPlugin: the three cmd unconfigured-source closures
+//     (newSearchClosure / newIdentifyClosure / newItemIdentifyClosure) wrap
+//     the enrich producers' sourcestate.ErrUnconfiguredSource into that
+//     twin via %w — cmd classifies the sourcestate value, api never sees
+//     an enrich/module symbol.
 //   - INV3: Principal is a TYPE (not a bool gate). Handlers read it via the
 //     unexported context helper; RoleClient is minted by device pairing
 //     (the middleware's LookupToken branch), and future roles arrive without
