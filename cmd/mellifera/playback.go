@@ -664,11 +664,24 @@ func sweepRetention(ctx context.Context, st *store.Store, root string, grace tim
 	}
 }
 
-// evictDir moves one artifact directory aside (the .trash sibling — a client
-// mid-fetch never sees a half-deleted tree) and then deletes it. Best-effort:
-// a failed move leaves the artifact for the next sweep. It reports whether the
-// directory is gone — the caller's cue to unpublish the build record.
+// evictDir reclaims one artifact directory. A directory already carrying the
+// .trash suffix (an earlier pass's removal-failure leftover, or crash
+// hygiene) is ALREADY evicted: it is deleted on sight, never renamed aside
+// again — a failed removal retries the same name on the next pass, so the
+// suffix never grows. Any other directory first moves aside (the .trash
+// sibling — a client mid-fetch never sees a half-deleted tree) and then
+// deletes. Best-effort: a failed step leaves the artifact for the next
+// sweep. It reports whether the directory is gone — the caller's cue to
+// unpublish the build record.
 func evictDir(path string) bool {
+	if strings.HasSuffix(path, ".trash") {
+		if err := os.RemoveAll(path); err != nil {
+			slog.Warn("orchestrator: trash removal failed", "path", path, "error", err)
+			return false
+		}
+		slog.Info("orchestrator: evicted artifact directory", "path", path)
+		return true
+	}
 	trash := path + ".trash"
 	if err := os.Rename(path, trash); err != nil {
 		slog.Warn("orchestrator: eviction move failed", "path", path, "error", err)
