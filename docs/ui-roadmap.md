@@ -13,6 +13,7 @@ change. Continue with `/build <change-name>` — the original draft text follows
 | 3 — player polish | `player-watch-polish` | planned (cast UI row lands here) |
 | 4 — TMDB (B3) | `tmdb-metadata-source` | planned |
 | 5 — search / facets / home | `browse-scale` | done (archived 2026-11-08 — shipped as `browse-scale`, not the planned `browse-search-facets`) |
+| follow-on — plugin/source options UI (stacked on tmdb-enrichment; not in the original draft) | `plugin-options-ui` | done (archived 2026-11-10) |
 
 GATE 1 amendments to the draft (media-data-convention, 2026-10-21): cast[] is flat
 {name, role?, photo_url?}; episode title/summary live in the source's own namespace

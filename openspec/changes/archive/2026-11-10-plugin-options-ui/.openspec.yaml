@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-11-10
+goal: Make the plugin 'needs config' state and its options operator-visible and
+  editable in the SPA

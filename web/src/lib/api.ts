@@ -602,6 +602,14 @@ export interface PluginAdminBinding {
   auth_mode?: string;
   display_fields?: unknown;
   options?: unknown;
+  // required_secrets — the additive per-binding verdicts object
+  // (plugin_admin.go:41-48): the plugin's declared secret names mapped to
+  // whether THIS binding's options provide each (per-binding options make
+  // per-binding verdicts). Omitted entirely when the plugin declares no
+  // secrets — absence means "no declarations", never a type hole. The
+  // redaction law holds on the serve side: the served options omit secret
+  // VALUES; presence lives here, in the verdicts.
+  required_secrets?: Record<string, boolean>;
 }
 
 // plugin_admin.go pluginAdminEffective — one plugin's module-scope
@@ -1058,11 +1066,14 @@ export const ENDPOINTS = {
   sourcePreview: "/api/v1/admin/sources/preview",
   librarySource: (id: number, pluginId: string): string =>
     `/api/v1/libraries/${id}/sources/${pluginId}`,
-  // adminPlugins / adminPluginLogs — the Plugins admin surface
-  // (plugin-admin-surfaces, plugin_admin.go). GET /admin/plugins lists every
-  // loaded plugin with its health snapshot, capability chips, module-scope
-  // effective verdicts, and config bindings — READ-ONLY (the Sources surface
-  // owns the gate writes); GET /admin/plugins/{plugin_id}/logs serves the
+  // adminPlugins / adminPluginLogs / adminModuleSourceOptions — the Plugins
+  // admin surface (plugin-admin-surfaces, plugin_admin.go). GET /admin/plugins
+  // lists every loaded plugin with its health snapshot, capability chips,
+  // module-scope effective verdicts, and config bindings — read-only except
+  // the binding options editor (plugin-options-ui): the Sources surface still
+  // owns the gate writes, while the ONE options write rides
+  // PUT /admin/modules/{module_id}/sources/{plugin_id}/options (module_id
+  // before plugin_id); GET /admin/plugins/{plugin_id}/logs serves the
   // plugin's host-captured last logs on demand (oldest-first tail). 503
   // "unavailable" when a closure is unwired, 400 bad_request for an unknown
   // plugin id, 500 closure error — all canonical, surfaced inline by the
@@ -1070,6 +1081,8 @@ export const ENDPOINTS = {
   adminPlugins: "/api/v1/admin/plugins",
   adminPluginLogs: (pluginId: string): string =>
     `/api/v1/admin/plugins/${pluginId}/logs`,
+  adminModuleSourceOptions: (moduleId: string, pluginId: string): string =>
+    `/api/v1/admin/modules/${moduleId}/sources/${pluginId}/options`,
   // libraryFacets — GET /api/v1/libraries/{id}/facets (facets.go
   // libraryFacets, browse-scale 3.2): the index's per-library facet
   // aggregates, viewer-scoped like every browse route. Only getLibraryFacets
@@ -1968,6 +1981,29 @@ export async function getAdminPluginLogs(
   pluginId: string,
 ): Promise<PluginLogsResponse> {
   return apiRequest<PluginLogsResponse>(ENDPOINTS.adminPluginLogs(pluginId));
+}
+
+// putAdminModuleSourceOptions — PUT /api/v1/admin/modules/{module_id}/
+// sources/{plugin_id}/options (source_admin.go adminModuleBindingOptions):
+// ONE module binding's options JSON replaced whole — the plugin-options-ui
+// write, and the Plugins surface's single sanctioned one. 204, no body: the
+// write is its own acknowledgement (the editor closes and the aggregate
+// re-read carries the new verdicts). The body rides PRE-stringified because
+// apiRequestVoid does not stringify (its 204 parse would throw on
+// JSON.parse("")) and fetch does not serialize objects — the explicit
+// Content-Type keeps the request canonical (the putLibrarySource idiom).
+// 404 unknown module, 400 unbound-or-malformed, 503 unwired closure — all
+// canonical, left to the caller to surface inline without auto-retry.
+export async function putAdminModuleSourceOptions(
+  moduleId: string,
+  pluginId: string,
+  options: Record<string, unknown>,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminModuleSourceOptions(moduleId, pluginId), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ options }),
+  });
 }
 
 // login — POST /api/v1/auth/login (auth.go login, l6-accounts): verify the

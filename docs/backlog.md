@@ -225,3 +225,21 @@ Seeded non-blocking at the gate (the change's review.md):
   unconfigured-closure doc comments still say "the enrich-side sentinel" —
   their `errors.Is` operands are now the sourcestate-qualified shared leaf
   (`sourcestate.ErrUnconfiguredSource`), not an enrich-package symbol.
+
+## plugin-options-ui follow-ups (GATE 2 flags, 2026-11-10)
+
+Seeded non-blocking at the gate (the change's review.md FLAG dispositions):
+
+- **P3: widen the no-auto-retry test margin** if it ever flakes —
+  `web/src/components/admin/BindingOptionsEditor.test.tsx` (~:213) proves the
+  single write with a bounded `setTimeout` wait (~1200 ms) past the
+  query-core's `1e3 * 2 ** failureCount` default retry delay; a slower CI
+  runner could eat the margin.
+- **P3: trim the editor's unused exports** — `composeOptions` and
+  `presentedOptions` in `web/src/components/admin/BindingOptionsEditor.tsx`
+  have no external consumer (only `OPTION_WORDS` is imported, by
+  `Plugins.tsx`); un-export them, or fold into a future extraction.
+- **P3: extract `Plugins.tsx`'s Binding + optionWords pieces into
+  `components/admin/`** — the page sits at ~539 lines vs the generic 500
+  limit (the web convention overrides the baseline for now; noted at the
+  gate).
