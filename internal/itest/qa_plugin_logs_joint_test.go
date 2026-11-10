@@ -148,6 +148,7 @@ func qaLogsStartServer(t *testing.T, tmp string) qaSerialServer {
 		"MELLIFERA_SERIAL_PARSER="+buildBinary(t, tmp, "qa-logs-parser", "./plugins/serial-parser"),
 		"MELLIFERA_FRAME_GRABBER="+buildBinary(t, tmp, "qa-logs-grabber", "./plugins/frame-grabber"),
 		"MELLIFERA_SHIKIMORI="+shikimoriBin(t, tmp),
+		"MELLIFERA_TMDB="+tmdbBin(t, tmp),
 		"MELLIFERA_SHIKIMORI_UPSTREAM="+qaLogsDeadUpstream,
 		qaLogsCookieEnv+"="+qaLogsCookieValue,
 		qaLogsPayloadEnv+"="+qaLogsPayload(),

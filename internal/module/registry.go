@@ -232,6 +232,13 @@ const imageConfigJSON = `{
 // composite, resolved label-aware in the renderer; frame-grabber's fields
 // resolve from its namespace), identity_fields per module (episode names the
 // episode-name slot case).
+// PluginIDTmdb is the canonical plugin id of the TMDB metadata_source, declared
+// once in the config home (the serial seed below already names it in its
+// binding list) so orchestrator code references the id by symbol instead of
+// carrying the quoted literal — the AC-4 config-driven-core probe forbids
+// media literals outside internal/module (tmdb-enrichment 7.2).
+const PluginIDTmdb = "tmdb"
+
 const serialConfigJSON = `{
   "id": "serial",
   "schema_version": 4,

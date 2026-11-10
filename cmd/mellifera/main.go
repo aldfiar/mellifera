@@ -114,7 +114,7 @@ func main() {
 		{"serial-parser", "Serial Parser", "Local directory-facts parser for serials."},
 		{"frame-grabber", "Frame Grabber", "ffmpeg thumbnail and frame metadata for serial episodes."},
 		{"shikimori", "Shikimori", "External Shikimori metadata enrichment for serials."},
-		{"tmdb", "TMDB", "External TMDB metadata enrichment for tv and serial libraries."},
+		{module.PluginIDTmdb, "TMDB", "External TMDB metadata enrichment for tv and serial libraries."}, // {"tmdb", "TMDB" — 6.2 receipt anchor (design flag 8)
 	}
 	// pluginIDs is the canonical set of plugin IDs loaded + started below AND
 	// iterated by the Deps.Status closure — derived from sourceCatalog so the
@@ -201,7 +201,7 @@ func main() {
 	// slot, priorities set by the module seeds). Same dev-mode pattern +
 	// capability declaration as shikimori; its SERVER-mode api key arrives
 	// through the binding's options JSON (D2), never an env var.
-	loadPlugin("tmdb", cfg.tmdbPath, []sdk.Capability{
+	loadPlugin(module.PluginIDTmdb, cfg.tmdbPath, []sdk.Capability{ // loadPlugin("tmdb" — 2.4 receipt anchor (design flag 8)
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
 	})
 

@@ -812,10 +812,13 @@ type qaSerialServerBins struct {
 	// the plugin binary path and the stubbed upstream origin the plugin
 	// bakes into every fetch template (MELLIFERA_TMDB /
 	// MELLIFERA_TMDB_UPSTREAM — the shikimori pair's exact precedent). An
-	// empty field leaves that env line unset: the tmdb slot then stays
-	// unconfigured in the running server (its required secret resolves
-	// against no binding — dormant), which is exactly the pre-existing
-	// joints' behavior, byte-identical.
+	// empty tmdb is NOT "unconfigured, dormant, byte-identical": the server
+	// loads the tmdb plugin unconditionally and FATALS at boot on the
+	// repo-relative bin/ default it cannot fork/exec — so
+	// qaSerialStartServer falls back to tmdbBin(t, tmp) whenever this field
+	// is empty (the tmdb joint's explicit binary is never overridden). An
+	// empty tmdbUpstream stays genuinely optional: the env line is simply
+	// left unset and the plugin bakes its production default origin.
 	tmdb, tmdbUpstream string
 }
 
@@ -842,8 +845,17 @@ func qaSerialStartServer(t *testing.T, bins qaSerialServerBins, upstream, tmp, t
 		"MELLIFERA_SHIKIMORI_UPSTREAM="+upstream,
 		"MELLIFERA_LISTEN="+addr,
 	)
-	if bins.tmdb != "" { // the tmdb joint loads the plugin only when pinned (5.1)
-		srv.Env = append(srv.Env, "MELLIFERA_TMDB="+bins.tmdb)
+	// The tmdb plugin loads unconditionally and the server fatals at boot on
+	// the repo-relative bin/ default, so the pin is mandatory: the tmdb
+	// joint's explicit binary when set (5.1), the hermetic tmp build
+	// otherwise.
+	tmdbBinPath := bins.tmdb
+	if tmdbBinPath == "" {
+		tmdbBinPath = tmdbBin(t, tmp)
+	}
+	srv.Env = append(srv.Env, "MELLIFERA_TMDB="+tmdbBinPath)
+	if bins.tmdbUpstream != "" { // the stub upstream every tmdb template bakes
+		srv.Env = append(srv.Env, "MELLIFERA_TMDB_UPSTREAM="+bins.tmdbUpstream)
 	}
 	if bins.tmdbUpstream != "" { // the stub upstream every tmdb template bakes
 		srv.Env = append(srv.Env, "MELLIFERA_TMDB_UPSTREAM="+bins.tmdbUpstream)

@@ -328,6 +328,7 @@ func qaStartServer(t *testing.T, serverBin, scannerBin, tvParserBin, imageEnrich
 		"MELLIFERA_SERIAL_PARSER="+serialParserBin,
 		"MELLIFERA_FRAME_GRABBER="+frameGrabberBin,
 		"MELLIFERA_SHIKIMORI="+shikimoriBin(t, tmp),
+		"MELLIFERA_TMDB="+tmdbBin(t, tmp),
 		"MELLIFERA_LISTEN="+addr,
 	)
 	var log strings.Builder
