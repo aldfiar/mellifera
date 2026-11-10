@@ -1,0 +1,5 @@
+# Session — plugin-options-ui
+
+GATE 1 APPROVED 2026-11-10: operator ruled "Approve + fold Q1–Q3" (surveyor findings folded by the planner, validate --strict clean) + OQ-1 AS DESIGNED ("Absence clears"). Proposal: SPA-only admin UI for plugin/source options — required_secrets badges («Требует настройки»), options-as-words (vocabulary {language → «Язык»}, metadata bindings only), BindingOptionsEditor dialog (write-only secrets, whole-replacement, empty-secret-input = key cleared) over PUT /admin/modules/{module_id}/sources/{plugin_id}/options; Plugins-page INV-no-writes amended to exactly one sanctioned write. Plan: 2 groups, 4 authored tasks + git-check (register: 2 groups, 5 tasks); stacked on feature/tmdb-enrichment @ cf32a20. Baseline green (go test ./..., 28 pkgs). Survey: wiring PASS, qa seams PASS, blast radius CONTAINED (integration.md resolutions filled).
+
+Next: apply — 1.1 first (api.ts choke point), then 2.1+2.2 parallel (different files), then 2.3 (same-file after 2.1; wires the editor).
