@@ -51,7 +51,8 @@ RUN CGO_ENABLED=0 go build -trimpath -o out/mellifera ./cmd/mellifera \
  && CGO_ENABLED=0 go build -trimpath -o out/image-enricher ./plugins/image-enricher \
  && CGO_ENABLED=0 go build -trimpath -o out/serial-parser ./plugins/serial-parser \
  && CGO_ENABLED=0 go build -trimpath -o out/frame-grabber ./plugins/frame-grabber \
- && CGO_ENABLED=0 go build -trimpath -o out/shikimori ./plugins/shikimori
+ && CGO_ENABLED=0 go build -trimpath -o out/shikimori ./plugins/shikimori \
+ && CGO_ENABLED=0 go build -trimpath -o out/tmdb ./plugins/tmdb
 
 # --- Stage 3: runtime -----------------------------------------------------------
 FROM debian:13-slim
