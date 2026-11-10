@@ -1,7 +1,6 @@
 package main
 
 import (
-	"reflect"
 	"testing"
 
 	pluginv1 "github.com/mellifera/mellifera/proto/mellifera/plugin/v1"
@@ -30,7 +29,7 @@ func TestHandshakeDeclaresRequiredSecrets(t *testing.T) {
 	if cap.Id != "default" {
 		t.Errorf("Id = %q, want %q", cap.Id, "default")
 	}
-	if !reflect.DeepEqual(cap.RequiredSecrets, []string{"api_key"}) {
+	if len(cap.RequiredSecrets) != 1 || cap.RequiredSecrets[0] != "api_key" {
 		t.Errorf("RequiredSecrets = %v, want [api_key]", cap.RequiredSecrets)
 	}
 }

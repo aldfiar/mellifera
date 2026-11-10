@@ -857,9 +857,6 @@ func qaSerialStartServer(t *testing.T, bins qaSerialServerBins, upstream, tmp, t
 	if bins.tmdbUpstream != "" { // the stub upstream every tmdb template bakes
 		srv.Env = append(srv.Env, "MELLIFERA_TMDB_UPSTREAM="+bins.tmdbUpstream)
 	}
-	if bins.tmdbUpstream != "" { // the stub upstream every tmdb template bakes
-		srv.Env = append(srv.Env, "MELLIFERA_TMDB_UPSTREAM="+bins.tmdbUpstream)
-	}
 	var log strings.Builder
 	srv.Stdout = &log
 	srv.Stderr = &log
