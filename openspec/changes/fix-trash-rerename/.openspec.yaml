@@ -1,5 +1,0 @@
-schema: lite
-created: 2026-11-10
-goal: evictDir deletes an already-suffixed .trash dir on sight instead of
-  renaming it aside; stranded prod dir becomes reclaimable; growth becomes
-  impossible
