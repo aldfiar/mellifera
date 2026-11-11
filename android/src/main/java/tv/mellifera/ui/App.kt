@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.tv.material3.Text
 import tv.mellifera.AppViewModel
 import tv.mellifera.Screen
+import tv.mellifera.pairing.PairingScreen
 
 /**
  * The when-screen shell (D1): `when (state.screen)` IS the navigation —
@@ -19,16 +20,8 @@ import tv.mellifera.Screen
 fun App(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsState()
     when (state.screen) {
-        Screen.Pairing -> PairingScreen()
+        Screen.Pairing -> PairingScreen(viewModel.pairing)
         Screen.Browse -> BrowseScreen()
-    }
-}
-
-/** Placeholder — the real pairing flow lands in 5.4. */
-@Composable
-private fun PairingScreen() {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("Подключение к серверу…")
     }
 }
 
