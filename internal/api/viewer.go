@@ -12,41 +12,28 @@ import (
 
 // This file is THE ONE principal→Viewer read in api (l6-accounts D9):
 // principalFromContext is legal only here and in middleware.go (check.sh's
-// grep rule, task 6.4), and viewerFor is the ONLY production stasher of the
+// grep rule, task 6.4), and viewerFor is the only production stasher of the
 // access-viewer context carrier (internal/access's WithViewer/FromContext
-// pair, task 1.3). Every downstream consumer — content handlers, the
-// cmd-side Deps.OnProgress legs and the ModulePresentation chain closure,
-// the store reads' trailing v access.Viewer — reads FromContext or takes the
-// resolved Viewer; none re-reads the principal.
+// pair) — every downstream consumer reads FromContext or takes the resolved
+// Viewer, none re-reads the principal. viewerFor resolves ONCE per request
+// and the stash IS the memo: repeat calls down a threaded chain never
+// re-resolve and never re-stash.
 //
-// viewerFor resolves ONCE per request and the stash IS the memo: a viewer
-// already carried by the request context is returned as-is, so repeat calls
-// down a threaded chain never re-resolve and never re-stash.
-//
-// Mapping (accounts design §2, D1/D9; the auth-chain legs landed in 7.1):
+// Mapping (accounts design §2, D1/D9; the auth-chain legs landed in 7.1) —
+// this is the api-wide canonical for the principal→scope mapping:
 //   - env-admin principal → access.Admin() (all-seeing, ledger slot 0).
-//   - device principal → the bound user's resolved scope
-//     (identity.ResolveViewer) when the credential names a user, else
-//     access.LegacyDevice() — today's explicit see-all. The binding rides
-//     Principal.UserID, which the auth chain (7.1) stamps from the
-//     credentials row. Device principals stay RoleClient (never admin-
-//     projected), so the bound leg resolves the user's GRANT union with
-//     isAdmin=false — even a device bound to an admin-role user rides that
-//     user's grants, not see-all (the design's mapping names role
-//     projection for the session leg only).
-//   - session principal → identity.ResolveViewer(ctx, userID, role==admin)
-//     — the projection already happened at the middleware (7.1): an
-//     admin-role user's session carries RoleAdmin, so it lands in the
-//     IsAdmin leg below; ResolveViewer(uid, true) returns the identical
-//     all-seeing Admin scope, so the two paths agree. A non-admin session
-//     carries RoleClient + UserID and resolves the user's grant union.
-//   - HasUsers()==0 (runtime legacy, D1) collapses EVERY principal to
-//     today's scope BEFORE any mapping: env admin stays Admin, device
-//     principals stay LegacyDevice — zero-user deployments are byte-identical
-//     to pre-accounts.
-//   - nil Deps.Identity is the same runtime-legacy posture for every
-//     principal (the nil-safe Deps contract; the composition root assigns a
-//     real identity.Service in task 10.1).
+//   - device principal → the bound user's grant union via
+//     identity.ResolveViewer (keyed on Principal.UserID, stamped by the
+//     auth chain), else access.LegacyDevice() when unbound — today's
+//     explicit see-all. Devices are NEVER role-projected: isAdmin=false
+//     even for a device bound to an admin-role user.
+//   - session principal → the middleware already projected the role (D11):
+//     an admin-role user's session carries RoleAdmin and lands in the
+//     IsAdmin leg (the identical all-seeing Admin scope); a non-admin
+//     session resolves the user's grant union.
+//   - HasUsers()==0 (runtime legacy, D1) or nil Deps.Identity (the nil-safe
+//     Deps contract) collapses EVERY principal to today's scope BEFORE any
+//     mapping — zero-user deployments are byte-identical to pre-accounts.
 
 // viewerFor resolves the calling request's authority scope and returns it
 // together with the request context that carries it. The returned context is
@@ -59,10 +46,6 @@ import (
 func (a *app) viewerFor(r *http.Request) (access.Viewer, context.Context) {
 	ctx := r.Context()
 	if v := access.FromContext(ctx); !isZeroViewer(v) {
-		// Already resolved this request — by an earlier viewerFor call with
-		// the stashed context threaded down, or by the role-test seam's
-		// viewer injection (principalViewerInjector). Return it as-is: one
-		// resolve, one WithViewer, per request (D9/D5).
 		return v, ctx
 	}
 	v := a.resolveViewer(ctx)
@@ -80,52 +63,31 @@ func (a *app) viewerFor(r *http.Request) (access.Viewer, context.Context) {
 func (a *app) resolveViewer(ctx context.Context) access.Viewer {
 	p, ok := principalFromContext(ctx)
 	if !ok {
-		// No principal: a request that never passed authN (the pair group's
-		// unauthenticated surface — nothing there should scope a viewer).
-		// There is no caller to resolve; fail closed.
 		return access.Viewer{}
 	}
 	if a.deps.Identity == nil {
-		// Nil Identity = runtime-legacy behavior (the nil-safe Deps
-		// contract): every principal keeps today's scope, nothing resolved.
 		return legacyScope(p)
 	}
 	has, err := a.deps.Identity.HasUsers(ctx)
 	if err != nil {
-		// An identity read error never widens authority: the zero Viewer,
-		// which the store's visibility fragment collapses to `1=0`.
 		return access.Viewer{}
 	}
 	if !has {
-		// Runtime-legacy collapse (D1): a zero-user deployment stays
-		// byte-identical to pre-accounts — today's scope for EVERY principal.
 		return legacyScope(p)
 	}
 	return a.principalViewer(ctx, p)
 }
 
 // principalViewer maps an authenticated principal to its Viewer under a LIVE
-// accounts deployment (users exist). The env-admin leg is role-only. The
-// bound-device and session legs (7.1) resolve through identity — the bound
-// user's grant union via identity.ResolveViewer — keyed on Principal.UserID,
-// which the middleware stamped from the credentials row. A zero UserID is
-// the unbound device (and the env-admin token never reaches here): today's
-// explicit see-all posture.
+// accounts deployment (users exist) — the head mapping's legs, with the
+// never-role-projected device and the fail-closed resolution error.
 func (a *app) principalViewer(ctx context.Context, p Principal) access.Viewer {
 	if p.IsAdmin() {
-		// The env admin token, or an admin-role user's session (the
-		// middleware projected its role — D11): the all-seeing Admin scope.
 		return access.Admin()
 	}
 	if p.UserID == 0 {
-		// Unbound device: today's explicit see-all, unchanged.
 		return access.LegacyDevice()
 	}
-	// Bound device or (non-admin) session: the owning user's grant union.
-	// isAdmin is false on every path here — device principals are never
-	// role-projected, and admin-role sessions left through the IsAdmin leg
-	// (the mapping doc records the design reading). A resolution error is
-	// never widened into authority: the zero Viewer fails closed.
 	v, err := a.deps.Identity.ResolveViewer(ctx, p.UserID, false)
 	if err != nil {
 		return access.Viewer{}
@@ -133,11 +95,10 @@ func (a *app) principalViewer(ctx context.Context, p Principal) access.Viewer {
 	return v
 }
 
-// legacyScope is "today's scope" for a principal (D1's runtime-legacy
-// posture, and the nil-Identity posture): the env admin keeps the all-seeing
-// Admin scope, every other principal keeps the unbound device's explicit
-// see-all. Never the zero Viewer — these are constructed see-all scopes,
-// not absence.
+// legacyScope is "today's scope" for a principal (D1's runtime-legacy and
+// nil-Identity postures): the env admin keeps the all-seeing Admin scope,
+// every other principal the unbound device's explicit see-all. Never the
+// zero Viewer — these are constructed see-all scopes, not absence.
 func legacyScope(p Principal) access.Viewer {
 	if p.IsAdmin() {
 		return access.Admin()
@@ -145,12 +106,9 @@ func legacyScope(p Principal) access.Viewer {
 	return access.LegacyDevice()
 }
 
-// isZeroViewer reports whether v is the zero Viewer (fail-closed absence).
-// Viewer carries slice/map fields, so it is not a comparable struct — the
-// check is field-wise. The zero Viewer is never a live resolution for an
-// authenticated principal: every constructor sets Admin or UserID, and
-// identity.ResolveViewer's User viewers always carry a non-nil visible set
-// and mute map. It therefore reads as "no viewer stashed".
+// isZeroViewer reports whether v is the zero Viewer (fail-closed absence —
+// reads as "no viewer stashed"): Viewer carries slice/map fields, so the
+// check is field-wise; every live constructor sets Admin or UserID.
 func isZeroViewer(v access.Viewer) bool {
 	return !v.Admin && v.UserID == 0 && v.VisibleLibraryIDs == nil && v.ChainMutes == nil
 }

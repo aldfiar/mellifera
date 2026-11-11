@@ -20,26 +20,18 @@ import (
 // its own type so no other package can collide on the context namespace.
 type principalKey struct{}
 
-// principalFromContext returns the Principal the middleware recorded, if any.
-// authMiddleware reads it to skip already-authenticated requests (the
-// synthetic-principal injector seam); handlers call it when they need the
-// caller downstream (INV3).
+// principalFromContext returns the Principal the middleware recorded, if any
+// — the authN skip seam (INV3).
 func principalFromContext(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(principalKey{}).(Principal)
 	return p, ok
 }
 
 // requestPrincipal is the raw-principal IDENTITY-FACTS seam for /profile
-// (task 8.1 — its sole consumer): the one read outside the auth chain that
-// needs the credential itself rather than a resolved authority scope. The
-// Viewer cannot serve the profile's facts — access.Admin() zeroes UserID,
-// so an admin-role session is indistinguishable there from the env admin —
-// and /profile derives NO authority from what this returns: viewerFor's
-// stashed Viewer stays the only authority translation, and profile.go's
-// kind switch decides only WHICH identity facts to serve. It forwards to
-// principalFromContext and exists so the raw-principal symbol stays inside
-// the auth seam files (the 6.4 placement rule) while its named consumer
-// reads the principal through this documented accessor.
+// (task 8.1 — its sole consumer): the Viewer cannot serve those facts
+// (access.Admin() zeroes UserID), and /profile derives NO authority from
+// what this returns — viewerFor's stashed Viewer stays the only authority
+// translation.
 func requestPrincipal(r *http.Request) (Principal, bool) {
 	return principalFromContext(r.Context())
 }
@@ -56,22 +48,17 @@ const sessionAdminRole = "admin"
 //
 //  1. the admin token (constant-time compare) → Principal{Role: RoleAdmin};
 //  2. a credentials kind='device' row (store lookup by the bearer's SHA-256,
-//     l6-accounts 7.1) → Principal{Role: RoleClient, UserID: bound user} —
-//     UserID 0 is the unbound device, today's see-all posture; a bound row
-//     carries its user so viewerFor resolves that user's grant scope;
-//  3. a credentials kind='session' row → identity.VerifySession (the owning
-//     user's facts, the disabled flag RE-CHECKED — fail closed) projected
-//     onto the existing roles: an admin-role user's session resolves
-//     RoleAdmin, every other session RoleClient; UserID always carried (D11).
+//     l6-accounts 7.1) → RoleClient with the bound user on UserID (0 = the
+//     unbound device, today's see-all posture);
+//  3. a credentials kind='session' row → identity.VerifySession (the disabled
+//     flag RE-CHECKED — fail closed), the owning user's role projected onto
+//     the existing constants (D11 — roles project, never fork).
 //
-// On a full miss (no header, wrong scheme, unknown token, disabled user,
-// nil store/service) it writes a 401 canonical body and does NOT invoke
-// next — so no handler ever runs without a resolved Principal (authN;
-// S-roles). authMiddleware is the authN layer; per-route authZ lives in
-// requireRole (run after authMiddleware, inside the route group). A request
-// that already carries a Principal skips authN — the seam the role-gating
-// test's synthetic-principal injector rides (mounted ahead of this middleware
-// on the test router; no production chain sets a Principal before authN runs).
+// On a full miss it writes a 401 canonical body and does NOT invoke next —
+// no handler ever runs without a resolved Principal (authN; per-route authZ
+// lives in requireRole). A request that already carries a Principal skips
+// authN — the role-gating test's injector seam; no production chain sets one
+// before authN runs.
 func authMiddleware(token string, st *store.Store, id *identity.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,11 +68,10 @@ func authMiddleware(token string, st *store.Store, id *identity.Service) func(ht
 			}
 			creds := bearerCredentials(r.Header.Get("Authorization"))
 			if creds == "" || subtle.ConstantTimeCompare([]byte(creds), []byte(token)) != 1 {
-				// Not the admin token: resolve against the credentials store.
-				// Device leg first (the older credential class; token_hash is
-				// UNIQUE across kinds, so at most one row can match either
-				// way — the order never double-resolves). A resolver error is
-				// a real failure, not a miss: 500, never 401.
+				// Not the admin token: resolve against the credentials store,
+				// device leg first (token_hash is UNIQUE across kinds — the
+				// order never double-resolves). A resolver error is a real
+				// failure, not a miss: 500, never 401.
 				p, ok, err := devicePrincipal(r.Context(), st, creds)
 				if err != nil {
 					writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -116,14 +102,12 @@ func authMiddleware(token string, st *store.Store, id *identity.Service) func(ht
 	}
 }
 
-// devicePrincipal resolves the bearer against credentials kind='device'
-// (the SHA-256 discipline, re-derived here per the repo's rule that the
-// hash helpers are never imported across packages). A hit yields the
-// RoleClient principal with the row's bound user on UserID (0 = unbound —
-// the device keeps today's see-all posture downstream); a miss reports
-// ok=false so the chain falls through. A store outage is NOT a miss: it
-// reports the error and the middleware 500s (fail closed, mirroring the
-// old LookupToken error shape).
+// devicePrincipal resolves the bearer against credentials kind='device' (the
+// SHA-256 discipline re-derived here — the hash helpers are never imported
+// across packages). A hit yields RoleClient with the row's bound user on
+// UserID (0 = unbound, see-all downstream); a miss reports ok=false so the
+// chain falls through; a store outage is an error (the middleware 500s),
+// never a miss.
 func devicePrincipal(ctx context.Context, st *store.Store, creds string) (Principal, bool, error) {
 	if st == nil || creds == "" {
 		return Principal{}, false, nil
@@ -139,17 +123,11 @@ func devicePrincipal(ctx context.Context, st *store.Store, creds string) (Princi
 }
 
 // sessionPrincipal resolves the bearer against identity's session store
-// (credentials kind='session' JOIN users — VerifySession re-checks the
-// disabled flag, so a disabled user's session fails closed here). The hit
-// projects the owning user's role onto the existing constants (D11): an
-// admin-role user's session is an admin-capable principal, everything else
-// stays RoleClient. UserID carries the owning user's row id as principal
-// facts either way — viewerFor's IsAdmin leg answers the admin-role session
-// with the all-seeing Admin scope (ResolveViewer's own isAdmin short-circuit
-// is the identical resolution), and the non-admin session resolves the
-// user's grant union from it. A miss (unknown, revoked, disabled —
-// VerifySession folds them into one sql.ErrNoRows shape) reports ok=false
-// and the chain 401s; any other error bubbles.
+// (VerifySession re-checks the disabled flag — a disabled user's session
+// fails closed here) and projects the owning user's role onto the existing
+// constants (D11). A miss (unknown, revoked, disabled — VerifySession folds
+// them into one sql.ErrNoRows shape) reports ok=false and the chain 401s;
+// any other error bubbles.
 func sessionPrincipal(ctx context.Context, id *identity.Service, creds string) (Principal, bool, error) {
 	if id == nil || creds == "" {
 		return Principal{}, false, nil
@@ -176,15 +154,13 @@ func hashBearerToken(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// requireRole returns a chi-style middleware that enforces per-route authZ. It
-// reads the Principal authMiddleware recorded; if the principal's Role is NOT in
-// roles it writes a 403 canonical body and does NOT invoke next. A request with
-// no/invalid token never reaches requireRole (authMiddleware's 401 short-circuits
-// first — INV-authn-then-authz). requireRole is a positive-membership check:
-// an empty/unknown role is denied admin routes (default-deny — INV-default-deny),
-// and an empty roles set fails closed (denies everyone). Handlers never call
-// requireRole and never read .Role; the gate is mounted only on route groups
-// (INV-no-handler-fork; arch §11.5).
+// requireRole returns a chi-style middleware that enforces per-route authZ —
+// a positive-membership check over the Principal authMiddleware recorded
+// (default-deny: an empty roles set fails closed, denying everyone; a
+// no-principal request never reaches here — authMiddleware's 401
+// short-circuits first). A non-member gets a 403 canonical body, never next.
+// Handlers never call requireRole and never read .Role; the gate is mounted
+// only on route groups (INV-no-handler-fork; arch §11.5).
 func requireRole(roles ...Role) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -208,9 +184,8 @@ func requireRole(roles ...Role) func(http.Handler) http.Handler {
 
 // bearerCredentials extracts the credential following a "Bearer " scheme prefix
 // from an Authorization header, or "" when the header is absent or not a Bearer
-// scheme. The scheme prefix is matched literally; the credential (the secret) is
-// never compared here — callers compare it constant-time. No strings import is
-// needed: the prefix is a fixed-length byte slice compared by Go string equality.
+// scheme. The credential (the secret) is never compared here — callers compare
+// it constant-time.
 func bearerCredentials(header string) string {
 	const prefix = "Bearer "
 	if len(header) <= len(prefix) {

@@ -19,353 +19,160 @@ import (
 	"github.com/mellifera/mellifera/internal/store"
 )
 
-// Deps holds the collaborators New wires into the router plus the configured
-// admin token the middleware constant-time-compares each Bearer credential
-// against. The admin token lives here (not in a separate constructor or env
-// read) so the whole router is injectable and testable in one shot: New is the
-// sole injection point, and the middleware cannot do its job without it.
+// Deps holds the collaborators New wires into the router; AdminToken is the
+// credential the auth middleware constant-time-compares each Bearer against.
+// New is the sole injection point.
 type Deps struct {
 	AdminToken string
 	Store      *store.Store
 	Scan       func(ctx context.Context, libraryID int64) (scan.Result, error)
-	// Status is the admin-panel liveness closure: built in cmd/mellifera over
-	// plugin.Manager.Status + enrich.Queue.Stats and returning the api-local
-	// AdminStatus. Nil-safe (the handler returns 503 when Status is nil) so
-	// existing callers that omit it compile and the endpoint degrades cleanly
-	// — this is the anti-corruption seam that keeps api free of plugin/enrich
-	// imports (INV2; mirrors the Deps.Scan func-field).
+	// Status is the admin-panel liveness closure (built cmd-side over
+	// plugin.Manager.Status + enrich.Queue.Stats) — the anti-corruption seam
+	// keeping api free of plugin/enrich imports (INV2). Nil-safe: 503.
 	Status func(ctx context.Context) (AdminStatus, error)
-	// Playback is the read-only descriptor closure (packaged-playback D-7):
-	// built in cmd/mellifera over the stream Service's Describe and returning
-	// the api-local Playback. Nil-safe (503 when nil), mirroring Status.
+	// Playback is the read-only descriptor closure (packaged-playback D-7).
+	// Nil-safe: 503, mirroring Status.
 	Playback func(ctx context.Context, itemID string) (Playback, error)
 	// Play is the ONLY playback mutation closure (D-7): retry re-enqueues a
-	// failed packaging run (queued=true when one existed), fromSeconds is
-	// reserved (a v1 no-op carried through for future resume semantics).
-	// Nil-safe (503 when nil). sql.ErrNoRows from either closure surfaces as
-	// 404 in the handlers.
+	// failed run; fromSeconds is a reserved v1 no-op. Nil-safe: 503;
+	// sql.ErrNoRows surfaces as 404.
 	Play func(ctx context.Context, itemID string, retry bool, fromSeconds *float64) (queued bool, err error)
 	// ModulePresentation is the module presentation closure (element-pages
-	// 3.4; widened per plugin-title-enrichment D5): built in cmd/mellifera
-	// over module.Registry (IdentityFields + the ordered parser bindings with
-	// their display_fields) — and, since the widening, over the store's
-	// metadata-source prefs: TitleSources carries the EFFECTIVE per-library
-	// gate resolution (inherit-then-override via enrich.ResolveGates from ONE
-	// batched prefs read), so the libraryID argument is the gate scope. Nil-
-	// safe — the `module` block on the library surfaces is ADDITIVE: a nil
-	// closure omits it and the handlers still serve the library rows (the SPA
-	// degrades to a footer without the presentation block). A non-nil closure
-	// erroring is a real failure → 500.
+	// 3.4; widened per plugin-title-enrichment D5): libraryID is the gate
+	// scope. Nil-safe — the additive `module` wire block omits; error → 500.
 	ModulePresentation func(ctx context.Context, moduleID string, libraryID int64) (ModulePresentation, error)
-	// PluginCapabilities answers the parser-validation question for the
-	// mutating parser endpoints (element-pages 3.3): is pluginID a loaded
-	// plugin, and which capability types does it serve (e.g. "scanner",
-	// "metadata_source")? An unloaded plugin yields known=false. Nil-safe —
-	// a nil closure skips the plugin validation step (the endpoints keep
-	// working store-side; the 400 unknown/mismatched-plugin path needs the
-	// closure wired).
+	// PluginCapabilities answers the parser-validation question (element-pages
+	// 3.3): is pluginID loaded, and which capability types does it serve.
+	// Unloaded yields known=false; nil-safe (validation skipped).
 	PluginCapabilities func(ctx context.Context, pluginID string) (capabilities []string, known bool)
-	// OnProgress is the watch-event seam (continue-nextup-media D-2):
-	// invoked by putProgress after a successful PutProgress, with the
-	// request context — the cmd-side implementation detaches it
-	// (context.WithoutCancel) because the stop-frame re-grab outlives the
-	// response. completed is the request's explicit-completion intent
-	// (watched-states D3): true only when the write carried
-	// `completed: true` — absent decodes to false, the plain floor-only
-	// write of today. Nil-safe (a nil closure is a no-op; progress
-	// persistence is never load-bearing on it), mirroring Deps.Scan/Status.
-	// Keeps api free of plugin imports (INV2).
+	// OnProgress is the watch-event seam (continue-nextup-media D-2, watched-
+	// states D3): invoked after a confirmed PutProgress, context detached
+	// cmd-side. Nil-safe: no-op (INV2).
 	OnProgress func(ctx context.Context, itemID string, position int64, completed bool)
-	// Reenrich is the explicit re-enrichment kickoff closure (enrichment
-	// design Interfaces, D-1/D-6): built in cmd/mellifera over
-	// enrich.Queue.ReenrichSource, owning the strip pass and the per-library
-	// whole-sweep in-flight guard. rowIDs are the opaque string row ids
-	// (itm_/ser_); nil/empty = whole-library sweep. Returns the sentinel
-	// errors (ErrRefreshInFlight/ErrUnknownPlugin/ErrUnknownRows) the
-	// handler maps to 409/400/404 — cmd translates enrich outcomes, api
-	// never imports enrich (INV2). Nil-safe (503 when nil).
+	// Reenrich kicks off explicit re-enrichment (enrichment D-1/D-6); rowIDs
+	// nil/empty = whole-library sweep; sentinel errors map to 409/400/404
+	// (cmd translates enrich outcomes — INV2). Nil-safe: 503.
 	Reenrich func(ctx context.Context, libraryID int64, pluginID string, rowIDs []string) (ReenrichResult, error)
 	// EnrichPreview is the consent-surface closure (enrichment D-7): the
-	// per-plugin drift picture for one library (namespace matches, derivable
-	// pending, ledger cooling, the `_provenance` version histogram),
-	// computed on demand — drift is never stored. Built in cmd/mellifera.
-	// Nil-safe (503 when nil), mirroring Reenrich.
+	// per-plugin drift picture for one library, computed on demand — drift is
+	// never stored. Nil-safe: 503, mirroring Reenrich.
 	EnrichPreview func(ctx context.Context, libraryID int64, pluginID string) (EnrichPreview, error)
-	// SearchSource is the identify overlay's interactive search closure
-	// (identify-match-override): a live read against ONE named source — the
-	// fetch rides the enrichment pacing gate cmd-side, and the candidates
-	// come back as convention-field primitive maps in the source's served
-	// order. Unknown plugin errors (wrapping ErrUnknownPlugin); a source
-	// without search errors (wrapping the SDK's ErrSearchUnsupported → 400
-	// search_unsupported). Nil-safe (503 when nil), mirroring Reenrich.
+	// SearchSource is the identify overlay's interactive search closure (identify-match-
+	// override): a live read against ONE named source, paced cmd-side; unknown plugin
+	// wraps ErrUnknownPlugin, search-unsupported → 400. Nil-safe: 503.
 	SearchSource func(ctx context.Context, pluginID, query, kind string) ([]map[string]any, error)
-	// IdentifySeries is the identify re-anchor closure (identify-match-
-	// override): writes the picked external id into the series document's
-	// identifiers, strips the source's namespace, and notifies the library so
-	// the next derivation run fetches BY the picked id. Unknown plugin errors
-	// (wrapping ErrUnknownPlugin); an unknown series errors with the store's
-	// sql.ErrNoRows preserved (→ 404 at the handler). Nil-safe (503 when
-	// nil), mirroring Reenrich.
+	// IdentifySeries is the identify re-anchor closure (identify-match-override):
+	// writes the picked external id, strips the namespace, notifies the library;
+	// unknown plugin → ErrUnknownPlugin, unknown series → 404. Nil-safe: 503.
 	IdentifySeries func(ctx context.Context, seriesID, pluginID, externalID string) (queued bool, stripped, deferred int, err error)
-	// IdentifyItem is the series re-anchor closure generalized over ANY row
-	// (tmdb-enrichment, the async-enrichment delta): writes the picked
-	// external id into the ITEM document's identifiers, strips the source's
-	// namespace, clears the source's ledger cooldown for the row, and
-	// notifies the library so the next derivation run fetches BY the picked
-	// id — a lease-held row reports deferred with nothing written. Unknown
-	// plugin errors (wrapping ErrUnknownPlugin); an unknown item errors with
-	// the store's sql.ErrNoRows preserved (→ 404 at the handler). Nil-safe
-	// (503 when nil), mirroring IdentifySeries.
+	// IdentifyItem generalizes IdentifySeries over ANY row (tmdb-enrichment),
+	// clearing the ledger cooldown too — a lease-held row reports deferred
+	// with nothing written. Error mapping as IdentifySeries. Nil-safe: 503.
 	IdentifyItem func(ctx context.Context, itemID, pluginID, externalID string) (queued bool, stripped, deferred int, err error)
-	// SourceInventory is the admin-sources boot-literal inventory closure
-	// (plugin-title-enrichment D6): the plugin ids the process booted with,
-	// in boot order, each with its operator-facing display name and
-	// description (cmd literals — Manager.List() is Phase-2). The returns are
-	// PRIMITIVE types on purpose: the api package-level export budget sits at
-	// its cap, so the aggregate's shapes stay unexported (sourceAdminSource)
-	// and the handler assembles them from these plain slices/maps. Nil-safe
-	// (503 when nil), mirroring Status.
+	// SourceInventory is the admin-sources boot-literal inventory closure (plugin-title-enrichment
+	// D6): boot-order plugin ids with names/descriptions. EXPORT-BUDGET LAW: api's package-level
+	// exports are capped (complexity budget) — aggregates stay unexported, closures return primitives.
 	SourceInventory func(ctx context.Context) (ids []string, names, descriptions map[string]string)
-	// ModuleIDs lists the module registry's module ids — the enumeration
-	// scope for chain positions and gate resolution on GET /admin/sources.
-	// Primitive return (budget — see SourceInventory). Nil-safe (503).
+	// ModuleIDs lists the registry's module ids — the enumeration scope for
+	// chain positions and gate resolution. Primitive return (export budget —
+	// see SourceInventory). Nil-safe: 503.
 	ModuleIDs func(ctx context.Context) ([]string, error)
-	// ModuleSources resolves ONE module's metadata-source chain for ONE gate
-	// scope (libraryID 0 = module scope): the ordered plugin ids with their
-	// config priorities and their EFFECTIVE enablement after gate resolution
-	// — cmd-side via ONE batched prefs read (store.ListMetadataSourcePrefs)
-	// + enrich.ResolveGates, the same resolution the ModulePresentation
-	// closure applies. Parallel slices keep the return primitive-typed
-	// (budget — see SourceInventory). Nil-safe (503).
+	// ModuleSources resolves ONE module's source chain for ONE gate scope
+	// (libraryID 0 = module scope): ordered ids, priorities, EFFECTIVE enablement
+	// (export budget — see SourceInventory). Nil-safe: 503.
 	ModuleSources func(ctx context.Context, moduleID string, libraryID int64) (pluginIDs []string, priorities []int, enabled []bool, err error)
-	// OnParsersChanged is the parser-wake seam (enrichment D-6): invoked by
-	// putItemParsers/deleteItemParsers after a successful SetItemParsers,
-	// with the library resolved from the item row — the cmd-side
-	// implementation notifies the enrich queue so newly-applicable (or
-	// removed) parser sources join or leave derivation without a rescan.
-	// Nil-safe (a nil closure is a no-op), mirroring OnProgress.
+	// OnParsersChanged is the parser-wake seam (enrichment D-6): invoked after
+	// a successful SetItemParsers so parser sources join/leave derivation
+	// without a rescan. Nil-safe: no-op.
 	OnParsersChanged func(ctx context.Context, libraryID int64)
 	// OnSourceGateChanged is the source-gate wake seam (plugin-title-
-	// enrichment): invoked by adminSourcePatch after a successful module-scope
-	// gate ENABLE, once per library of the affected modules, and by the
-	// library-scope gate endpoints for the one scoped library (PUT on enable,
-	// DELETE on the clear-to-inherit — a clear may restore the source) — the
-	// cmd-side implementation notifies the enrich queue so newly-applicable
-	// source namespaces re-derive without a rescan. Nil-safe (a nil closure is
-	// a no-op), mirroring OnParsersChanged. Keeps api free of enrich imports
-	// (INV2).
+	// enrichment): invoked on a gate enable or clear-to-inherit so affected
+	// namespaces re-derive without a rescan. Nil-safe: no-op (INV2).
 	OnSourceGateChanged func(ctx context.Context, libraryID int64)
 	// OnTitleChange is the title-change invalidation seam (browse-scale 3.4):
-	// invoked after a CONFIRMED display-name write with the entity id whose
-	// composed name may have changed — putTitle on a stored override,
-	// deleteTitle on a clear (the store clear is unconditional, so the
-	// idempotent no-row delete fires too), seriesIdentify after a successful
-	// re-anchor. The cmd-side implementation pokes the browse index so the
-	// affected entries re-derive in ~immediately (the wiring is task 3.5);
-	// the request context detaches cmd-side, the OnProgress idiom. Nil-safe
-	// (a nil closure is a no-op; title persistence is never load-bearing on
-	// it), mirroring OnProgress. Keeps api free of browse imports (INV2).
+	// invoked after a CONFIRMED display-name write so the browse index
+	// re-derives the entity. Nil-safe: no-op (INV2).
 	OnTitleChange func(ctx context.Context, entityID string)
-	// PluginConfigs resolves ONE plugin's config bindings across the module
-	// registry (plugin-admin-surfaces D4): one row per module whose config
-	// binds the plugin — as its scanner or as a metadata source — as parallel
-	// slices, the sourceResolution precedent (the export budget keeps the
-	// wire DTOs unexported, so cmd returns primitives). Slice i is one
-	// binding: moduleIDs[i] binds kinds[i] ("scanner" | "metadata"); metadata
-	// rows carry priorities[i] (the chain position), enabled[i] (the CONFIG
-	// flag, pre-gate) and authModes[i]; displayFields[i] and options[i] are
-	// the binding's raw JSON ("" when undeclared), embedded verbatim by the
-	// handler — api never parses config semantics (INV4). An unknown plugin
-	// errors (wrapping ErrUnknownPlugin); a loaded plugin with no bindings
-	// returns empty slices. Built in cmd/mellifera; nil-safe (503 when nil).
+	// PluginConfigs resolves ONE plugin's config bindings (plugin-admin-surfaces
+	// D4) as parallel slices; displayFields/options are raw JSON embedded verbatim
+	// (INV4). Unknown plugin wraps ErrUnknownPlugin. Nil-safe: 503.
 	PluginConfigs func(ctx context.Context, pluginID string) (moduleIDs []string, kinds []string, priorities []int, enabled []bool, authModes []string, displayFields []string, options []string, err error)
-	// PluginLogs serves ONE plugin's host-captured stderr tail (plugin-admin-
-	// surfaces D3), oldest line first — built in cmd/mellifera over
-	// plugin.Manager.Logs. An unknown plugin errors (wrapping
-	// ErrUnknownPlugin → 400 at the handler); any other error is a real
-	// failure (→ 500). Nil-safe (503 when nil), mirroring PluginConfigs.
+	// PluginLogs serves ONE plugin's host-captured stderr tail, oldest line
+	// first (plugin-admin-surfaces D3). Unknown plugin wraps ErrUnknownPlugin
+	// (400); other errors are real failures (500). Nil-safe: 503.
 	PluginLogs func(ctx context.Context, pluginID string) ([]string, error)
-	// SetModuleBindingOptions is the plugin-admin delta's write closure
-	// (tmdb-enrichment 3.2): replaces ONE module binding's options JSON via
-	// Registry.SetBindingOptions (INV2 — api never imports internal/module;
-	// cmd wraps the registry's unexported refusals into the api-local
-	// ErrUnknownModule/ErrUnknownPlugin sentinels via %w, the newSearchClosure
-	// pattern). Options ride as raw JSON and are stored verbatim — serve-side
-	// redaction is the aggregate's concern (3.3), not the write's. The write
-	// wakes nothing: dormancy is read-time, the next derivation reads the new
-	// options through the refreshed registry cache. Nil-safe (503 when nil),
-	// mirroring PluginLogs.
+	// SetModuleBindingOptions replaces ONE module binding's options JSON
+	// (tmdb-enrichment 3.2): raw JSON stored verbatim; registry refusals
+	// wrapped via %w; wakes nothing. Nil-safe: 503.
 	SetModuleBindingOptions func(ctx context.Context, moduleID, pluginID string, options json.RawMessage) error
-	// RequiredSecretsStatus is the plugin-admin delta's per-binding verdict
-	// closure (tmdb-enrichment 3.3): the plugin's declared secret names, each
-	// mapped to whether THAT module binding's options provide a value — cmd
-	// composes Manager.RequiredSecrets (the retained handshake declaration)
-	// against the registry binding's Options JSON, presence-judged (a name is
-	// provided iff its key exists; non-emptiness is never judged). The
-	// aggregate renders the map as the metadata binding's additive
-	// required_secrets verdicts and omits every named key from the served
-	// options (serve-side redaction — presence lives in the verdicts, never
-	// in the bytes). An empty/nil map is "the plugin declares no secrets":
-	// the row serves today's shape byte-identically. A nil closure degrades
-	// the same way (no verdicts, options verbatim) — nil-safe, cmd wires it.
+	// RequiredSecretsStatus is the per-binding secrets verdict (tmdb-enrichment
+	// 3.3): declared secret names → whether THAT binding's options provide them
+	// (presence-judged); empty map = no declared secrets; nil closure degrades.
 	RequiredSecretsStatus func(moduleID, pluginID string) map[string]bool
-	// LibraryFacets serves one library's facet aggregates (browse-scale 3.2,
-	// library-facets delta): built in cmd/mellifera over browse.Service.Facets
-	// (INV2 — api never imports browse). Parallel slices, the ModuleSources
-	// precedent — the export budget keeps the aggregate shapes unexported, so
-	// the handler assembles the wire from plain slices: keys[i] is the facet
-	// key ("genres"|"kind"|"status") and values[i]/counts[i] are that key's
-	// parallel value/count lists in the index's serving order (count desc,
-	// value asc — the browse-side build's law), served verbatim. A library
-	// with no aggregates (photo library, nothing resolved) arrives as empty
-	// slices — the facet keys honestly absent. Nil-safe (503 when nil),
-	// mirroring Status/Playback.
+	// LibraryFacets serves one library's facet aggregates (browse-scale 3.2)
+	// as parallel slices in serving order (count desc, value asc), verbatim
+	// (INV2); empty slices = keys honestly absent. Nil-safe: 503.
 	LibraryFacets func(libraryID int64) (keys []string, values [][]string, counts [][]int)
-	// FacetIDs resolves ONE library's facet-filter id sets (browse-scale 3.2,
-	// library-facets delta): which series ids and item ids carry EVERY
-	// supplied facet value (an empty argument = no filter on that key),
-	// resolved cmd-side against the same facet corpus the aggregates count —
-	// the naming resolver's About projection per document — never a second
-	// namespace walk. An unknown value yields an empty set (the unknown-value
-	// law: the handler serves 200 empty, never an error). Parallel returns
-	// keep the two id spaces primitive-typed (budget — see LibraryFacets):
-	// the series listing intersects its rows with seriesIDs, the item listing
-	// with itemIDs. Nil-safe (503 when a filter is requested while nil),
-	// mirroring LibraryFacets.
+	// FacetIDs resolves ONE library's facet-filter id sets (browse-scale 3.2):
+	// ids carrying EVERY supplied value; unknown value = empty set, never an
+	// error (budget — see SourceInventory). Nil-safe: 503 when a filter is nil.
 	FacetIDs func(ctx context.Context, libraryID int64, genre, kind, status string) (seriesIDs, itemIDs map[string]bool, err error)
-	// RelayClaim is the client-relayed-fetch claim closure (D7): hands the
-	// oldest claimable relay job (pending, or claimed with an expired lease)
-	// to the requesting principal — any authenticated one, admin+client (ruled
-	// OQ-1); the browse group is the only gate. principalHash is the SHA-256
-	// hex of the caller's bearer credential (the pairing hashToken recipe —
-	// the SAME identity the result route's guard re-derives); v is the
-	// claimant's resolved Viewer (the handler passes viewerFor's resolution —
-	// l6-accounts 11.1): the store scopes the claim pool to its visible set
-	// (`(library_id = 0 OR library_id IN (…))`), so a job from an invisible
-	// library is never handed out. The claim and lease stamping happen inside
-	// the closure cmd-side. found=false with a nil error (empty queue, lost
-	// race, or a pool empty under v's conjunct) is not an error → the handler
-	// answers 204 — an invisible job leaks neither descriptor nor title.
-	// Returns the raw relay.RelayJob — the descriptor source the handler
-	// projects to the wire verbatim. Nil-safe (503 when nil),
-	// mirroring Reenrich/SearchSource; built in cmd/mellifera over
-	// enrich.Relay.Claim (INV2 — api never imports enrich).
+	// RelayClaim is the relayed-fetch claim closure (client-relayed-fetch D7): the oldest
+	// claimable job for the principal — pool scoped to v's visible set, an invisible job
+	// leaks nothing (found=false → 204; principalHash = the bearer's SHA-256). Nil-safe: 503.
 	RelayClaim func(ctx context.Context, principalHash string, v access.Viewer) (relay.RelayJob, bool, error)
-	// RelayResult is the client-relayed-fetch result closure (D7): accepts ONE
-	// claimed relay job's reported outcome from the principal that claimed it
-	// — built in cmd/mellifera over enrich.Relay.Ingest (INV2 — api never
-	// imports enrich). jobID is the claimed job's id; principalHash is the
-	// SHA-256 hex of the caller's bearer credential (the SAME identity
-	// RelayClaim stamped — the guard inside the closure's one conditional
-	// UPDATE matches it against a LIVE lease); result is the decoded
-	// relay.RelayResult passed through verbatim (its json tags ARE the wire
-	// vocabulary, the PlanSpec discipline — nothing re-shaped handler-side).
-	// The closure's wrapped sql.ErrNoRows is the store guard's refusal — a
-	// lost, expired, foreign, or unknown claim, row left untouched — and maps
-	// to 409 at the handler; any other error is a real failure → 500; nil
-	// error → 204. Nil-safe (503 when nil), mirroring RelayClaim.
+	// RelayResult accepts ONE claimed job's outcome from the claiming principal
+	// (client-relayed-fetch D7): sql.ErrNoRows = lost/expired/foreign claim →
+	// 409; other errors → 500; nil → 204. Nil-safe: 503, mirroring RelayClaim.
 	RelayResult func(ctx context.Context, jobID int64, principalHash string, result relay.RelayResult) error
-	// RelayMaxBody is the POST /relay/{id}/result request-body cap in bytes
-	// (client-relayed-fetch D7): the handler wraps r.Body in
-	// http.MaxBytesReader over it BEFORE decoding, so an over-cap payload is
-	// rejected 413 before any ingestion. A plain int64 — the WatchDefaults
-	// precedent: a configured value, not a domain call; the composition root
-	// owns the env read (MELLIFERA_RELAY_MAX_BODY, default 2 MiB — task 4.3)
-	// and its floor, and the handler never reads env (INV1 pure delegation).
-	// Zero/negative is a composition-root misconfiguration (every body then
-	// trips the cap); the value is passed through verbatim, never
-	// second-guessed handler-side.
+	// RelayMaxBody is the POST /relay/{id}/result body cap in bytes (client-
+	// relayed-fetch D7): MaxBytesReader BEFORE decoding (413 over cap); the
+	// composition root owns the env read (default 2 MiB) and its floor (INV1).
 	RelayMaxBody int64
-	// Pairing is the device-pairing minting service (device-pairing D1/D3):
-	// the pairing handlers delegate to it. (Until l6-accounts 7.1 the auth
-	// middleware's RoleClient branch consulted its LookupToken; the branch
-	// now resolves the credentials store directly — the row's bound user_id
-	// rides the principal — so Pairing is mint/management-only.) Not a closure but the
-	// service value itself — pairing is plain domain logic over the store
-	// (api already imports store), so the anti-corruption closure indirection
-	// buys nothing here. Nil-safe (the pairing routes 503 when nil and no
-	// device token ever resolves), mirroring Status/Playback. Built in
-	// cmd/mellifera over pairing.NewService.
+	// Pairing is the device-pairing minting service (device-pairing D1/D3) —
+	// the service value itself, not a closure (plain domain logic over the
+	// store). Nil-safe: the pairing routes 503, no device token resolves.
 	Pairing *pairing.Service
 	// Identity is the accounts domain service (l6-accounts D9, the Pairing
-	// precedent): viewerFor consults it to map the request principal to its
-	// access.Viewer scope — the per-user grant resolution
-	// (identity.ResolveViewer) and the HasUsers runtime-legacy collapse
-	// (D1). Not a closure but the service value itself — identity is plain
-	// domain logic over the store (the pairing precedent; api already
-	// imports store). Nil-safe (nil = runtime-legacy behavior: every
-	// principal keeps today's scope and ResolveViewer is never consulted),
-	// mirroring Pairing. Built in cmd/mellifera over identity.NewService —
-	// the composition root MUST assign a real service (task 10.1,
-	// TestDepsIdentityWired): nil wiring would silently legacy-fall EVERY
-	// principal at runtime.
+	// precedent): viewerFor resolves the principal's access.Viewer via
+	// identity.ResolveViewer; nil = runtime-legacy scope (root MUST assign).
 	Identity *identity.Service
-	// Art is the artwork facade (artwork): the composition's staged lookups
-	// and non-blocking acquisition handoffs, the object route's path
-	// resolution, and the upload ingest all delegate to it. Not a closure
-	// but the service value itself — art is a leaf over the store (art →
-	// store), the Pairing precedent. Nil-safe (the art routes 503 when nil
-	// and the composed artwork field simply omits — the additive field
-	// degrades to absence), mirroring Pairing. Built in cmd/mellifera over
-	// art.NewService.
+	// Art is the artwork facade (artwork): staged lookups, acquisition
+	// handoffs, object-route path resolution, upload ingest. Nil-safe: the
+	// art routes 503 and the composed artwork field omits.
 	Art *art.Service
-	// BrowseSearch is the global-search hit closure (browse-scale D7): the
-	// cmd-built browse index answering the RANKED hit ids per group (series,
-	// then items) for one query — ids only, the honesty backstop (D3): every
-	// display byte is composed live api-side from the live rows, so a stale
-	// index can degrade recall but never falsify a name. The groups arrive
-	// already bounded and ranked (tiers, then alphabetical); the handler
-	// applies the caller's visibility conjunct and the optional ?library=/
-	// ?limit= cuts on top. Parallel slices keep the return primitive-typed
-	// (budget — see SourceInventory): api never imports the browse package
-	// (D2 — serve closures only). Nil-safe: a nil closure answers empty
-	// lists, the same honest never-built floor the browse service itself
-	// serves; built in cmd/mellifera over browse.Service.Search (task 3.5).
+	// BrowseSearch is the global-search hit closure (browse-scale D7): RANKED
+	// hit ids per group, ids only — display bytes compose live api-side, so a
+	// stale index degrades recall, never falsifies a name (D3). Nil-safe: empty.
 	BrowseSearch func(query string) (seriesIDs, itemIDs []string)
-	// WatchDefaults is the auto-next countdown seconds (watch-flow-polish
-	// D1): resolved ONCE at the composition root from
-	// MELLIFERA_AUTO_NEXT_COUNTDOWN_SECONDS (default 10, floored at 1 — a
-	// zero/negative knob would make auto-next an instant jump) and served
-	// VERBATIM by GET /watch-defaults. A plain int, not a closure: there is
-	// no domain call behind it, the configured value IS the answer — api
-	// never reads env or config itself (INV1 pure delegation; the floor is
-	// the composition root's job, not the handler's).
+	// WatchDefaults is the auto-next countdown seconds (watch-flow-polish D1):
+	// resolved ONCE at the composition root (MELLIFERA_AUTO_NEXT_COUNTDOWN_
+	// SECONDS, default 10, floor 1), served VERBATIM (INV1).
 	WatchDefaults int
 }
 
-// Role is the authorization role resolved from the credential. The admin
-// token issues RoleAdmin; device pairing mints RoleClient (the auth
-// middleware resolves it from a valid device token). Values are lower-snake to
-// match the existing status literals. Handlers never fork on Role; authz lives
-// in the route group via requireRole (Task 04/08) — arch §11.5.
+// Role is the authorization role resolved from the credential; values are
+// lower-snake to match the status literals. Handlers never fork on Role —
+// authz lives in the route group via requireRole (arch §11.5).
 type Role string
 
 const (
-	// RoleAdmin is the role every valid admin token resolves to (both the
-	// admin and the browse panels work for it).
+	// RoleAdmin is the role every valid admin token resolves to.
 	RoleAdmin Role = "admin"
-	// RoleClient is the client-panel role, minted by device pairing: the auth
-	// middleware resolves it from a valid device credential (the credentials
-	// kind='device' row), giving a paired TV read-only browse access behind the
-	// same middleware (INV3). Since l6-accounts 7.1 it is also the projected
-	// role of a non-admin user's session.
+	// RoleClient is the client-panel role minted by device pairing — read-only
+	// browse behind the same middleware (INV3); since l6-accounts 7.1 also a
+	// non-admin user's session's projected role.
 	RoleClient Role = "client"
 )
 
 // Principal is the authenticated caller the middleware resolves from a valid
-// credential. The widening from {Admin bool} to {Role Role} is the arch §11.5
-// anticipated Phase-2 evolution, arrived early: new roles are added as a Role
-// constant plus a requireRole(...) member, not a handler fork. INV3: Principal
-// is a TYPE (not a bool gate); handlers read it via the unexported context
-// helper, never by branching on the role.
+// credential. INV3: a TYPE (not a bool gate) — new roles arrive as a constant
+// + requireRole member; handlers never branch on the role (arch §11.5).
 type Principal struct {
 	Role Role
-	// UserID is the credential's owning user (l6-accounts 7.1): the bound
-	// user of a device credential, or the session's user — 0 means
-	// not-user-backed (the env admin token, an unbound device). viewerFor
-	// resolves the user's grant scope from it; handlers never read it.
-	// No new Role constant exists for sessions: the user's role PROJECTS
-	// onto RoleAdmin/RoleClient at the middleware (D11).
+	// UserID is the credential's owning user (l6-accounts 7.1): 0 = not-user-
+	// backed. viewerFor resolves the grant scope from it; handlers never
+	// read it; a session's role PROJECTS at the middleware (D11).
 	UserID int64
 }
 
@@ -374,16 +181,9 @@ type Principal struct {
 // route group); do not branch on p.Role inside a handler.
 func (p Principal) IsAdmin() bool { return p.Role == RoleAdmin }
 
-// New builds the chi router: the routes are grouped under /api/v1 via
-// mountV1Routes into the unauthenticated pair group plus the two authed
-// groups — authN (authMiddleware) lives INSIDE the authed groups, next to
-// authZ (requireRole), because the pair group must run without it (chi
-// panics on Use after routes; the pair group is declared first, bare). The
-// browse group admits admin+client (read-only views); the admin group admits
-// admin only (mutating + liveness). authN precedes authZ: a bad token 401s
-// before any requireRole runs; a good token with the wrong role 403s
-// (INV-authn-precedes-authz). Handlers never fork on Role — the group is the
-// only gate (arch §11.5).
+// New builds the chi router: the pair group declared first and bare (chi
+// panics on Use after routes); authed groups mount authN inside, next to
+// authZ — 401 before requireRole, 403 on wrong role (arch §11.5).
 func New(deps Deps) http.Handler {
 	h := &app{deps: deps, beacons: newBeaconLimiter(), logins: newLoginLimiter()}
 	r := chi.NewRouter()
@@ -391,24 +191,13 @@ func New(deps Deps) http.Handler {
 	return r
 }
 
-// mountV1Routes wires the /api/v1 route table into THREE groups: pair (NO
-// authN/authZ — POST /pair and GET /pair/{id}/wait are the only
-// unauthenticated API surface, the device-pairing bootstrap), browse
-// (admin+client — read-only library/item views) and admin (admin only —
-// library mutation, scan trigger, system status, pairing adjudication).
-// authMiddleware (authN) is mounted inside the two authed groups, before
-// requireRole (authZ). Extracted so New (production, real authN) and the
-// role-gating test (behind a synthetic-principal injector) exercise the SAME
-// wiring — the test proves the real group composition, not a duplicate. No
-// handler forks on Role here; the group is the only authZ gate
-// (INV-no-handler-fork; arch §11.5).
+// mountV1Routes wires /api/v1 into THREE groups: pair (NO authN), browse
+// (admin+client, read-only), admin (admin only); authN precedes authZ in the
+// authed groups. Extracted so New and the role-gating test share the wiring.
 func mountV1Routes(r chi.Router, h *app) {
 	// Pair group (device-pairing D2): NO authN — an unpaired device has no
-	// credential yet, so the bootstrap must be open. The pairing_id (128-bit
-	// capability) is the route's protection, not a bearer token. Login is
-	// mounted in the same bare group (l6-accounts 7.2): it is HOW a caller
-	// obtains a session credential, so it must run without one (its own
-	// defense is the (IP, username) rate limiter + the uniform 401).
+	// credential; the pairing_id (128-bit capability) is the protection. Login
+	// rides the same bare group (l6-accounts 7.2); defended by its own limiter.
 	r.Group(func(r chi.Router) {
 		r.Post("/pair", h.createPairing)
 		r.Get("/pair/{id}/wait", h.waitPairing)
@@ -419,98 +208,72 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Use(requireRole(RoleAdmin, RoleClient))
 		r.Get("/libraries", h.listLibraries)
 		// Library detail (element-pages 3.4): the row plus the additive module
-		// presentation block (`module`: identity_fields + the ordered parser
-		// bindings with display_fields) — the element page's chain/identity
-		// source. Read-only, browse group beside the other library views.
+		// presentation block — read-only, browse group.
 		r.Get("/libraries/{id}", h.getLibrary)
 		r.Get("/libraries/{id}/summary", h.librarySummary)
 		r.Get("/libraries/{id}/folders", h.libraryFolders)
-		// Facets (browse-scale D7): the per-library facet aggregates — the
-		// chip values the SPA renders verbatim. Read-only viewer data, so the
-		// browse group beside the other library views.
+		// Facets (browse-scale D7): per-library facet aggregates, the chip
+		// values the SPA renders verbatim — read-only viewer data.
 		r.Get("/libraries/{id}/facets", h.libraryFacets)
 		r.Get("/items", h.listItems)
 		r.Get("/items/{id}", h.getItem)
-		// Item media (media-preview): real bytes for the SPA's <img> surfaces —
-		// the document-resolved original plus the frame-grabber thumb variant.
-		// Read-only, so it lives in the browse group beside the item detail
-		// view. HEAD is mounted explicitly (chi does not fold HEAD into Get);
-		// the handler answers it headers-only via http.ServeContent.
+		// Item media (media-preview): document-resolved bytes for the SPA's
+		// <img> surfaces. HEAD mounted explicitly (chi does not fold HEAD into
+		// Get); the handler answers it headers-only via http.ServeContent.
 		r.Get("/items/{id}/media", h.itemMedia)
 		r.Head("/items/{id}/media", h.itemMedia)
-		// Art object (artwork D5): the stored poster bytes through the same
-		// authenticated channel — read-only, so the browse group beside the
-		// item media route. HEAD is mounted explicitly (chi does not fold
-		// HEAD into Get); the same handler answers it headers-only via
-		// http.ServeContent, ETag 304s included.
+		// Art object (artwork D5): stored poster bytes through the same
+		// authenticated channel. HEAD mounted explicitly, ServeContent
+		// headers-only, ETag 304s included.
 		r.Get("/art/object/{oid}", h.artObject)
 		r.Head("/art/object/{oid}", h.artObject)
-		// Series routes (serials-library): read-only serial-level views, same
-		// browse group as items — the serial document is opaque on the wire,
-		// exactly like an item document.
+		// Series routes (serials-library): read-only serial-level views — the
+		// serial document is opaque on the wire, exactly like an item's.
 		r.Get("/series", h.listSeries)
 		r.Get("/series/{id}", h.getSeries)
 		r.Get("/series/{id}/episodes", h.seriesEpisodes)
-		// Playback verbs (packaged-playback D-7): the read-only descriptor and
-		// the single playback mutation, both in the browse group — playback is
-		// a viewer action, exactly like progress.
+		// Playback verbs (packaged-playback D-7): read-only descriptor + the
+		// single playback mutation — viewer actions, browse group.
 		r.Get("/items/{id}/playback", h.itemPlayback)
 		r.Post("/items/{id}/play", h.itemPlay)
-		// Playback progress (web-ui-phase-3): the PUT lives in the browse
-		// group by design (admin+client) — writing a position is a viewer
+		// Playback progress (web-ui-phase-3): writing a position is a viewer
 		// action, not an operator mutation.
 		r.Get("/progress", h.listProgress)
 		r.Get("/progress/{item_id}", h.getProgress)
 		r.Put("/progress/{item_id}", h.putProgress)
 		// Home continue rail (browse-scale D5): the ONE server-composed
-		// round-trip the SPA's home surface renders from — the caller's
-		// progress rows scored through the recs composition, bounded to 50,
-		// each row carrying its series/current/next composition. A viewer
-		// action over its own ledger, so the browse group beside progress.
+		// round-trip the SPA's home surface renders from — a viewer action
+		// over its own ledger.
 		r.Get("/home", h.home)
-		// Item state (collections-ux): the watched-toggle write — a
-		// playback-STATE endpoint named for state so the closed set can grow,
-		// a viewer action exactly like progress, so the browse group beside
-		// it.
+		// Item state (collections-ux): the watched-toggle write — a viewer
+		// action exactly like progress.
 		r.Put("/items/{id}/state", h.putItemState)
-		// Watch defaults (watch-flow-polish D1): the auto-next countdown the
-		// SPA reads before offering the next episode — the wired Deps int
-		// served verbatim (never env-read here). Read-only viewer data, so
-		// the browse group beside progress.
+		// Watch defaults (watch-flow-polish D1): the wired Deps int served
+		// verbatim (never env-read here).
 		r.Get("/watch-defaults", h.watchDefaults)
-		// Global search (browse-scale D7): the composed-name index answers
-		// the ranked hit ids; rows compose live through namerFor (the D3
-		// backstop). A read-only viewer view, so the browse group beside the
-		// other library views.
+		// Global search (browse-scale D7): ranked hit ids from the
+		// composed-name index, rows composed live through namerFor (the D3
+		// backstop).
 		r.Get("/search", h.search)
-		// Playback-event beacon (tv-playback-unblock D7): the TV's fire-and-
-		// forget failure telemetry — a viewer action, so the browse group
-		// (a pairing-minted client session must reach it). Top-level under
-		// /api/v1, never nested under /items: the item_id is unvalidated
-		// data (no store read), not a route parameter.
+		// Playback-event beacon (tv-playback-unblock D7): fire-and-forget
+		// failure telemetry — a viewer action; top-level because the item_id
+		// is unvalidated data, not a route parameter.
 		r.Post("/playback-events", h.playbackEvent)
-		// Relay claim (client-relayed-fetch D7): the oldest claimable fetch
-		// job handed to ANY authenticated principal — a viewer-side transport
-		// action, not an operator mutation, so the browse group (admin+client;
-		// the group is the only gate). 200 descriptor / 204 nothing claimable.
+		// Relay claim (client-relayed-fetch D7): the oldest claimable job for
+		// ANY authenticated principal — viewer-side transport. 200 descriptor /
+		// 204 nothing claimable.
 		r.Post("/relay/claim", h.relayClaim)
-		// Relay result (client-relayed-fetch 4.2): the claimed job's reported
-		// outcome accepted back from the SAME principal — a viewer-side
-		// transport action beside the claim, so the browse group (admin+client;
-		// the group is the only gate). 204 accepted / 409 lost, expired, or
-		// foreign claim / 413 over the RelayMaxBody cap / 400 malformed body.
+		// Relay result (client-relayed-fetch 4.2): the claimed job's outcome
+		// from the SAME principal. 204 / 409 lost-expired-foreign / 413 over
+		// RelayMaxBody / 400 malformed body.
 		r.Post("/relay/{id}/result", h.relayResult)
 		// Logout (l6-accounts 7.2): the bearer IS the capability — deletes
-		// ONLY the presented session row, so any authenticated principal may
-		// call it, but a non-session credential (device bearer, admin token)
-		// finds no session row and 401s (the kind guard, documented on the
-		// handler). A viewer action beside the other session verbs, so the
-		// browse group.
+		// ONLY the presented session row; a non-session credential 401s (the
+		// kind guard, on the handler).
 		r.Post("/auth/logout", h.logout)
-		// Profile (l6-accounts 8.1): the caller's own identity facts and the
-		// caller's own preference document — every principal kind has a
-		// profile and writes only its own, so the browse group (admin+client)
-		// is the only gate; zero viewer/visibility logic behind either route.
+		// Profile (l6-accounts 8.1): the caller's own identity facts and prefs
+		// — every principal kind has one, writes only its own; zero
+		// viewer/visibility logic behind either route.
 		r.Get("/profile", h.profile)
 		r.Put("/profile/prefs", h.putProfilePrefs)
 	})
@@ -518,38 +281,29 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Use(authMiddleware(h.deps.AdminToken, h.deps.Store, h.deps.Identity))
 		r.Use(requireRole(RoleAdmin))
 		r.Post("/libraries", h.createLibrary)
-		// Library mutation: present display_name/description/streams_enabled
-		// fields update the row, and an optional ordered parsers array
-		// (element-pages 3.1) replaces the collection's parser chain — the
-		// footer group order and the enrichment queue priority. Identity fields
-		// (root_path/module_id) are rejected here, unchanged.
+		// Library mutation: display_name/description/streams_enabled update the
+		// row; the ordered parsers array (element-pages 3.1) replaces the chain.
+		// Identity fields (root_path/module_id) rejected — unchanged.
 		r.Patch("/libraries/{id}", h.patchLibrary)
-		// Delete: removes the library row AND every dependent row in one
-		// store transaction (items, series, control rows, scan jobs) —
-		// media files on disk are never touched.
+		// Delete: the library row AND every dependent row in one store
+		// transaction — media files on disk are never touched.
 		r.Delete("/libraries/{id}", h.deleteLibrary)
 		r.Post("/libraries/{id}/scan", h.scanLibrary)
 		// Element-only parser attachment (element-pages 3.3): full-replacement
-		// PUT and clearing DELETE over one item's parser attachments — operator
-		// mutations, so the admin group. Attachments survive re-scans (they are
-		// keyed by the item id, which re-scans preserve) and never leak to
-		// sibling items (keyed by item).
+		// PUT + clearing DELETE, keyed by item id (survive re-scans, never leak
+		// to siblings) — operator mutations.
 		r.Put("/items/{id}/parsers", h.putItemParsers)
 		r.Delete("/items/{id}/parsers", h.deleteItemParsers)
 		// Title overrides (serial-watch-flow 2.1): manual display titles over
-		// the series and item id spaces — operator mutations, so the admin
-		// group. PUT stores the record (200 with it), DELETE clears it (204,
-		// idempotent). The override is control state beside the document: no
-		// document namespace is read or written (D-1).
+		// both id spaces — PUT stores (200), DELETE clears (204, idempotent);
+		// control state only, no document namespace touched (D-1).
 		r.Put("/series/{id}/title", h.putSeriesTitle)
 		r.Delete("/series/{id}/title", h.deleteSeriesTitle)
 		r.Put("/items/{id}/title", h.putItemTitle)
 		r.Delete("/items/{id}/title", h.deleteItemTitle)
-		// Poster override family (artwork): the candidates read plus the
-		// pin/upload/reset verbs, symmetric to the title overrides above —
-		// operator mutations/observability, so the admin group. Refresh
-		// never touches the override; DELETE never touches the bytes (the
-		// GC reclaims on reference loss).
+		// Poster override family (artwork): candidates read + pin/upload/reset,
+		// symmetric to the title overrides. Refresh never touches the override;
+		// DELETE never touches the bytes.
 		r.Get("/series/{id}/posters", h.seriesPosters)
 		r.Put("/series/{id}/poster", h.putSeriesPoster)
 		r.Post("/series/{id}/poster", h.uploadSeriesPoster)
@@ -558,117 +312,75 @@ func mountV1Routes(r chi.Router, h *app) {
 		r.Put("/items/{id}/poster", h.putItemPoster)
 		r.Post("/items/{id}/poster", h.uploadItemPoster)
 		r.Delete("/items/{id}/poster", h.deleteItemPoster)
-		// Re-enrichment admin surface (enrichment design Interfaces, D-6):
-		// the explicit refresh kickoff (202 + strip counts; 409 only on a
-		// whole-library sweep collision), the on-demand drift preview, and
-		// the failure-ledger listing (store-served — no closure). Operator
-		// mutations/observability, so the admin group.
+		// Re-enrichment admin surface (enrichment D-6): refresh kickoff (202;
+		// 409 on a whole-library sweep collision), drift preview, failure
+		// ledger (store-served — no closure).
 		r.Post("/libraries/{id}/refresh", h.libraryRefresh)
 		r.Get("/libraries/{id}/enrich/preview", h.enrichPreview)
 		r.Get("/enrich/failures", h.enrichFailures)
-		// Metadata-source admin aggregate (plugin-title-enrichment): the
-		// read-only per-plugin inventory — boot-literal list, health,
-		// capabilities, chain positions, effective gates per module and per
-		// library, on-demand title counts (?title_counts=true). Operator
-		// observability, so the admin group.
+		// Metadata-source admin aggregate (plugin-title-enrichment): read-only
+		// per-plugin inventory — boot list, health, capabilities, chains,
+		// effective gates, on-demand title counts.
 		r.Get("/admin/sources", h.adminSources)
-		// Module-wide source gate (plugin-title-enrichment): the operator
-		// enable/disable write — validation-first (unknown plugin 400, nothing
-		// written), enable wakes every affected library's derivation, disable
-		// wakes nothing. Operator mutation, so the admin group.
+		// Module-wide source gate (plugin-title-enrichment): validation-first
+		// enable/disable — enable wakes every affected library's derivation,
+		// disable wakes nothing.
 		r.Patch("/admin/sources/{plugin_id}", h.adminSourcePatch)
 		// Per-collection source gate (plugin-title-enrichment): PUT writes the
-		// library-scope override, DELETE clears it back to inherit — one
-		// library of one module. Validation-first like the module-wide PATCH
-		// (unknown library 404, unknown plugin 400, nothing written on error).
-		// Operator mutation of one library's gate, so the admin group beside
-		// the other library mutations.
+		// library-scope override, DELETE clears to inherit — validation-first
+		// like the module-wide PATCH.
 		r.Put("/libraries/{id}/sources/{plugin_id}", h.librarySourcePut)
 		r.Delete("/libraries/{id}/sources/{plugin_id}", h.librarySourceDelete)
 		// Composition preview (plugin-title-enrichment): the production
-		// composer run TWICE over the same library rows — the live gates vs.
-		// the request's hypothetical gate vector — answering symmetric
-		// before/after name sets with the no_data marker. Pure read path:
-		// nothing is written, no derivation wakes. Operator observability, so
-		// the admin group beside the gate writes it previews.
+		// composer run TWICE — live gates vs the request's hypothetical vector
+		// — pure read, nothing written, no derivation wakes.
 		r.Post("/admin/sources/preview", h.adminSourcePreview)
-		// Identify overlay (identify-match-override): the interactive source
-		// search passthrough (a read — but operator tooling, so the admin
-		// group beside /admin/sources) and the re-anchor write (202; the
-		// strip + re-derive run under the row's lease) over BOTH row spaces —
-		// the series space and, since tmdb-enrichment, the item space (films
-		// are items in tv libraries). All are Deps-closure endpoints
-		// (nil-safe, cmd-wired).
+		// Identify overlay (identify-match-override): interactive source
+		// search + the re-anchor write (202; strip + re-derive under the
+		// row's lease) over BOTH row spaces — Deps-closure endpoints.
 		r.Get("/admin/sources/{plugin_id}/search", h.sourceSearch)
 		r.Put("/series/{id}/identify", h.seriesIdentify)
 		r.Put("/items/{id}/identify", h.itemIdentify)
-		// Plugin admin surfaces (plugin-admin-surfaces): the read-only
-		// loaded-plugin aggregate — boot inventory, health snapshot,
-		// capability chips, module-scope effective verdicts, config bindings —
-		// and the per-plugin host-captured stderr tail. Operator
-		// observability (nothing written), so the admin group beside
-		// /admin/sources.
+		// Plugin admin surfaces (plugin-admin-surfaces): read-only loaded-
+		// plugin aggregate + per-plugin stderr tail — operator observability,
+		// nothing written.
 		r.Get("/admin/plugins", h.adminPlugins)
 		r.Get("/admin/plugins/{plugin_id}/logs", h.adminPluginLogs)
-		// Binding-options write (tmdb-enrichment, the plugin-admin delta):
-		// PUT {"options": {...}} replaces exactly that module binding's
-		// options JSON in the store-backed module config — the SERVER-mode
-		// auth resolution's home (the per-binding secrets an operator
-		// configures here). Validation-first (unknown module 404, unbound
-		// plugin / malformed body 400, nothing written on error); the write
-		// wakes nothing — dormancy is read-time, the next derivation reads
-		// the new options. A Deps-closure endpoint (nil-safe, cmd-wired), so
-		// the admin group beside the aggregate it configures.
+		// Binding-options write (tmdb-enrichment): PUT {"options": …} replaces
+		// exactly that binding's options JSON — SERVER-mode auth's home;
+		// validation-first, wakes nothing. Deps-closure endpoint.
 		r.Put("/admin/modules/{module_id}/sources/{plugin_id}/options", h.adminModuleBindingOptions)
 		r.Get("/admin/status", h.adminStatus)
-		// Device-pairing admin surface (device-pairing D2): the operator
-		// review of pending pairing requests (list/approve/deny) and the
-		// paired-device registry (list/revoke). Operator mutations and
-		// observability, so the admin group beside /admin/plugins.
+		// Device-pairing admin surface (device-pairing D2): pending-request
+		// review (approve/deny) + paired-device registry (revoke).
 		r.Get("/admin/pairings", h.listPairings)
 		r.Post("/admin/pairings/{id}/approve", h.approvePairing)
 		r.Post("/admin/pairings/{id}/deny", h.denyPairing)
 		r.Get("/admin/devices", h.listDevices)
 		r.Delete("/admin/devices/{id}", h.revokeDevice)
 		// Device-to-user bind (l6-accounts 9.3): PUT {"user_id": n|null}
-		// binds the device credential (the next request from it rides the
-		// bound user's resolved Viewer — the 7.1 chain) and null unbinds back
-		// to the legacy see-all device viewer. The {id} is the credentials
-		// rowid the device list surfaces; the list's user_id posture field is
-		// the read-back. Operator mutation, so the admin group beside the
-		// device surface it completes.
+		// binds/unbinds the device credential — the next request rides the
+		// bound user's resolved Viewer (the 7.1 chain).
 		r.Put("/admin/devices/{id}/user", h.adminDeviceBind)
-		// User accounts admin surface (l6-accounts 9.1): the users CRUD —
-		// create (the FIRST-user one-way-door notice), list (hashes never
-		// served), role/disable patch, password reset (the session cascade),
-		// delete (the last-user guard + the state cascade). Pure delegation
-		// to identity; operator mutations, so the admin group beside the
-		// device surface it complements.
+		// User accounts admin surface (l6-accounts 9.1): users CRUD — first-
+		// user one-way-door, hashes never served, session-cascading password
+		// reset, last-user guard. Pure delegation to identity.
 		r.Post("/admin/users", h.adminUserCreate)
 		r.Get("/admin/users", h.adminUsersList)
 		r.Patch("/admin/users/{id}", h.adminUserPatch)
 		r.Put("/admin/users/{id}/password", h.adminUserPassword)
 		r.Delete("/admin/users/{id}", h.adminUserDelete)
 		// One-shot legacy-ledger adoption (l6-accounts 9.3): merges the
-		// user_id=0 slot into the user's slots newer-wins (progress by
-		// updated_at, watched by completed_at) in ONE identity transaction;
-		// rerun is a no-op. Explicit by design (D7 — never seed-on-login).
-		// Pure delegation, so the admin group beside the users CRUD.
+		// user_id=0 slot newer-wins in ONE identity transaction; rerun is a
+		// no-op (D7 — never seed-on-login). Pure delegation.
 		r.Post("/admin/users/{id}/adopt-legacy", h.adminUserAdopt)
-		// Visibility-explain diagnostic (l6-accounts 9.3): the resolved
-		// grant for an ARBITRARY named user over one library — the same
-		// identity.ResolveViewer a request from that user rides, never the
-		// caller's scope and never a second derivation (the design's
-		// one-resolution law). Operator observability, so the admin group.
+		// Visibility-explain diagnostic (l6-accounts 9.3): the resolved grant
+		// for an ARBITRARY named user — the same identity.ResolveViewer a
+		// request from that user rides, never a second derivation.
 		r.Get("/admin/visibility-explain", h.adminVisibilityExplainGet)
-		// Groups admin surface (l6-accounts 9.2): the groups CRUD
-		// (id-addressed — rename-proof, the 9.1 convention; duplicate names
-		// 409), the member-users and member-Collections sub-resources (+
-		// display positions — overlap allowed, re-add re-positions,
-		// orphan-tolerant library ids), and the schema-versioned mute
-		// document PUT (object-checked, stored verbatim). Pure delegation
-		// to identity; operator mutations, so the admin group beside the
-		// users surface it complements.
+		// Groups admin surface (l6-accounts 9.2): groups CRUD (id-addressed;
+		// duplicate names 409), member sub-resources (re-add re-positions),
+		// schema-versioned mute doc PUT. Pure delegation to identity.
 		r.Post("/admin/groups", h.adminGroupCreate)
 		r.Get("/admin/groups", h.adminGroupsList)
 		r.Get("/admin/groups/{id}", h.adminGroupGet)

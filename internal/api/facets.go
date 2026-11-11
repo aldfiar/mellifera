@@ -6,8 +6,12 @@
 // plus the additive genre/kind facet filters on the collection listings —
 // id-set resolution through the Deps closure (cmd-built over the browse
 // index, INV2 — api never imports browse), in-Go intersection over the
-// fetched rows. Every surface here is viewer-scoped like the browse group
-// around it: an invisible library contributes nothing.
+// fetched rows.
+//
+// VIEWER SCOPE (this file's canonical): every surface here is viewer-scoped
+// like the browse group around it — an invisible library reads as unknown
+// (404 not_found, exactly like getLibrary): no counts, no keys, no leak of
+// the library's facet existence.
 
 package api
 
@@ -46,12 +50,10 @@ type facetsResponse struct {
 }
 
 // libraryFacets: parse {id} → nil-closure 503 → viewer-scoped GetLibrary →
-// serve the index's facet aggregates verbatim through the Deps closure. The
-// visibility conjunct (library-facets delta): the library read is scoped to
-// the calling viewer, so a library outside the visible set is unknown — 404
-// not_found, exactly like getLibrary; no counts, no keys, no leak of the
-// library's facet existence. The closure's serving order (count desc, value
-// asc — the browse-side build's law) is served untouched.
+// serve the index's facet aggregates verbatim through the Deps closure
+// (VIEWER SCOPE — the file head: invisible ≡ 404, nothing leaks). The
+// closure's serving order (count desc, value asc — the browse-side build's
+// law) is served untouched.
 //
 // @Summary      List a library's facet values
 // @Tags         libraries
@@ -73,8 +75,7 @@ func (a *app) libraryFacets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "facets endpoint disabled", false)
 		return
 	}
-	// The caller's scope (6.2): the visibility conjunct rides the requesting
-	// viewer — a denied library serves nothing.
+	// VIEWER SCOPE — the file head.
 	v, ctx := a.viewerFor(r)
 	if _, err := a.deps.Store.GetLibrary(ctx, id, v); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

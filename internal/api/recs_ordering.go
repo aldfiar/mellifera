@@ -5,15 +5,13 @@
 // the api composes one recs EntityState per browsable entity from BATCHED
 // store reads — one tag-weights read, one progress read, one watched-ledger
 // read, plus the listing's own rows — feeds internal/recs, and serves
-// score-desc with the alphabetical
-// floor. Scoring is read-time and never persisted; the score reaches the wire
-// solely as the additive rec_score field, so the ordering is observable. The
-// item listing runs D7's score-then-window: the FULL filtered set is read,
-// scored, and ordered in the handler, and offset/limit apply afterwards —
-// the score order never reaches QueryItems' SQL, so page 2 can never
-// outrank page 1. The api keeps its own genres projection (INV2 bars
-// internal/enrich here); the resolver mirrors the enrich walk's rule, not
-// its code.
+// score-desc with the alphabetical floor. Scoring is read-time and never
+// persisted; the score reaches the wire solely as the additive rec_score
+// field. The item listing runs D7's score-then-window: the FULL filtered set
+// is read, scored, and ordered in the handler, and offset/limit apply
+// afterwards — page 2 can never outrank page 1. The api keeps its own genres
+// projection (INV2 bars internal/enrich here); the resolver mirrors the
+// enrich walk's rule, not its code.
 
 package api
 
@@ -37,14 +35,11 @@ const (
 	// inside, none outside.
 	newEpisodeWindow = 30 * 24 * time.Hour
 
-	// photoModuleID is the photo-scanner module's registry id (the module
-	// seed's "image" row — internal/module/registry.go, media_type "image",
-	// display_name Photos): the ONE comparison behind the photo carve-out.
-	// A library whose row carries it never serves a computed order — the
-	// grid keeps the store's path order under the scored default, and no
-	// surface's score carries a context bonus for its items. The comparison
-	// is cheap by construction: the library row rides the namer the
-	// scored surfaces already read — no new store read.
+	// photoModuleID is the photo-scanner module's registry id (the "image"
+	// seed row, internal/module/registry.go): the ONE comparison behind the
+	// photo carve-out — a photo library never serves a computed order and no
+	// surface's score carries a context bonus for its items. The library row
+	// rides the namer the scored surfaces already read — no new store read.
 	photoModuleID = "image"
 
 	// itemsPage is the paging-loop page behind the full-set item read (D7):
@@ -94,15 +89,13 @@ func (f recsFacts) completed(itemID string) bool {
 }
 
 // recsFactsFor batches the two scoring reads. The stored tag_weights weight
-// IS the recs interest — the apply pass inserts 1 on first sight and +1 per
-// completion element (the spec's "raises the weights by 1 from base"), and
-// recs.Score adds the base 1 itself — so the values pass straight into
-// recs.Weights. Keys re-fold on read through recs.NormalizeTag: the one tag
-// normalization (D1) guards the read side the way it guards the write.
-//
-// Both ledger reads are the CALLING VIEWER's (6.2): the caller's own slot
-// over its visible libraries — the tag weights stay the global learning
-// input (5.2's documented invariant), the ledger facts scope per viewer.
+// IS the recs interest (the apply pass raises it by 1 from base per
+// completion element, and recs.Score adds the base 1 itself), so the values
+// pass straight into recs.Weights; keys re-fold on read through
+// recs.NormalizeTag — the one tag normalization (D1) guards the read side
+// the way it guards the write. Both ledger reads are the CALLING VIEWER's
+// (6.2) — the tag weights stay the global learning input (5.2's invariant),
+// the ledger facts scope per viewer.
 func (a *app) recsFactsFor(ctx context.Context, v access.Viewer) (recsFacts, error) {
 	tags, weights, err := a.deps.Store.ListTagWeights(ctx)
 	if err != nil {
@@ -206,17 +199,13 @@ const statusDeleted = "deleted"
 // listItems'; the RAM is one library's filtered rows.
 //
 // Tombstone serve law (tombstone-lifecycle 3.2): an EMPTY status maps here —
-// once, at this shared seam — to the active-rows read. The pages come back
-// no-filter (empty status = all statuses is the pinned store invariant) and
-// the walk drops deleted rows before appending, so EVERY caller inherits the
-// default exclusion with no per-caller filtering: listItems' scored branch,
-// its sort=path opt-out (which routes empty-status requests through this walk
-// and cuts its page in Go), and libraryEpisodes' per-series episode facts —
-// the getSeries watched stamp's input, so a vanished episode feeds no fact
+// once, at this shared seam — to the active-rows read: the walk drops deleted
+// rows before appending, so EVERY caller (listItems' scored branch, its
+// sort=path opt-out, libraryEpisodes' episode facts) inherits the default
+// exclusion with no per-caller filtering — a vanished episode feeds no fact
 // and stamps no Watched off its dead ledger row. Offsets page over the
-// store's unfiltered batches (the enrich allItems precedent), so the drop
-// never perturbs pagination. An explicit status passes through exact-match
-// untouched.
+// store's unfiltered batches, so the drop never perturbs pagination. An
+// explicit status passes through exact-match untouched.
 func (a *app) allFilteredItems(ctx context.Context, v access.Viewer, libraryID int64, status, pathPrefix string, topLevel bool) ([]store.Item, error) {
 	var out []store.Item
 	for offset := 0; ; offset += itemsPage {
@@ -246,27 +235,18 @@ func (a *app) allFilteredItems(ctx context.Context, v access.Viewer, libraryID i
 // watched-ledger carve-out (a completed item keeps its progress row, so
 // the resume bonus needs hasProgress && !completed), and NewEpisode marks
 // an episode with neither a progress nor a watched row discovered in the
-// window whose series is started by the batched facts — started now means
-// progress OR watched (the spec's started-series definition). The episode
-// item IS the new episode, so the fresh entry bubbles in the grid it
-// serves.
+// window whose series is started by the batched facts — started means
+// progress OR watched (the spec's started-series definition).
 //
 // startedSeed is the series-scoped startedness the CALLER already derived —
-// the single-item progress route's scored composition scores a ONE-item
-// slice, so the slice derivation below cannot see a series started by a
-// sibling episode (or by the target's own zero-position row); getProgress
-// seeds the fact from the series' episode rows (seriesStartedFact). Listings
-// pass nil: their slice IS the full set, so the derivation below is
-// series-scoped already.
+// a ONE-item slice cannot see a series started by a sibling episode, so
+// getProgress seeds the fact via seriesStartedFact; listings pass nil (their
+// slice is already series-scoped).
 //
-// The photo carve-out branches here first: a photo-scanner-module library
-// (photoModuleID off the namer's already-read library row) scores ALL
-// ZEROS — one ModuleID comparison, no store read — so no surface scoring
-// through this composition (the grid, the single-item route, the continue
-// rail via scoreProgress) can carry a context bonus for a photo item. The
-// photo GRID's path order itself is enforced in listItems (the scoredServe
-// skip); zeroing here keeps every OTHER surface honest, since equal-zero
-// scores degrade to that surface's own recency/id floor.
+// The photo carve-out scores ALL ZEROS first (photoModuleID off the namer's
+// already-read library row — one comparison, no store read), so no surface
+// scoring through this composition carries a photo context bonus; the photo
+// GRID's path order is enforced in listItems (the scoredServe skip).
 func scoreItems(n naming.Namer, items []store.Item, f recsFacts, startedSeed map[string]bool) []float64 {
 	scores := make([]float64, len(items))
 	if n.ModuleID == photoModuleID {
@@ -297,19 +277,15 @@ func scoreItems(n naming.Namer, items []store.Item, f recsFacts, startedSeed map
 
 // scoreSeries derives one recommendation score per series row, aligned with
 // srs, from the series' grouped episodes (D2/D3) — plus the watched law
-// (watched-states D1) folded in the SAME walk: every episode's ledger fact
-// is already read, so the all-episodes fold costs nothing. Started means ANY
-// episode carries a progress OR watched row (the spec's started-series
-// definition — the watched ledger is the startedness leg the progress facts
-// alone could not see); the InProgress bonus needs an episode with a positive
-// progress row that has NOT completed (a fully-watched series keeps its
-// progress rows but carries no resume bonus — watched-to-the-end does not
-// float); the new-episode bonus needs the started series carrying an episode
-// with neither a progress nor a watched row discovered in the window. An
-// unstarted series never carries the bonus (D3). The tags are the series
-// document's own genres (D1). Photo libraries have no series rows (series
-// are serial-only), so no photo case exists here. Both returned slices align
-// with srs.
+// (watched-states D1) folded in the SAME walk (the all-episodes fold costs
+// nothing; every episode's ledger fact is already read). Started means ANY
+// episode carries a progress OR watched row (the spec's definition); the
+// InProgress bonus needs a positive progress row that has NOT completed
+// (watched-to-the-end does not float); the new-episode bonus needs the
+// started series carrying an episode with neither row discovered in the
+// window; an unstarted series never carries the bonus (D3). The tags are the
+// series document's own genres (D1). Photo libraries have no series rows, so
+// no photo case exists here. Both returned slices align with srs.
 func scoreSeries(n naming.Namer, srs []store.Series, eps map[string][]store.Item, f recsFacts) ([]float64, []bool) {
 	scores := make([]float64, len(srs))
 	watched := make([]bool, len(srs))
@@ -367,15 +343,11 @@ func episodesBySeries(items []store.Item) map[string][]store.Item {
 }
 
 // scoredServe reorders rows into the served scored order — recs.Order, the
-// ONE comparator (every unwatched entry before every watched one, each
-// partition score descending, ties by served display name ascending, then
-// id: the alphabetical floor — watched-states D4) — and stamps each row's
-// rec_score, returning the ordered copy. scores align with the input order;
-// id and name read the identity and served display name the comparator
-// needs; watched reads the ledger fact the partition sinks on — the caller
-// feeds it from the SAME batched facts the score composed, never an extra
-// read; set stamps the wire field. IDs are unique per surface (the item id,
-// the ser_ id), so the index map is total.
+// ONE comparator (the alphabetical floor, watched-states D4) — and stamps
+// each row's rec_score, returning the ordered copy. scores align with the
+// input order; watched reads the ledger fact the partition sinks on, fed
+// from the SAME batched facts the score composed, never an extra read. IDs
+// are unique per surface, so the index map is total.
 func scoredServe[T any](rows []T, scores []float64, id func(T) string, name func(T) string, watched func(T) bool, set func(*T, float64)) []T {
 	entries := make([]recs.Entry, len(rows))
 	pos := make(map[string]int, len(rows))
@@ -539,18 +511,14 @@ type homeEntity struct {
 
 // homeEntities derives the rail's entities from the caller's FULL
 // positive-progress set (D1 — no input withdrawal): ONE GetItem walk over
-// facts.rows (the walk scoreProgress runs), episode-fact grouping by
-// (libraryID, seriesPath), the per-series started-max/resume-max folds, ONE
-// pre-cut QueryItemsBySeries per served series (D7), and the serve law (D2)
-// computed from the SAME pick result the composer serves — survival iff an
-// in-progress touched row exists (the resume-max) OR homeNextPick finds a
-// next after the started-max. Rows without parseable episode facts stay
-// per-item film entities (Q1); unresolvable or tombstoned series floor to
-// the per-item honest entity; ledgered film/tv items drop (their position is
-// spent and they have no next concept); caught-up-without-next drops. A row
-// whose item vanished between the ledger read and the walk is skipped — the
-// homeRows posture. The namers are built ONCE per distinct library here and
-// returned shared (D7 — kills the double namerFor): scoring and the composer
+// facts.rows, episode-fact grouping by (libraryID, seriesPath), the
+// per-series started-max/resume-max folds, ONE pre-cut QueryItemsBySeries
+// per served series (D7), and the serve law (D2) — survival iff a resume-max
+// exists OR homeNextPick finds a next after the started-max. Rows without
+// parseable episode facts stay per-item film entities (Q1); unresolvable or
+// tombstoned series floor to the per-item honest entity; ledgered film/tv
+// items drop; caught-up-without-next drops. The namers are built ONCE per
+// distinct library here and returned shared (D7): scoring and the composer
 // consume the same map.
 func (a *app) homeEntities(ctx context.Context, v access.Viewer, f recsFacts) ([]homeEntity, map[int64]naming.Namer, error) {
 	type entKey struct {
@@ -656,14 +624,11 @@ func (a *app) homeEntities(ctx context.Context, v access.Viewer, f recsFacts) ([
 
 // scoreHomeEntities scores each entity IN PLACE through the EXISTING scorers
 // (D5): a served serial entity through scoreSeries fed an eps map UNIONED
-// with the entity's touched items (Q2 — zero extra reads, and the resume
-// ≥1000 tier holds even under document drift, a touched row whose parsed
-// anchor moved and that the raw eps list therefore misses; the residual
-// inherited-grid corner — an eps row with a foreign parsed anchor — is
-// documented, wire honesty unaffected); a film or floored entity through
-// scoreItems over its resume body item (today's per-item shape — Q1's
-// fallback never fabricates series identity, so it never scores as one).
-// The namers are homeEntities' map, built once and shared downstream (D7).
+// with the entity's touched items (Q2 — zero extra reads; the resume ≥1000
+// tier holds even under document drift); a film or floored entity through
+// scoreItems over its resume body item (Q1's fallback never fabricates
+// series identity). The namers are homeEntities' map, built once and shared
+// downstream (D7).
 func scoreHomeEntities(ents []homeEntity, f recsFacts, namers map[int64]naming.Namer) {
 	for i := range ents {
 		ent := &ents[i]
