@@ -1,11 +1,13 @@
 package tv.mellifera
 
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import tv.mellifera.browse.BrowseFlow
 import tv.mellifera.net.Api
 import tv.mellifera.net.MelliferaApi
 import tv.mellifera.pairing.InMemorySessionBacking
@@ -37,21 +39,45 @@ data class AppState(
  * device path passes the SharedPreferences-backed store and its own scope.
  */
 class AppViewModel(
-    store: SessionStore = SessionStore(InMemorySessionBacking()),
+    private val store: SessionStore = SessionStore(InMemorySessionBacking()),
     appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-    apiFactory: (address: String) -> MelliferaApi = { address -> Api(address).service },
+    private val apiFactory: (address: String, token: String?) -> MelliferaApi = { address, token ->
+        Api(address, token).service
+    },
 ) {
     private val _state = MutableStateFlow(AppState(token = store.readToken()))
     val state: StateFlow<AppState> = _state.asStateFlow()
 
     val pairing: PairingFlow = PairingFlow(
-        apiFor = apiFactory,
+        apiFor = { address -> apiFactory(address, null) },
         store = store,
         scope = appScope,
         onPaired = { token ->
             _state.value = _state.value.copy(screen = Screen.Browse, token = token)
         },
     )
+
+    /** Browse (5.6): fetch-on-navigate + the player-exit refresh law. */
+    val browse: BrowseFlow = BrowseFlow(
+        apiFor = { browseApi() },
+        onUnauthorized = { onUnauthorized() },
+    )
+
+    /**
+     * One shared client per server address + token — a fresh Retrofit per
+     * fetch would build a fresh OkHttp pool on every refresh. A re-pair
+     * (new address or token) keys a new entry; the old one is dropped with
+     * the view model.
+     */
+    private val apiMemo = ConcurrentHashMap<String, MelliferaApi>()
+
+    private fun browseApi(): MelliferaApi {
+        val address = requireNotNull(store.readServerAddress()) {
+            "browse needs a stored server address"
+        }
+        val token = _state.value.token
+        return apiMemo.getOrPut("$address|$token") { apiFactory(address, token) }
+    }
 
     init {
         // A stored address skips the first-run entry; a stored token skips
@@ -70,5 +96,15 @@ class AppViewModel(
     fun onUnauthorized() {
         pairing.onUnauthorized()
         _state.value = _state.value.copy(screen = Screen.Pairing, token = null)
+    }
+
+    /**
+     * The player-exit refresh hook (5.6): the player leaves the screen, the
+     * visible browse data re-fetches so progress and resume rows are
+     * current without a manual reload. 5.7's player-exit path fires this —
+     * suspend so the caller's coroutine drives it to completion.
+     */
+    suspend fun onPlayerExit() {
+        browse.refresh()
     }
 }
