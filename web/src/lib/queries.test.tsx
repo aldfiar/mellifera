@@ -245,7 +245,7 @@ describe("pairing hooks — device-pairing (admin verbs + device bootstrap)", ()
     });
     const devicesSpy = vi.spyOn(apiModule, "getAdminDevices").mockResolvedValue({
       devices: [
-        { device_id: "dev1", code: "ABCD-2345", user_id: 0, created_at: "c" },
+        { device_id: "dev1", code: "ABCD-2345", user_id: 0, created_at: "c", debug: false },
       ],
     });
     const client = new QueryClient({

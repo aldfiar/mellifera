@@ -30,6 +30,7 @@ const DEVICE: AdminDevice = {
   code: "ABCD-2345",
   user_id: 0, // the unbound legacy viewer — the bind posture (l6-accounts 9.3)
   created_at: "2026-10-23T10:01:00Z",
+  debug: false, // the quiet default — the telemetry flag (android-tv-app 3.1)
 };
 
 function freshClient(): QueryClient {
@@ -186,6 +187,77 @@ describe("Pairing — admin surface (device-pairing 3.2)", () => {
       expect(container.querySelector('tr[data-device-id="dev1"]')).toBeNull(),
     );
     expect(screen.getByText("No paired devices")).toBeDefined();
+  });
+
+  it("debug toggle fires the PUT with the flipped state and re-renders via the invalidated refetch", async () => {
+    let devices: AdminDevice[] = [DEVICE];
+    vi.spyOn(apiModule, "getAdminDevices").mockImplementation(async () => ({
+      devices,
+    }));
+    const debugSpy = vi
+      .spyOn(apiModule, "setDeviceDebug")
+      .mockImplementation(async (deviceId: string, next: boolean) => {
+        devices = devices.map((d) =>
+          d.device_id === deviceId ? { ...d, debug: next } : d,
+        );
+      });
+    vi.spyOn(apiModule, "getAdminPairings").mockResolvedValue({ pairings: [] });
+
+    const { container } = renderPairing(freshClient());
+    await waitFor(() =>
+      expect(container.querySelector('tr[data-device-id="dev1"]')).not.toBeNull(),
+    );
+    // The registry's served flag renders (the seeded device is quiet).
+    const deviceRow = row(container, 'tr[data-device-id="dev1"]');
+    expect(within(deviceRow).getByText("off")).toBeDefined();
+
+    fireEvent.click(
+      within(deviceRow).getByRole("button", { name: "Debug for device dev1" }),
+    );
+
+    // The write carries the flipped boolean as the whole body.
+    await waitFor(() => expect(debugSpy).toHaveBeenCalledWith("dev1", true));
+    // The new state re-reads from the server (invalidation), never the body.
+    await waitFor(() => {
+      expect(
+        within(row(container, 'tr[data-device-id="dev1"]')).getByText("on"),
+      ).toBeDefined();
+    });
+    expect(
+      within(row(container, 'tr[data-device-id="dev1"]')).getByRole("button", {
+        name: "Debug for device dev1",
+      }).textContent,
+    ).toBe("Disable");
+  });
+
+  it("a refused debug flip surfaces the canonical error inline without auto-retry", async () => {
+    vi.spyOn(apiModule, "getAdminDevices").mockResolvedValue({
+      devices: [DEVICE],
+    });
+    const debugSpy = vi.spyOn(apiModule, "setDeviceDebug").mockRejectedValue(
+      new apiModule.ApiError(404, {
+        code: "not_found",
+        message: "device not found",
+        retryable: false,
+      }),
+    );
+    vi.spyOn(apiModule, "getAdminPairings").mockResolvedValue({ pairings: [] });
+
+    const { container } = renderPairing(freshClient());
+    await waitFor(() =>
+      expect(container.querySelector('tr[data-device-id="dev1"]')).not.toBeNull(),
+    );
+
+    fireEvent.click(
+      within(row(container, 'tr[data-device-id="dev1"]')).getByRole("button", {
+        name: "Debug for device dev1",
+      }),
+    );
+
+    expect(await screen.findByText("not_found")).toBeDefined();
+    expect(screen.getByText("device not found")).toBeDefined();
+    // Exactly ONE attempt: retry:0, no auto-retry.
+    await waitFor(() => expect(debugSpy).toHaveBeenCalledTimes(1));
   });
 
   it("a refused adjudication surfaces the canonical error inline without auto-retry", async () => {

@@ -110,8 +110,8 @@ function resetDb(): void {
     group(5, "household", { theme: "dark", mutes: { tvdb: false } }),
   ];
   db.devices = [
-    { device_id: "dev1", code: "AAAA", user_id: 0, created_at: "2026-11-04T00:00:00Z" },
-    { device_id: "dev2", code: "BBBB", user_id: 2, created_at: "2026-11-04T00:00:00Z" },
+    { device_id: "dev1", code: "AAAA", user_id: 0, created_at: "2026-11-04T00:00:00Z", debug: false },
+    { device_id: "dev2", code: "BBBB", user_id: 2, created_at: "2026-11-04T00:00:00Z", debug: false },
   ];
 }
 

@@ -977,12 +977,15 @@ export interface PairingActionResponse {
 // is the approval code, kept for recognition. user_id is the bind posture
 // (l6-accounts 9.3): the bound user's id, 0 when the row is unbound (the
 // legacy see-all viewer) — the bind affordance on the devices list renders
-// both states from this field.
+// both states from this field. debug is the device's telemetry flag
+// (android-tv-app 3.1) — ALWAYS present (no omitempty server-side): false is
+// the quiet default, true gates the client's debug beacons.
 export interface AdminDevice {
   device_id: string;
   code: string;
   user_id: number;
   created_at: string;
+  debug: boolean;
 }
 
 // pairing.go devicesResponse — empty array, never null
@@ -1260,6 +1263,15 @@ export const ENDPOINTS = {
   // 404 (the kind-guard — only device rows bind).
   adminDeviceUser: (id: string): string =>
     `/api/v1/admin/devices/${id}/user`,
+  // adminDeviceDebug — PUT /api/v1/admin/devices/{id}/debug
+  // (admin_scoping.go adminDeviceDebug, android-tv-app 3.1): the body
+  // {debug: <bool>} IS the new state (whole replacement — the boolean
+  // replaces the column verbatim; the paired client reads the flag back
+  // through its own /profile). A non-integer id or malformed body is a 400;
+  // an unknown id — or a session credential addressed by its rowid — is a
+  // 404 (the kind-guard).
+  adminDeviceDebug: (id: string): string =>
+    `/api/v1/admin/devices/${id}/debug`,
   // visibilityExplain — GET /api/v1/admin/visibility-explain
   // (admin_scoping.go adminVisibilityExplainGet, l6-accounts 9.3): the
   // resolved grant for one (user_id, library_id) pair — both query params
@@ -2359,6 +2371,24 @@ export async function bindAdminDeviceUser(
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+// setDeviceDebug — PUT /api/v1/admin/devices/{id}/debug
+// (admin_scoping.go adminDeviceDebug, android-tv-app 6.1): {debug} IS the
+// new state (whole replacement). 200 on success — the read-back is the
+// device registry list and the device's own /profile, never this write's
+// body. A session-credential id in the path is a 404 (the kind-guard); a
+// non-integer id is a 400. The body rides PRE-stringified (apiRequestVoid
+// does not stringify — the bindAdminDeviceUser bridge).
+export async function setDeviceDebug(
+  deviceId: string,
+  debug: boolean,
+): Promise<void> {
+  await apiRequestVoid(ENDPOINTS.adminDeviceDebug(deviceId), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ debug }),
   });
 }
 
