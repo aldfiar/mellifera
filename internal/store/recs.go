@@ -23,19 +23,14 @@ import (
 // (D2) — INV-value-agnostic-store and INV3 apply verbatim.
 
 // InsertWatched records ONE completed watch: the item reached its completion
-// threshold, stamped into THE VIEWER's ledger slot (l6-accounts D7) — the
-// insert targets (v.UserID, item_id), so each user's completion of an item is
-// an independent row. Legacy viewers (System, Admin, LegacyDevice and the
-// zero Viewer) carry UserID 0 and write the user_id=0 legacy slot (the
-// single-profile era's slot). The (user_id, item_id) PRIMARY KEY makes the
-// insert IDEMPOTENT per slot — a repeat write or a full rewatch by the SAME
+// threshold, stamped into the viewer's ledger slot (l6-accounts D7 — see
+// ledgerSlotWhere). The (user_id, item_id) PRIMARY KEY makes the insert
+// IDEMPOTENT per slot — a repeat write or a full rewatch by the SAME
 // user is a no-op that keeps the FIRST completed_at, so a rewatch never
 // double-counts (the learning loop consumes each item's completion exactly
 // once), while another user's completion inserts its own row. seriesPath ""
-// (film/tv item
-// — no series behind
-// the entity) persists as NULL. Callers stamp completedAt; the store does
-// not read a clock.
+// (film/tv item — no series behind the entity) persists as NULL. Callers
+// stamp completedAt; the store does not read a clock.
 func (s *Store) InsertWatched(ctx context.Context, itemID string, libraryID int64, seriesPath string, completedAt time.Time, v access.Viewer) error {
 	var seriesArg any
 	if seriesPath != "" {
@@ -52,18 +47,17 @@ ON CONFLICT(user_id, item_id) DO NOTHING`,
 	return nil
 }
 
-// DeleteWatched un-watches itemID in the CALLER's ledger slot (collections-ux
-// unwatch, threaded onto the per-user ledger): ONE transaction removes the
-// viewer's OWN watched_items row AND resets the playback_progress position
-// to 0 in the SAME (user_id, item_id) slot (the PutProgress upsert statement
-// shape — 0 satisfies the CHECK position_seconds >= 0). The reset is what
-// makes the unwatch STICK: the positive-positions-only reads (ListProgress /
-// ListProgressAll WHERE > 0) feed the recs janitor's boot backfill, so a
-// still-positive position would re-ledger the item on the next boot; a
-// rewatch then inserts fresh against the freed key. Legacy viewers (UserID 0)
-// target the slot-0 legacy row. Idempotent: deleting an already-absent row
-// touches nothing and errors on nothing — unwatch is a settled state, not an
-// event.
+// DeleteWatched un-watches itemID in the caller's ledger slot (l6-accounts
+// D7 — see ledgerSlotWhere; collections-ux unwatch): ONE transaction removes
+// the viewer's OWN watched_items row AND resets the playback_progress
+// position to 0 in the SAME (user_id, item_id) slot (the PutProgress upsert
+// statement shape — 0 satisfies the CHECK position_seconds >= 0). The reset
+// is what makes the unwatch STICK: the positive-positions-only reads
+// (ListProgress / ListProgressAll WHERE > 0) feed the recs janitor's boot
+// backfill, so a still-positive position would re-ledger the item on the
+// next boot; a rewatch then inserts fresh against the freed key. Idempotent:
+// deleting an already-absent row touches nothing and errors on nothing —
+// unwatch is a settled state, not an event.
 func (s *Store) DeleteWatched(ctx context.Context, itemID string, v access.Viewer) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -92,18 +86,14 @@ ON CONFLICT(user_id, item_id) DO UPDATE SET
 }
 
 // ListWatched returns every completed watch's item id readable by the
-// viewer — the completion ledger per the ledger-read scoping law
-// (ledgerSlotWhere, D7), regardless of applied_at (the scorer's
+// viewer — the completion ledger per the ledger-scoping law (l6-accounts D7
+// — see ledgerSlotWhere), regardless of applied_at (the scorer's
 // completedness fact must survive the janitor's stamp, unlike the learning
-// queue's applied-only view). A USER-scope viewer reads ONLY its own slot
-// (user_id = v.UserID) AND only rows whose library_id sits in its visible
-// set (watched_items carries the library column directly — the one ledger
-// table that does): a revoked grant's rows never leak existence. A SEE-ALL
-// viewer (System/Admin/LegacyDevice) reads across every slot and library —
-// since api's viewer threading (l6-accounts group 6) the per-request callers
-// pass the request's resolved Viewer, and the learning reads stay global
-// through ListUnappliedWatched/ApplyTagWeights (System, deliberately
-// unthreaded).
+// queue's applied-only view). watched_items carries the library column
+// directly — the one ledger table that does. Since api's viewer threading
+// (l6-accounts group 6) the per-request callers pass the request's resolved
+// Viewer, and the learning reads stay global through
+// ListUnappliedWatched/ApplyTagWeights (System, deliberately unthreaded).
 // Rows come back ordered by completed_at then item_id for deterministic
 // input; a ledger with no readable rows yields an empty non-nil slice (the
 // ListLibraries convention). The served score is derived at read time (D2),
@@ -111,8 +101,6 @@ ON CONFLICT(user_id, item_id) DO UPDATE SET
 func (s *Store) ListWatched(ctx context.Context, v access.Viewer) ([]string, error) {
 	slotClause, slotArgs := ledgerSlotWhere(v, "user_id")
 	clause, visArgs := visibleWhere(v, "library_id")
-	// The two fragments are both "" exactly for a see-all viewer, so the
-	// empty where keeps the SQL byte-identical to pre-accounts there.
 	where := andVisible(slotClause, clause)
 	q := "SELECT item_id FROM watched_items"
 	if where != "" {
@@ -229,8 +217,9 @@ ORDER BY completed_at, item_id`)
 // element, so the caller's per-watch resolution (a tag shared by two watched
 // rows is passed twice) accumulates exactly — and every still-unapplied
 // watched row completed at or before appliedUpTo is stamped applied_at.
-// Tags arrive normalized (trim + Unicode casefold, the tag rule); the store
-// stays value-agnostic about the tag's content. The stamp's WHERE predicate
+// Tags arrive normalized (trim + Unicode casefold, the tag rule; the store
+// stays value-agnostic — ERROR-FLOOR LAW, doc.go # Invariants). The stamp's
+// WHERE predicate
 // is the caller's seen-batch cutoff, so a watch landing between the queue
 // read and this call stays unapplied for the next pass (restart-safe). An
 // empty tags slice stamps only — a watch whose entity resolved no tags is

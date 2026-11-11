@@ -16,9 +16,9 @@ import (
 
 // SearchSpecs shapes the interactive search fetch (identify-match-override):
 // a core-executed fetch like every other, under the SAME request contract —
-// the ru-RU language and the server-scoped secret reference (the api key
-// resolved core-side, never shipped into this process), the light 250 ms
-// pacing, {placeholder} substitution only. The requested kind picks the
+// ru-RU, the light 250 ms pacing, the api key as the server:api_key
+// redacted_ref (SERVER-RESOLVED SECRETS, doc.go), {placeholder} substitution
+// only. The requested kind picks the
 // endpoint — the tv search when the kind names tv, the movie search
 // otherwise (movie is the default) — and the plan stays SINGLE-FETCH: one
 // spec, no extras (the search run's Convert composes no contributions).

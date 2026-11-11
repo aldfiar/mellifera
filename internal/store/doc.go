@@ -124,4 +124,17 @@
 //     addition; future store growth goes through the S10 DB() seam or a trim
 //     pass). The DB accessor is the seam-S10 connection share for
 //     internal/module; store remains the sole opener/closer.
+//   - ERROR-FLOOR LAW: absence floors, it never invents state and never
+//     leaks existence. A write whose parent row is missing or hidden
+//     surfaces a wrapped sql.ErrNoRows with NOTHING written (hidden ≡
+//     unknown); single-row reads floor the same way and the api layer maps
+//     that error to 404 (409 on the relay completion guard); orphan-tolerant
+//     joins — a row whose parent item/library is gone — read as absent
+//     (ErrNoRows for single-row reads, an empty non-nil slice for lists),
+//     so a hidden or reaped row is indistinguishable from a missing one.
+//     The same honesty runs on content: the store stays VALUE-AGNOSTIC
+//     about column vocabularies — lifecycle sets, tag rules, clocks,
+//     transition graphs, and config documents belong to the callers (INV3
+//     is the same discipline for documents). Sites restating these floors
+//     point here instead of re-narrating.
 package store

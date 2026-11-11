@@ -65,30 +65,19 @@ RETURNING id, purpose, row_id, library_id, plugin_id, plan, state,
 const relayClaimableSQL = "state = 'pending' OR (state = 'claimed' AND lease_until < ?)"
 
 // relayClaimWhere is the relay claim's visibility conjunct over relay_jobs
-// (l6-accounts 11.1 — the same scoping law the content reads apply through
-// visibleWhere, plus the 0-job disjunct). It returns the WHERE fragment to
-// splice into relayJobClaimSQL's %s slot plus the bound args to append after
-// the claim's own stamps.
-//
-// The conjunct is `(library_id = 0 OR library_id IN (claimant's visible
-// set))`: a 0-job (search — library_id 0) carries NO titles, so it is
-// provably safe to hand to any authenticated principal, while a
-// library-backed job must sit inside the claimant's grant union.
-//
-// Shapes, keyed on the SAME see-all discriminator as visibleWhere:
-//
-//   - see-all (Admin true: System, Admin, LegacyDevice) → ("", nil): the
-//     all-seeing pass is the DISTINCT empty-clause form, reachable only
-//     through v.Admin — never through a visible set's shape. The spliced SQL
-//     is byte-identical to pre-accounts.
-//   - scoped principal with a nil OR empty visible set → ("library_id = 0",
-//     nil): nil and empty are the SAME case — both mean "no grants". Fail
-//     closed: such a claimant sees only the title-free 0-jobs, never a
-//     library-backed row. The widening is structurally impossible — the
-//     empty grant set produces a NARROWER conjunct, never the empty clause.
-//   - scoped principal with a non-empty visible set → ("(library_id = 0 OR
-//     library_id IN (?,?,…))", args): the ids ride as BOUND int64 args,
-//     never interpolated SQL text (injection-safe, the visibleWhere law).
+// (l6-accounts 11.1): the WHERE fragment to splice into relayJobClaimSQL's
+// %s slot plus the bound args to append after the claim's own stamps. It is
+// the content-read scoping law applied to relay rows (same see-all
+// discriminator and shape law as visibleWhere, D3/D7 — see there); the one
+// relay-specific delta is the 0-job disjunct: a scoped principal's conjunct
+// is "(library_id = 0 OR library_id IN (?,?,…))" — a 0-job (search,
+// library_id 0) carries NO titles, so it is provably safe to hand to any
+// authenticated principal, while a library-backed job must sit inside the
+// claimant's grant union. A nil OR empty visible set (the SAME case — both
+// mean "no grants") fails closed to "library_id = 0": such a claimant sees
+// only the title-free 0-jobs, and the empty grant set produces a NARROWER
+// conjunct, never the empty clause — the widening is structurally
+// impossible.
 //
 // Never exported — the claim path is its only consumer.
 func relayClaimWhere(v access.Viewer) (clause string, args []any) {
@@ -118,8 +107,8 @@ func relayClaimWhere(v access.Viewer) (clause string, args []any) {
 // plan is marshaled to the JSON blob column; state/consumed/result ride the
 // column defaults (pending / 0 / NULL). The caller owns the clock: a zero
 // CreatedAt is stamped now (the PutItem precedent). Purpose, row and plugin
-// ids are not validated — the store is value-agnostic, the caller owns the
-// enrich|search vocabulary.
+// ids are not validated — value-agnostic store (ERROR-FLOOR LAW, doc.go #
+// Invariants); the caller owns the enrich|search vocabulary.
 func (s *Store) CreateRelayJob(ctx context.Context, job relay.RelayJob) (int64, error) {
 	plan, err := json.Marshal(job.Plan)
 	if err != nil {
@@ -205,9 +194,10 @@ WHERE id = ? AND state = 'claimed' AND claim_principal_hash = ?`
 
 // CompleteRelayJob moves a claimed job to the caller's terminal state (the
 // done|failed vocabulary is the caller's) and stores its result. The guard is
-// the SAME principal hash and a LIVE lease — a lost or expired claim is a
-// wrapped sql.ErrNoRows and the row is left untouched (the api layer maps it
-// to 409). completed_at is stamped with the caller's now; result_bytes is
+// the SAME principal hash and a LIVE lease — a lost or expired claim is
+// refused and the row left untouched (ERROR-FLOOR LAW — doc.go #
+// Invariants; the api layer maps the refusal to 409). completed_at is
+// stamped with the caller's now; result_bytes is
 // derived from the stored body length — the caller never passes it.
 //
 // v is the claimant's CURRENT viewer (l6-accounts 11.2 — the RESULT-time
@@ -284,8 +274,9 @@ func (s *Store) refuseRelayCompletion(ctx context.Context, id int64, principalHa
 }
 
 // MarkRelayConsumed flags a job's stored result as consumed (the consult read
-// that fed it to Convert — D4). An unknown id is a wrapped sql.ErrNoRows;
-// re-marking an already-consumed row is a harmless rewrite, never an error.
+// that fed it to Convert — D4). An unknown id floors per the ERROR-FLOOR LAW
+// (doc.go # Invariants); re-marking an already-consumed row is a harmless
+// rewrite, never an error.
 // Whether the row was claimable/done first is the caller's transition graph —
 // the store validates none (the SetPairingStatus precedent).
 func (s *Store) MarkRelayConsumed(ctx context.Context, id int64) error {

@@ -33,8 +33,7 @@ type Store struct {
 // expressions are verbatim from §9.2; only the DDL mechanism differs.
 //
 // Columns added AFTER a table first shipped (libraries.description) follow the
-// same rule: fresh DBs get them from the CREATE TABLE above; pre-existing DBs
-// get them from a PRAGMA table_info-guarded ALTER in Open (ensureColumn).
+// same additive rule (ensureColumn).
 var schemaSQL = []string{
 	`CREATE TABLE IF NOT EXISTS modules (
   id             TEXT PRIMARY KEY,
@@ -514,9 +513,12 @@ func withBusyTimeout(dsn string) string {
 }
 
 // ensureColumn is the shared guarded-ALTER primitive for columns added after a
-// table first shipped. SQLite has no ADD COLUMN IF NOT EXISTS, so Open probes
-// PRAGMA table_info and ALTERs only when the column is absent — the guard is
-// what keeps re-running Open safe (INV-idempotent-migration). addDDL must be
+// table first shipped, and the CANONICAL home of the additive-migration
+// mechanics its ensure* wrappers point to. SQLite has no ADD COLUMN IF NOT
+// EXISTS, so Open probes PRAGMA table_info and ALTERs only when the column is
+// absent — the guard is what keeps re-running Open safe
+// (INV-idempotent-migration); fresh DBs already get the column from the
+// CREATE TABLE in schemaSQL, pre-existing DBs get it here. addDDL must be
 // the static ALTER statement matching the column declared in schemaSQL
 // (identifiers are constants, never data — INV1).
 func ensureColumn(ctx context.Context, db *sql.DB, table, column, addDDL string) error {
@@ -555,11 +557,10 @@ func ensureColumn(ctx context.Context, db *sql.DB, table, column, addDDL string)
 }
 
 // ensureItemsStatus makes Open additive across scan-library databases: the
-// items.status column + its index. Fresh DBs already get the column from the
-// CREATE TABLE in schemaSQL; pre-existing scan-library DBs (no status column)
-// get it via ensureColumn's guarded ALTER. The index is created AFTER the
-// column exists so both fresh and migrated DBs end up indexed. Store stays
-// value-agnostic: only the column DEFAULT 'new' is owned here; the lifecycle
+// items.status column + its index (additive mechanics — see ensureColumn).
+// The index is created AFTER the column exists so both fresh and migrated DBs
+// end up indexed. Store stays value-agnostic (ERROR-FLOOR LAW, doc.go #
+// Invariants): only the column DEFAULT 'new' is owned here; the lifecycle
 // set/transitions live in internal/enrich.
 func ensureItemsStatus(ctx context.Context, db *sql.DB) error {
 	if err := ensureColumn(ctx, db, "items", "status",
@@ -574,11 +575,11 @@ func ensureItemsStatus(ctx context.Context, db *sql.DB) error {
 }
 
 // ensureLibrariesDescription makes Open additive for libraries.description
-// (web-ui-phase-3): the human description column. Fresh DBs get it from the
-// CREATE TABLE in schemaSQL; pre-existing DBs get it via ensureColumn's
-// guarded ALTER with the same NOT NULL DEFAULT ” the fresh DDL declares
-// (every existing row reads as ""). Store stays value-agnostic about the
-// description's content — it is an opaque human string.
+// (web-ui-phase-3): the human description column (additive mechanics — see
+// ensureColumn), the guarded ALTER carrying the same NOT NULL DEFAULT ” the
+// fresh DDL declares (every existing row reads as ""). The content is an
+// opaque human string — value-agnostic store (ERROR-FLOOR LAW, doc.go #
+// Invariants).
 func ensureLibrariesDescription(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "libraries", "description",
 		"ALTER TABLE libraries ADD COLUMN description TEXT NOT NULL DEFAULT ''")
@@ -588,10 +589,9 @@ func ensureLibrariesDescription(ctx context.Context, db *sql.DB) error {
 // (packaged-playback D-8): the per-library packaging gate, DEFAULT 1 (ON) —
 // every existing library keeps packaging permitted, and the knob is the
 // rollback (switch a library off; its artifacts are then reaped by the
-// budget policy). Fresh DBs get the column from the CREATE TABLE in
-// schemaSQL; pre-existing DBs get it via ensureColumn's guarded ALTER.
-// Store stays value-agnostic about what the flag drives: the frontier gate
-// lives in internal/orchestrator via callers.
+// budget policy). Additive mechanics — see ensureColumn. What the flag
+// drives lives in internal/orchestrator via callers — value-agnostic store
+// (ERROR-FLOOR LAW, doc.go # Invariants).
 func ensureLibrariesStreamsEnabled(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "libraries", "streams_enabled",
 		"ALTER TABLE libraries ADD COLUMN streams_enabled INTEGER NOT NULL DEFAULT 1")
@@ -599,11 +599,10 @@ func ensureLibrariesStreamsEnabled(ctx context.Context, db *sql.DB) error {
 
 // ensureLibrariesNamingGroupStyle makes Open additive for
 // libraries.naming_group_style (display-naming): the opaque group-style
-// naming knob. Fresh DBs get the column from the CREATE TABLE in schemaSQL;
-// pre-existing DBs get it via ensureColumn's guarded ALTER with the same
-// DEFAULT ” the fresh DDL declares (every existing row reads as "" — the
-// module-default marker). Store stays value-agnostic: the column is an
-// opaque string, parsed by nobody.
+// naming knob (additive mechanics — see ensureColumn), the guarded ALTER
+// carrying the same DEFAULT ” the fresh DDL declares (every existing row
+// reads as "" — the module-default marker). Value-agnostic store (ERROR-FLOOR
+// LAW, doc.go # Invariants): an opaque string.
 func ensureLibrariesNamingGroupStyle(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "libraries", "naming_group_style",
 		"ALTER TABLE libraries ADD COLUMN naming_group_style TEXT DEFAULT ''")
@@ -611,9 +610,8 @@ func ensureLibrariesNamingGroupStyle(ctx context.Context, db *sql.DB) error {
 
 // ensureLibrariesNamingElementName makes Open additive for
 // libraries.naming_element_name (display-naming): the opaque element-name
-// naming knob. Same mechanics as ensureLibrariesNamingGroupStyle — fresh
-// DBs from schemaSQL, pre-existing DBs via the guarded ALTER, existing rows
-// reading as "" (the module-default marker).
+// naming knob, declared with the module-default DEFAULT ” like
+// naming_group_style (additive mechanics — see ensureColumn).
 func ensureLibrariesNamingElementName(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "libraries", "naming_element_name",
 		"ALTER TABLE libraries ADD COLUMN naming_element_name TEXT DEFAULT ''")
@@ -624,10 +622,9 @@ func ensureLibrariesNamingElementName(ctx context.Context, db *sql.DB) error {
 // shape (position_ms/played/play_count): the spec'd position_seconds column is
 // added via ensureColumn's guarded ALTER when absent (with a DEFAULT 0 —
 // NOT NULL ADD COLUMN requires one; the upsert always supplies the value).
-// Fresh DBs already get the column from the CREATE TABLE in schemaSQL. The
-// placeholder columns survive the ALTER on migrated DBs; the ledger rebuild
-// below (which nothing needs ordering against — no code ever read or wrote
-// the placeholders) retires them with the legacy table it drops.
+// The placeholder columns survive the ALTER on migrated DBs; the ledger
+// rebuild below (which nothing needs ordering against — no code ever read or
+// wrote the placeholders) retires them with the legacy table it drops.
 func ensurePlaybackProgressSeconds(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "playback_progress", "position_seconds",
 		"ALTER TABLE playback_progress ADD COLUMN position_seconds INTEGER NOT NULL DEFAULT 0 CHECK (position_seconds >= 0)")

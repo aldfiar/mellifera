@@ -29,24 +29,15 @@ type PlaybackProgress struct {
 	UserID int64
 }
 
-// PutProgress upserts the playback position for itemID into THE VIEWER's
-// ledger slot (l6-accounts D7): the write targets (v.UserID, item_id), so
-// each user's position for an item is an independent row — user A's put
-// never touches user B's row. Legacy viewers (System, Admin, LegacyDevice
-// and the zero Viewer) carry UserID 0 and write the user_id=0 legacy slot
-// (the single-profile era's slot): the INSERT ... ON CONFLICT overwrites
-// position_seconds and refreshes updated_at, so each slot holds exactly ONE
-// row per item whose stamp always reflects the latest write. The item must
-// exist — a missing items row yields a wrapped sql.ErrNoRows (the api layer
-// maps it to 404) and NOTHING is written, so the write path never mints
-// orphan rows even though the reads below tolerate them. The column CHECK
-// (position_seconds >= 0) is the storage-side backstop; callers validate
-// first (api → 400).
-//
-// v scopes both halves of the write: the item-existence check treats an
-// item outside the viewer's visible set exactly like a missing row (hidden
-// ≡ unknown — nothing is written), and the write itself stamps v.UserID's
-// slot.
+// PutProgress upserts the playback position for itemID into the viewer's
+// ledger slot (l6-accounts D7 — see ledgerSlotWhere): the INSERT ... ON
+// CONFLICT overwrites position_seconds and refreshes updated_at, so each
+// slot holds exactly ONE row per item whose stamp always reflects the latest
+// write. The item must exist and sit inside the viewer's visible set (hidden
+// ≡ unknown) or NOTHING is written (ERROR-FLOOR LAW — doc.go # Invariants),
+// so the write path never mints orphan rows even though the reads below
+// tolerate them. The column CHECK (position_seconds >= 0) is the storage-side
+// backstop; callers validate first (api → 400).
 func (s *Store) PutProgress(ctx context.Context, itemID string, positionSeconds int64, v access.Viewer) (PlaybackProgress, error) {
 	clause, visArgs := visibleWhere(v, "library_id")
 	args := append([]any{itemID}, visArgs...)
@@ -73,18 +64,14 @@ ON CONFLICT(user_id, item_id) DO UPDATE SET
 }
 
 // GetProgress loads the stored position for itemID. The read JOINs to the
-// item's row, so a record whose item no longer exists (or is deleted) reads as
-// absent — the orphan-tolerant read (playback-progress spec): a wrapped
-// sql.ErrNoRows, never an error.
+// item's row, so a record whose item no longer exists (or is deleted) reads
+// as absent — the orphan-tolerant read (playback-progress spec; ERROR-FLOOR
+// LAW — doc.go # Invariants).
 //
-// v scopes the read per the ledger-read scoping law (ledgerSlotWhere, D7):
-// a SEE-ALL viewer reads across every slot and library; a USER-scope viewer
-// reads ONLY (v.UserID, visible-library) rows — the own-slot conjunct rides
-// p.user_id and the visibility conjunct rides the joined item row's
-// library_id (playback_progress has no library column — the row's library
-// identity lives on its item, design D3). A row in another user's slot, or
-// one whose item sits in a no-longer-granted library (revoked grant), reads
-// exactly as absent (hidden ≡ not-found) — existence never leaks.
+// v scopes the read per the ledger-scoping law (l6-accounts D7 — see
+// ledgerSlotWhere): the own-slot conjunct rides p.user_id and the visibility
+// conjunct rides the joined item row's library_id (playback_progress has no
+// library column — the row's library identity lives on its item, design D3).
 func (s *Store) GetProgress(ctx context.Context, itemID string, v access.Viewer) (PlaybackProgress, error) {
 	slotClause, slotArgs := ledgerSlotWhere(v, "p.user_id")
 	clause, visArgs := visibleWhere(v, "i.library_id")
@@ -107,15 +94,9 @@ WHERE `+andVisible(andVisible("p.item_id = ?", slotClause), clause), args...)
 // ORDER, no LIMIT). The recs janitor's boot backfill reads the full stock:
 // progress rows that predate the watch detector carry no watched_items row,
 // and a LIMIT page would strand the tail unledgered across boots. Boot-only —
-// the per-request read stays limit-bound (ListProgress).
-//
-// v scopes the read per the ledger-read scoping law (ledgerSlotWhere, D7):
-// the boot-backfill caller passes access.System() and keeps seeing EVERY
-// slot and library (learning is global — the documented invariant), with
-// System's empty clauses keeping the SQL byte-identical to pre-accounts. A
-// USER-scope viewer gets its OWN slot plus the visibility conjunct (the
-// joined item's library_id — the row's identity column per D3; no limit
-// window to order it against).
+// the per-request read stays limit-bound (ListProgress). v scopes the read
+// per the ledger-scoping law (l6-accounts D7 — see ledgerSlotWhere): the
+// boot-backfill caller passes access.System() (learning is global).
 func (s *Store) ListProgressAll(ctx context.Context, v access.Viewer) ([]PlaybackProgress, error) {
 	slotClause, slotArgs := ledgerSlotWhere(v, "p.user_id")
 	clause, visArgs := visibleWhere(v, "i.library_id")
@@ -151,15 +132,11 @@ ORDER BY p.updated_at DESC, p.item_id`, args...)
 // The `status <> 'deleted'` literal is the same read-side carve-out
 // LibrarySummary/LibraryFolders make (INV-value-agnostic-store).
 //
-// v scopes the read per the ledger-read scoping law (ledgerSlotWhere, D7):
-// a USER-scope viewer's window holds ONLY (v.UserID, visible-library) rows —
-// the own-slot conjunct rides p.user_id and the visibility conjunct rides the
-// joined item row's library_id (the row's identity column per D3 —
-// playback_progress itself has no library column) — and both land in the
-// WHERE list, BEFORE the ORDER BY/LIMIT window, so the window fills with
-// readable rows only (filtered-before-limit: neither a hidden row nor another
-// user's row ever displaces a readable one). SEE-ALL viewers keep the
-// all-slot, all-library window byte-identical to pre-accounts.
+// v scopes the read per the ledger-scoping law (l6-accounts D7 — see
+// ledgerSlotWhere); both conjuncts land in the WHERE list, BEFORE the
+// ORDER BY/LIMIT window, so the window fills with readable rows only
+// (filtered-before-limit: neither a hidden row nor another user's row ever
+// displaces a readable one).
 func (s *Store) ListProgress(ctx context.Context, limit int, v access.Viewer) ([]PlaybackProgress, error) {
 	slotClause, slotArgs := ledgerSlotWhere(v, "p.user_id")
 	clause, visArgs := visibleWhere(v, "i.library_id")

@@ -34,9 +34,10 @@
 //   - NAMESPACE WRITE (arch §3.3). Merge writes ONLY document.sources["tmdb"];
 //     any other key is a violation the core rejects + reverts (soft-fail).
 //   - SERVER-RESOLVED SECRETS. The Handshake declares required_secrets
-//     ["api_key"]; the core resolves the key server-side (AuthContext) and it
-//     is NEVER shipped into the plugin — the plugin sees only the
-//     {server:api_key} redacted_ref placeholder it emits.
+//     ["api_key"]; the core resolves the key server-side (AuthContext) from
+//     the store-backed binding config at fetch execution, and it is NEVER
+//     shipped into the plugin — the key rides no literal: the plugin sees
+//     (and every spec carries) only the {server:api_key} redacted_ref.
 //   - SEPARATE PROCESS. This package imports pkg/sdk + proto/mellifera/* +
 //     stdlib + public deps only; it MAY NOT import any internal/* package
 //     (architecture §10, R7).

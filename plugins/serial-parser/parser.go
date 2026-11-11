@@ -131,9 +131,8 @@ func matchFilmFilename(rel string) *metadatav1.MatchResult {
 	}
 }
 
-// BuildRequest returns an empty RequestSpec: a local parser performs no
-// external fetch (the fetch between BuildRequest and Convert is a no-op stub).
-// The query is carried forward to Convert by the core. Mirrors tv-parser.
+// BuildRequest is a nop: a local parser performs no external fetch; the query
+// rides to Convert on the core. Mirrors tv-parser.
 func (*parserImpl) BuildRequest(_ context.Context, _ *metadatav1.BuildRequestRequest) (*metadatav1.BuildRequestResponse, error) {
 	return &metadatav1.BuildRequestResponse{Spec: &metadatav1.RequestSpec{}}, nil
 }
@@ -148,10 +147,9 @@ func (*parserImpl) Convert(_ context.Context, req *metadatav1.ConvertRequest) (*
 	}, nil
 }
 
-// Merge writes ONLY the sources.<plugin_id> namespace (the plugin_id is the
-// core-supplied namespace id). The plugin never touches
-// _provenance/_view/_stages; the returned View bindings are a proposal the core
-// recomputes authoritatively. Verbatim mirror of tv-parser's Merge.
+// Merge writes ONLY the sources.<plugin_id> namespace (the core-supplied id) —
+// never _provenance/_view/_stages (the core stamps those). Verbatim mirror of
+// tv-parser's Merge.
 func (*parserImpl) Merge(_ context.Context, req *metadatav1.MergeRequest) (*metadatav1.MergeResult, error) {
 	id := req.GetPluginId()
 	if id == "" {

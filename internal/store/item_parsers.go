@@ -17,10 +17,9 @@ import (
 // It is FULL replacement — attachments absent from pluginIDs are removed, an
 // empty (or nil) slice clears the item's attachments entirely — and it is
 // keyed by (item_id, plugin_id), so it never touches another item's rows
-// (sibling isolation). The item must exist: a missing items row yields a
-// wrapped sql.ErrNoRows (the api layer maps it to 404) and NOTHING is written.
-// The delete+insert pair runs in one transaction, so a failed write can never
-// leave the item half-attached.
+// (sibling isolation). The item must exist or NOTHING is written (ERROR-FLOOR
+// LAW — doc.go # Invariants). The delete+insert pair runs in one transaction,
+// so a failed write can never leave the item half-attached.
 //
 // Attachment lifetime follows the item's identity, never the file: re-scans
 // upsert the item row PRESERVING its id (PutItem, B3), so attachments survive
@@ -65,8 +64,9 @@ ON CONFLICT(item_id, plugin_id) DO UPDATE SET
 // order (the footer group order after the chain, and the queue-derivation
 // input). The read JOINs to the item's row, so attachments whose item no
 // longer exists read as absent — the orphan-tolerant read (the
-// playback_progress pattern): an empty slice, never an error. An item with no
-// attachments also lists empty. v rides the join's item/library row: the
+// playback_progress pattern; ERROR-FLOOR LAW — doc.go # Invariants). An item
+// with no attachments also lists empty. v rides the join's item/library row
+// (viewer scoping — visibleWhere / l6-accounts D7, see ledgerSlotWhere): the
 // parsers of an item whose library is outside the viewer's visible set read
 // as absent too — invisible even when handed the item id directly.
 func (s *Store) ListItemParsers(ctx context.Context, itemID string, v access.Viewer) ([]string, error) {

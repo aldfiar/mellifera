@@ -14,11 +14,9 @@ import (
 )
 
 // pluginSvcPlugin registers the domain Plugin service (Handshake/Health/Shutdown)
-// on the SAME gRPC server as the metadata_source capability. The core's
-// plugin.Manager calls Plugin.Handshake on Start and Plugin.Shutdown on Stop over
-// the shared connection; without this service those lifecycle RPCs would fail and
-// the end-to-end subprocess flow would break. It is included in the PluginSet
-// passed to sdk.Serve alongside sdk.MetadataSourcePlugin. Mirrors
+// on the SAME gRPC server as the metadata_source capability — without it the
+// Manager's lifecycle RPCs fail and the subprocess flow breaks. It is included in
+// the PluginSet passed to sdk.Serve alongside sdk.MetadataSourcePlugin. Mirrors
 // plugins/shikimori/pluginsvc.go (INV-handshake-mirror); only the advertised
 // identity differs (tmdb, not shikimori) — and this is the FIRST real user of
 // CapabilityDeclaration.required_secrets (proto field 6): the tmdb API key.
@@ -43,20 +41,17 @@ func (*pluginSvcPlugin) GRPCClient(context.Context, *goplugin.GRPCBroker, *grpc.
 // pluginServiceImpl is the domain Plugin service stub: a stable Handshake
 // advertising this plugin's ONE metadata_source capability (requiring the
 // api_key secret), a serving Health, and a no-op Shutdown (clean teardown is
-// parent-driven: the Manager sends Shutdown then SIGTERM, architecture §7.4;
-// the go-plugin substrate owns process exit).
+// parent-driven — Manager sends Shutdown then SIGTERM, arch §7.4; the substrate
+// owns exit).
 type pluginServiceImpl struct {
 	pluginv1.UnimplementedPluginServer
 }
 
 // Handshake advertises identity, the SDK contract version, a minimum core
 // version, and the one metadata_source capability this plugin provides
-// (architecture §2.2.2), declaring required_secrets ["api_key"] — the secret
-// name the core resolves SERVER-side (mode A: the fetch is core-executed, the
-// key never ships into the plugin process; the plugin only ever sees
-// {server:api_key} redacted_ref placeholders in the specs it emits). The
-// Manager records the returned declaration and routes the 4-RPC
-// MetadataSource chain here.
+// (architecture §2.2.2), declaring required_secrets ["api_key"]
+// (SERVER-RESOLVED SECRETS, doc.go). The Manager records the returned
+// declaration and routes the 4-RPC MetadataSource chain here.
 func (*pluginServiceImpl) Handshake(_ context.Context, _ *pluginv1.HandshakeRequest) (*pluginv1.HandshakeResponse, error) {
 	return &pluginv1.HandshakeResponse{
 		PluginId:       pluginID,
@@ -77,8 +72,7 @@ func (*pluginServiceImpl) Health(_ context.Context, _ *pluginv1.HealthRequest) (
 	return &pluginv1.HealthResponse{Status: pluginv1.HealthResponse_SERVING}, nil
 }
 
-// Shutdown acknowledges a graceful stop request. The actual process exit is
-// handled by the go-plugin substrate after the Manager's SIGTERM grace window.
+// Shutdown acknowledges a graceful stop request.
 func (*pluginServiceImpl) Shutdown(_ context.Context, _ *pluginv1.ShutdownRequest) (*pluginv1.ShutdownResponse, error) {
 	return &pluginv1.ShutdownResponse{}, nil
 }

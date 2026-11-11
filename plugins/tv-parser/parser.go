@@ -52,11 +52,9 @@ func (*parserImpl) Match(_ context.Context, req *metadatav1.MatchRequest) (*meta
 	}, nil
 }
 
-// BuildRequest returns an empty RequestSpec: Phase A performs no external fetch
-// (tv-parser is a local parser; the fetch between BuildRequest and Convert is a
-// no-op stub — contracts §3d / D-7). The query is carried forward to Convert by
-// the core (enrich passes Match.query straight through), so BuildRequest only
-// needs to acknowledge the call (B4). Phase B swaps in a real RequestSpec here.
+// BuildRequest is a nop (Phase A performs no external fetch — contracts §3d /
+// D-7): the query rides to Convert on the core (enrich passes Match.query
+// straight through); Phase B swaps in a real RequestSpec here.
 func (*parserImpl) BuildRequest(_ context.Context, _ *metadatav1.BuildRequestRequest) (*metadatav1.BuildRequestResponse, error) {
 	return &metadatav1.BuildRequestResponse{Spec: &metadatav1.RequestSpec{}}, nil
 }
@@ -75,13 +73,11 @@ func (*parserImpl) Convert(_ context.Context, req *metadatav1.ConvertRequest) (*
 	}, nil
 }
 
-// Merge integrates tv-parser's metadata into the core document, writing ONLY the
-// sources.<plugin_id> namespace (the plugin_id is the core-supplied namespace id,
-// "tv-parser"). The plugin never touches _provenance/_view/_stages — the core
-// owns those and validates the namespace (arch §3.3: a foreign top-level key or
-// sources.<other> is rejected + reverted + failed). The returned View bindings
-// are a proposal (informational); the core recomputes _view authoritatively
-// (arch §3.2 L2). Returned conflicts are empty in Phase A (single source).
+// Merge writes ONLY the sources.<plugin_id> namespace ("tv-parser") — never
+// _provenance/_view/_stages, which the core stamps and validates (arch §3.3: a
+// foreign key is rejected + reverted); the View bindings are a proposal the core
+// recomputes _view over (arch §3.2 L2). Returned conflicts stay empty in Phase A
+// (single source).
 func (*parserImpl) Merge(_ context.Context, req *metadatav1.MergeRequest) (*metadatav1.MergeResult, error) {
 	id := req.GetPluginId() // the namespace id the core directs this plugin to write
 	if id == "" {
@@ -136,10 +132,8 @@ func structFromQuery(query *structpb.Struct) *structpb.Struct {
 }
 
 // provenanceHints builds the per-field provenance hint map the core merges over
-// its authoritative _provenance stamp (provenance.go). Each field names tv-parser
-// + its version + the fetch time. Confidence is left to the core: it uses the
-// Match confidence (the parse confidence) when the hint omits it, which is the
-// correct per-field value for a local parser (AC-5).
+// its authoritative _provenance stamp (provenance.go); confidence is left to the
+// core (it uses the Match confidence when the hint omits it — AC-5).
 func provenanceHints(meta *structpb.Struct) map[string]*commonv1.Provenance {
 	fields := meta.GetFields()
 	out := make(map[string]*commonv1.Provenance, len(fields))

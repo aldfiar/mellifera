@@ -555,17 +555,16 @@ func main() {
 		RequiredSecretsStatus: newRequiredSecretsClosure(mgr, reg),
 		// Parser wake (enrichment D-6): a successful parser attach/clear fires
 		// the queue's Notify so the changed parsers re-derive at once. The
-		// request-scoped ctx is substituted with the PROCESS ctx — the same
-		// detachment scanDeps.Notify applies (the feeder must outlive the
-		// HTTP request; SIGINT/SIGTERM cancels pool + server together).
+		// request-scoped ctx is substituted with the PROCESS ctx — the
+		// scanDeps.Notify detachment (see above).
 		OnParsersChanged: func(_ context.Context, libraryID int64) {
 			enrichQueue.Notify(ctx, libraryID)
 		},
 		// Source-gate wake (plugin-title-enrichment): a module-wide source
 		// ENABLE fires the queue's Notify per affected library so the restored
 		// source's namespaces re-derive without a rescan. The request-scoped
-		// ctx is substituted with the PROCESS ctx — the same detachment
-		// OnParsersChanged applies (the feeder must outlive the HTTP request).
+		// ctx is substituted with the PROCESS ctx — the scanDeps.Notify
+		// detachment (see above).
 		// Gate-flip fan-out (browse-scale D4): the same event pokes the browse
 		// index — a gate flip changes the composition chain with zero row
 		// writes, so without the poke recall for those names would wait out
@@ -1164,9 +1163,7 @@ func newModulePresentationClosure(
 // for the sweep's duration, while a per-row refresh bypasses the guard
 // entirely. Queued = the rows the sweep scoped = stripped + deferred
 // (Queue.ReenrichSource's counting invariant). procCtx is the PROCESS ctx
-// ReenrichSource rides: the closure discards the request-scoped ctx at its
-// boundary — the same detachment scanDeps.Notify applies (the queue's feeder
-// must outlive the HTTP request).
+// ReenrichSource rides — the scanDeps.Notify detachment (see above).
 func newReenrichClosure(
 	procCtx context.Context, st *store.Store, reg *module.Registry, q *enrich.Queue,
 	loadedPlugins map[string][]string, sweeps *sweepGuard,
@@ -1281,9 +1278,7 @@ func newSearchClosure(
 
 // newIdentifyClosure builds the api Deps.IdentifySeries seam (identify-match-
 // override): the operator's picked anchor rides into Queue.IdentifySeries on
-// the PROCESS ctx — the identify write ends in a queue Notify whose feeder
-// must outlive the HTTP request, so the request-scoped ctx is discarded at
-// this boundary (the newReenrichClosure detachment). Unknown-plugin
+// the PROCESS ctx — the scanDeps.Notify detachment (see above). Unknown-plugin
 // validation runs BEFORE any write (the spec: nothing is written on the
 // error paths); an unknown series surfaces as the store's sql.ErrNoRows,
 // preserved for the handler's 404. An unconfigured (dormant, tmdb-enrichment
@@ -1311,8 +1306,7 @@ func newIdentifyClosure(
 // newItemIdentifyClosure builds the api Deps.IdentifyItem seam (tmdb-
 // enrichment, the async-enrichment delta): the series re-anchor generalized
 // over ANY row (films are items in tv libraries), riding Queue.IdentifyItem
-// on the PROCESS ctx — the same detachment as newIdentifyClosure (the write
-// ends in a queue Notify whose feeder must outlive the HTTP request).
+// on the PROCESS ctx — the scanDeps.Notify detachment (see above).
 // Unknown-plugin validation runs BEFORE any write (nothing is written on the
 // error paths); an unknown item surfaces as the store's sql.ErrNoRows,
 // PRESERVED through this seam (%w wrap, never masked) for the handler's 404.

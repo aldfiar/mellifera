@@ -163,11 +163,9 @@ func toStruct(m map[string]any) *structpb.Struct {
 // Request-contract constants. minIntervalMS=250 is TMDB's light pacing (the
 // upstream allows ~50 rps; the core's FetchGate enforces the interval
 // server-side); languageRU pins RU-first so Convert's namespace is
-// russian-first. The api key NEVER rides a literal: it is declared
-// required_secrets ["api_key"] (pluginsvc.go) and referenced in every
-// template through the redacted_ref variable scoped "server:api_key" — the
-// core resolves it from the store-backed binding config at execution time
-// and the secret value never enters this process.
+// russian-first. The api key NEVER rides a literal — every template carries
+// it only as the server:api_key redacted_ref (SERVER-RESOLVED SECRETS,
+// doc.go).
 const (
 	minIntervalMS = 250
 	languageRU    = "ru-RU"
@@ -245,11 +243,10 @@ var (
 	seasonTemplate      = apiBase + "/tv/{tmdb_id}/season/{season}" + anchoredQuery
 )
 
-// BuildRequest shapes the fetch the core executes server-side (mode A). The
-// api key rides ONLY as the redacted_ref variable scoped server:api_key —
-// the core resolves it from the binding's store-backed config before
-// execution, so the secret value never enters this process; every spec
-// carries language=ru-RU and the light 250 ms pacing. An anchored query
+// BuildRequest shapes the fetch the core executes server-side (mode A); every
+// spec carries language=ru-RU, the light 250 ms pacing, and the api key only
+// as the server:api_key redacted_ref (SERVER-RESOLVED SECRETS, doc.go). An
+// anchored query
 // (tmdb_id, the Match anchor) resolves to the detail plan: the tv-detail
 // primary plus the season fetch as an extra when the query carries a season
 // (the season fetch's n IS the query's own season fact), the movie-detail

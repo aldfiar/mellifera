@@ -14,11 +14,9 @@ import (
 )
 
 // pluginSvcPlugin registers the domain Plugin service (Handshake/Health/Shutdown)
-// on the SAME gRPC server as the metadata_source capability. The core's
-// plugin.Manager calls Plugin.Handshake on Start and Plugin.Shutdown on Stop over
-// the shared connection (T05); without this service those lifecycle RPCs would
-// fail and the end-to-end subprocess flow (seam S3) would break. It is included
-// in the PluginSet passed to sdk.Serve alongside sdk.MetadataSourcePlugin.
+// on the SAME gRPC server as the metadata_source capability — without it the
+// Manager's lifecycle RPCs fail and the subprocess flow breaks (seam S3). It is
+// included in the PluginSet passed to sdk.Serve alongside sdk.MetadataSourcePlugin.
 // Mirrors plugins/tv-parser/pluginsvc.go (INV-handshake-mirror) and
 // plugins/base-scanner/pluginsvc.go.
 type pluginSvcPlugin struct {
@@ -41,8 +39,8 @@ func (*pluginSvcPlugin) GRPCClient(context.Context, *goplugin.GRPCBroker, *grpc.
 
 // pluginServiceImpl is the domain Plugin service stub: a stable Handshake
 // advertising this plugin's ONE metadata_source capability, a serving Health, and
-// a no-op Shutdown (clean teardown is parent-driven: the Manager sends Shutdown
-// then SIGTERM, architecture §7.4; the go-plugin substrate owns process exit).
+// a no-op Shutdown (clean teardown is parent-driven — Manager sends Shutdown then
+// SIGTERM, arch §7.4; the substrate owns exit).
 type pluginServiceImpl struct {
 	pluginv1.UnimplementedPluginServer
 }
@@ -70,8 +68,7 @@ func (*pluginServiceImpl) Health(_ context.Context, _ *pluginv1.HealthRequest) (
 	return &pluginv1.HealthResponse{Status: pluginv1.HealthResponse_SERVING}, nil
 }
 
-// Shutdown acknowledges a graceful stop request. The actual process exit is
-// handled by the go-plugin substrate after the Manager's SIGTERM grace window.
+// Shutdown acknowledges a graceful stop request.
 func (*pluginServiceImpl) Shutdown(_ context.Context, _ *pluginv1.ShutdownRequest) (*pluginv1.ShutdownResponse, error) {
 	return &pluginv1.ShutdownResponse{}, nil
 }

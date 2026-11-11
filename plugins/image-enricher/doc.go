@@ -45,7 +45,8 @@
 //     shell — golang-security; a hostile filename cannot inject). Mirrors
 //     plugins/base-scanner/ffprobe.go.
 //   - SOFT-FAIL. EVERY exiftool failure (missing binary / non-zero exit / timeout /
-//     non-JSON / empty array) yields EMPTY metadata + a Warning (NOT a gRPC error) ->
-//     the B1 queue's no_data terminal -> cooldown -> settle (AC-6). Only a cancelled
-//     context is a hard error.
+//     non-JSON / empty array) yields EMPTY metadata + a Warning (NOT a gRPC error,
+//     never ConvertResult.Error) -> the B1 queue's no_data terminal -> cooldown ->
+//     settle (AC-6). Only a cancelled context is a hard error, and only the caller
+//     surfaces it (the helpers return warnings, not errors).
 package main

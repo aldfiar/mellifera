@@ -20,15 +20,12 @@ const (
 // from plugins/base-scanner/ffprobe.go (episodes are probed EXACTLY like the
 // shipped video walk — design.md D2 rule 2): args are passed as a slice to
 // exec.CommandContext — NEVER a shell — so a hostile filename cannot inject
-// command syntax (golang-security; kickoff hard rule).
-//
-// Every failure mode is SOFT (AC-6): on a missing binary, non-zero exit, ctx
-// deadline, or non-JSON stdout it returns empty bytes + a human-readable warning
-// and a nil err — the caller still emits the episode so it is identified without
-// ffprobe data. The err return is part of the signature and reserved for
-// caller-fatal signals; it is always nil today because INV3 makes every ffprobe
-// problem a soft-fail. Sidecars NEVER reach this function (they are classified,
-// never probed).
+// command syntax (golang-security; kickoff hard rule). Every failure mode is
+// SOFT (AC-6): empty bytes + a human-readable warning + nil err — the caller
+// still emits the episode so it is identified without ffprobe data. The err
+// return is part of the signature and reserved for caller-fatal signals; it is
+// always nil today because INV3 makes every ffprobe problem a soft-fail.
+// Sidecars NEVER reach this function (they are classified, never probed).
 func probe(ctx context.Context, absPath string) ([]byte, string, error) {
 	if _, err := exec.LookPath(ffprobeBin); err != nil {
 		return nil, "ffprobe not found on PATH", nil

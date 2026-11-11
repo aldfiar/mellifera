@@ -10,22 +10,14 @@ import (
 )
 
 // withinRoot reports whether candidate resolves to a path inside root, checking
-// BOTH before and after symlink resolution to close the TOCTOU window. root MUST
-// already be a resolved absolute path (the caller resolves it once via
-// resolveRoot). A candidate that escapes — via "..", an absolute path to another
-// tree, or a symlink pointing outside root — is rejected. No escaping path is
-// ffprobed, read, or persisted (AC-4; kickoff path-traversal guard).
-//
-// Checks:
-//  1. PRE-symlink: the lexically cleaned absolute candidate is under root. Stops
-//     a plain ".." escape before touching the filesystem.
-//  2. POST-symlink: filepath.EvalSymlinks resolves every link in the candidate,
-//     then the resolved absolute path is re-checked against root. Stops a symlink
-//     that points outside root.
-//
-// A non-existent candidate (EvalSymlinks errors) is rejected: the scanner only
-// probes real files handed to it by WalkDir, so an unresolvable path here means
-// a race replaced the file — safer to skip than to probe an unknown target.
+// BOTH before and after symlink resolution to close the TOCTOU window: an escape
+// via "..", an absolute path to another tree, or an outside-pointing symlink is
+// rejected — no escaping path is ffprobed, read, or persisted (AC-4; kickoff
+// path-traversal guard). root MUST already be a resolved absolute path (the
+// caller resolves it once via resolveRoot). A candidate that cannot be resolved
+// (EvalSymlinks errors) is rejected: the scanner only probes real files handed to
+// it by WalkDir, so an unresolvable path here means a race replaced the file —
+// safer to skip than to probe an unknown target.
 func withinRoot(root, candidate string) bool {
 	pre, err := filepath.Abs(filepath.Clean(candidate))
 	if err != nil {
