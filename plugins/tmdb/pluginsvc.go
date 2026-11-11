@@ -15,43 +15,38 @@ import (
 
 // pluginSvcPlugin registers the domain Plugin service (Handshake/Health/Shutdown)
 // on the SAME gRPC server as the metadata_source capability — without it the
-// Manager's lifecycle RPCs fail and the subprocess flow breaks. It is included in
-// the PluginSet passed to sdk.Serve alongside sdk.MetadataSourcePlugin. Mirrors
-// plugins/shikimori/pluginsvc.go (INV-handshake-mirror); only the advertised
-// identity differs (tmdb, not shikimori) — and this is the FIRST real user of
-// CapabilityDeclaration.required_secrets (proto field 6): the tmdb API key.
+// Manager's lifecycle RPCs fail. Mirrors plugins/shikimori/pluginsvc.go
+// (INV-handshake-mirror); only the advertised identity differs (tmdb, not
+// shikimori) — the FIRST real user of CapabilityDeclaration.required_secrets
+// (proto field 6): the tmdb API key.
 type pluginSvcPlugin struct {
 	goplugin.NetRPCUnsupportedPlugin
 }
 
-// GRPCServer registers the Plugin service on the shared gRPC server. go-plugin's
-// GRPCServer.Init calls this once per plugin in the set, wiring every service.
+// GRPCServer registers the Plugin service on the shared gRPC server (go-plugin
+// calls this once per plugin in the set).
 func (*pluginSvcPlugin) GRPCServer(_ *goplugin.GRPCBroker, s *grpc.Server) error {
 	pluginv1.RegisterPluginServer(s, &pluginServiceImpl{})
 	return nil
 }
 
-// GRPCClient is server-only: tmdb never acts as a core-side client.
-// Returns an error so a misuse fails loudly rather than silently. Satisfies the
-// GRPCPlugin interface.
+// GRPCClient is server-only: tmdb never acts as a core-side client —
+// a misuse fails loudly.
 func (*pluginSvcPlugin) GRPCClient(context.Context, *goplugin.GRPCBroker, *grpc.ClientConn) (interface{}, error) {
 	return nil, errors.New("tmdb is a server-only plugin")
 }
 
 // pluginServiceImpl is the domain Plugin service stub: a stable Handshake
-// advertising this plugin's ONE metadata_source capability (requiring the
-// api_key secret), a serving Health, and a no-op Shutdown (clean teardown is
-// parent-driven — Manager sends Shutdown then SIGTERM, arch §7.4; the substrate
-// owns exit).
+// (requiring the api_key secret), a serving Health, and a no-op Shutdown
+// (teardown is parent-driven — Manager sends Shutdown then SIGTERM, arch §7.4).
 type pluginServiceImpl struct {
 	pluginv1.UnimplementedPluginServer
 }
 
 // Handshake advertises identity, the SDK contract version, a minimum core
-// version, and the one metadata_source capability this plugin provides
-// (architecture §2.2.2), declaring required_secrets ["api_key"]
-// (SERVER-RESOLVED SECRETS, doc.go). The Manager records the returned
-// declaration and routes the 4-RPC MetadataSource chain here.
+// version, and the one metadata_source capability declaring required_secrets
+// ["api_key"] (SERVER-RESOLVED SECRETS, doc.go; arch §2.2.2); the Manager
+// records the declaration and routes the 4-RPC MetadataSource chain here.
 func (*pluginServiceImpl) Handshake(_ context.Context, _ *pluginv1.HandshakeRequest) (*pluginv1.HandshakeResponse, error) {
 	return &pluginv1.HandshakeResponse{
 		PluginId:       pluginID,

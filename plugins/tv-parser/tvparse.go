@@ -13,15 +13,12 @@ import (
 	"github.com/mellifera/mellifera/pkg/releasename"
 )
 
-// The SxxExx/resolution/year grammar MOVED to pkg/releasename (unified-parser
-// box 2.3): one shared release-name grammar every binary derives its parsing
-// from; its compiled regexes never assume ASCII, so Cyrillic titles (e.g.
-// "Игра престолов S01E01.mkv") parse correctly — the season/episode token is
-// ASCII and the title is whatever surrounds it (conventions.md §Russian-language;
-// INV5). What stays here are this adapter's OWN rules (design.md D-7): the
-// release-group dash rule — the shared strict CamelCase group shape would not
-// strip "RG" (2 letters < 3), and sharing the loose dash rule wide would eat
-// real title words — and the 4-tier confidence.
+// The SxxExx/resolution/year grammar is pkg/releasename's (unified-parser
+// box 2.3; Unicode-first-class — conventions.md §Russian-language, INV5). This
+// adapter's OWN rules stay (design.md D-7): the release-group dash rule — the
+// shared strict CamelCase group shape would not strip "RG" (2 letters < 3), and
+// the loose dash rule shared wide would eat real title words — plus the 4-tier
+// confidence.
 
 // releaseGroupRe matches the final "-Token" of a stem (the adapter-local dash
 // rule: any -word at the stem's end; the group-tag shape rule is NOT applied).

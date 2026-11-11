@@ -21,19 +21,6 @@
 // scanner client it always did, and a metadata_source plugin dispenses a
 // MetadataSource — caps-driven, never hardcoded.
 //
-// # Public API (10 symbols — WARN >8, justified, <12; see INV5)
-//
-//   - Manager: the per-pluginID client map + capability registry + restart state.
-//   - Deps: the magic-cookie pair + core version the Manager launches against.
-//   - Health: a plugin's state + message + restart count + last-checked time.
-//   - Open: constructs a Manager holding the config (no subprocess launched yet).
-//   - Load: registers a plugin binary + its capability declarations (no launch).
-//   - Start: launches the subprocess, runs Plugin.Handshake, marks it serving.
-//   - Stop: sends the Shutdown RPC + SIGTERM with a 10s grace period.
-//   - Status: returns the plugin's current Health (polled state + restart count).
-//   - Scanner: the typed capability accessor returning a live sdk.Scanner.
-//   - MetadataSource: the typed capability accessor returning a live sdk.MetadataSource.
-//
 // # Invariants
 //
 //   - INV1: Scanner and MetadataSource are TYPED accessors. No reflect, no

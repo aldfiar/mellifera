@@ -19,9 +19,6 @@
 //     scanner capability, so the core's Manager can drive lifecycle over the
 //     shared gRPC connection.
 //
-// PUBLIC API  (package main has no exported symbols; main wires sdk.Serve)
-//   - func main()
-//
 // INVARIANTS
 //   - PATH-TRAVERSAL GUARD (security-critical, AC-4). No file outside the root is
 //     ffprobed, read, or persisted — via symlinks or "..". withinRoot is checked

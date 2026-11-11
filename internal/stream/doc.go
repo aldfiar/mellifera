@@ -10,41 +10,6 @@
 // anywhere — the direct floor (original bytes, Range support) is unconditional
 // for every class.
 //
-// # Public API (4 counted symbols — under the 8-symbol target; grouped consts
-// and Service methods are excluded by the counter)
-//
-//   - Class / ClassDirect / ClassPack / ClassOptIn / ClassDirectOnly /
-//     Classify: the derived playback classification (D-2 — pure over the
-//     stored ffprobe blob + the opt-in codec knob; never stored, never
-//     client-driven; knob-off opt_in behaves direct_only).
-//   - Service: the mechanism, one injectable value. Methods:
-//     Pack (remux-only pack lane: one ffmpeg exec site, arg-slice only,
-//     `-c copy -map 0:v:0 -map 0:a -sn -dn`; head-first 600 s first chunk
-//     published playable before the remainder; atomic publish via .tmp
-//     siblings + rename; fresh build-nonce directories so a repack never
-//     collides with a cached playlist; playlists byte-identical per nonce),
-//     Issue/verify (HMAC media tokens: cookie-primary + query fallback, 4 h
-//     TTL default, never the admin secret, never logged), ServeHTTP (the
-//     token-gated /media surface: playlists, segments, direct originals with
-//     Range; 401 without a valid media token), Describe (the read-only
-//     playback descriptor: mode direct|hls, packaging state, sections, play
-//     URL). Describe also answers the descriptor honesty projection for a
-//     non-native direct floor: state preparing/unsupported plus the additive
-//     state_reason, projected from stored ffprobe facts only
-//     (tv-playback-unblock D1/D3 — read-side, never persisted).
-//   - Build: one published packaging run (artifact pointer + nonce).
-//   - StateNone/StatePartial/StateComplete/StateFailed: packaging states, as
-//     persisted by the streams lane in doc["streams"] and read back here.
-//   - StatePreparing/StateUnsupported + ReasonNonNativeContainer/
-//     ReasonCodecNotOptedIn/ReasonCodecUnsupported: the descriptor honesty
-//     states and the closed state_reason vocabulary (tv-playback-unblock D1)
-//     — read-side projections of a none-state non-native direct floor, never
-//     persisted in the doc["streams"] namespace; the empty string reasons
-//     every other answer.
-//   - ModeDirect/ModeHls: descriptor modes.
-//   - SectionKindChapter/SectionKindMarker: section kinds (marker is reserved
-//     and never produced in v1).
-//
 // # Interfaces
 //
 //   - doc["streams"] (Interfaces §1): the streams lane (internal/enrich) is

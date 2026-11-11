@@ -26,39 +26,6 @@
 // Leases are in-memory and expire lazily; pending work survives a restart in
 // items + the ledger and is re-derived on the next Start.
 //
-// # Public API (12 symbols)
-//
-//   - Deps: the collaborators (store, plugin manager, module registry) plus
-//     the streams lane's PackItem packaging seam (nil = lane disabled).
-//   - Result: per-item enrichment outcome (stages attempted/succeeded + warnings).
-//   - Enrich: the SYNC per-item chain for one item (worker-internal + preserved
-//     for sync/tests; AC-3 deprecate-don't-delete).
-//   - Queue: the in-process async dispatcher (derived queue + worker pool);
-//     its EnqueuePack method is the streams lane's shared (background)
-//     dispatch entry — a play-requested pack rides EnqueuePackUrgent
-//     instead (eviction D4).
-//   - QueueConfig: the §4.4 knobs (zero-value = defaults).
-//   - Stats: a best-effort liveness snapshot (pending/in-flight/done/failed).
-//   - NewQueue: construct a Queue over Deps + QueueConfig (not yet running).
-//   - FetchGate / NewFetchGate: the per-plugin outbound pacing gate (enrichment
-//     D-5), constructed in cmd/mellifera and injected into the chain.
-//   - Relay: the client-relayed-fetch deferred-handoff transport (Claim/Ingest),
-//     constructed in cmd/mellifera beside the queue.
-//   - ResolveGates: the operator gate prefs materialized onto COPIES of a
-//     module's source bindings (plugin-title-enrichment D3) — the chain
-//     resolution every consumer (api presentation, queue derivation, the tag
-//     resolver) shares.
-//   - ResolveGenres: the learning loop's tag resolver (recommendation-sorting
-//     D1) — the genres array of the winning document's first effectively-enabled
-//     synopsis-group carrier over a gate-resolved chain; honest absence is nil.
-//
-// The pack vocabulary is NOT on this surface: PackOutcome (one published
-// packaging build returned over the PackItem seam) and MasterRuleVersion
-// (the streams lane's map key) moved to internal/pack in the GATE-ruled
-// vocabulary split (the internal/relay precedent — check.sh's per-package
-// exported-symbol budget); enrich references them as pack.PackOutcome and
-// pack.MasterRuleVersion.
-//
 // # The streams lane (packaged-playback D-10)
 //
 // Packaging jobs ride the SAME queue as metadata sources as a dedicated lane

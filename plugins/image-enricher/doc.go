@@ -25,9 +25,6 @@
 //   - Non-ASCII EXIF strings (e.g. a Cyrillic camera Model) are carried verbatim
 //     (exiftool emits UTF-8 JSON; strings are not re-encoded).
 //
-// PUBLIC API  (package main has no exported symbols; main wires sdk.Serve)
-//   - func main()
-//
 // INVARIANTS
 //   - STATELESS SUBPROCESS (arch §0.2). No state between RPCs; all output is a pure
 //     function of the request. A crash loses no in-flight work (the core replays via

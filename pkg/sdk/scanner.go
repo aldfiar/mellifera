@@ -34,15 +34,14 @@ type Capability struct {
 // unproven, so a consumer must treat the drain as incomplete (never clean).
 var ErrScanUnconfirmed = errors.New("scanner stream closed without a terminal confirmation")
 
-// ScanStream is the streaming half of Scanner.Scan: the DiscoveredFile channel
-// plus a producer-side terminal report. The producer calls End exactly once —
-// nil for a confirmed clean completion, the abort error otherwise — BEFORE
-// closing Files; the consumer reads Err only after draining Files to closure.
-// That ordering needs no lock: the End write precedes the channel close in the
-// producer, and the channel's close happens-before the consumer's zero-value
-// receive, so the terminal state is visible to any Err read after the drain
-// (the Go memory model's channel ordering). An implementation that closes
-// Files without End is NEVER clean — Err then reports ErrScanUnconfirmed.
+// ScanStream is the streaming half of Scanner.Scan: the Files channel plus a
+// producer-side terminal report. The producer calls End exactly once — nil for
+// a confirmed clean completion, the abort error otherwise — BEFORE closing
+// Files; the consumer reads Err only after draining Files to closure. That
+// ordering needs no lock: the End write precedes the close, and the close
+// happens-before the consumer's zero-value receive (Go memory model), so the
+// terminal state is visible to any post-drain Err read. A Files close without
+// End is NEVER clean — Err reports ErrScanUnconfirmed.
 type ScanStream struct {
 	Files <-chan *scannerv1.DiscoveredFile
 
@@ -82,27 +81,23 @@ func (s *ScanStream) Err() error {
 	return s.term
 }
 
-// Scanner is the capability interface every scanner plugin implements. It is
-// the only interface this feature ships: it has >=2 real implementations --
-// the subprocess client wrapper built by ScannerPlugin.GRPCClient and an
-// in-process test fake -- which justifies the interface at the plugin seam
-// (R8). Scan returns a ScanStream (the streaming surface plus the terminal
-// report); Identify is a pure unary parse. See package doc for the streaming
-// contract.
+// Scanner is the capability interface every scanner plugin implements — the
+// only interface this feature ships, justified by two real implementations
+// (the subprocess client wrapper built by ScannerPlugin.GRPCClient and an
+// in-process test fake) at the plugin seam (R8). Scan returns a ScanStream
+// (the streaming surface plus the terminal report); Identify is a pure unary
+// parse. See package doc for the streaming contract.
 type Scanner interface {
 	Scan(ctx context.Context, req *scannerv1.ScanRequest) (*ScanStream, error)
 	Identify(ctx context.Context, req *scannerv1.IdentifyRequest) (*scannerv1.IdentifyResult, error)
 }
 
-// ScannerPlugin is the dual-side go-plugin adapter for the Scanner capability.
-// Server side: Impl is the author's Scanner; GRPCServer registers a
-// scannerServer that adapts the channel-based Scan into the gRPC stream.
-// Client side: Impl is zero-value; GRPCClient returns a Scanner wrapping the
-// generated gRPC stub.
-//
-// The plugin.NetRPCUnsupportedPlugin embed satisfies go-plugin's net/rpc
-// Plugin interface (GRPCPlugin is a separate interface); gRPC serving never
-// touches the net/rpc methods.
+// ScannerPlugin is the dual-side go-plugin adapter for the Scanner capability:
+// server side Impl is the author's Scanner (adapted into the gRPC stream);
+// client side Impl is zero-value and GRPCClient returns a Scanner wrapping the
+// generated gRPC stub. The plugin.NetRPCUnsupportedPlugin embed satisfies
+// go-plugin's net/rpc Plugin interface; gRPC serving never touches those
+// methods.
 type ScannerPlugin struct {
 	plugin.NetRPCUnsupportedPlugin
 	Impl Scanner
@@ -130,11 +125,10 @@ type scannerServer struct {
 
 // Scan drains the author's ScanStream and forwards each file over the stream.
 // stream.Context() is passed to the author so a client disconnect cancels
-// their work; a failed Send (client gone) stops the forward. After the drain,
-// the author's terminal report surfaces over the wire: an aborted walk reaches
-// the client as a stream error, never as a clean end-of-stream. A bare close
-// (ErrScanUnconfirmed) stays clean here — that state is a client-side property
-// of the ScanStream surface, not a server fault.
+// their work; a failed Send stops the forward. The terminal report surfaces
+// over the wire: an aborted walk is a stream error, never a clean
+// end-of-stream; a bare close (ErrScanUnconfirmed) stays clean — that state is
+// a client-side property of the ScanStream surface, not a server fault.
 func (s *scannerServer) Scan(req *scannerv1.ScanRequest, stream grpc.ServerStreamingServer[scannerv1.DiscoveredFile]) error {
 	ss, err := s.Impl.Scan(stream.Context(), req)
 	if err != nil {
@@ -163,14 +157,13 @@ type scannerGRPC struct {
 }
 
 // Scan opens the server-streaming RPC and pumps received files into a bounded
-// channel wrapped in a ScanStream. The open error is returned. The Recv loop
-// classifies its own termination into the stream's terminal report BEFORE the
-// deferred channel close, so a consumer that reads Err after draining can
-// distinguish a confirmed clean end-of-stream from a mid-stream failure:
-// io.EOF → End(nil); any other Recv error → End(err), except that a dead ctx
-// reports the ctx error (the transport error of a cancelled stream is noise).
-// The select on ctx.Done() prevents a producer leak when the consumer stops
-// reading after cancelling ctx.
+// channel wrapped in a ScanStream. The Recv loop classifies its own
+// termination into the stream's terminal report BEFORE the deferred close, so
+// a post-drain Err read distinguishes a confirmed clean end (io.EOF →
+// End(nil)) from a mid-stream failure (any other Recv error → End(err); a dead
+// ctx reports the ctx error — the transport error of a cancelled stream is
+// noise). The select on ctx.Done() prevents a producer leak when the consumer
+// stops reading.
 func (c *scannerGRPC) Scan(ctx context.Context, req *scannerv1.ScanRequest) (*ScanStream, error) {
 	stream, err := c.stub.Scan(ctx, req)
 	if err != nil {

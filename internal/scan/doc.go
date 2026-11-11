@@ -17,13 +17,6 @@
 // store + post-drain Notify coordination that cannot live in api/ (ai-arch §3
 // hard rule).
 //
-// # Public API (3 symbols — under the 8-symbol target)
-//
-//   - Deps: the collaborators Run orchestrates (store + module registry + plugin
-//     manager + enrich.Deps + the Notify hook, set by the composition root).
-//   - Result: the outcome of one scan (counts, soft warnings, time bounds).
-//   - Run: the orchestrator entrypoint — the only function api/ calls.
-//
 // # Invariants
 //
 //   - INV1: Run is the ONLY function the api scan handler calls (pure-delegation

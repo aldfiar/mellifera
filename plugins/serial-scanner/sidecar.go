@@ -13,10 +13,9 @@ import (
 // directory; they are classified — NEVER probed, NEVER items — into
 // episode-linked (SxxExx first, bare-number fallback) or serial-level buckets.
 // The episode-name grammar itself is pkg/releasename.EpisodeNumberOf
-// (unified-parser): the replicated regex copies that used to live here
-// dissolved into the one shared release-name grammar, so a pure-number bracket
-// anywhere in a sidecar stem is a number candidate and the resolution
-// vocabulary (720i included) matches the parser's exactly.
+// (unified-parser): a pure-number bracket anywhere in a sidecar stem is a
+// number candidate and the resolution vocabulary (720i included) matches the
+// parser's exactly.
 
 // sidecarKind maps a lowercased dotted sidecar extension to its fact kind
 // ("subtitle" | "audio"). The extension set is exactly design.md D2 rule 4:

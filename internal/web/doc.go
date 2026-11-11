@@ -9,14 +9,6 @@
 // auth to the SPA/docs surface (INV-public-surface — the SPA shell + API
 // contract load before any token is entered).
 //
-// # Public API (≤3 symbols — under the 8-symbol target)
-//
-//   - Handler: composes apiHandler (/api/*) + the media surface (/media,
-//     packaged-playback Interface 3, when Options.Media is set) + the embedded
-//     SPA (+ swagger).
-//   - Options: DevMode flag (loose cache headers for the Vite dev proxy) and
-//     the Media handler (mounted before the SPA fallback; nil = no mount).
-//
 // # Embedding + fallback rule
 //
 // The SPA is embedded via //go:embed all:dist over internal/web/dist/ (the
