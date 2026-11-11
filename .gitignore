@@ -37,3 +37,9 @@ node_modules/
 
 # generated itest fixtures (frame-grabber thumbs root et al.)
 internal/itest/data/
+
+# Throwaway T0 probe (task 1.2; the tree is deleted by 5.1)
+android-tvprobe/build/
+android-tvprobe/app/build/
+android-tvprobe/.gradle/
+android-tvprobe/local.properties
