@@ -14,15 +14,13 @@ import (
 )
 
 // MetadataSource is the capability interface every enrichment plugin
-// implements. It mirrors Scanner (pkg/sdk/scanner.go) at the plugin seam: it
-// has >=2 real implementations -- the subprocess client wrapper built by
-// MetadataSourcePlugin.GRPCClient (core side) and an in-process test fake
-// (test side) -- which justifies the interface (R8). All six RPCs are UNARY
-// (no streaming surface, unlike Scanner.Scan): Match decides applicability,
-// BuildRequest shapes the fetch, Convert normalizes a raw response, and Merge
-// integrates the result into the core document (the 4-RPC enrichment chain);
-// SearchSpecs/SearchResults (identify-match-override) add the interactive
-// match-picking pair for sources whose upstream carries a search endpoint.
+// implements — mirrors Scanner (pkg/sdk/scanner.go) at the plugin seam, with
+// two real implementations (the subprocess client wrapper and an in-process
+// test fake) justifying the interface (R8). Match decides applicability,
+// BuildRequest shapes the fetch, Convert normalizes a raw response, Merge
+// integrates the result (the 4-RPC enrichment chain); SearchSpecs/SearchResults
+// (identify-match-override) add the interactive match-picking pair. All six
+// RPCs are UNARY — no streaming surface.
 type MetadataSource interface {
 	Match(ctx context.Context, req *metadatav1.MatchRequest) (*metadatav1.MatchResult, error)
 	BuildRequest(ctx context.Context, req *metadatav1.BuildRequestRequest) (*metadatav1.BuildRequestResponse, error)
@@ -33,14 +31,11 @@ type MetadataSource interface {
 }
 
 // MetadataSourcePlugin is the dual-side go-plugin adapter for the
-// MetadataSource capability. Server side: Impl is the author's
-// MetadataSource; GRPCServer registers a metadataServer that forwards the
-// four unary RPCs. Client side: Impl is zero-value; GRPCClient returns a
-// MetadataSource wrapping the generated gRPC stub.
-//
-// It mirrors ScannerPlugin but is simpler: every RPC is unary, so the server
-// adapter forwards directly (no channel pump) and the client wraps the stub
-// with no goroutine.
+// MetadataSource capability: server side Impl is the author's MetadataSource
+// (registered as a metadataServer); client side Impl is zero-value and
+// GRPCClient returns a MetadataSource wrapping the generated gRPC stub. Every
+// RPC is unary, so the adapter forwards directly — no channel pump, no
+// goroutine (mirrors ScannerPlugin).
 type MetadataSourcePlugin struct {
 	plugin.NetRPCUnsupportedPlugin
 	Impl MetadataSource
@@ -122,9 +117,8 @@ func (c *metadataGRPC) SearchResults(ctx context.Context, req *metadatav1.Search
 }
 
 // ErrSearchUnsupported is the sentinel both UnsupportedSearch methods fail
-// with: a source embedding the base declares the interactive search
-// capability absent (the core maps it to the `search_unsupported` answer
-// instead of an opaque failure).
+// with: a source embedding the base declares interactive search absent (the
+// core maps it to the `search_unsupported` answer, not an opaque failure).
 var ErrSearchUnsupported = errors.New("metadata source does not support search")
 
 // UnsupportedSearch is the embeddable base for MetadataSource authors whose

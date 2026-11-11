@@ -25,24 +25,22 @@ import (
 	"github.com/mellifera/mellifera/internal/store"
 )
 
-// app holds the injected Deps for the unexported handler methods. It is not
-// exported (it does not count toward the symbol budget); New is the only
-// constructor callers touch.
+// app holds the injected Deps for the unexported handler methods; New is the
+// only constructor callers touch.
 type app struct {
 	deps Deps
-	// beacons is the playback-event beacon's per-client rate limiter
-	// (tv-playback-unblock D7) — handler-local state, built in New (never a
-	// Deps closure: there is no domain behind it), one instance per router
-	// so tests get fresh budgets.
+	// beacons is the playback-event per-client rate limiter (tv-playback-
+	// unblock D7) — handler-local state, fresh per router so tests get fresh
+	// budgets.
 	beacons *beaconLimiter
-	// logins is the login endpoint's per-(IP, username) rate limiter
-	// (l6-accounts D6) — the same handler-local shape as beacons.
+	// logins is the login per-(IP, username) rate limiter (l6-accounts D6) —
+	// the same handler-local shape as beacons.
 	logins *loginLimiter
 }
 
-// Pagination defaults. limit clamps to defaultLimit; a client limit above
-// maxLimit is capped so a huge page cannot strain SQLite. These are request
-// parsing concerns (part of the parse step), not domain logic.
+// Pagination defaults: limit clamps to defaultLimit, a client limit above
+// maxLimit is capped so a huge page cannot strain SQLite — parse step, not
+// domain logic.
 const (
 	defaultLimit = 50
 	maxLimit     = 200
@@ -57,18 +55,9 @@ type createLibraryRequest struct {
 	Description string `json:"description"`
 }
 
-// updateLibraryRequest is the body of PATCH /api/v1/libraries/{id}. Pointers
-// carry presence: a nil field leaves the column unchanged; RootPath/ModuleID
-// are read only to REJECT identity changes with 400 (web-ui-phase-3 D2).
-// StreamsEnabled is the packaged-playback packaging gate (pass-through only).
-// Parsers (element-pages 3.1) is the ordered parser-chain replacement: a nil
-// pointer (absent field) changes nothing, a PRESENT list replaces the chain —
-// an explicitly empty list is 400 (the chain edit is a reorder, never a clear;
-// the module seed's chain is the default a library starts on).
-// NamingGroupStyle/NamingElementName (display-naming 3.2) are the display
-// naming options: nil changes nothing, a non-nil "" resets to the module
-// default; both are validated BEFORE any write (group style "" | clean | raw,
-// element template's {...} groups exactly {title}/{season}/{episode}).
+// updateLibraryRequest is the body of PATCH /libraries/{id}: pointers carry
+// presence (nil = unchanged); RootPath/ModuleID are reject-only (D2); a
+// present Parsers list is a validated FULL replacement (empty = 400).
 type updateLibraryRequest struct {
 	DisplayName       *string   `json:"display_name"`
 	Description       *string   `json:"description"`
@@ -80,20 +69,9 @@ type updateLibraryRequest struct {
 	NamingElementName *string   `json:"naming_element_name"`
 }
 
-// libraryDTO is the ONE wire shape for a library (no store.Library leaked) —
-// the boundary conversion of store.Library used by the list, create, and patch
-// responses (mirrors the itemResponse-reuses-itemDTO pattern: one type per wire
-// noun). CreatedAt is intentionally omitted, mirroring itemDTO time-omission
-// (the document is the source of truth; carrying time.Time here would force a
-// disallowed time import) — INV4. Module is the additive presentation block
-// (element-pages 3.4; plugin-title-enrichment D5): present on GET
-// /libraries/{id} and on the GET /libraries list — each row resolved PER
-// LIBRARY through the Deps.ModulePresentation closure (the title_sources
-// gates are library-scoped) — and only when the closure is wired; the
-// create/patch responses never carry it. NamingGroupStyle/NamingElementName (display-naming 3.2)
-// are the library's two naming options, ALWAYS on the wire as flat strings —
-// "" = module default (the module default layers under the library option at
-// composition, namerFor).
+// libraryDTO is the ONE wire shape for a library (INV4: no store.Library, no
+// time import). Module is the additive presentation block (element-pages
+// 3.4), resolved per-library on the GET surfaces only.
 type libraryDTO struct {
 	ID                int64               `json:"id"`
 	ModuleID          string              `json:"module_id"`
@@ -106,11 +84,9 @@ type libraryDTO struct {
 	Module            *ModulePresentation `json:"module,omitempty"`
 }
 
-// ParserBinding is one entry of the module presentation block's ordered parser
-// chain (element-pages 3.4): the binding's plugin id, its capability id as
-// declared by the module config (omitted when the binding declares none), and
-// the ordered display_fields declaration — the footer render order for this
-// parser's namespace (config data, never core logic — element-pages D-1).
+// ParserBinding is one entry of the module presentation's ordered parser
+// chain (element-pages 3.4) — config data, never core logic (element-pages
+// D-1).
 type ParserBinding struct {
 	ID            string   `json:"id"`
 	Capability    string   `json:"capability,omitempty"`
@@ -118,99 +94,51 @@ type ParserBinding struct {
 }
 
 // ModulePresentation is the additive module block on the library surfaces
-// (element-pages 3.4; the list rows carry it per-library since
-// plugin-title-enrichment D5): the module's mandatory identity_fields (the
-// element page's identity badges) plus the collection's ordered parser chain.
-// It is
-// ALSO the Deps.ModulePresentation seam-input shape (like PluginHealth for
-// Status): the closure is built in cmd/mellifera over module.Registry, so the
-// type is exported and its fields carry the JSON tags — the handler embeds the
-// closure's value as-is (INV4: no module.Registry type crosses into api; this
-// is a plain api-local struct).
+// (element-pages 3.4) AND the Deps.ModulePresentation seam-input shape:
+// exported + JSON-tagged so the cmd closure constructs it directly (INV4).
 type ModulePresentation struct {
 	IdentityFields []string        `json:"identity_fields"`
 	Parsers        []ParserBinding `json:"parsers"`
-	// ItemName is the module's default display.item_name element template
-	// (display-naming 3.2/3.3): the composition floor under the library's
-	// own naming_element_name option — namerFor uses the library option when
-	// set, else this default, else no composition.
+	// ItemName is the module's default display.item_name template (display-
+	// naming 3.2) — the composition floor under the library's own option.
 	ItemName string `json:"item_name"`
 	// TitleSources is the module's resolved title-walk input (plugin-title-
-	// enrichment D5, additive): display.title_source_priority in config order,
-	// each binding carrying its effective enabled flag AFTER gate resolution.
-	// The gate resolution lives upstream (cmd-side, via enrich.ResolveGates per
-	// library) — this shape is the pure seam-input; an empty/absent list means
-	// the composer skips the walk entirely. Pairs are appended through
-	// AddTitleSource — the element type is unexported (complexity budget:
-	// package-level exports capped at 12; see titleSourceBinding).
+	// enrichment D5): config order, enablement AFTER gate resolution; empty =
+	// the composer skips the walk (budget — see Deps.SourceInventory).
 	TitleSources []titleSourceBinding `json:"title_sources,omitempty"`
-	// LanguagePreference is the module's display.language_preference order —
-	// the pick order the composer applies over object-shaped source titles.
+	// LanguagePreference is the module's display.language_preference pick
+	// order over object-shaped source titles.
 	LanguagePreference []string `json:"language_preference,omitempty"`
 	// RefreshSources is the module's refreshable-source list (plugin-admin-
-	// surfaces, additive): the title_source_priority entries that carry a
-	// modeled metadata-source binding, whose plugin is loaded, and whose
-	// effective gate resolution is enabled, in config order — the refresh
-	// pickers' option list (chain parsers and scanners never appear). The
-	// display composition walk ignores the list — title behavior is
-	// byte-identical with and without it. Pairs are appended through
-	// AddRefreshSource, reusing the titleSourceBinding element type so the
-	// package-level export count stays at the complexity budget's cap of 12.
+	// surfaces): modeled, loaded, gate-enabled bindings in config order; the
+	// display walk ignores it (budget — see Deps.SourceInventory).
 	RefreshSources []titleSourceBinding `json:"refresh_sources,omitempty"`
-	// SourceChain is the module's gate-resolved metadata-source chain
-	// (media-data-convention D6, additive): every bound source in CHAIN order
-	// (the module config's m.MetadataSources order, NOT title_source_priority —
-	// the title walk's order is the title machine's, deliberately different),
-	// each pair carrying its effective enabled flag AFTER gate resolution. The
-	// list IS the served resolution order: the convention projection walks it
-	// to resolve groups, so priority is served data, never document key order.
-	// Pairs are appended through AddChainSource, reusing the titleSourceBinding
-	// element type so the package-level export count stays at the complexity
-	// budget's cap of 12.
+	// SourceChain is the module's gate-resolved source chain in CHAIN order
+	// (media-data-convention D6) — the served resolution order the projection
+	// walks (budget — see Deps.SourceInventory).
 	SourceChain []titleSourceBinding `json:"source_chain,omitempty"`
 }
 
-// titleSourceBinding is one title-walk entry (plugin-title-enrichment D3/D5):
-// the source's plugin id and its effective enablement after gate resolution.
-// The type itself lives in internal/naming (browse-scale 1.1 — the composer
-// moved there reads it); this alias keeps every api-side signature, JSON tag,
-// and Add* construction path byte-identical — an alias is transparent through
-// slices, so the wire bytes ({"id":…,"enabled":…}) and the cmd closure's
-// calls are unchanged, and the alias adds no package-level export to api
-// (the complexity budget's cap of 12 holds). The cmd-side closure constructs
-// pairs through the exported AddTitleSource method.
+// titleSourceBinding aliases naming.TitleSourceBinding (browse-scale 1.1 —
+// the composer that reads it lives there): keeps every api-side signature,
+// JSON tag, and Add* path byte-identical.
 type titleSourceBinding = naming.TitleSourceBinding
 
-// AddTitleSource appends one resolved title-walk pair to the presentation's
-// TitleSources (plugin-title-enrichment D3/D5): the cmd-side closure's
-// construction path for the per-library gate resolution — one call per
-// title_source_priority entry that carries a modeled binding. Lives on the
-// method set (not the package surface) so the package-level export count
-// stays at the complexity budget's cap of 12.
+// AddTitleSource appends one resolved title-walk pair (plugin-title-
+// enrichment D3/D5) — the cmd-side closure's construction path.
 func (p *ModulePresentation) AddTitleSource(id string, enabled bool) {
 	p.TitleSources = append(p.TitleSources, titleSourceBinding{ID: id, Enabled: enabled})
 }
 
-// AddRefreshSource appends one refreshable source to the presentation's
-// RefreshSources (plugin-admin-surfaces): the cmd-side closure's construction
-// path — one call per title_source_priority entry that carries a modeled,
-// loaded, gate-enabled metadata-source binding (a disabled flag is carried
-// for shape parity with AddTitleSource; the served list only carries
-// effectively-enabled entries). Reuses titleSourceBinding and lives on the
-// method set (not the package surface) so the package-level export count
-// stays at the complexity budget's cap of 12.
+// AddRefreshSource appends one refreshable source (plugin-admin-surfaces) —
+// only effectively-enabled entries are carried.
 func (p *ModulePresentation) AddRefreshSource(id string, enabled bool) {
 	p.RefreshSources = append(p.RefreshSources, titleSourceBinding{ID: id, Enabled: enabled})
 }
 
-// AddChainSource appends one gate-resolved chain pair to the presentation's
-// SourceChain (media-data-convention D6): the cmd-side closure's construction
-// path — one call per bound metadata source in chain order, each carrying its
-// enrich.ResolveGates verdict (a muted source is carried with enabled false —
-// the projection must SEE the mute to skip it, unlike the filtered refresh
-// list). Reuses titleSourceBinding and lives on the method set (not the
-// package surface) so the package-level export count stays at the complexity
-// budget's cap of 12.
+// AddChainSource appends one gate-resolved chain pair (media-data-convention
+// D6) — a muted source is carried with enabled=false: the projection must SEE
+// the mute to skip it, unlike the filtered refresh list.
 func (p *ModulePresentation) AddChainSource(id string, enabled bool) {
 	p.SourceChain = append(p.SourceChain, titleSourceBinding{ID: id, Enabled: enabled})
 }
@@ -221,17 +149,16 @@ type librariesResponse struct {
 }
 
 // librarySummaryResponse is the wire shape for GET /libraries/{id}/summary —
-// the constant-time count + last-update aggregate. UpdatedAt is the raw
-// RFC3339 TEXT from the store ("" when the library has no items), keeping the
-// DTO free of a time import.
+// the constant-time count + last-update aggregate; UpdatedAt is raw RFC3339
+// TEXT ("" when no items), keeping the DTO free of a time import.
 type librarySummaryResponse struct {
 	LibraryID int64  `json:"library_id"`
 	Items     int64  `json:"items"`
 	UpdatedAt string `json:"updated_at"`
 }
 
-// folderDTO is one depth-1 folder prefix + its item count (GET
-// /libraries/{id}/folders). Top-level files report Path "".
+// folderDTO is one depth-1 folder prefix + its item count; top-level files
+// report Path "".
 type folderDTO struct {
 	Path  string `json:"path"`
 	Items int64  `json:"items"`
@@ -243,42 +170,30 @@ type libraryFoldersResponse struct {
 }
 
 // Progress listing defaults (web-ui-phase-3): a smaller page than the item
-// tables — the Continue rail renders a handful of cards. limit clamps to
-// progressMaxLimit; unlike parsePagination, a PRESENT non-integer limit is a
-// 400 (the rail is user-facing, so silent fallbacks would hide client bugs).
+// tables; unlike parsePagination a PRESENT non-integer limit is a 400 (the
+// rail is user-facing — silent fallbacks would hide client bugs).
 const (
 	progressDefaultLimit = 20
 	progressMaxLimit     = 100
 )
 
-// progressRequest is the body of PUT /api/v1/progress/{item_id}. The pointer
-// carries presence: a MISSING position_seconds is a non-canonical body (400),
-// distinct from an explicit 0 (a valid "back to start"). Completed is the
-// additive explicit-completion intent (watched-states D3): optional, absent
-// decodes to false — the plain floor-only write of today — and true rides the
-// OnProgress seam so the watch-detect leg can ledger past the 0.9 floor.
+// progressRequest is the body of PUT /progress/{item_id}: pointer presence —
+// a MISSING position_seconds is 400, distinct from an explicit 0; completed
+// is the explicit-completion intent (watched-states D3).
 type progressRequest struct {
 	PositionSeconds *int64 `json:"position_seconds"`
 	Completed       bool   `json:"completed"`
 }
 
-// progressDTO is the ONE wire shape for a stored playback position (no
-// store.PlaybackProgress leaked — INV4): the item id, integer seconds, and
-// the raw RFC3339 stamp as persisted. RecScore is the additive recommendation
-// score (recommendation-sorting D7), stamped only under the scored default —
-// sort=recent serves unscored, and omitempty keeps the field off the wire
-// there.
+// progressDTO is the ONE wire shape for a stored position (INV4): integer
+// seconds + raw RFC3339 stamp; RecScore/Watched are read-time stamps, omitempty
+// honest absence (recommendation-sorting D7 / watched-states D1).
 type progressDTO struct {
 	ItemID          string  `json:"item_id"`
 	PositionSeconds int64   `json:"position_seconds"`
 	UpdatedAt       string  `json:"updated_at"`
 	RecScore        float64 `json:"rec_score,omitempty"`
-	// Watched is the additive served watched state (watched-states D1):
-	// the row's item carries a watched_items ledger row — stamped from the
-	// same batched ledger facts the score composition reads. True-only on
-	// the wire (omitempty): absent means unwatched, the honest-absence
-	// posture RecScore serves.
-	Watched bool `json:"watched,omitempty"`
+	Watched         bool    `json:"watched,omitempty"`
 }
 
 // progressListResponse is the wire shape for GET /api/v1/progress.
@@ -299,17 +214,9 @@ type itemsResponse struct {
 	Items []itemDTO `json:"items"`
 }
 
-// seriesDTO is the ONE wire shape for a series (no store.Series leaked — INV4),
-// mirroring itemDTO: the row identity fields plus the FULL §3.1 serial-level
-// document carried opaque (INV-full-document). Timestamps are intentionally
-// omitted (the document is the source of truth; carrying time.Time here would
-// force a disallowed time import). TitleOverride is the additive manual
-// display-title override (serial-watch-flow 2.1) — "" when unset (always on
-// the wire; the SPA's fallback chain reads the empty string as absent).
-// Display is the server-composed display name (display-naming 3.1): the
-// seriesName chain — override > parser title > dir_name_raw > last path
-// segment, byte-for-byte the SPA's seriesDisplayTitle — stamped per row
-// through the same seam; ALWAYS on the wire, "" when nothing resolves.
+// seriesDTO is the ONE wire shape for a series (INV4): identity fields plus
+// the FULL §3.1 serial document opaque (INV-full-document, no time import);
+// the additive read-time fields follow itemDTO's field law.
 type seriesDTO struct {
 	ID            string          `json:"id"`
 	ModuleID      string          `json:"module_id"`
@@ -320,30 +227,20 @@ type seriesDTO struct {
 	Status        string          `json:"status"`
 	TitleOverride string          `json:"title_override"`
 	Display       string          `json:"display_name"`
-	// Artwork is the additive composed poster URL (artwork): the stored
-	// override's value (a staged blob rides the object route's proxy URL),
-	// else the first non-placeholder chain poster's URL — proxied when
-	// materialized, the raw remote URL while unstaged — else absent
-	// (omitempty): honest absence, never a placeholder URL, never an empty
-	// one. Read-time only, never persisted into the document.
+	// Artwork is the composed poster URL (artwork): the stored override, else
+	// the first chain poster's URL — omitempty = honest absence, never a
+	// placeholder; read-time only, never persisted.
 	Artwork string `json:"artwork,omitempty"`
-	// Metadata is the additive convention projection (media-data-convention
-	// D5): the about / cast / episode blocks resolved at read from the
-	// document's sources.* namespaces over the gate-resolved source_chain —
-	// first effectively-enabled carrier wins WHOLE, values verbatim. Absent
-	// (omitempty) when the chain is unwired or no group has a carrier —
-	// honest absence, never an empty block.
+	// Metadata is the convention projection (media-data-convention D5):
+	// about/cast/episode resolved over the gate-resolved chain — first
+	// enabled carrier wins WHOLE; omitempty when none.
 	Metadata map[string]any `json:"metadata,omitempty"`
-	// RecScore is the additive recommendation score (recommendation-sorting
-	// D7) — the same read-time field itemDTO carries: see the field comment
-	// there; one score model, one stamping rule, both wire nouns.
+	// RecScore is the same read-time score itemDTO carries (recommendation-
+	// sorting D7) — one model, one stamping rule, both wire nouns.
 	RecScore float64 `json:"rec_score,omitempty"`
-	// Watched is the additive watched state (watched-states D1): true only
-	// when EVERY backing episode carries a watched_items ledger row — the
-	// all-episodes law the scoreSeries walk derives (a series with zero
-	// episodes is never watched). Absent (omitempty) otherwise — true-only
-	// on the wire, exactly as itemDTO's stamp; never persisted into the
-	// document.
+	// Watched (watched-states D1): true only when EVERY backing episode is
+	// ledgered — the all-episodes law the scoreSeries walk derives; zero
+	// episodes never watched.
 	Watched bool `json:"watched,omitempty"`
 }
 
@@ -366,30 +263,21 @@ type itemResponse struct {
 	Item itemDTO `json:"item"`
 }
 
-// PluginHealth is the seam-input shape for one plugin's liveness, built by the
-// cmd/mellifera Deps.Status closure from plugin.Health. Exported so the closure
-// (which lives in package main, external to api) can construct populated values
-// — the unexported DTO this replaced could not be named cross-package, which is
-// what BLK-T13-1 fixed. CheckedAt is an RFC3339 string (not time.Time) so the
-// api DTOs stay free of a time import; the closure formats
-// plugin.Health.LastCheckedAt. INV4: no plugin.Health over the wire — this is a
-// plain api-local struct.
+// PluginHealth is the seam-input shape for one plugin's liveness (built by
+// the cmd Deps.Status closure from plugin.Health; INV4 — no plugin.Health
+// over the wire; CheckedAt RFC3339, no time import).
 type PluginHealth struct {
 	ID        string `json:"id"`
 	State     string `json:"state"`
 	Restarts  int    `json:"restarts"`
 	CheckedAt string `json:"checked_at"`
-	// Message is the plugin's own liveness word from the last status probe
-	// (plugin.Health.Message — the failure reason when not serving).
-	// ADDITIVE on both health surfaces (/admin/status and /admin/sources,
-	// plugin-title-enrichment): omitted on the wire while "".
+	// Message is the plugin's own liveness word from the last probe, additive
+	// on both health surfaces (plugin-title-enrichment); omitted while "".
 	Message string `json:"message,omitempty"`
 }
 
-// EnrichStats is the seam-input shape for the async-enrichment queue snapshot,
-// built by the cmd/mellifera Deps.Status closure from enrich.Stats. Exported so
-// the closure can construct populated values (BLK-T13-1). INV4: no enrich.Stats
-// over the wire — this is a plain api-local struct.
+// EnrichStats is the seam-input shape for the enrichment queue snapshot (built
+// by the Deps.Status closure; INV4 — no enrich.Stats over the wire).
 type EnrichStats struct {
 	Pending  int `json:"pending"`
 	InFlight int `json:"in_flight"`
@@ -397,41 +285,24 @@ type EnrichStats struct {
 	Failed   int `json:"failed"`
 }
 
-// AdminStatus is the api-local aggregate the Deps.Status closure returns. It is
-// defined HERE (not in plugin/enrich) so api never imports those packages
-// (INV2). cmd/mellifera (Task 13) builds the closure that maps plugin.Health +
-// enrich.Stats into these api-local types. The field types are exported so
-// AdminStatus is constructible from outside package api (the closure site,
-// cmd/mellifera package main, and the external integration test).
+// AdminStatus is the api-local aggregate the Deps.Status closure returns —
+// defined HERE so api never imports plugin/enrich (INV2); field types exported
+// so the cmd closure and the external itest can construct it.
 type AdminStatus struct {
 	Plugins []PluginHealth
 	Enrich  EnrichStats
 }
 
-// statusResponse is the wire envelope for GET /admin/status. It stays
-// unexported (INV4: the wire envelope is api-package-local). Its field types are
-// the exported seam-input structs, so the handler maps AdminStatus→
-// statusResponse without a per-field copy — the closure already built the
-// wire-shaped values, and the JSON tags live on the exported types.
+// statusResponse is the wire envelope for GET /admin/status (unexported,
+// INV4) — its fields are the exported seam-input structs, so no per-field
+// copy is needed.
 type statusResponse struct {
 	Plugins []PluginHealth `json:"plugins"`
 	Enrich  EnrichStats    `json:"enrich"`
 }
 
-// itemDTO is the wire shape for one item. store.Item is converted here at the
-// boundary (INV4): nothing in store.Item is serialized directly. Timestamps are
-// intentionally omitted (the document is the source of truth for item state and
-// carrying time.Time here would force a disallowed time import). ExtraParsers
-// is the additive element-only attachment list (element-pages 3.3) — populated
-// ONLY by the detail handler (getItem); the listings stay N+1-free and the
-// field is absent until a first attachment. TitleOverride is the additive
-// manual display-title override (serial-watch-flow 2.1) — "" when unset
-// (always on the wire, unlike ExtraParsers: the SPA's fallback chain reads the
-// empty string as absent). Display is the server-composed display name
-// (display-naming 3.1): the full chain — override > composed element name >
-// _view.title.value floor — stamped per row through the same seam as
-// TitleOverride; ALWAYS on the wire with the same ""=unset precedent (no
-// omitempty — the SPA renders its em-dash placeholder for the empty string).
+// itemDTO is the wire shape for one item (INV4: nothing in store.Item is
+// serialized directly; timestamps omitted — no time import).
 type itemDTO struct {
 	ID            string          `json:"id"`
 	ModuleID      string          `json:"module_id"`
@@ -442,34 +313,26 @@ type itemDTO struct {
 	Document      json.RawMessage `json:"document"`
 	SchemaVersion int             `json:"schema_version"`
 	Status        string          `json:"status"`
-	TitleOverride string          `json:"title_override"`
-	Display       string          `json:"display_name"`
-	// Artwork is the additive composed poster URL (artwork) — the same
-	// read-time resolution seriesDTO carries: see the field comment there;
-	// one shape, one precedence, both wire nouns. The thumbnail leg stays
-	// client-side by design.
+	// TitleOverride "" = unset (always on the wire — the SPA's fallback reads
+	// ""); Display is the composed name (display-naming 3.1), always on the
+	// wire (no omitempty — the SPA renders its em-dash placeholder for "").
+	TitleOverride string `json:"title_override"`
+	Display       string `json:"display_name"`
+	// Artwork is the composed poster URL (artwork): override > own poster >
+	// owning series (the lazy fallback leg) — omitempty honest absence; the
+	// thumbnail leg stays client-side by design.
 	Artwork      string   `json:"artwork,omitempty"`
 	ExtraParsers []string `json:"extra_parsers,omitempty"`
-	// Metadata is the additive convention projection (media-data-convention
-	// D5) — the same read-time block seriesDTO carries: see the field comment
-	// there; one shape, one resolution rule, both wire nouns.
+	// Metadata is the convention projection (media-data-convention D5) — the
+	// same read-time block seriesDTO carries.
 	Metadata map[string]any `json:"metadata,omitempty"`
-	// RecScore is the additive recommendation score (recommendation-sorting
-	// D7): the read-time score the scored default ordered this listing by —
-	// 1000·inProgress + 500·newEpisode + min(Σ tag weights, 400) — stamped
-	// per row so the ordering is observable, never client-input. Present
-	// only under the scored default (sort=path computes no scores); omitted
-	// (omitempty) when unscored or zero — honest absence, never a
-	// fabricated 0.
+	// RecScore is the read-time score (recommendation-sorting D7):
+	// 1000·inProgress + 500·newEpisode + min(Σ tag weights, 400) — only
+	// under the scored default; omitempty honest absence, never a fake 0.
 	RecScore float64 `json:"rec_score,omitempty"`
-	// Watched is the additive served watched state (watched-states D1): a
-	// watched_items ledger row exists for the item — read-time from the
-	// batched ledger read, never persisted, never client-input. True-only
-	// on the wire (omitempty): absent means unwatched, the same
-	// honest-absence posture RecScore serves. Stamped on EVERY serving
-	// route — unconditional on the wire even where the score is not (the
-	// sort=path opt-out and the detail/episode routes stamp it while
-	// serving no rec_score).
+	// Watched is the served watched state (watched-states D1): a ledger row
+	// exists — read-time, never persisted, never client-input; stamped on
+	// EVERY serving route, even where rec_score is not.
 	Watched bool `json:"watched,omitempty"`
 }
 
@@ -505,27 +368,9 @@ func (a *app) createLibrary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// patchLibrary: parse {id} + updateLibraryRequest → store.UpdateLibrary (+
-// store.SetLibraryChain when the body carries parsers) → write libraryDTO. One
-// domain call per store surface. Presence of root_path/module_id is rejected
-// with 400 BEFORE the store call (identity is (module_id, root_path); moving a
-// root re-identifies every item — D2). A present parsers array is validated
-// BEFORE any write (element-pages 3.1): an explicitly empty list and an
-// unknown or non-parser plugin id are 400 bad_request with the stored chain
-// unchanged (the validation is pure — nothing is written to reject). A nil
-// parsers field changes nothing; a present list is a FULL replacement whose
-// order defines the footer group order and the enrichment queue priority.
-// A nil display_name/description leaves the column unchanged; a missing id
-// surfaces from store as a wrapped sql.ErrNoRows → 404 not_found. Handlers do
-// not retry or auto-correct.
-//
-// Naming options (display-naming 3.2): a nil naming_* field changes nothing;
-// a non-nil "" resets the column to the module default. Both are validated
-// BEFORE any write, parsers-precedent: naming_group_style must be "",
-// "clean", or "raw"; naming_element_name's {...} groups must each be exactly
-// {title}, {season}, or {episode} — anything else is 400 bad_request with
-// the stored columns unchanged. A changed option re-composes display_names
-// on the NEXT read (composition is read-time; no invalidation exists).
+// patchLibrary: updateLibraryRequest → store.UpdateLibrary (+ SetLibraryChain
+// when parsers present) → libraryDTO. Identity fields 400 pre-write (D2); an
+// empty parser list is 400 (a chain is replaced, never cleared); missing id → 404.
 //
 // @Summary      Update a library's display name, description, and/or parser chain
 // @Tags         libraries
@@ -553,10 +398,9 @@ func (a *app) patchLibrary(w http.ResponseWriter, r *http.Request) {
 			"root_path and module_id are immutable (moving a root re-identifies all items)", false)
 		return
 	}
-	// Chain validation (element-pages 3.1): pure checks, run BEFORE either
-	// store call so a rejected body leaves row and chain untouched. Empty is
-	// 400 here — unlike item attachments, a library chain is never cleared
-	// through this endpoint (the module seed chain is the floor).
+	// Chain validation (element-pages 3.1): pure checks BEFORE either store
+	// call — a rejected body leaves row and chain untouched; empty is 400
+	// (a library chain is never cleared here).
 	if req.Parsers != nil {
 		if len(*req.Parsers) == 0 {
 			writeError(w, http.StatusBadRequest, "bad_request",
@@ -568,9 +412,8 @@ func (a *app) patchLibrary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Naming-option validation (display-naming 3.2): pure checks, run BEFORE
-	// the store call so a rejected body leaves both columns untouched. A nil
-	// field changes nothing; a non-nil "" is the module-default reset.
+	// Naming-option validation (display-naming 3.2): pure checks BEFORE the
+	// store call; a non-nil "" is the module-default reset.
 	if req.NamingGroupStyle != nil {
 		switch *req.NamingGroupStyle {
 		case "", "clean", "raw":
@@ -607,18 +450,9 @@ func (a *app) patchLibrary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toLibraryDTO(lib))
 }
 
-// getLibrary: parse {id} → store.GetLibrary → write libraryDTO plus the
-// additive module presentation block (element-pages 3.4): identity_fields and
-// the ordered parser bindings with display_fields — the element page's
-// chain/identity source, served from module config via the
-// Deps.ModulePresentation closure (INV2/INV4: module.Registry never crosses
-// into api; the closure returns this api-local shape) with the stored
-// per-library chain (store.GetLibraryChain) overlaid as the footer group
-// order (element-pages 3.1; absent/empty chain = config order). The block is
-// additive: a nil closure serves the row without it (the SPA degrades to a
-// footer without the presentation data — the block is absent, never an empty
-// stub). A missing row surfaces from store as a wrapped sql.ErrNoRows → 404
-// not_found; a closure or chain-read error is a real failure → 500.
+// getLibrary: {id} → store.GetLibrary → libraryDTO plus the additive module
+// presentation block (element-pages 3.4), stored chain overlaid as footer
+// order; nil closure serves the row without it; missing row → 404, errors → 500.
 //
 // @Summary      Get a single library with its module presentation block
 // @Tags         libraries
@@ -654,11 +488,9 @@ func (a *app) getLibrary(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
-		// Chain overlay (element-pages 3.1): the stored per-library chain is the
-		// footer group order, so the served parser order overlays it onto the
-		// closure's config order. Absent/empty chain = config order (the seed
-		// default). A chain read error is a real failure → 500, like any other
-		// store read here.
+		// Chain overlay (element-pages 3.1): the stored chain is the footer
+		// group order overlaid onto the closure's config order; absent/empty
+		// chain = config order.
 		chain, err := a.deps.Store.GetLibraryChain(ctx, id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -670,13 +502,9 @@ func (a *app) getLibrary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, dto)
 }
 
-// orderParserBindings overlays a library's stored parser chain onto the module
-// config order (element-pages 3.1: the parser order defines the footer group
-// order). Bindings the chain names come first, in chain position order;
-// config-bound bindings the chain does not name retain their relative config
-// order after them. An empty chain (never set, cleared) is a no-op — the
-// module seed's chain (config order) is the default. The input slice is never
-// mutated.
+// orderParserBindings overlays the stored parser chain onto the config order
+// (element-pages 3.1): chain-named bindings first in chain order, the rest in
+// config order after; empty chain is a no-op; no input mutation.
 func orderParserBindings(bindings []ParserBinding, chain []string) []ParserBinding {
 	if len(bindings) == 0 || len(chain) == 0 {
 		return bindings
@@ -700,10 +528,8 @@ func orderParserBindings(bindings []ParserBinding, chain []string) []ParserBindi
 	return append(chained, rest...)
 }
 
-// librarySummary: parse {id} → store.LibrarySummary → write
-// librarySummaryResponse. One domain call (the aggregate is a constant-time
-// SQL count/max, never an item scan). A missing id → 404; a non-integer id →
-// 400 (parse step).
+// librarySummary: {id} → store.LibrarySummary → librarySummaryResponse. One
+// constant-time SQL aggregate (never an item scan); missing id → 404.
 //
 // @Summary      Item count and last-update stamp for a library
 // @Tags         libraries
@@ -733,9 +559,8 @@ func (a *app) librarySummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, librarySummaryResponse{LibraryID: id, Items: items, UpdatedAt: updatedAt})
 }
 
-// libraryFolders: parse {id} → store.LibraryFolders → write
-// libraryFoldersResponse. One domain call (the depth-1 aggregate runs in SQL;
-// the handler does no shaping). A missing id → 404; a non-integer id → 400.
+// libraryFolders: {id} → store.LibraryFolders → libraryFoldersResponse; the
+// depth-1 aggregate runs in SQL; missing id → 404, non-integer id → 400.
 //
 // @Summary      Depth-1 folder prefixes and item counts for a library
 // @Tags         libraries
@@ -769,21 +594,10 @@ func (a *app) libraryFolders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, libraryFoldersResponse{Folders: dtos})
 }
 
-// putProgress: parse {item_id} + progressRequest → store.PutProgress → write
-// progressDTO. One domain call. Validation is the parse step, BEFORE the store
-// call: a malformed or non-canonical body (json decodes into *int64, so a
-// non-integer 1.5 or "90" fails the decode; a missing field fails the nil
-// check) and a negative value are 400 bad_request with the stored value
-// untouched; an unknown item is 404 not_found (store.PutProgress refuses
-// before writing, so no orphan row is minted). After a successful upsert the
-// Deps.OnProgress watch-event seam fires (continue-nextup-media D-2) with the
-// request context and the saved write's id + position, plus the body's
-// explicit-completion intent (watched-states D3: `completed: true` — absent is
-// false) — after the store call, before the response write, so a closure
-// observes only confirmed writes. A
-// nil closure is a silent no-op (progress persistence is never load-bearing
-// on it), and the response is byte-identical either way. The endpoint is
-// never retried.
+// putProgress: progressRequest → store.PutProgress → progressDTO. Parse-step
+// validation BEFORE the store call: missing/negative position_seconds → 400,
+// unknown item → 404 (no orphan row). OnProgress fires only after a CONFIRMED
+// upsert, before the response (D-2/D3); nil closure is a silent no-op.
 //
 // @Summary      Store the playback position for an item
 // @Tags         progress
@@ -810,10 +624,8 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "position_seconds must be >= 0", false)
 		return
 	}
-	// The write stamps the CALLER's ledger slot (per-user ledgers 5.1): the
-	// handler's own scope, resolved once — legacy principals keep the slot-0
-	// posture byte-identical. The OnProgress closure takes the stashed
-	// context, so its FromContext read sees the same viewer.
+	// 6.2 viewer scope — see getLibrary (the canonical); the write stamps the
+	// CALLER's ledger slot, legacy principals keep slot-0 byte-identical.
 	v, ctx := a.viewerFor(r)
 	rec, err := a.deps.Store.PutProgress(ctx, itemID, *req.PositionSeconds, v)
 	if err != nil {
@@ -831,11 +643,8 @@ func (a *app) putProgress(w http.ResponseWriter, r *http.Request) {
 }
 
 // itemStateWatched / itemStateUnwatched are the closed vocabulary PUT
-// /items/{id}/state accepts (collections-ux): a playback-STATE endpoint named
-// for state so the set can grow. The handler strict-parses the wire string
-// against this set — an unknown value is 400 bad_request (the sort/include
-// grammar posture) — and the write switch below is exhaustive over the
-// validated set.
+// /items/{id}/state accepts (collections-ux); the handler strict-parses
+// against this set (unknown → 400) and the write switch is exhaustive over it.
 const (
 	itemStateWatched   = "watched"
 	itemStateUnwatched = "unwatched"
@@ -846,11 +655,9 @@ type itemStateRequest struct {
 	State string `json:"state"`
 }
 
-// itemStateDTO is the ONE wire shape for the state echo (no store type leaks
-// — INV4): the settled state plus the derived facts the SPA seeds its caches
-// from. PositionSeconds comes from the post-write progress read; CompletedAt
-// is present only when watched (omitempty) — an absent field on an unwatched
-// echo is the shape, never a type hole.
+// itemStateDTO is the ONE wire shape for the state echo (INV4): position from
+// the post-write read; CompletedAt present only when watched (omitempty — an
+// absent field on an unwatched echo is the shape, never a type hole).
 type itemStateDTO struct {
 	ItemID          string `json:"item_id"`
 	State           string `json:"state"`
@@ -858,25 +665,11 @@ type itemStateDTO struct {
 	CompletedAt     string `json:"completed_at,omitempty"`
 }
 
-// putItemState: parse {id} + itemStateRequest → store ledger write → write
-// itemStateDTO (collections-ux). Validation is the parse step, BEFORE the
-// store calls: an unknown state string is 400 bad_request, a photo-module
-// item is 400 bad_request (photos carry no watched concept), an unknown item
-// is 404 not_found — no ledger or progress row is touched in any of the
-// three cases. The `watched` branch inserts the completion-ledger row exactly
-// like the detector path (InsertWatched: idempotent item_id PRIMARY KEY,
-// completed_at stamped by this write) with the series anchor read off the
-// stored document's parsed.series_relative_path — seriesPathOf, the same
-// resolution the detector persists (an unreadable document degrades to "",
-// intent wins, learning degrades honestly) — and does NOT touch the item's
-// playback position; the `unwatched` branch is DeleteWatched, one store
-// transaction deleting the ledger row AND zeroing the position (so the
-// positive-positions-only reads and the boot backfill can never re-ledger).
-// The response position comes from the post-write GetProgress read: the read
-// wraps sql.ErrNoRows on a missing row, so a watched write on a NEVER-STARTED
-// item maps the no-row to position_seconds 0 instead of surfacing an error —
-// the missing row is zero, never a failure. completed_at is this write's
-// stamp, formatted as the store persists ledger stamps (RFC3339Nano).
+// putItemState: the watched toggle (collections-ux); parse-step validation
+// BEFORE any store call (unknown state / photo item → 400, unknown item → 404).
+// `watched` inserts the completion-ledger row like the detector path, position
+// untouched; `unwatched` deletes the row AND zeroes the position in one
+// transaction (no re-ledger via positive-only reads or boot backfill).
 //
 // @Summary      Set an item's playback state (watched toggle)
 // @Tags         progress
@@ -918,10 +711,8 @@ func (a *app) putItemState(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	switch req.State {
 	case itemStateWatched:
-		// seriesPathOf is the detector's own anchor resolution (parsed.
-		// series_relative_path, "" when the document carries none); the
-		// position is deliberately untouched — the ledger row alone is the
-		// intent.
+		// The position is deliberately untouched — the ledger row alone is
+		// the intent (anchor via seriesPathOf, the detector's own resolution).
 		if err := a.deps.Store.InsertWatched(ctx, itemID, it.LibraryID, seriesPathOf(it), now, v); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
@@ -944,27 +735,11 @@ func (a *app) putItemState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, dto)
 }
 
-// listProgress: parse ?limit + ?sort → store reads → write
-// progressListResponse. limit defaults to progressDefaultLimit and clamps to
-// progressMaxLimit; a present non-positive or non-integer limit is 400
-// bad_request (stricter than the item tables' parsePagination, whose silent
-// fallbacks fit admin paging but not a user-facing rail). The store read is
-// orphan-tolerant and positive-positions-only, so the handler does no shaping.
-//
-// Ordering (recommendation-sorting D7): the scored default orders score-desc
-// then updated_at-desc — score-then-window, like the item listing: the FULL
-// positive set is read (recsFactsFor's own batched read; the table holds one
-// row per item), scored through the same scoreItems composition, ordered,
-// and THEN cut to limit, so a high scorer can never fall behind the recency
-// window. ?sort=recent restores today's order byte-for-byte: the store's own
-// updated_at-desc SQL window, unscored (rec_score omitted). An unknown sort
-// is 400 (the same parse posture as the collection listings).
-//
-// Withdrawal (watched-states D2): rows whose item is ledgered drop from the
-// default listing in BOTH branches — a completed watch has no resume point,
-// its position is spent. ?include=watched restores them (served rows then
-// carry watched: true); an unknown include value is 400, the same strict
-// parse the sort grammar serves.
+// listProgress: ?limit/?sort/?include → progressListResponse; strict parse
+// (bad limit/sort/include → 400). Scored default (recommendation-sorting D7):
+// FULL positive set, score-desc then recency, THEN cut — score-then-window;
+// ?sort=recent keeps the store window; withdrawn rows (watched-states D2)
+// drop by default, ?include=watched restores them.
 //
 // @Summary      Recent playback positions (Continue rail)
 // @Tags         progress
@@ -996,13 +771,11 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", bad, false)
 		return
 	}
-	// The caller's ledger scope (6.2): every read below — both branches — is
-	// the requesting viewer's own slot over its visible libraries.
+	// 6.2 viewer scope — see getLibrary: every read below, both branches.
 	v, ctx := a.viewerFor(r)
 	if recent {
-		// The opt-out keeps today's exact contract: the store's own recency
-		// window, unscored — plus the SAME withdrawal default (watched-states
-		// D2), off the batched ledger read the branch makes none of today.
+		// The opt-out keeps today's exact contract: the store's recency
+		// window, unscored — plus the SAME withdrawal default (D2).
 		recs, err := a.deps.Store.ListProgress(ctx, limit, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1025,11 +798,9 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, progressListResponse{Items: dtos})
 		return
 	}
-	// The scored default (D7 score-then-window): recsFactsFor already carries
-	// the full positive set it built the progress facts from — no second
-	// read. The withdrawal (D2) trims the input set BEFORE the composition,
-	// so the page cut lands on the served rows. Score, order
-	// score-desc/recency, THEN cut the page.
+	// The scored default (D7): facts already carry the full positive set — no
+	// second read; withdrawal trims BEFORE composition so the cut lands on
+	// served rows. Score, order, THEN cut.
 	facts, err := a.recsFactsFor(ctx, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1053,20 +824,15 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 	for i, e := range entries {
 		dtos[i] = toProgressDTO(e.row)
 		dtos[i].RecScore = e.score
-		// The watched stamp (watched-states D1): the row's own item against
-		// the ledger map the batched facts already carry — no extra read.
+		// Watched stamp (D1) off the ledger map the facts already carry.
 		dtos[i].Watched = facts.completed(e.row.ItemID)
 	}
 	writeJSON(w, http.StatusOK, progressListResponse{Items: dtos})
 }
 
-// getProgress: parse {item_id} → store.GetProgress → write progressDTO. One
-// domain call plus the additive rec_score (recommendation-sorting D7): the
-// entity scores through the same composition as the list — scoreItems over
-// the batched facts under the item's library namer — so the single record
-// carries the same score its row serves. An absent record OR an item that no
-// longer exists is 404 not_found — the store read JOINs to items, so
-// orphaned rows never surface.
+// getProgress: {item_id} → store.GetProgress → progressDTO plus the additive
+// rec_score (D7, the list's own composition). An absent record OR item is 404
+// (the read JOINs to items — orphans never surface).
 //
 // @Summary      Get one item's stored playback position
 // @Tags         progress
@@ -1078,8 +844,8 @@ func (a *app) listProgress(w http.ResponseWriter, r *http.Request) {
 // @Failure      500 {object} errorBody
 func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "item_id")
-	// The caller's scope (6.2): the record read, the item point read, and the
-	// scored composition's ledger facts all ride the requesting viewer.
+	// 6.2 viewer scope — see getLibrary: the record read, the item point read,
+	// and the scored composition's ledger facts all ride the requesting viewer.
 	v, ctx := a.viewerFor(r)
 	rec, err := a.deps.Store.GetProgress(ctx, itemID, v)
 	if err != nil {
@@ -1090,14 +856,9 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// The additive score (D7): the record's item row and the item's library
-	// namer plus the batched facts — the same reads the scored list composes,
-	// scoped to the one entity. The stored zero position (a valid "back to
-	// start") is not in the positive-progress set, so it carries no resume
-	// bonus — the InProgress fact is the positive row, exactly as everywhere
-	// else; an episode of a STARTED series still serves the new-episode bonus
-	// (the series-scoped seed below — D2/D3), the same score the grid
-	// composes for the same entity.
+	// The additive score (D7): the list's composition scoped to one entity. A
+	// stored zero position ("back to start") carries no resume bonus; an episode
+	// of a STARTED series still serves the new-episode bonus (seed below, D2/D3).
 	it, err := a.deps.Store.GetItem(ctx, itemID, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1114,11 +875,9 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// The series-scoped startedness seed (D2/D3): an episode scores against
-	// its SERIES' episode rows — a series started by a sibling episode (or by
-	// this episode's own stored ZERO position, which the positive-progress
-	// facts never carry) must serve the new-episode bonus exactly as the grid
-	// does; the one-item slice derivation alone would serve tags-only.
+	// Series-scoped startedness seed (D2/D3): an episode scores against its
+	// SERIES' episode rows — a sibling-started (or own-stored-zero) series
+	// serves the new-episode bonus exactly as the grid does.
 	startedSeed := (map[string]bool)(nil)
 	if path := seriesPathOf(it); path != "" {
 		started, err := a.seriesStartedFact(ctx, v, n, path, facts)
@@ -1132,21 +891,14 @@ func (a *app) getProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	dto := toProgressDTO(rec)
 	dto.RecScore = scoreItems(n, []store.Item{it}, facts, startedSeed)[0]
-	// The watched stamp (watched-states D1, every-serving-route law): the
-	// row's own item against the ledger set the batched facts already carry
-	// — no extra read; true-only on the wire (omitempty).
+	// Watched stamp (D1) off the facts' ledger set — no extra read.
 	dto.Watched = facts.completed(itemID)
 	writeJSON(w, http.StatusOK, dto)
 }
 
-// deleteLibrary: parse {id} → store.DeleteLibrary → 204. One domain call.
-// The store transaction removes the library together with every dependent
-// row (items, series, per-item control rows, scan jobs, the parser chain,
-// library-scope source gates); files on disk are never touched. A missing id
-// surfaces from store as a wrapped sql.ErrNoRows → 404 not_found. Not
-// idempotent on purpose (unlike the source-gate clears): the second DELETE
-// of the same id is a 404, so an operator double-click cannot hide a
-// mistaken delete of a re-created library.
+// deleteLibrary: {id} → store.DeleteLibrary → 204; the transaction removes
+// the library and every dependent row (files untouched). Not idempotent on
+// purpose: the second DELETE is a 404 (a double-click cannot hide a mistake).
 //
 // @Summary      Delete a library and its scan results
 // @Tags         libraries
@@ -1204,24 +956,12 @@ func (a *app) scanLibrary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// listItems: parse {id} + optional ?status=/?path_prefix=/?top_level= +
-// ?sort= + pagination → store items → write itemsResponse. An absent/empty
-// ?status= passes "" and serves ACTIVE rows only (the tombstone serve law,
-// tombstone-lifecycle 3.2 — the default exclusion lives inside the shared
-// allFilteredItems walk); an explicit ?status= keeps exact-match semantics
-// (?status=deleted is the operator's audit window). api does not validate the
-// status set (store/enrich own it — pure delegation). The folder filters are
-// normalized HERE (parsePathFilter) so the store only ever sees a
-// pre-trimmed prefix.
-//
-// Ordering (recommendation-sorting D7): the scored default reads the FULL
-// filtered set (allFilteredItems), scores every row via recs over batched
-// facts (recsFactsFor), orders score-desc with the alphabetical floor
-// (scoredServe), and THEN applies offset/limit in the handler — score-then-
-// window, so page 2 can never outrank page 1. ?sort=path restores the store's
-// id order, unscored (rec_score omitted) — through the same walk for an
-// empty status (the serve law), and as QueryItems' id-ordered SQL window for
-// an explicit status.
+// listItems: ?library + ?status + folder filters + ?sort + pagination →
+// itemsResponse. Empty ?status= serves ACTIVE only (the tombstone serve law,
+// tombstone-lifecycle 3.2); explicit ?status= is exact-match, unvalidated
+// (delegation). Scored default (D7): FULL filtered set, score-desc with the
+// alphabetical floor, THEN cut (page 2 never outranks page 1); ?sort=path
+// restores store id order.
 //
 // @Summary      List items (optionally filtered by library + status + folder)
 // @Tags         items
@@ -1258,54 +998,31 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, offset := parsePagination(r)
-	// The facet filter trio minus `status` (browse-scale 3.2, library-facets
-	// delta): on /items the `status` param NAME is pinned to the enrichment-
-	// lifecycle filter by the living specs (plugin-pipeline / async-
-	// enrichment's ?status= passthrough — the filter above), so the facet-
-	// status filter composes on /series only, whose `status` name is
-	// unoccupied. genre/kind compose additively as authored, conjunct with
-	// every existing param.
+	// The facet filter trio minus `status` (browse-scale 3.2): on /items the
+	// `status` param NAME is pinned to the enrichment-lifecycle filter, so
+	// facet-status composes on /series only; genre/kind add conjunctively.
 	facets := parseFacetFilters(r)
 	facets.status = ""
-	// The caller's scope (6.2): the item set, the scored composition's ledger
-	// facts, and the watched stamps all ride the requesting viewer — an
-	// invisible library contributes nothing (the store read is visibility-
-	// conjunct, so its row set is empty before any filter runs).
+	// 6.2 viewer scope — see getLibrary: an invisible library contributes
+	// nothing (the visibility-conjunct read is empty before any filter runs).
 	v, ctx := a.viewerFor(r)
-	// The display-naming namer is per-library: the naming options off the
-	// library row plus the whole-series map the composed names join against
-	// (and, under the scored default, the episode→series tags join). A
-	// MISSING library floors to the empty namer inside namerFor — the one
-	// floor every namerFor call site shares — so the browse contract for a
-	// nonexistent ?library= stays 200-with-empty-items. Any other read
-	// failure is a real failure → 500, like any other store read here.
-	// 10.4: the walk floors past this viewer's muted sources.
+	// The namer is per-library; a MISSING library floors to the empty namer in
+	// namerFor (shared by every call site), so a nonexistent ?library= stays
+	// 200-with-empty; other read failures → 500. 10.4: muted sources floored.
 	n, err := a.namerFor(ctx, id, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// The photo carve-out (recommendation-sorting, "Photo libraries keep
-	// path order regardless of score"): a photo-scanner-module library
-	// serves the store's order under the scored DEFAULT too — no computed
-	// score, tie-break, or default sort ever reorders its grid. One
-	// ModuleID comparison off the library row the namer already carries;
-	// the scoredServe block below never runs, so the wire carries no
-	// rec_score either. An explicit sort value still parses first, so an
-	// unknown sort stays a 400 on a photo library like anywhere else.
+	// Photo carve-out (recommendation-sorting): a photo-module library serves
+	// store order under the scored DEFAULT too — no score, tie-break, or
+	// default sort reorders its grid (an explicit sort still 400s if unknown).
 	if n.ModuleID == photoModuleID {
 		byPath = true
 	}
-	// A facet-filtered listing must read the FULL filtered set first: the
-	// intersection is applied in Go, so a windowed store read would cut the
-	// page before the filter drops rows (D7's score-then-window law, general-
-	// ized to filter-then-window — the design's whole-library raw scan at
-	// filter time, tolerable by budget). The tombstone serve law (3.2) rides
-	// the same walk: an EMPTY status reads active rows only — on the scored
-	// default AND the sort=path/photo opt-out alike (the window is then cut
-	// in Go below, in the store's preserved id order). An explicit ?status=
-	// on the opt-out keeps today's exact contract: the store's own id-ordered
-	// SQL window, unscored — the operator's audit window.
+	// A facet-filtered (or empty-status) listing must read the FULL set first —
+	// the intersection is applied in Go, so a windowed read would cut before
+	// filtering (filter-then-window); an explicit ?status= keeps the SQL window.
 	var items []store.Item
 	if byPath && !facets.any() && status != "" {
 		items, err = a.deps.Store.QueryItems(ctx, id, status, pathPrefix, topLevel, limit, offset, v)
@@ -1316,10 +1033,8 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// Facet filters (browse-scale 3.2): the item id set resolved cmd-side
-	// against the facet corpus, the intersection applied in Go over the
-	// fetched rows — an unknown value resolves to an empty set → 200 empty,
-	// never an error.
+	// Facet filters (browse-scale 3.2): id sets resolved cmd-side, the
+	// intersection applied in Go; an unknown value → empty set → 200 empty.
 	if facets.any() {
 		_, iids, ok := a.facetIDSet(ctx, w, id, facets.genre, facets.kind, "")
 		if !ok {
@@ -1333,9 +1048,8 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !byPath {
-		// D7 score-then-window: score the full set (facts are two batched
-		// reads), order through recs.Order's comparator, THEN cut the page —
-		// never SQL-window order under the scored default.
+		// D7 score-then-window: score the full set, order, THEN cut — never
+		// SQL-window order under the scored default.
 		facts, err := a.recsFactsFor(ctx, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1347,21 +1061,15 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 			func(d itemDTO) bool { return facts.completed(d.ID) },
 			func(d *itemDTO, s float64) { d.RecScore = s },
 		)
-		// The watched stamps (watched-states D1) ride the SAME batched facts
-		// the score composed — the ledger map lookup, no extra read.
+		// Watched stamps (D1) ride the same batched facts the score composed.
 		for i := range dtos {
 			dtos[i].Watched = facts.completed(dtos[i].ID)
 		}
 		dtos = cutPage(dtos, offset, limit)
 	} else {
-		// The watched stamps (watched-states D1) ride the opt-out branch
-		// from the LEDGER ALONE: one batched ListWatched read — no score
-		// composition (rec_score stays absent exactly as today), and the
-		// store's id-ordered window is untouched (a field stamp never
-		// reorders). The photo carve-out rides this same branch and stamps
-		// identically. A facet-filtered request fetched the FULL set (the
-		// filter-then-window law), so the page cut happens HERE — in Go,
-		// after the intersection, in the store's preserved order.
+		// Opt-out branch: watched stamps from the LEDGER ALONE (one batched
+		// read; rec_score stays absent, the store's window untouched — a field
+		// stamp never reorders; the photo carve-out stamps identically).
 		done, err := a.deps.Store.ListWatched(ctx, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1374,22 +1082,18 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if facets.any() || status == "" {
-			// A facet-filtered or empty-status request fetched the FULL set
-			// (filter-then-window; the tombstone serve law routes the empty
-			// status through the shared walk), so the page cut happens HERE —
-			// in Go, after the intersection, in the store's preserved order.
-			// A pure explicit-status window keeps its SQL cut: a Go cut here
-			// would re-window an already-windowed page.
+			// This request fetched the FULL set (filter-then-window), so the
+			// cut happens HERE in Go — a pure explicit-status window keeps
+			// its SQL cut (a Go cut would re-window an already-windowed page).
 			dtos = cutPage(dtos, offset, limit)
 		}
 	}
 	writeJSON(w, http.StatusOK, itemsResponse{Items: dtos})
 }
 
-// listLibraries: store.ListLibraries → write librariesResponse. One domain
-// call (pure delegation, INV1). No request parsing — GET /libraries lists ALL
-// configured scan roots (AC-3). store.ListLibraries returns a non-nil empty
-// slice when there are no rows, so the handler emits {"items":[]} not null.
+// listLibraries: store.ListLibraries → librariesResponse (pure delegation,
+// INV1) over ALL configured scan roots (AC-3); the store returns a non-nil
+// empty slice, so the wire carries {"items":[]} not null.
 //
 // @Summary      List scan libraries
 // @Tags         libraries
@@ -1398,8 +1102,7 @@ func (a *app) listItems(w http.ResponseWriter, r *http.Request) {
 // @Success      200 {object} librariesResponse
 // @Failure      500 {object} errorBody
 func (a *app) listLibraries(w http.ResponseWriter, r *http.Request) {
-	// The caller's scope (6.2): the list shows only the requesting viewer's
-	// visible libraries; legacy principals keep today's full list.
+	// 6.2 viewer scope — see getLibrary; legacy principals keep the full list.
 	v, ctx := a.viewerFor(r)
 	libs, err := a.deps.Store.ListLibraries(ctx, v)
 	if err != nil {
@@ -1407,15 +1110,9 @@ func (a *app) listLibraries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dtos := toLibraryDTOs(libs)
-	// Module block per row (plugin-title-enrichment D5, display-naming
-	// "Module presentation carries the resolved title chain"): the list
-	// surface resolves the presentation for EVERY listed library — the
-	// closure gets each row's own (module_id, id), so a library-scope gate
-	// shows on the list row itself. Nil closure degrades (no block on any
-	// row), mirroring the detail endpoint; a closure error is a real failure
-	// → 500. No chain overlay here (that footer-order read stays the detail
-	// endpoint's contract) — the list block exists to carry the per-library
-	// title chain, and its parsers render in module config order.
+	// Module block per row (plugin-title-enrichment D5): resolved for EVERY
+	// library (each row's own (module_id, id) — a library-scope gate shows on
+	// the row); nil closure degrades, error → 500. No chain overlay here.
 	if a.deps.ModulePresentation != nil {
 		for i := range libs {
 			mp, err := a.deps.ModulePresentation(ctx, libs[i].ModuleID, libs[i].ID)
@@ -1429,14 +1126,9 @@ func (a *app) listLibraries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, librariesResponse{Items: dtos})
 }
 
-// getItem: parse {id} → store.GetItem → write itemResponse. One domain call
-// plus the additive attachment read (element-pages 3.3): the detail view also
-// carries extra_parsers (the item's element-only parser ids in attachment
-// order) so the element page renders the element-only footer groups without a
-// second fetch. The id is a string UUID (store.Item.ID), so it is NOT
-// integer-parsed — chi.URLParam returns the raw string. A missing row
-// surfaces from store as a wrapped sql.ErrNoRows → 404 not_found
-// (INV-full-document: itemDTO.Document carries the full §3.1 document opaque).
+// getItem: {id} (string UUID — NOT integer-parsed) → store.GetItem →
+// itemResponse plus the additive extra_parsers read (element-pages 3.3);
+// missing row → wrapped sql.ErrNoRows → 404 (INV-full-document).
 //
 // @Summary      Get a single item with its full document
 // @Tags         items
@@ -1448,9 +1140,8 @@ func (a *app) listLibraries(w http.ResponseWriter, r *http.Request) {
 // @Failure      500 {object} errorBody
 func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	// The caller's scope (6.2): the row read, the parser attachments, and the
-	// scored composition's ledger facts all ride the requesting viewer — an
-	// item outside the visible set is an unknown item.
+	// 6.2 viewer scope — see getLibrary: an item outside the visible set is
+	// an unknown item.
 	v, ctx := a.viewerFor(r)
 	it, err := a.deps.Store.GetItem(ctx, id, v)
 	if err != nil {
@@ -1461,21 +1152,15 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// The tombstone serve law (tombstone-lifecycle 3.2): the item-detail GET
-	// is the SERVE boundary — a tombstoned row answers the SAME 404 a missing
-	// row does (gone, not forbidden — never 403/410, and indistinguishable
-	// from a row that was never there). store.GetItem itself stays
-	// unfiltered: internal machinery — descriptor reads, adoption, the
-	// re-scan upsert — reads tombstoned rows by design, and the write routes
-	// keep accepting tombstoned ids (PUT /progress/{id}, PUT /items/{id}/state)
-	// — ONLY this route 404s.
+	// The tombstone serve law (tombstone-lifecycle 3.2): this GET is the SERVE
+	// boundary — a tombstoned row answers the SAME 404 a missing row does;
+	// store.GetItem stays unfiltered — ONLY this route 404s.
 	if it.Status == statusDeleted {
 		writeError(w, http.StatusNotFound, "not_found", "item "+id+" not found", false)
 		return
 	}
-	// Display-naming namer (display-naming 3.1): built off the item's own
-	// library so the detail view carries the same composed display_name the
-	// list serves. A read failure is a real failure → 500.
+	// Display namer off the item's own library — the same composed
+	// display_name the list serves.
 	// 10.4: the walk floors past this viewer's muted sources.
 	n, err := a.namerFor(ctx, it.LibraryID, v.ChainMutes)
 	if err != nil {
@@ -1487,21 +1172,17 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// The same batched conversion the listings run — one row through it —
-	// so the detail view's display_name, artwork, and metadata compose
-	// EXACTLY what the grid served. The override read above feeds the namer;
-	// the conversion re-reads its own (the per-row posture itemDTOs owns).
+	// The same batched conversion the listings run — one row through it — so
+	// the detail composes EXACTLY what the grid served (the override read
+	// above feeds the namer; the conversion re-reads its own).
 	dtos, err := a.itemDTOs(ctx, []store.Item{it}, n, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
 	dto := dtos[0]
-	// The additive watched stamp (watched-states D1): the detail view gains
-	// the same recsFactsFor composition getProgress runs — the batched
-	// ledger read answers the one fact the route serves. The route never
-	// carries rec_score (the scored single-record route is getProgress);
-	// the stamp is unconditional on the wire even where the score is not.
+	// Watched stamp (D1): the same recsFactsFor composition getProgress runs —
+	// no rec_score here (that route is getProgress), the stamp unconditional.
 	facts, err := a.recsFactsFor(ctx, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1517,37 +1198,21 @@ func (a *app) getItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, itemResponse{Item: dto})
 }
 
-// mediaVariantThumb is the frame-grabber JPEG variant: the thumbnail stamped
-// into the item document's sources["frame-grabber"].thumbnail_path
-// (media-preview D2/D6). mediaVariantSidecar is the episode-linked sidecar
-// variant (serial-watch-flow D-3/D-4): the document-indexed sidecar file,
-// selected by ?n=. Any other non-empty ?variant= value is a 400.
+// mediaVariantThumb is the frame-grabber JPEG variant (media-preview D2/D6);
+// mediaVariantSidecar is the episode-linked sidecar variant (serial-watch-flow
+// D-3/D-4), selected by ?n=. Any other non-empty ?variant= value is a 400.
 const (
 	mediaVariantThumb   = "thumb"
 	mediaVariantSidecar = "sidecar"
 )
 
-// itemMedia: parse {id} + ?variant → store.GetItem → serve the document-resolved
-// file's bytes. One domain call (the read); the file IO IS the response write —
-// media-preview D2. The path is resolved ONLY from the stored document
-// (parsed.absolute_path for the original, sources["frame-grabber"].thumbnail_path
-// for the thumb variant, parsed.sidecars[n].relative_path for the sidecar
-// variant — D-4: a number into the stored list, never a path from the client);
-// no client-supplied value ever steers resolution, so an unknown id / missing
-// path fact / missing file are all 404 not_found, an unknown variant and a
-// missing/non-integer/negative sidecar index are 400 bad_request. Serving is
-// http.ServeContent (media-preview D3): Content-Type by extension, a strong
-// ETag (size+mtime — no content hashing of multi-GB files), and stdlib
-// 304/HEAD/Range handling for free. HEAD and If-None-Match are answered by
-// ServeContent from the same headers. Cache-Control is per variant
-// (continue-nextup-media D-6): the thumb is a regenerable derived artifact
-// that scans/enrich overwrites in place, so it revalidates on every fetch —
-// `private, no-cache` (the strong ETag still answers If-None-Match with 304
-// when the file is unchanged); the write-once original and sidecar keep
-// `private, immutable` (bearer-authed content must not sit in shared caches
-// either way). Non-image content carries Content-Disposition: attachment —
-// video downloads, it does not stream (media-preview D4; the deferred
-// internal/stream surface owns playback).
+// itemMedia: {id} + ?variant → the document-resolved bytes (media-preview
+// D2; the file IO IS the response write). Paths resolve ONLY from the stored
+// document (D-4: a list index, never a client path) — unknown id/fact/file →
+// 404, unknown variant/bad index → 400. http.ServeContent serves (D3) with
+// per-variant Cache-Control (D-6): thumb `private, no-cache`, write-once
+// original/sidecars `private, immutable` (bearer-authed content never sits in
+// shared caches); non-image content downloads (attachment, D4).
 //
 // @Summary      Serve an item's media bytes
 // @Tags         items
@@ -1567,8 +1232,8 @@ func (a *app) itemMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	// The caller's scope (6.2): an item outside the requesting viewer's
-	// visible set is an unknown item — the same 404 shape as a missing row.
+	// 6.2 viewer scope — see getLibrary: an item outside the visible set is
+	// an unknown item.
 	v, ctx := a.viewerFor(r)
 	it, err := a.deps.Store.GetItem(ctx, id, v)
 	if err != nil {
@@ -1581,9 +1246,9 @@ func (a *app) itemMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	var path string
 	if variant == mediaVariantSidecar {
-		// Index validation is the parse step, BEFORE any fact read: the index
-		// must be a present non-negative integer (400), then it must resolve
-		// within the stored sidecar list (404 — nothing client-side steers it).
+		// Index validation is the parse step, BEFORE any fact read: present
+		// non-negative integer (400), then it must resolve within the stored
+		// list (404).
 		n, err := strconv.Atoi(r.URL.Query().Get("n"))
 		if err != nil || n < 0 {
 			writeError(w, http.StatusBadRequest, "bad_request",
@@ -1624,9 +1289,6 @@ func (a *app) itemMedia(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(ct, "image/") {
 		disposition = "inline"
 	}
-	// Per-variant cache policy (continue-nextup-media D-6): the thumb is
-	// regenerable and overwritten in place, so it must revalidate every fetch;
-	// the write-once original and sidecars are immutable.
 	cacheControl := "private, immutable"
 	if variant == mediaVariantThumb {
 		cacheControl = "private, no-cache"
@@ -1639,12 +1301,9 @@ func (a *app) itemMedia(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, fi.ModTime(), f)
 }
 
-// documentMediaPath resolves the media file path for the requested variant from
-// the stored document — the ONLY resolution input (media-preview D2). This is a
-// targeted one-fact read in the seriesBacking idiom: the document stays opaque
-// on the wire and is never mapped to a typed model. An unreadable document or an
-// absent fact returns "" (the caller answers 404 not_found — D6's strict
-// contract; no server-side thumb→original fallback to hide the distinction).
+// documentMediaPath resolves the variant's path from the stored document —
+// the ONLY resolution input (media-preview D2), a targeted one-fact read.
+// "" on unreadable/absent (the caller 404s — no thumb→original fallback).
 func documentMediaPath(raw json.RawMessage, variant string) string {
 	var doc struct {
 		Parsed struct {
@@ -1663,19 +1322,9 @@ func documentMediaPath(raw json.RawMessage, variant string) string {
 	return doc.Parsed.AbsolutePath
 }
 
-// sidecarMediaPath resolves the n-th episode-linked sidecar file from the
-// stored document (serial-watch-flow D-4): the ONLY resolution input is the
-// document's parsed.sidecars list indexed by n — a number into the stored
-// list, exactly as variant=thumb resolves against sources["frame-grabber"];
-// never a path from the client. The absolute path derives from the episode's
-// own stored facts (library root = parsed.absolute_path minus the item's
-// relative_path, joined with the sidecar's relative_path) — the same
-// derivation the pack lane uses, so serving and packing agree. This is a
-// targeted one-fact read in the seriesBacking idiom: the document stays
-// opaque on the wire and is never mapped to a typed model. ok is false when
-// the document is unreadable or n is beyond the list (the caller answers 404
-// — an absent sidecar list and an out-of-range index are the same 404, D6's
-// strict contract; no fallback onto any other fact).
+// sidecarMediaPath resolves the n-th sidecar from parsed.sidecars (serial-watch-
+// flow D-4) — a stored-list index, never a client path, derived the same way the
+// pack lane does; ok=false on unreadable/out-of-range (the caller 404s).
 func sidecarMediaPath(it store.Item, n int) (string, bool) {
 	var doc struct {
 		Parsed struct {
@@ -1692,30 +1341,18 @@ func sidecarMediaPath(it store.Item, n int) (string, bool) {
 	return filepath.Join(root, doc.Parsed.Sidecars[n].RelativePath), true
 }
 
-// strongETag derives a strong entity tag from the file's size and nanosecond
-// mtime (media-preview D3): no content hashing of potentially multi-GB videos.
-// No W/ prefix — this is a strong validator, so If-None-Match revalidates to 304
-// on an unchanged file. Write-once scan/enrich files make collisions practically
-// impossible, and a re-scan that rewrites bytes also refreshes the mtime.
+// strongETag derives a strong validator from size + nanosecond mtime
+// (media-preview D3) — no content hashing of multi-GB files; If-None-Match
+// revalidates to 304 on an unchanged file.
 func strongETag(fi os.FileInfo) string {
 	return fmt.Sprintf(`"%d-%d"`, fi.Size(), fi.ModTime().UnixNano())
 }
 
-// listSeries: parse ?library (required integer) → store.QuerySeries → write
-// seriesListResponse. A missing or non-integer ?library= is a 400 (parse
-// step) — unlike the items listing there is no all-libraries form, because a
-// serial catalog is always browsed within one library. All statuses are
-// returned (the store's "" status pass-through); api does not validate the
-// status set (store/enrich own it).
-//
-// Ordering (recommendation-sorting D7): the scored default composes each
-// series' recs facts over batched reads — QuerySeries itself is unpaged, so
-// the full set scores directly; the per-series started/new-episode facts need
-// the library's episodes, one batched item read grouped by the parsed anchor.
-// The watched stamp (watched-states D1) derives in the same scoreSeries walk
-// under the scored default; the ?sort=path branch stamps from the ledger set
-// alone (rec_score stays absent, path order untouched). ?sort=path restores
-// today's relative_path order, unscored.
+// listSeries: ?library (required integer — a serial catalog is browsed within
+// one library) → store.QuerySeries → seriesListResponse; all statuses returned
+// ("" pass-through, unvalidated). Scored default (D7): FULL unpaged set, one
+// batched episode read; the watched stamp (D1) derives in the same walk;
+// ?sort=path restores path order, unscored.
 //
 // @Summary      List a library's series
 // @Tags         series
@@ -1742,22 +1379,17 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	facets := parseFacetFilters(r)
-	// The caller's scope (6.2): the series set, the episode facts, and the
-	// watched stamps all ride the requesting viewer — an invisible library
-	// contributes nothing (the store read is visibility-conjunct, so its row
-	// set is empty before any filter runs).
+	// 6.2 viewer scope — see getLibrary: an invisible library contributes
+	// nothing (the visibility-conjunct read is empty before any filter runs).
 	v, ctx := a.viewerFor(r)
 	series, err := a.deps.Store.QuerySeries(ctx, id, "", v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// Facet filters (browse-scale 3.2, library-facets delta): narrow to the
-	// series whose resolved About block carries EVERY requested value — the
-	// id sets resolved cmd-side against the facet corpus, the intersection
-	// applied in Go over the fetched rows (facetFilter keeps the fetched
-	// order, so sort=path and the scored default's input order both compose).
-	// An unknown value resolves to an empty set → 200 empty, never an error.
+	// Facet filters (browse-scale 3.2): id sets resolved cmd-side, the
+	// intersection applied in Go (facetFilter keeps fetched order, so both
+	// sorts compose); an unknown value → empty set → 200 empty.
 	if facets.any() {
 		sids, _, ok := a.facetIDSet(ctx, w, id, facets.genre, facets.kind, facets.status)
 		if !ok {
@@ -1765,9 +1397,8 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		}
 		series = facetFilter(series, sids, func(sr store.Series) string { return sr.ID })
 	}
-	// The display-naming namer is per-library: the naming options off the
-	// library row plus the whole-series map the composed names join against.
-	// A read failure is a real failure → 500, like any other store read here.
+	// The display namer is per-library (options + the whole-series map); a
+	// read failure → 500.
 	// 10.4: the walk floors past this viewer's muted sources.
 	n, err := a.namerFor(ctx, id, v.ChainMutes)
 	if err != nil {
@@ -1780,10 +1411,8 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !byPath {
-		// The scored default (D7): QuerySeries returns EVERY row of the
-		// library unpaged, so the full set scores directly — no window. The
-		// per-series context facts ride one batched episode read grouped by
-		// the parsed series anchor.
+		// QuerySeries returns EVERY row unpaged — the full set scores directly;
+		// per-series context rides one batched episode read.
 		facts, err := a.recsFactsFor(ctx, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1794,11 +1423,9 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 			return
 		}
-		// The watched stamps (watched-states D1) derive in the SAME
-		// scoreSeries episode walk that scores the rows — every backing
-		// episode ledgered, zero episodes never watched, zero extra reads.
-		// The stamp rides the row through scoredServe, whose partition reads
-		// the same fact off the field (one derivation, two consumers).
+		// Watched stamps (D1) derive in the SAME scoreSeries walk that scores
+		// — every backing episode ledgered, zero episodes never watched, zero
+		// extra reads.
 		scores, watched := scoreSeries(n, series, eps, facts)
 		for i := range dtos {
 			if watched[i] {
@@ -1812,11 +1439,8 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 			func(d *seriesDTO, s float64) { d.RecScore = s },
 		)
 	} else {
-		// The watched stamps (watched-states D1) ride the opt-out branch
-		// from the LEDGER ALONE — no score composition (rec_score stays
-		// absent exactly as today) and the store's path order untouched (a
-		// field stamp never reorders). The same all-episodes law reads the
-		// set: a series stamps only when every backing episode is in it.
+		// Opt-out branch: stamps from the LEDGER ALONE — no score, path order
+		// untouched (a field stamp never reorders); the same all-episodes law.
 		done, err := a.deps.Store.ListWatched(ctx, v)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1837,14 +1461,11 @@ func (a *app) listSeries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, seriesListResponse{Items: dtos})
 }
 
-// libraryEpisodes reads the library's FULL ACTIVE item set (one batched read —
-// the batched-read rule bars per-series episode queries) and groups the rows
-// by their parsed series anchor: the per-series started/new-episode facts the
-// series scoring composes from. The empty status it passes is the shared
-// walk's tombstone serve seam (tombstone-lifecycle 3.2) — a vanished episode
-// feeds no per-series fact and stamps no Watched off its dead ledger row
-// (list/detail watched-stamp consistency: the item detail 404s, the series
-// list agrees).
+// libraryEpisodes reads the library's FULL ACTIVE item set (one batched read
+// — the batched-read rule bars per-series queries) grouped by parsed series
+// anchor. The empty status is the shared walk's tombstone serve seam
+// (tombstone-lifecycle 3.2): a vanished episode feeds no fact and stamps no
+// Watched off its dead ledger row.
 func (a *app) libraryEpisodes(ctx context.Context, v access.Viewer, libraryID int64) (map[string][]store.Item, error) {
 	items, err := a.allFilteredItems(ctx, v, libraryID, "", "", false)
 	if err != nil {
@@ -1853,13 +1474,9 @@ func (a *app) libraryEpisodes(ctx context.Context, v access.Viewer, libraryID in
 	return episodesBySeries(items), nil
 }
 
-// getSeries: parse {id} → store.GetSeries → write seriesResponse. The id is
-// the opaque ser_ string id, so it is NOT integer-parsed — chi.URLParam
-// returns the raw string. A missing row surfaces from store as a wrapped
-// sql.ErrNoRows → 404 not_found. The serial-level document is returned FULL
-// and opaque (INV-full-document). The additive watched stamp (watched-states
-// D1) composes the same batched facts the scored list runs, so the detail
-// view carries wire parity with its grid row.
+// getSeries: {id} (opaque ser_ string — NOT integer-parsed) → store.GetSeries
+// → seriesResponse; document FULL and opaque (INV-full-document); missing row
+// → 404; watched stamp (D1) = same batched facts as the grid (wire parity).
 //
 // @Summary      Get a single series with its full serial-level document
 // @Tags         series
@@ -1871,8 +1488,8 @@ func (a *app) libraryEpisodes(ctx context.Context, v access.Viewer, libraryID in
 // @Failure      500 {object} errorBody
 func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	// The caller's scope (6.2): the row read and the backing-episode read ride
-	// the requesting viewer — a series outside the visible set is unknown.
+	// 6.2 viewer scope — see getLibrary: a series outside the visible set is
+	// unknown.
 	v, ctx := a.viewerFor(r)
 	sr, err := a.deps.Store.GetSeries(ctx, id, v)
 	if err != nil {
@@ -1883,27 +1500,23 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// Display-naming namer (display-naming 3.1): built off the series' own
-	// library so the detail view carries the same display_name the list
-	// serves. A read failure is a real failure → 500.
+	// Display namer off the series' own library — the same display_name the
+	// list serves.
 	// 10.4: the walk floors past this viewer's muted sources.
 	n, err := a.namerFor(ctx, sr.LibraryID, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// The same batched conversion the listing runs — one row through it —
-	// so the detail view composes exactly what the grid served.
+	// The same batched conversion the listing runs — one row through it — so
+	// the detail composes exactly what the grid served.
 	dtos, err := a.seriesDTOs(ctx, []store.Series{sr}, n, v.ChainMutes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// The watched stamp (watched-states D1): the detail view composes the
-	// same facts the scored list runs — wire parity with the grid row — and
-	// stamps the all-episodes law over the series' backing episodes (one
-	// batched store read). A partially-watched or episode-less series stamps
-	// nothing (true-only omitempty).
+	// Watched stamp (D1): the all-episodes law over the backing episodes (one
+	// batched read); a partially-watched or episode-less series stamps nothing.
 	facts, err := a.recsFactsFor(ctx, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1920,14 +1533,9 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, seriesResponse{Series: dtos[0]})
 }
 
-// seriesEpisodes: parse {id} → store.GetSeries → store.QueryItemsBySeries →
-// write itemsResponse. Two domain calls, still pure delegation (the second
-// needs the loaded row: the backing kind is an explicit store argument — the
-// store never reads documents). The backing comes from the series document's
-// `parsed.backing` marker fact (serials-library design.md §Interfaces §1) via
-// the one-fact read in seriesBacking; episodes are emitted in the SAME item
-// wire shape as GET /items (mirrors itemDTO delegation). An unknown series id
-// is 404 not_found, identical to getSeries.
+// seriesEpisodes: {id} → store.GetSeries → QueryItemsBySeries → itemsResponse.
+// Two domain calls, still pure delegation — backing kind is an explicit store
+// argument (seriesBacking); the wire shape matches GET /items; unknown id → 404.
 //
 // @Summary      List a series' episode items
 // @Tags         series
@@ -1939,8 +1547,8 @@ func (a *app) getSeries(w http.ResponseWriter, r *http.Request) {
 // @Failure      500 {object} errorBody
 func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	// The caller's scope (6.2): the series row, its episodes, and the ledger
-	// facts all ride the requesting viewer.
+	// 6.2 viewer scope — see getLibrary: the series row, its episodes, and the
+	// ledger facts all ride the requesting viewer.
 	v, ctx := a.viewerFor(r)
 	sr, err := a.deps.Store.GetSeries(ctx, id, v)
 	if err != nil {
@@ -1956,9 +1564,8 @@ func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// Display-naming namer (display-naming 3.1), built off the series' own
-	// library — the episodes' composed names join against this library's
-	// naming options and series map. A read failure is a real failure → 500.
+	// Display namer off the series' own library — the episodes' composed
+	// names join against this library's options and series map.
 	// 10.4: the walk floors past this viewer's muted sources.
 	n, err := a.namerFor(ctx, sr.LibraryID, v.ChainMutes)
 	if err != nil {
@@ -1970,10 +1577,8 @@ func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
 		return
 	}
-	// The watched stamps (watched-states D1): the episode table gains the
-	// same recsFactsFor composition the single-item route runs — each row
-	// stamps from the batched ledger facts. Narrative order stays (a field
-	// stamp never reorders) and the route serves no rec_score.
+	// Watched stamps (D1): each row stamps from the batched ledger facts;
+	// narrative order stays (a field stamp never reorders); no rec_score here.
 	facts, err := a.recsFactsFor(ctx, v)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
@@ -1985,10 +1590,8 @@ func (a *app) seriesEpisodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, itemsResponse{Items: dtos})
 }
 
-// adminStatus: deps.Status → write statusResponse. One closure call (pure
-// delegation, INV1). A nil Deps.Status means the endpoint is disabled (the api
-// package never imports plugin/enrich, so a nil closure is the disabled state)
-// → 503 unavailable (INV-nil-safe). A non-nil closure returning an error → 500.
+// adminStatus: deps.Status → statusResponse (pure delegation, INV1). A nil
+// closure IS the disabled state → 503 (INV-nil-safe); a closure error → 500.
 //
 // @Summary      Admin liveness snapshot (plugins + enrich queue)
 // @Tags         admin
@@ -2028,11 +1631,9 @@ func parsePagination(r *http.Request) (limit, offset int) {
 	return limit, offset
 }
 
-// cutPage applies offset/limit in Go over a fully-narrowed row set: the
-// scored default's D7 window (score-then-window — no page can outrank page
-// 1) and the facet-filtered path branch's window (browse-scale 3.2 — the
-// intersection runs before the cut, so no matching row is lost to a page
-// boundary). An offset past the end serves an empty page.
+// cutPage applies offset/limit in Go over a fully-narrowed set: the D7
+// score-then-window and the filter-then-window branch (the intersection runs
+// before the cut, so no matching row is lost to a page boundary).
 func cutPage[T any](rows []T, offset, limit int) []T {
 	if offset > len(rows) {
 		offset = len(rows)
@@ -2043,19 +1644,9 @@ func cutPage[T any](rows []T, offset, limit int) []T {
 	return rows[offset:]
 }
 
-// parsePathFilter reads the optional folder filters of GET /items (the photos
-// chip lane): path_prefix keeps only items under that folder (any depth),
-// top_level=true only "/"-free paths. Validation and normalization live HERE
-// so the store receives a pre-trimmed prefix it can trust blindly:
-//
-//   - leading/trailing slashes and surrounding spaces are trimmed ("/ecchi/"
-//     and " /ecchi " both mean "ecchi");
-//   - an interior empty segment ("a//b"), "." or ".." is a 400 bad_request —
-//     a folder prefix cannot walk the tree;
-//   - path_prefix together with top_level is contradictory — 400, never a
-//     silent precedence.
-//
-// The returned message is "" when the request is fine.
+// parsePathFilter normalizes the folder filters (photos chip lane): trims
+// slashes/spaces, 400s on interior-empty/./.. segments and the prefix+top_level
+// contradiction; "" message = request fine, store gets a pre-trimmed prefix.
 func parsePathFilter(r *http.Request) (pathPrefix string, topLevel bool, bad string) {
 	topLevel = r.URL.Query().Get("top_level") == "true"
 	raw := strings.TrimSpace(r.URL.Query().Get("path_prefix"))
@@ -2077,29 +1668,17 @@ func parsePathFilter(r *http.Request) (pathPrefix string, topLevel bool, bad str
 	return pathPrefix, false, ""
 }
 
-// itemDTOs performs the boundary struct conversion (INV4): every store.Item
-// becomes an itemDTO before it leaves the package, each row carrying its
-// stored title override (serial-watch-flow 2.1 — the per-row read is the
-// MVP posture; design defers batching to implementation latitude), its
-// server-composed display name through the namer threaded in from the
-// handler (display-naming 3.1 — the same seam stamps title_override per
-// row), and its composed artwork — an item resolving neither an override
-// nor an own poster inherits its owning series' (artwork, the lazy
-// series-fallback leg below). When a template is active and the row
-// resolves to a series, the series' stored override is point-read beside
-// the row's own, so a series rename reaches the composed name while the
-// item's own override still wins. A store failure on any override read
-// propagates (500 at the call site).
+// itemDTOs performs the boundary conversion (INV4): per-row stored title
+// override, composed display name (display-naming 3.1), composed artwork
+// (override > own poster > owning series); store failures propagate (500).
 func (a *app) itemDTOs(ctx context.Context, items []store.Item, n naming.Namer, mutes map[string]bool) ([]itemDTO, error) {
 	rows := make([]artRow, len(items))
 	for i, it := range items {
 		rows[i] = artRow{id: it.ID, path: it.RelativePath, doc: it.Document}
 	}
 	// The artwork compose's lazy series-fallback leg: ONE library-scoped
-	// series read per call, made by artworkFor only when some item actually
-	// resolved absent. Every itemDTOs caller addresses one library (the
-	// list's ?library=, the detail's own row, the episodes route's series),
-	// so the first row's library keys the read.
+	// series read per call, made only when some item resolved absent (every
+	// caller addresses one library — the first row keys the read).
 	libID := int64(0)
 	if len(items) > 0 {
 		libID = items[0].LibraryID
@@ -2107,9 +1686,8 @@ func (a *app) itemDTOs(ctx context.Context, items []store.Item, n naming.Namer, 
 	seriesOf := func(ctx context.Context) ([]store.Series, error) {
 		return a.deps.Store.QuerySeries(ctx, libID, "", access.System())
 	}
-	// The mute floor (10.3): mutes is the calling Viewer's ChainMutes,
-	// threaded in by the handler — a source muted for this viewer composes
-	// no artwork in this response; storage and other viewers are untouched.
+	// Mute floor (10.3): a source muted for this viewer composes no artwork
+	// in this response; storage and other viewers are untouched.
 	artwork, err := a.artworkFor(ctx, artKindItem, rows, n, seriesOf, mutes)
 	if err != nil {
 		return nil, err
@@ -2129,11 +1707,9 @@ func (a *app) itemDTOs(ctx context.Context, items []store.Item, n naming.Namer, 
 	return out, nil
 }
 
-// toItemDTO maps a single store.Item to its wire shape; override is the
-// entity's stored title override ("" when unset), artwork its composed
-// poster URL ("" = absent, the field omitted), and n the request's namer,
-// whose itemName chain stamps Display (display-naming 3.1). Factored out so
-// the list and detail handlers share one conversion (DRY).
+// toItemDTO maps one store.Item to its wire shape; override "" = unset,
+// artwork "" = absent; n's itemName chain stamps Display (display-naming
+// 3.1). Shared by list and detail (DRY).
 func toItemDTO(it store.Item, override, artwork string, n naming.Namer) itemDTO {
 	return itemDTO{
 		ID:            it.ID,
@@ -2177,13 +1753,9 @@ func toLibraryDTO(l store.Library) libraryDTO {
 	}
 }
 
-// seriesDTOs performs the boundary struct conversion (INV4): every
-// store.Series becomes a seriesDTO before it leaves the package, each row
-// carrying its stored title override (serial-watch-flow 2.1) and its
-// server-composed display name through the namer threaded in from the
-// handler (display-naming 3.1 — the same seam stamps title_override per
-// row). A store failure on any override read propagates (500 at the call
-// site).
+// seriesDTOs performs the boundary conversion (INV4): per-row stored title
+// override and composed display name (display-naming 3.1); no series fallback
+// leg — artwork absence is honest. Store failures propagate.
 func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n naming.Namer, mutes map[string]bool) ([]seriesDTO, error) {
 	rows := make([]artRow, len(srs))
 	for i, sr := range srs {
@@ -2204,11 +1776,8 @@ func (a *app) seriesDTOs(ctx context.Context, srs []store.Series, n naming.Namer
 	return out, nil
 }
 
-// toSeriesDTO maps a single store.Series to its wire shape; override is the
-// entity's stored title override ("" when unset), artwork its composed
-// poster URL ("" = absent, the field omitted), and n the request's namer,
-// whose seriesName chain stamps Display (display-naming 3.1). Factored out
-// so the list and detail responses share one conversion (DRY).
+// toSeriesDTO maps one store.Series to its wire shape; n's seriesName chain
+// stamps Display (display-naming 3.1). Shared by list and detail (DRY).
 func toSeriesDTO(sr store.Series, override, artwork string, n naming.Namer) seriesDTO {
 	return seriesDTO{
 		ID:            sr.ID,
@@ -2225,14 +1794,9 @@ func toSeriesDTO(sr store.Series, override, artwork string, n naming.Namer) seri
 	}
 }
 
-// seriesBacking extracts the `parsed.backing` marker fact from a series
-// document (serials-library design.md §Interfaces §1) — the one fact the
-// episodes route needs, because store.QueryItemsBySeries takes the backing as
-// an explicit argument and the store itself never reads documents. The
-// document stays opaque otherwise: this is a targeted one-fact read, never a
-// typed document mapping (the wire DTO carries the document raw). An absent or
-// unreadable marker falls back to the directory backing — the dominant kind
-// for serial libraries.
+// seriesBacking extracts the `parsed.backing` marker fact (serials-library
+// design §Interfaces §1) — the one fact the episodes route needs (the store
+// never reads documents); absent/unreadable → directory backing fallback.
 func seriesBacking(raw json.RawMessage) string {
 	var doc struct {
 		Parsed struct {
@@ -2245,8 +1809,7 @@ func seriesBacking(raw json.RawMessage) string {
 	return doc.Parsed.Backing
 }
 
-// toProgressDTO maps a single store.PlaybackProgress to its wire shape (INV4).
-// The store already carries UpdatedAt as the raw RFC3339 TEXT, so this is a
+// toProgressDTO maps one store.PlaybackProgress to its wire shape (INV4) —
 // plain field copy.
 func toProgressDTO(p store.PlaybackProgress) progressDTO {
 	return progressDTO{

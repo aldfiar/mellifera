@@ -14,9 +14,8 @@ import (
 const protocolVersion = 1
 
 // HandshakeConfig carries the magic-cookie pair the core sets in the plugin's
-// environment plus the identity the plugin advertises. The core and the
-// plugin must agree on the cookie pair for go-plugin to launch; a mismatch is
-// fatal (go-plugin prints a human-friendly message and exits non-zero).
+// environment plus the identity the plugin advertises; a cookie mismatch is
+// fatal at launch (go-plugin exits non-zero).
 type HandshakeConfig struct {
 	MagicCookieKey   string
 	MagicCookieValue string
@@ -25,23 +24,15 @@ type HandshakeConfig struct {
 	PluginVersion    string
 }
 
-// Serve is the plugin-process entrypoint. It validates the magic cookie,
-// registers the provided capability plugins as a go-plugin PluginSet, and
-// serves them over gRPC. It never returns in normal operation: go-plugin owns
-// the handshake, the gRPC server lifecycle, and process signal handling.
-//
-// Plugins are keyed by their position index (as a string) so the core's
-// client dispenses the same key on its side. Signal handling is delegated to
-// go-plugin: it intercepts SIGINT so an interactive Ctrl-C does not abort a
-// plugin mid-handshake, and clean shutdown is parent-driven -- the core calls
-// the plugin's Shutdown RPC, then sends SIGTERM with a grace period
-// (architecture §7.4).
-//
-// The element type is plugin.Plugin (not plugin.GRPCPlugin as the task spec's
-// B3/contracts §9 sketch): go-plugin's PluginSet is map[string]Plugin, and
-// GRPCPlugin does not implement Plugin in go-plugin v1.8. ScannerPlugin
-// implements both (via the plugin.NetRPCUnsupportedPlugin embed), so every
-// call site of the form Serve(cfg, &ScannerPlugin{...}) compiles unchanged.
+// Serve is the plugin-process entrypoint: it validates the magic cookie and
+// serves the provided capability plugins over gRPC, never returning in normal
+// operation (go-plugin owns the handshake, the server lifecycle, and signals —
+// SIGINT is intercepted so a Ctrl-C does not abort a mid-handshake plugin;
+// clean shutdown is parent-driven, arch §7.4). Plugins are keyed by their
+// position index so the core's client dispenses the same key. The element type
+// is plugin.Plugin, not plugin.GRPCPlugin (GRPCPlugin does not implement
+// Plugin in go-plugin v1.8); ScannerPlugin satisfies both via the
+// NetRPCUnsupportedPlugin embed, so Serve(cfg, &ScannerPlugin{...}) compiles.
 func Serve(cfg HandshakeConfig, plugins ...plugin.Plugin) {
 	set := make(plugin.PluginSet, len(plugins))
 	for i, p := range plugins {

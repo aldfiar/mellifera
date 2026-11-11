@@ -25,9 +25,6 @@
 //   - Non-ASCII EXIF strings (e.g. a Cyrillic camera Model) are carried verbatim
 //     (exiftool emits UTF-8 JSON; strings are not re-encoded).
 //
-// PUBLIC API  (package main has no exported symbols; main wires sdk.Serve)
-//   - func main()
-//
 // INVARIANTS
 //   - STATELESS SUBPROCESS (arch §0.2). No state between RPCs; all output is a pure
 //     function of the request. A crash loses no in-flight work (the core replays via
@@ -45,7 +42,8 @@
 //     shell — golang-security; a hostile filename cannot inject). Mirrors
 //     plugins/base-scanner/ffprobe.go.
 //   - SOFT-FAIL. EVERY exiftool failure (missing binary / non-zero exit / timeout /
-//     non-JSON / empty array) yields EMPTY metadata + a Warning (NOT a gRPC error) ->
-//     the B1 queue's no_data terminal -> cooldown -> settle (AC-6). Only a cancelled
-//     context is a hard error.
+//     non-JSON / empty array) yields EMPTY metadata + a Warning (NOT a gRPC error,
+//     never ConvertResult.Error) -> the B1 queue's no_data terminal -> cooldown ->
+//     settle (AC-6). Only a cancelled context is a hard error, and only the caller
+//     surfaces it (the helpers return warnings, not errors).
 package main

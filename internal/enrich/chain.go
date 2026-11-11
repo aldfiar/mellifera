@@ -158,24 +158,19 @@ type sourceResult struct {
 }
 
 // runSource drives the full 4-RPC chain for one metadata_source binding:
-// Match -> BuildRequest -> fetch -> Convert -> Merge, serial (D8). doc is the
-// item document being enriched: its identifiers feed Match.existing_ids (the
-// identity anchor, enrichment D-4 — first enrichment sees none). The fetch
-// between BuildRequest and Convert executes the plugin's RequestSpec
-// server-side (mode A, enrichment D-5); a spec without a url template is
-// local (no fetch, the former stub behavior). gate paces the fetch (nil = unpaced).
-// scope is the deferred-handoff scope (nil = relay disabled): the call site
-// owns the relay policy (client-relayed-fetch D4) — consult before fetching,
+// Match -> BuildRequest -> fetch -> Convert -> Merge, serial (D8). doc's
+// identifiers feed Match.existing_ids (the identity anchor, enrichment D-4).
+// The fetch executes the plugin's RequestSpec server-side (mode A, D-5); a
+// spec without a url template is local. gate paces the fetch (nil = unpaced).
+// scope (nil = relay disabled) is the deferred-handoff scope — the call site
+// owns the relay policy (client-relayed-fetch D4): consult before fetching,
 // and a network-class failure (primary OR extra) hands the whole plan to the
-// relay and ends the run deferred. requiredSecrets is the Deps.RequiredSecrets
-// closure (nil-safe: nil names no plugin's secrets — every existing source
-// byte-identical): a SERVER binding whose declared names all resolve against
-// its Options JSON runs the mode-only SERVER AuthContext (tmdb-enrichment
-// D4/flag 3 — the values NEVER ride to the plugin, substitution stays
-// core-side) and resolves server-scoped refs in the fetch and the relay plan;
-// otherwise the empty AuthContext of today, and any redacted_ref stays the
-// spec-class errRedactedRef. On any per-source failure the chain soft-fails
-// (AC-6); only a cancelled context is a hard failure (handled by Enrich).
+// relay and ends the run deferred. requiredSecrets (nil-safe) drives
+// serverAuth: a fully resolved SERVER binding runs the mode-only SERVER
+// AuthContext (tmdb-enrichment D4 — values never ride to the plugin,
+// substitution stays core-side), otherwise the empty AuthContext and any
+// redacted_ref stays the spec-class errRedactedRef. Per-source failure
+// soft-fails (AC-6); only ctx cancellation is hard.
 func runSource(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate, scope *relayScope, requiredSecrets func(pluginID string) []string) sourceResult {
 	start := stamp()
 	if !src.Enabled {

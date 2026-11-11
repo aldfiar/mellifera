@@ -46,31 +46,22 @@ const upgradeTVConfigSQL = `UPDATE modules
   WHERE id = 'tv' AND schema_version < 2`
 
 // upgradeSerialConfigSQL promotes an existing serial row from config v1 to v2
-// (enrichment D-7): the same guarded-UPDATE pattern as the tv upgrade —
-// INSERT OR IGNORE never rewrites an existing row, so the shikimori binding
-// ships as this schema-guarded UPDATE, idempotent and scoped to the serial row
-// alone (no other module row is touched).
+// (enrichment D-7): the tv upgrade's guarded-UPDATE pattern, scoped to the
+// serial row alone.
 const upgradeSerialConfigSQL = `UPDATE modules
   SET config_json = ?, schema_version = 2, updated_at = ?
   WHERE id = 'serial' AND schema_version < 2`
 
-// upgradeSerialConfigV3SQL promotes an existing serial row from config v2 to
-// v3 (display-naming): the same guarded-UPDATE pattern as the v1→v2 upgrade —
-// INSERT OR IGNORE never rewrites an existing row, so the display.item_name
-// template ships as this schema-guarded UPDATE, idempotent and scoped to the
-// serial row alone. Open runs it AFTER the v2 upgrade, so a pre-shikimori v1
-// row passes through both and lands on v3.
+// upgradeSerialConfigV3SQL promotes the serial row from v2 to v3
+// (display-naming): the same guarded-UPDATE pattern, run by Open AFTER the
+// v2 upgrade so a pre-shikimori v1 row passes through both.
 const upgradeSerialConfigV3SQL = `UPDATE modules
   SET config_json = ?, schema_version = 3, updated_at = ?
   WHERE id = 'serial' AND schema_version < 3`
 
-// upgradeSerialConfigV4SQL promotes an existing serial row from config v3 to
-// v4 (tmdb-enrichment D7): the same guarded-UPDATE pattern as the v2/v3
-// upgrades — INSERT OR IGNORE never rewrites an existing row, so the tmdb
-// binding ships as this schema-guarded UPDATE, idempotent and scoped to the
-// serial row alone (no other module row is touched). Open runs it AFTER the
-// v3 upgrade, so a pre-shikimori v1 row passes through all three and lands
-// on v4.
+// upgradeSerialConfigV4SQL promotes the serial row from v3 to v4
+// (tmdb-enrichment D7): the same guarded-UPDATE pattern, run AFTER the v3
+// upgrade so a pre-shikimori v1 row passes through all three and lands on v4.
 const upgradeSerialConfigV4SQL = `UPDATE modules
   SET config_json = ?, schema_version = 4, updated_at = ?
   WHERE id = 'serial' AND schema_version < 4`
@@ -95,23 +86,16 @@ const selectModuleRowSQL = `SELECT media_type, schema_version, config_json
 // which an options edit must never cause).
 const setBindingOptionsSQL = `UPDATE modules SET config_json = ? WHERE id = ?`
 
-// tvConfigJSON is the architecture §2.4.1 TV module config, as JSON. The
-// metadata_sources chain is now modeled into Module.MetadataSources: tv-parser
-// (priority 1) is the local parser that runs in Phase A; kinopoisk (2) and
-// tmdb (3) are the designed external enrichers, soft-failed in Phase A because
-// their plugins are not loaded (AC-6). Schema v2 (continue-nextup-media D-7)
-// binds frame-grabber (4) after the unloaded slots — a local plugin, so film
-// documents gain a thumbnail namespace like serial episodes already have
-// (priority 4 keeps the seeded kinopoisk/tmdb numbering stable).
-// document_schema is omitted because document validation is a deferred
-// feature and module does not read it. The scanner binding is what scan
-// resolves via Get("tv"). display_name carries Russian first-class
-// (arch §1.2). tv-parser and frame-grabber are local: no auth_mode.
-// Presentation declarations are CONFIG, not code (element-pages D-1, AC-4):
-// display_fields per binding is the footer render order, identity_fields per
-// module is the mandatory identity block — both media-type literals live only
-// here. kinopoisk/tmdb declare none: seeded-but-unloaded slot groups render
-// their pill only.
+// tvConfigJSON is the architecture §2.4.1 TV module config, as JSON: tv-parser
+// (priority 1) is the local Phase A parser; kinopoisk (2) and tmdb (3) are the
+// designed external enrichers, soft-failed in Phase A while their plugins are
+// unloaded (AC-6); schema v2 (continue-nextup-media D-7) binds frame-grabber
+// (4) after the unloaded slots. document_schema is omitted (validation is a
+// deferred feature; module does not read it); the scanner binding is what
+// scan resolves via Get("tv"). display_name carries Russian first-class
+// (arch §1.2); presentation declarations are CONFIG, not code (element-pages
+// D-1, AC-4) — kinopoisk/tmdb declare none: seeded-but-unloaded slot groups
+// render their pill only.
 const tvConfigJSON = `{
   "id": "tv",
   "schema_version": 2,
@@ -160,22 +144,15 @@ const tvConfigJSON = `{
   }
 }`
 
-// imageConfigJSON is the architecture §2.4.1 image module config, as JSON. It is a
-// CONFIG ENTITY (INV1/INV2) — data, not code — mirroring tvConfigJSON. It binds
-// base-scanner (scanner) + image-enricher (priority 1) under media_type "image",
-// schema_version 1. image-enricher is a LOCAL EXIF parser: no auth_mode (so it is
-// queueable per D-Q1) and NO filename-date fallback (images have no reliable
-// filename convention analogous to TV's SxxExx — D-4; a no-EXIF image keeps base
-// info only). exclude_patterns is advisory (base-scanner defers enforcement,
-// walk.go:48-49) and intentionally does NOT exclude *.jpg. No display block —
-// image has no display-priority sources in B2. display_name carries Russian
-// first-class (arch §1.2). One metadata_source (image-enricher) — RAW/external
-// enrichers are deferred (B3). Presentation declarations are CONFIG, not code
-// (element-pages D-1, AC-4): base-scanner carries the same parser declaration
-// as the tv module (absent pairs are skipped silently by the renderer),
-// image-enricher declares the composite display order (camera = make + model,
-// dimensions = width×height — joined by the renderer), identity_fields names
-// the mandatory identity block.
+// imageConfigJSON is the architecture §2.4.1 image module config, as JSON —
+// a CONFIG ENTITY (INV1/INV2) mirroring tvConfigJSON: base-scanner (scanner)
+// + image-enricher (priority 1), schema_version 1. image-enricher is a LOCAL
+// EXIF parser: no auth_mode (queueable per D-Q1) and NO filename-date
+// fallback (images have no SxxExx-analogous convention — D-4). exclude_patterns
+// is advisory (base-scanner defers enforcement) and intentionally does NOT
+// exclude *.jpg. No display block — image has no display-priority sources in
+// B2; RAW/external enrichers are deferred (B3). display_name carries Russian
+// first-class (arch §1.2).
 const imageConfigJSON = `{
   "id": "image",
   "schema_version": 1,
@@ -210,35 +187,20 @@ const PluginIDTmdb = "tmdb"
 
 // serialConfigJSON is the serials-library module config, as JSON — a CONFIG
 // ENTITY (INV1/INV2) mirroring the tv seed shape. It binds serial-scanner
-// (scanner) with the structure knob "series-directories" (design.md §Interfaces
-// §3 — the plugin treats any other value as fatal config error) + serial-parser
-// (priority 1) and frame-grabber (priority 2) as the local metadata_source
-// chain, under media_type "serial". Schema v2 (enrichment D-7) binds shikimori
-// (priority 3) after the local pair — the first EXTERNAL source: no auth_mode
-// (the anonymous MVP → queueable per D-Q1), display_fields declared from its
-// RU-first namespace footer. Schema v3 (display-naming) adds the display
-// block's item_name — the per-episode element naming template
-// "{title} · S{season}E{episode}" (U+00B7 separator, byte-matching the SPA
-// compose) — the first display key parseModule modeled (decoded verbatim into
-// Module.ItemName). Schema v4 (tmdb-enrichment D7) binds tmdb (priority 4,
-// SERVER auth — the core-resolved store api key) after shikimori: like the tv
-// seed's tmdb slot it declares no display_fields (unloaded seeded slot groups
-// render their pill only), and it contributes the description/cast/episode
-// groups only — the display block stays byte-unchanged, shikimori keeps
-// naming both title/rating priority lists.
-// display_name carries Russian first-class (arch §1.2).
-// The display block is the module's first (mirroring the tv keys):
-// language_preference is RU-first, and shikimori is the only external
-// title/rating source, so it solely names both priority lists — since
-// plugin-title-enrichment language_preference and title_source_priority are
-// Go-consumed view inputs (Module.LanguagePreference / Module.TitleSourcePriority);
-// the remaining display keys stay SPA-consumed config
-// (element-pages D-1, AC-4: presentation declarations are CONFIG, not code).
-// The per-binding display_fields stay the footer render orders (serial-parser
-// declares the title literal it actually writes — its season_episode is the
-// composite, resolved label-aware in the renderer; frame-grabber's fields
-// resolve from its namespace), identity_fields per module (episode names the
-// episode-name slot case).
+// with the structure knob "series-directories" (design.md §Interfaces §3 —
+// the plugin treats any other value as fatal config error), serial-parser (1)
+// + frame-grabber (2) as the local metadata_source chain, shikimori (3, v2 —
+// enrichment D-7: the first EXTERNAL source, no auth_mode, queueable per
+// D-Q1) and tmdb (4, v4 — tmdb-enrichment D7: SERVER auth, no display_fields,
+// description/cast/episode groups only, display block byte-unchanged). The
+// v3 display block (display-naming) adds item_name "{title} · S{season}E{episode}"
+// — byte-matching the SPA compose — decoded verbatim into Module.ItemName.
+// display_name carries Russian first-class (arch §1.2); shikimori is the only
+// external title/rating source, so it solely names both priority lists, which
+// plugin-title-enrichment consumes as Go view inputs — the remaining display
+// keys and the per-binding display_fields (the footer render orders) stay
+// SPA-consumed config (element-pages D-1, AC-4: presentation declarations are
+// CONFIG, not code).
 
 const serialConfigJSON = `{
   "id": "serial",
@@ -356,7 +318,7 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	}
 	// v1→v2 promotion for stores seeded before the frame-grabber binding
 	// existed (D-7): the INSERT OR IGNORE above is a no-op on them, this
-	// UPDATE is the actual migration. Same params, deterministic timestamp.
+	// UPDATE is the actual migration (same params, deterministic timestamp).
 	if _, err := db.ExecContext(ctx, upgradeTVConfigSQL, tvConfigJSON, seedCreatedAt); err != nil {
 		return nil, fmt.Errorf("module: upgrade tv v2: %w", err)
 	}
@@ -377,23 +339,17 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	); err != nil {
 		return nil, fmt.Errorf("module: seed serial: %w", err)
 	}
-	// v1→v2 promotion for stores seeded before the shikimori binding existed
-	// (enrichment D-7): the INSERT OR IGNORE above is a no-op on them, this
-	// guarded UPDATE is the actual migration — the tv upgrade pattern, scoped
-	// to the serial row alone.
+	// v1→v2 promotion (enrichment D-7) — the tv upgrade's mechanism, scoped
+	// to the serial row.
 	if _, err := db.ExecContext(ctx, upgradeSerialConfigSQL, serialConfigJSON, seedCreatedAt); err != nil {
 		return nil, fmt.Errorf("module: upgrade serial v2: %w", err)
 	}
-	// v2→v3 promotion for stores seeded before display.item_name existed
-	// (display-naming): the same guarded-UPDATE chain step, run after the v2
-	// promotion so a pre-shikimori v1 row passes through both upgrades.
+	// v2→v3 promotion (display-naming) — the chain step after the v2 promotion.
 	if _, err := db.ExecContext(ctx, upgradeSerialConfigV3SQL, serialConfigJSON, seedCreatedAt); err != nil {
 		return nil, fmt.Errorf("module: upgrade serial v3: %w", err)
 	}
-	// v3→v4 promotion for stores seeded before the tmdb binding existed
-	// (tmdb-enrichment D7): the same guarded-UPDATE chain step, run after the
-	// v3 promotion so a pre-shikimori v1 row passes through all three upgrades
-	// and lands on v4.
+	// v3→v4 promotion (tmdb-enrichment D7) — the chain step after the v3
+	// promotion.
 	if _, err := db.ExecContext(ctx, upgradeSerialConfigV4SQL, serialConfigJSON, seedCreatedAt); err != nil {
 		return nil, fmt.Errorf("module: upgrade serial v4: %w", err)
 	}

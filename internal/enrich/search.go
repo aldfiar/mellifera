@@ -48,19 +48,14 @@ const relaySearchBudget = 60 * time.Second
 const relaySearchPollInterval = 250 * time.Millisecond
 
 // resolveServerSecrets resolves the plugin's binding secrets through the ONE
-// serverAuth iteration over its module bindings (chain.go — no divergent
-// resolution): a SERVER binding whose declared secrets all resolve against its
-// Options JSON answers (values, true); anything else answers (nil, false).
-// The vacuous cases keep the pre-SERVER shape — a nil Deps.RequiredSecrets or
-// a plugin declaring no names answers (nil, true), every existing source
-// byte-identical. The FIRST resolving binding wins: the interactive search is
-// a source-level action and the picked id re-derives wherever a configured
-// binding serves the row. Its two consumers share the answer, so they can
-// never disagree about "configured": sourceConfigured keeps only the boolean
-// (the pre-action check), SearchSource retains the values as the substitution
-// input for its fetch AND its relay plan (client-relayed-fetch's
-// server-authored rule — a relayed search job must never carry a
-// {server:...} placeholder).
+// serverAuth iteration over its module bindings (chain.go): the FIRST
+// resolving binding wins — (values, true); anything else answers (nil, false).
+// The vacuous cases keep the pre-SERVER shape: a nil Deps.RequiredSecrets or
+// a plugin declaring no names answers (nil, true). Its two consumers share
+// the answer so they can never disagree about "configured" (sourceConfigured
+// keeps the boolean; SearchSource retains the values for the fetch AND the
+// relay plan — a relayed search job never carries a {server:...}
+// placeholder).
 func (q *Queue) resolveServerSecrets(pluginID string) (map[string]string, bool) {
 	if q.deps.RequiredSecrets == nil {
 		return nil, true
@@ -89,15 +84,9 @@ func (q *Queue) resolveServerSecrets(pluginID string) (map[string]string, bool) 
 }
 
 // sourceConfigured runs the interactive producers' pre-action required-secrets
-// check (tmdb-enrichment D3): the plugin is configured when its declared
-// required secrets resolve against at least one of its module bindings'
-// Options JSON. The resolution is resolveServerSecrets — the same serverAuth
-// iteration (chain.go) whose values SearchSource's fetch and relay plan
-// consume — so the meaning of "resolved" is byte-identical with the
-// derivation conjunct, the chain's own auth leg, and the search executor. One
-// declaring binding resolving is enough; a plugin whose every binding (or no
-// binding at all) leaves a declared name unresolved is UNCONFIGURED and the
-// producers answer ErrUnconfiguredSource.
+// check (tmdb-enrichment D3): configured iff resolveServerSecrets resolves a
+// declared name against one binding; otherwise the producers answer
+// ErrUnconfiguredSource.
 func (q *Queue) sourceConfigured(pluginID string) bool {
 	_, ok := q.resolveServerSecrets(pluginID)
 	return ok
@@ -109,29 +98,17 @@ func (q *Queue) sourceConfigured(pluginID string) bool {
 const relayStateClaimed = "claimed"
 
 // SearchSource serves the identify overlay's interactive search
-// (identify-match-override): resolve the typed client (the same accessor the
-// chain uses — an unknown plugin errors from the manager), SearchSpecs, execute
-// the returned spec through the queue's own FetchGate (the interactive search
-// shares the plugin's anonymous-tier budget with sweeps) with the plugin's
-// resolved binding secrets (resolveServerSecrets — the chain's serverAuth
-// iteration — so a SERVER spec executes instead of failing spec-class on its
-// redacted_ref), SearchResults, and return the candidates as primitive maps
-// keyed by the convention field names (proto → map at the RPC boundary; an
-// absent optional is absent from the map).
-// A source without search surfaces sdk.ErrSearchUnsupported — direct for an
-// in-process impl, re-wrapped for the gRPC seam where a plugin's plain error
-// arrives carrying the sentinel text.
-//
-// A NETWORK-class fetch failure with the relay live (Deps.Relay non-nil — the
-// chain's same enablement rule, D4) rides the client relay instead (ruled
-// OQ-6): the closure enqueues a purpose=search job for the plugin and HOLDS,
-// polling the job within the budget, before answering — the poll lives here,
-// inside the closure, so the api endpoint and this signature stay
-// byte-identical (D8). Every other failure keeps today's immediate answer.
-// An UNCONFIGURED source (tmdb-enrichment D3 — the plugin declares required
-// secrets no binding resolves) answers ErrUnconfiguredSource BEFORE
-// SearchSpecs executes: the search would be a doomed anonymous fetch, so the
-// pre-check (sourceConfigured) answers the typed sentinel instead.
+// (identify-match-override): resolve the typed client, SearchSpecs, execute
+// the spec through the queue's own FetchGate with the plugin's resolved
+// binding secrets (resolveServerSecrets), SearchResults — candidates returned
+// as convention-field maps. A source without search surfaces
+// sdk.ErrSearchUnsupported (searchSentinel re-wraps across the gRPC seam).
+// An UNCONFIGURED source (tmdb-enrichment D3) answers ErrUnconfiguredSource
+// before SearchSpecs executes — never a doomed anonymous fetch. A
+// NETWORK-class fetch failure with the relay live rides the client relay
+// instead (ruled OQ-6/D8): searchOverRelay holds and polls inside this
+// closure, so the api endpoint and this signature stay byte-identical; every
+// other failure keeps the immediate answer.
 func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) ([]map[string]any, error) {
 	if q.resolve == nil {
 		return nil, errors.New("enrich: search: no plugin resolver")
@@ -199,24 +176,15 @@ func searchResults(ctx context.Context, md sdk.MetadataSource, query, kind strin
 	return candidates, nil
 }
 
-// searchOverRelay is the identify search's relay leg (ruled OQ-6, D8): the
-// network-class fetch failure has happened — enqueue the whole plan as ONE
-// purpose=search job for the plugin (Enqueue writes no ledger row: a search
-// has no (row, plugin) pair to cool, D5) and hold the request HERE, inside the
-// closure, polling the job until a terminal answer exists or the budget spends
-// out. The completion channel is the same Claim→Ingest round trip enrich jobs
-// ride: an authenticated client claims the job (Relay.Claim's oldest-claimable
-// pick is purpose-agnostic), executes the plan, and Ingests the outcome — a
-// result-carrying ingest lands the job done (search-purpose: no ledger write,
-// no wake). A done job feeds its STORED response to SearchResults — the same
-// searchResults call the direct fetch makes — and answers the candidates,
-// consuming the result (D4's read-that-fed discipline; the store treats a
-// re-mark as a harmless rewrite). A failed job, an observed expired claim, or
-// the spent budget answers fmt.Errorf("enrich: search fetch: %w", fetchErr) —
-// byte-for-byte the error the endpoint answers today with retry disabled. A
-// transient store read error burns a tick and keeps polling — the budget
-// backstops it; a cancelled context aborts the wait through the poll sleep and
-// answers the same way (the request it belonged to is gone either way).
+// searchOverRelay is the identify search's relay leg (ruled OQ-6, D8): enqueue
+// the plan as ONE purpose=search job (no ledger row — a search has no (row,
+// plugin) pair to cool, D5) and hold the request here, polling until a
+// terminal answer or the budget spends out. A done job feeds its stored
+// response to the same searchResults call the direct fetch makes and is
+// consumed (D4's read-that-fed); a failed job, an expired claim, or the spent
+// budget answers byte-for-byte the error the endpoint answers with retry
+// disabled. A transient store read error burns a tick and keeps polling; a
+// cancelled context aborts the wait through the poll sleep.
 func (q *Queue) searchOverRelay(ctx context.Context, md sdk.MetadataSource, pluginID, query, kind string, plan []relay.PlanSpec, fetchErr error) ([]map[string]any, error) {
 	giveUp := func() ([]map[string]any, error) {
 		return nil, fmt.Errorf("enrich: search fetch: %w", fetchErr)
@@ -260,17 +228,11 @@ type searchRelayJob struct {
 }
 
 // newestSearchJob is one poll tick's read: the newest purpose=search job for
-// the plugin whose stored plan byte-equals the current plan — Consult's keying
-// exactly (the deterministic marshaler makes equal plans equal bytes), newest
-// id first so THIS enqueue's row is the one watched. Enqueue returns no id
-// (the Relay boundary hands back only an error), so the poll keys the row
-// rather than reaching past the boundary; an identical twin search converges
-// on the same row and the same, data-identical answer — the stale twin stays
-// unconsumed, Consult's safe degradation. The read rides the S10 seam
-// (relay_jobs exposes no read method; relay.go's Consult/relayJobMeta are the
-// in-package precedent). found=false is just "no row yet" — the poll keeps
-// going; a read error is returned and the poller keeps ticking under the
-// budget.
+// the plugin whose stored plan byte-equals the current plan — Consult's
+// keying exactly (Enqueue returns no id, so the poll keys the row via the S10
+// seam). An identical twin search converges on the same row, the stale twin
+// staying unconsumed (Consult's safe degradation). found=false is just "no
+// row yet".
 func newestSearchJob(ctx context.Context, r *Relay, pluginID string, wantPlan []byte) (searchRelayJob, bool, error) {
 	var (
 		job    searchRelayJob
@@ -340,22 +302,16 @@ func candidateMap(c *metadatav1.SearchCandidate) map[string]any {
 	return m
 }
 
-// IdentifySeries re-anchors ONE series row's identity to the operator's picked
-// candidate (identify-match-override): under the row's own non-blocking lease —
-// a worker-held row is never written mid-flight — load the series, write
-// doc.identifiers.<pluginID>_id = externalID (OVERWRITE, no tombstone: the
-// core-side identifiers write is enrichment D-4's precedent), persist, release.
-// The existing ReenrichSource strip then runs for exactly this row: it purges
-// the plugin's namespace/_provenance/_view WITHOUT touching identifiers (the
-// anchor survives), flips the row to pending, and notifies the library so the
-// next pass fetches BY the picked id and rebuilds the namespace fresh. Title
-// namespaces and title_overrides are untouched throughout. An unknown plugin or
-// series errors before anything is written; a lease-held row reports
-// (queued=false, deferred=1) with the document byte-identical. An UNCONFIGURED
-// source (tmdb-enrichment D3) errors before anything is written too — before
-// the lease, even: an anchor this dormant source can never re-derive must
-// never land, so the pre-check (sourceConfigured) answers
-// ErrUnconfiguredSource with the document byte-identical.
+// IdentifySeries re-anchors ONE series row's identity to the operator's
+// picked candidate (identify-match-override): under the row's own
+// non-blocking lease write identifiers.<pluginID>_id = externalID (OVERWRITE,
+// no tombstone — enrichment D-4's precedent), persist, release, then run the
+// explicit ReenrichSource strip for exactly this row (purge sans identifiers,
+// flip pending, notify — the next pass fetches BY the picked id). Unknown
+// plugin/series and an UNCONFIGURED source (D3) error before anything is
+// written; a lease-held row reports (queued=false, deferred=1) with the
+// document byte-identical. This is the series specialization of IdentifyItem
+// — the shared anchor law is identifyAnchor's.
 func (q *Queue) IdentifySeries(ctx context.Context, seriesID, pluginID, externalID string) (queued bool, stripped, deferred int, err error) {
 	if externalID == "" {
 		return false, 0, 0, errEmptyExternalID
@@ -390,14 +346,11 @@ func (q *Queue) IdentifySeries(ctx context.Context, seriesID, pluginID, external
 }
 
 // identifyAnchor writes the picked anchor into a document's identifiers — the
-// anchor law BOTH identify actions share (the series action and the row-generic
-// IdentifyItem, tmdb-enrichment D5): identifiers.<pluginID>_id is OVERWRITTEN
-// (no tombstone: the core-side identifiers write is enrichment D-4's
-// precedent), riding identifiers NUMERICALLY when the pick parses as an
-// integer — every current external id does, and the plugins' Match reads
-// existing ids numerically (intField) — verbatim otherwise. Returns the
-// marshaled document; a map of strings/maps never fails (the callers keep the
-// prior document on the impossible error).
+// anchor law BOTH identify actions share (tmdb-enrichment D5/D-4):
+// identifiers.<pluginID>_id is OVERWRITTEN, numerically when the pick parses
+// as an integer (the plugins' Match reads ids via intField), verbatim
+// otherwise. Returns the marshaled document (a map never fails; callers keep
+// the prior document on the impossible error).
 func identifyAnchor(doc map[string]any, pluginID, externalID string) (json.RawMessage, error) {
 	ids, _ := doc["identifiers"].(map[string]any)
 	if ids == nil {
@@ -413,27 +366,12 @@ func identifyAnchor(doc map[string]any, pluginID, externalID string) (json.RawMe
 }
 
 // IdentifyItem is the series identify law generalized over ANY queue row
-// (tmdb-enrichment D5 — films are items in tv libraries): the same pre-action
-// ordering (empty-pick guard, the resolver's unknown-source check, the D3
-// sourceConfigured check), the same row lease, then loadRow — the
-// item/series-agnostic loader, so an id naming a series row re-anchors it too —
-// writing identifiers.<pluginID>_id OVERWRITING the previous anchor via the
-// shared identifyAnchor. The row's own persist sink lands the write (PutItem vs
-// PutSeries is loadRow's already), and the SAME explicit strip ReenrichSource
-// runs for exactly this row: it purges the plugin's namespace/_provenance/_view
-// WITHOUT touching identifiers (the anchor survives) or another plugin's
-// namespace, clears the plugin's ledger row (the explicit-action cooldown
-// bypass), flips the row to pending, and notifies the library so the next pass
-// fetches BY the picked id and rebuilds the namespace fresh. Title namespaces
-// and title_overrides are untouched throughout.
-//
-// A lease-held row reports (queued=false, deferred=1) with the document
-// byte-identical; an unknown plugin errors before anything is written; an
-// unknown row surfaces the loader's sql.ErrNoRows (%w-preserved — the api maps
-// 404); an UNCONFIGURED source (tmdb-enrichment D3) errors before anything is
-// written too — before the lease, even: an anchor this dormant source can never
-// re-derive must never land, so the pre-check (sourceConfigured) answers
-// ErrUnconfiguredSource with the document byte-identical.
+// (tmdb-enrichment D5 — films are items in tv libraries): the same
+// pre-action ordering, row lease, anchor write, and explicit ReenrichSource
+// strip as IdentifySeries (see there), with loadRow — the item/series-agnostic
+// loader, so an id naming a series row re-anchors it too — doing the read and
+// the row's own persist sink landing the write. A gone row surfaces
+// sql.ErrNoRows (%w-preserved — the api maps 404).
 func (q *Queue) IdentifyItem(ctx context.Context, itemID, pluginID, externalID string) (queued bool, stripped, deferred int, err error) {
 	if externalID == "" {
 		return false, 0, 0, errEmptyExternalID

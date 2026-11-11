@@ -1,0 +1,7 @@
+schema: lite
+created: 2026-11-11
+goal: "Reduce comment/docstring wording noise repo-wide per the go-clean-code
+  comment law: fix the 4 P0 stale/misleading comments, compress design essays to
+  contracts, pin comment-DRY invariants once, strip doc.go godoc catalogs.
+  Inventory: .tmp/comment-noise-audit.md"
+skip_specs: true

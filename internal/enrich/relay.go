@@ -118,22 +118,16 @@ func (r *Relay) cool() time.Duration {
 	return defaultRelayCool
 }
 
-// Enqueue inserts one relay job (purpose enrich or search) and — for enrich
-// jobs only — writes the relayed ledger row that keeps derivation quiet while
-// the job lives (D5): RecordFailure(status="relayed", flat cool, reason =
-// class token + redactURLs(errText)). The ledger write is the ONLY write
-// beyond the job row, and there is NO notify here: the cooldown-skip is what
-// keeps the pair quiet, and derivation needs no wake it will not act on. A
-// search job writes no ledger row at all — a search has no (row, plugin) pair
-// to cool; its failure path is the search endpoint's existing error.
-//
-// plan is the whole request plan (primary + extras, positional — task 3.2
-// hands it verbatim); class and errText arrive as data (the fetch classifier,
-// task 3.1, is upstream of this boundary). The attempts column carries the
-// relay round counter under the ledger's own increment discipline (prior row
-// +1, first round 1) — the same column Ingest (2.2) increments per failed
-// round, never a new counter. A store error is returned wrapped; the caller
-// (the chain) decides the soft-fail.
+// Enqueue inserts one relay job (purpose enrich or search) and — enrich jobs
+// only — writes the relayed ledger row that keeps derivation quiet while the
+// job lives (D5): RecordFailure(status="relayed", flat cool, reason = class
+// token + redactURLs(errText)). There is NO notify here — the cooldown-skip
+// is the quiet-down. A search job writes no ledger row (a search has no
+// (row, plugin) pair to cool). The attempts column carries the relay round
+// counter under the ledger's own increment discipline (prior row +1, first
+// round 1) — the same column Ingest increments per failed round, never a new
+// counter. A store error is returned wrapped; the chain decides the
+// soft-fail.
 func (r *Relay) Enqueue(ctx context.Context, plan []relay.PlanSpec, purpose, rowID string, libraryID int64, pluginID, class, errText string) error {
 	if _, err := r.Store.CreateRelayJob(ctx, relay.RelayJob{
 		Purpose:   purpose,
@@ -159,17 +153,13 @@ func (r *Relay) Enqueue(ctx context.Context, plan []relay.PlanSpec, purpose, row
 }
 
 // Claim hands the oldest claimable relay job to one client principal: pending,
-// or claimed with an expired lease (lazy expiry — the store's ONE conditional
-// UPDATE does the exclusive pick, D3; Relay adds no locking of its own). v is
-// the claimant's resolved Viewer (l6-accounts 11.1): the store scopes the
-// claim pool to its visible set — `(library_id = 0 OR library_id IN (…))` —
-// so an invisible library's job is never handed out, while the title-free
-// 0-jobs stay claimable by any principal. The claim is stamped with the
-// principal's hash and a lease_until of now plus the configured TTL; the
-// returned RelayJob IS the descriptor the api layer projects to the wire
-// (id, purpose, plan — 4.1). Nothing claimable — an empty queue, a lost
-// race, or a pool empty UNDER v's conjunct — is not-found (false, nil
-// error), and the caller never spins.
+// or claimed with an expired lease (lazy expiry) — the store's ONE conditional
+// UPDATE does the exclusive pick (D3; Relay adds no locking of its own). v is
+// the claimant's resolved Viewer (l6-accounts 11.1): the pool is scoped to
+// its visible libraries — invisible libraries' jobs are never handed out,
+// while the title-free 0-jobs stay claimable by any principal. The claim
+// stamps the principal's hash and a lease_until of now + TTL. Nothing
+// claimable is not-found (false, nil error) — the caller never spins.
 func (r *Relay) Claim(ctx context.Context, principalHash string, v access.Viewer) (relay.RelayJob, bool, error) {
 	t := now()
 	job, found, err := r.Store.ClaimOldestRelayJob(ctx, principalHash, v, t, t.Add(r.lease()))
@@ -181,16 +171,13 @@ func (r *Relay) Claim(ctx context.Context, principalHash string, v access.Viewer
 
 // Consult is the relay cache read at the fetch path (D4): a done, unconsumed
 // enrich job for the (row, plugin) pair whose stored request plan equals the
-// current plan — byte-comparison of the rebuilt plan against the stored blob
-// (both sides are encoding/json output of the same type, and that marshaler is
-// deterministic: struct field order, sorted map keys — so equal plans marshal
-// to equal bytes). The hit returns the stored response and marks the job
-// consumed (D4: the read that fed Convert); any mismatch, non-done state, or
-// missing job is a miss — safe degradation, the caller fetches normally and
-// the stale job stays unconsumed. A store read error is an error, not a miss:
-// the chain's consumer decides the soft-fail. Candidates scan newest-completed
-// first so the freshest plan-matched response wins (the RFC3339Nano TEXT
-// ordering carries the store's accepted sub-second truncation skew).
+// current plan — byte-comparison against the stored blob (both sides are
+// encoding/json output of the same deterministic marshaler, so equal plans
+// marshal to equal bytes). A hit returns the stored response and marks the
+// job consumed (the read that fed Convert); any mismatch, non-done state, or
+// missing job is a miss — the caller fetches normally, the stale job stays
+// unconsumed. A store read error is an error, not a miss. Candidates scan
+// newest-completed first so the freshest plan-matched response wins.
 func (r *Relay) Consult(ctx context.Context, rowID, pluginID string, plan []relay.PlanSpec) (relay.RelayResult, bool, error) {
 	want, err := json.Marshal(plan)
 	if err != nil {
@@ -234,32 +221,21 @@ ORDER BY completed_at DESC, id DESC`,
 
 // Ingest completes one claimed relay job with its claimant's reported outcome:
 // a result carrying an Error is the failed state, otherwise done (the 4.2 wire
-// rule — error set, response fields absent, for failed). The store's guard is
-// the SAME principal hash and a LIVE lease, applied inside the atomic UPDATE:
-// a wrong principal, an expired claim, or an unknown id refuses with a wrapped
-// sql.ErrNoRows — the 409 shape upstream — and leaves the row untouched.
-//
-// The RESULT-time viewer RE-CHECK (l6-accounts 11.2): the claimant's CURRENT
-// viewer rides the request context (the group-1 carrier — the api result
-// handler's viewerFor stashed it one resolve ago), and the store's guard ANDs
-// the claim-side visibility conjunct (relayClaimWhere) into its WHERE, so the
-// job's library is re-verified against that viewer at ingestion. A principal
-// narrowed since the claim (revoked grant, unbind-to-scoped, an Identity read
-// failure → the zero Viewer) refuses: the wrapped sql.ErrNoRows is the 409
-// shape upstream AND the store releases the claim back to the pool — the plan
-// blob's titles never reach the narrowed principal's document. A 0-job
-// (library_id 0 — search) ingests for every authenticated principal, the
-// zero Viewer included; a see-all viewer completes byte-identically to
-// pre-accounts.
-//
-// A done enrich job is a completion (D5): the pair's ledger row clears
-// (reset-on-success) and the library wakes so derivation re-runs the pair into
-// the consult. A failed enrich round increments the ledger's attempts column
-// (the same column Enqueue increments per handoff — never a new counter);
-// the THIRD failed round lands terminal exhausted through the standard
-// terminalCooldown doubling schedule instead of re-arming the flat handoff
-// cooldown (recordRelayRound). Search-purpose jobs complete but never touch
-// the ledger — their consumer is the search poll (5.1).
+// rule). The store's atomic guard is the SAME principal hash and a LIVE lease,
+// plus the RESULT-time viewer RE-CHECK (l6-accounts 11.2): the claimant's
+// CURRENT viewer rides the request context and the store ANDs its visibility
+// conjunct (relayClaimWhere) into the WHERE. A wrong principal, an expired
+// claim, an unknown id, or a principal narrowed since the claim (revoked
+// grant, unbind-to-scoped, an Identity read failure) refuses with wrapped
+// sql.ErrNoRows — the 409 shape upstream — leaving the row untouched and the
+// claim released: the plan blob's titles never reach the narrowed principal.
+// A 0-job (search) ingests for every authenticated principal; a see-all
+// viewer completes byte-identically to pre-accounts. A done enrich job is a
+// completion (D5): the ledger row clears (reset-on-success) and the library
+// wakes. A failed enrich round increments the ledger attempts column (the
+// same column Enqueue increments — never a new counter); the THIRD failed
+// round lands terminal exhausted through the standard doubling schedule
+// (recordRelayRound). Search jobs complete but never touch the ledger.
 func (r *Relay) Ingest(ctx context.Context, jobID int64, principalHash string, result relay.RelayResult) error {
 	state := relayStateDone
 	if result.Error != "" {

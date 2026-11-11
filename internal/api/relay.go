@@ -42,25 +42,18 @@ func principalHash(credential string) string {
 }
 
 // relayClaim hands the oldest claimable relay job (pending, or a claim whose
-// lease lapsed) to the calling principal — ANY authenticated one, admin,
-// paired device, or user session: the browse group is the only gate and the
-// handler never forks on Role (ruled OQ-1). The pool IS visibility-scoped
-// (l6-accounts 11.1): the handler resolves the claimant's Viewer (viewerFor —
-// the same one-resolve-per-request seam every content handler uses) and hands
-// it to the closure, whose store-side conjunct is
-// `(library_id = 0 OR library_id IN (claimant's visible set))` — the
-// title-free 0-jobs (search) stay claimable by everyone, a library-backed job
-// only crosses for a claimant whose grant union carries it, and an invisible
-// library's job reads as nothing claimable (204 — invisible ≡ absent, no
-// descriptor and no title ever surfaces). See-all viewers (env admin,
-// legacy/unbound device) keep the unfiltered pool. Pure delegation (INV1):
-// the credential hash comes from the middleware-validated Authorization
-// header (the same credential authN resolved), the nil-safe Deps.RelayClaim
-// closure owns the claim mechanics and lease stamping cmd-side, and the
-// returned relay.RelayJob is projected verbatim into the descriptor. Nothing
-// claimable is found=false with a nil error — the loser of a race, the empty
-// queue, and the scoped-out pool read identically → 204, the caller never
-// spins; a closure error is a real failure → 500; nil closure → 503.
+// lease lapsed) to the calling principal — any authenticated one: the browse
+// group is the only gate and the handler never forks on Role (ruled OQ-1).
+// The pool IS visibility-scoped (l6-accounts 11.1): the claimant's Viewer
+// scopes the closure's store-side conjunct, so a library-backed job only
+// crosses for a claimant whose grant union carries it, an invisible library's
+// job reads as nothing claimable (204 — invisible ≡ absent, no descriptor or
+// title ever surfaces), and see-all viewers keep the unfiltered pool. Pure
+// delegation (INV1): the credential hash rides the middleware-validated
+// Authorization header and the nil-safe Deps.RelayClaim closure owns the
+// claim mechanics and lease stamping cmd-side. Nothing claimable is
+// found=false, nil error — race loser, empty queue, and scoped-out pool read
+// identically → 204; a closure error → 500; nil closure → 503.
 //
 // @Summary      Claim a relay fetch job
 // @Tags         relay
@@ -76,10 +69,7 @@ func (a *app) relayClaim(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "relay endpoint disabled", false)
 		return
 	}
-	// The claimant's Viewer rides the carrier: viewerFor resolves once and
-	// stashes (or memoizes an earlier resolution), and the returned context
-	// carries the stash downstream — the closure gets THAT context, the
-	// calling pattern every content handler follows.
+	// The claimant's Viewer rides the carrier — viewerFor's memo contract.
 	v, ctx := a.viewerFor(r)
 	job, found, err := a.deps.RelayClaim(ctx, principalHash(bearerCredentials(r.Header.Get("Authorization"))), v)
 	if err != nil {
@@ -98,27 +88,20 @@ func (a *app) relayClaim(w http.ResponseWriter, r *http.Request) {
 // request body is capped FIRST (http.MaxBytesReader over Deps.RelayMaxBody —
 // a composition-root value, never env-read handler-side, INV1) so an over-cap
 // payload is rejected 413 before any ingestion. The wire body IS
-// relay.RelayResult: its json tags are the vocabulary ({http_status, headers,
-// body, error}; body rides the same base64 string encoding the plan's body
-// used on the way out), and nothing is re-shaped handler-side. Pure delegation
-// (INV1): the principal hash is re-derived from the SAME middleware-validated
-// credential the claim stamped, and Deps.RelayResult (built cmd-side over
-// enrich.Relay.Ingest) owns the mechanics — a done and a failed outcome ride
-// the same route (error set, response fields absent, for failed).
+// relay.RelayResult (its json tags are the vocabulary; nothing re-shaped
+// handler-side). Pure delegation (INV1): the principal hash re-derives from
+// the SAME middleware-validated credential the claim stamped, and
+// Deps.RelayResult (built cmd-side over enrich.Relay.Ingest) owns the
+// mechanics — a done and a failed outcome ride the same route.
 //
-// The RESULT-time viewer RE-CHECK (l6-accounts 11.2): the handler resolves the
-// claimant's CURRENT viewer (viewerFor — the stash IS the memo, one resolve
-// per request) and threads the returned context downstream, so the enrich hop
-// reads the carrier and the store's completion guard re-verifies the job's
-// library against it at ingestion. A principal narrowed since the claim
-// (revoked grant, unbind-to-scoped, an Identity read failure → the zero
-// Viewer, which still ingests the title-free 0-jobs) refuses: the refusal
-// surfaces as the same wrapped sql.ErrNoRows → 409 AND the store releases the
-// claim back to the pool — the response body carries nothing of the job (no
-// descriptor, no title, no plan blob). The closure's wrapped sql.ErrNoRows is
-// the guard's refusal — a lost, expired, foreign, unknown, or narrowed-out
-// claim — → 409; any other closure error is a real failure → 500; acceptance
-// → 204. A nil closure → 503; an unparseable or EMPTY body → 400 (the outcome
+// The RESULT-time viewer RE-CHECK (l6-accounts 11.2) threads the claimant's
+// CURRENT viewer downstream, so the store's completion guard re-verifies the
+// job's library at ingestion — a principal narrowed since the claim refuses
+// with the same wrapped sql.ErrNoRows → 409 AND the store releases the claim
+// back to the pool; the response body carries nothing of the job. Codes: the
+// guard's wrapped sql.ErrNoRows (lost, expired, foreign, unknown, or
+// narrowed-out claim) → 409; any other closure error → 500; acceptance →
+// 204; nil closure → 503; an unparseable or EMPTY body → 400 (the outcome
 // payload is not optional — an accepted zero result would be a done row
 // storing nothing).
 //
@@ -144,9 +127,7 @@ func (a *app) relayResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "relay job id must be an integer", false)
 		return
 	}
-	// The cap is applied before a single payload byte is interpreted: an
-	// over-cap body dies at the decode with *http.MaxBytesError, never
-	// reaching the closure.
+	// The cap lands before a single payload byte is interpreted.
 	r.Body = http.MaxBytesReader(w, r.Body, a.deps.RelayMaxBody)
 	var result relay.RelayResult
 	if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
@@ -160,18 +141,12 @@ func (a *app) relayResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The claimant's CURRENT viewer rides the carrier (the 11.2 re-check
-	// input): viewerFor resolves once — the stash IS the memo — and the
-	// returned context carries the stash downstream; the enrich hop reads
-	// access.FromContext(ctx) and the store's guard re-checks against it.
+	// input) — viewerFor's memo contract.
 	_, ctx := a.viewerFor(r)
 	ingestErr := a.deps.RelayResult(ctx, id, principalHash(bearerCredentials(r.Header.Get("Authorization"))), result)
 	if ingestErr != nil {
-		// The store guard refuses a lost, expired, foreign, unknown, or
-		// narrowed-out claim with a wrapped sql.ErrNoRows — the one 409
-		// shape (a narrowed refusal additionally released the claim back to
-		// the pool, store-side); the enrich hop re-wraps it, so match through
-		// the chain. The body names neither which fired nor anything about
-		// the job.
+		// The store guard's refusal — the one 409 shape (errors.Is through
+		// the enrich hop's re-wrap). The body names nothing about the job.
 		if errors.Is(ingestErr, sql.ErrNoRows) {
 			writeError(w, http.StatusConflict, "conflict", "no live relay claim for this job under the calling principal", false)
 			return

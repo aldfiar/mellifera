@@ -95,27 +95,17 @@ type Result struct {
 }
 
 // Enrich runs the configured metadata_source chain for ONE item in module
-// Priority order (serial within the item — D8; no hybrid/parallel — D14),
-// mutating the document (sources/_provenance/_view/_stages) and returning the
-// advanced lifecycle status. Soft failures (a source RPC error, a namespace
-// violation, an unloaded source) are recorded in Result.Warnings and the item
-// still advances to the furthest state its successful stages justify (AC-6).
-// A cancelled context is the only hard failure (B8): it returns status=failed
-// with a _error record and the cause.
-//
-// In the async substrate (Phase B1) this is the SYNC per-item entry, now
-// worker-internal: the async Queue's per-item driver reuses the same factored
-// helpers (enrichDoc, runSource/runSourceRetryable, applyContribution,
-// orderedSources, nextState) but adds per-source retry + the ledger. Enrich is
-// preserved (deprecate-don't-delete, AC-3) for sync use and tests — its
-// original five-argument behavior is unchanged.
-//
-// extraPlugins (element-pages D-4) are the item's element-attached plugin ids
-// (the item_parsers attachment order). They run AFTER the chain, in attachment
-// order, through the identical runSource path — the standard
-// namespace/_provenance/_stages writes; element attachment changes WHO runs,
-// not how a source writes. A CLIENT-locked extra is honored here (the sync
-// Mode-B run is allowed what the async queue excludes under D-Q1).
+// Priority order (serial within the item — D8), mutating the document
+// (sources/_provenance/_view/_stages) and returning the advanced lifecycle
+// status. Soft failures (a source RPC error, a namespace violation, an
+// unloaded source) land in Result.Warnings and the item still advances to the
+// furthest state its successful stages justify (AC-6); a cancelled context is
+// the only hard failure (B8). This is the SYNC per-item entry — the async
+// Queue's driver reuses the same factored helpers and adds per-source retry +
+// the ledger; Enrich is preserved for sync use and tests (AC-3).
+// extraPlugins (element-pages D-4) run after the chain in attachment order
+// through the identical runSource path; a CLIENT-locked extra is honored here
+// (the sync Mode-B run is allowed what the async queue excludes under D-Q1).
 func Enrich(ctx context.Context, deps Deps, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult, extraPlugins ...string) (map[string]any, string, Result, error) {
 	return enrichDoc(ctx, deps.Plugins.MetadataSource, mod, doc, base, runExtras(mod, extraPlugins))
 }

@@ -5,14 +5,9 @@ package naming
 
 // TitleSourceBinding is one title-walk entry (plugin-title-enrichment D3/D5):
 // the source's plugin id and its effective enablement after gate resolution.
-// Exported since browse-scale D1 moved the composer out of internal/api —
-// both the composer's inputs (Namer.TitleSources / Namer.Chain) and the
-// api-side alias (`type titleSourceBinding = naming.TitleSourceBinding`,
-// keeping every api signature, JSON tag, and Add* construction path
-// byte-identical) read this type; an alias is transparent through slices, so
-// the served wire bytes ({"id":…,"enabled":…}) are unchanged. The cmd-side
-// closure constructs pairs through the exported ModulePresentation Add*
-// methods, which append the alias-typed pairs.
+// Exported since browse-scale D1 moved the composer out of internal/api — the
+// api-side alias (`type titleSourceBinding = naming.TitleSourceBinding`)
+// keeps every api signature and wire byte identical.
 type TitleSourceBinding struct {
 	ID      string `json:"id"`
 	Enabled bool   `json:"enabled"`

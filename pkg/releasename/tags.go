@@ -11,9 +11,9 @@ import (
 
 // Release-decoration vocabulary: the bracket-segment rules, the whole-token
 // release-tag tables, and the group-tag shape rule the series and episode
-// grammars draw on. Role- and shape-keyed ONLY — no resource brand in any
-// identifier, comment, or mask key — so every parser binary derives its
-// stripping and its emission from this one table set.
+// grammars draw on (the one shared grammar, pkg/releasename's package doc).
+// Role- and shape-keyed ONLY — no resource brand in any identifier, comment,
+// or mask key.
 
 var (
 	// bracketSegmentRe matches one [...] or (...) segment.
@@ -209,14 +209,12 @@ func cutTrailingGroupTag(name string) string {
 }
 
 // cutTrailingDashGroup removes a trailing dash-joined two-part release-group
-// token ("CR-Cassu") from the pipeline string when the narrow dash-form rule
-// fires: the token ends the raw name as exactly two non-empty ASCII
-// letter-word parts, its first part is an all-caps acronym (letters only,
-// <= 5), the dash-removed combined form clears isGroupTagShape, and the raw
-// name after the last consumed release-tag/bracket span is exactly that token
-// — no title text between. Otherwise nothing strips: a capitalized first
-// part ("Spider-Man"), title text before the token, or a single-part tail
-// keeps the title whole.
+// token ("CR-Cassu") when the narrow dash-form rule fires: the token ends the
+// raw name as exactly two non-empty ASCII letter-word parts, its first part is
+// an all-caps acronym (letters only, <= 5), the dash-removed combined form
+// clears isGroupTagShape, and no title text sits between the last consumed
+// span and the token. Otherwise nothing strips ("Spider-Man", a title-text
+// prefix, or a single-part tail keeps the title whole).
 func cutTrailingDashGroup(raw, stripped string) string {
 	token, _, ok := trailingDashGroupToken(raw)
 	if !ok {

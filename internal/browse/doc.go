@@ -23,42 +23,4 @@
 // The package is a pure leaf: it imports nothing from mellifera — all
 // store and naming access arrives as cmd-built Deps closures — so api can
 // depend on it without inverting the dependency graph.
-//
-// # Public API (11 top-level exports — inside the complexity gate's 12
-// hard bar; the four service-lifecycle symbols join the receipted
-// search/facet seven, D2's authored ≤8 ceiling noted as exceeded)
-//
-//   - Entry: one searchable entity — id, library, group, composed served
-//     name, unpicked walk alternates.
-//
-//   - Kind and its two constants KindSeries/KindItem: the search groups.
-//
-//   - SearchIndex: the folded entry set, read-only after construction and
-//     safe for concurrent Search.
-//
-//   - NewSearchIndex: builds the index, folding every name and alternate
-//     once at write time.
-//
-//   - (*SearchIndex).Search: the one query — folded, tiered, bounded
-//     8+8, alphabetically tie-broken.
-//
-//   - Hits: the answer shape — ranked id lists per group.
-//
-//   - Facet and FacetValue: one facet key's counted values per library —
-//     the served facet shape (facets.go). The buildFacets aggregation is
-//     package-internal: the rebuild is its only caller, running the About
-//     resolver per series document.
-//
-//   - Epoch: the two-part scalar freshness stamp (service.go) — max
-//     updated_at over the naming-config horizon plus the corpus row
-//     count; config writes and deletes trip drift, content updates don't.
-//
-//   - Deps: the cmd-built closures — every store read and the naming
-//     composition arrive pre-built at the composition root, keeping the
-//     package a pure leaf.
-//
-//   - Service and NewService: the index service (service.go) — build at
-//     boot, wake pokes, the 60 s reconcile (drift ⇒ rebuild; else
-//     watermark walk + orphan sweep), and the serving queries (ids and
-//     counted values only — D3, rows composed live api-side).
 package browse

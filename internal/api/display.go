@@ -36,28 +36,16 @@ import (
 
 // namerFor builds the namer for one library: GetLibrary carries the two
 // naming options, plus ONE QuerySeries(libraryID, "") whole-table read mapped
-// by RelativePath (mirrors the SPA's matchSeries input). mutes is the
-// calling Viewer's ChainMutes (l6-accounts 10.4) — callers pass v.ChainMutes
-// off the viewerFor they already resolved (no fresh context read here); nil
-// is the mute-blind floor the admin/write call sites keep. A MISSING library row
-// floors to the empty namer — the one floor EVERY namerFor call site shares,
-// so a vanished library row can never turn a previously-200 route into a 500:
-// ElementTmpl "" means no composition, and display_name renders from the
-// floor tiers ("" when nothing resolves), exactly like the listItems browse
-// contract for a nonexistent ?library=. Any OTHER store error propagates to
-// the caller (the handlers map it → 500, like any other read).
-//
-// Flag-(i) per-site re-derivation (the two access.System() reads 6.2
-// documented as deliberately unthreaded — 10.4 owns this neighborhood):
-// BOTH reads stay System() on purpose. The mute floor floors source
-// NAMESPACES in the walk, never rows: GetLibrary re-reads the one library
-// row the calling handler already admitted the viewer to (an invisible
-// library 404s upstream of every namerFor), and QuerySeries is the
-// whole-library series map (D-9) — every row in it belongs to that same
-// admitted library, so a viewer-scoped re-filter could only re-drop rows
-// the caller already vetted, never change a name. Row visibility is the
-// Viewer's VisibleLibraryIDs contract and lives at the caller; only the
-// title walk below carries the mutes.
+// by RelativePath. mutes is the calling Viewer's ChainMutes (10.3) — callers
+// pass v.ChainMutes off the viewerFor they already resolved; nil is the
+// mute-blind floor the admin/write call sites keep (MUTE-FLOOR LAW —
+// art.go's artworkFor). A MISSING library row floors to the empty namer —
+// the one floor every namerFor call site shares, so a vanished library can
+// never turn a previously-200 route into a 500; any other store error
+// propagates. Both reads stay System() deliberately (10.4): the mute floor
+// floors source NAMESPACES in the walk, never rows of the one library the
+// calling handler already admitted the viewer to — row visibility
+// (VisibleLibraryIDs) lives at the caller.
 func (a *app) namerFor(ctx context.Context, libraryID int64, mutes map[string]bool) (naming.Namer, error) {
 	lib, err := a.deps.Store.GetLibrary(ctx, libraryID, access.System())
 	if err != nil {

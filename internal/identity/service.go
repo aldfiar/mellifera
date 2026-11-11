@@ -10,8 +10,8 @@ import (
 )
 
 // Service is the accounts domain over the store: user CRUD, argon2id
-// password hashing, and (in later tasks of this package) groups, sessions,
-// and viewer resolution. The now func is the injected clock — tests advance
+// password hashing, groups, sessions, and viewer resolution. The now func is
+// the injected clock — tests advance
 // it instead of sleeping (the pairing.Service precedent).
 type Service struct {
 	st  *store.Store

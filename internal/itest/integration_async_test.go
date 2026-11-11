@@ -12,8 +12,8 @@
 // buildBinary/startServer/createLibrary/scanLibrary/listItems/indexByPath/
 // makeMedia/mustWrite) and adds only the async-specific assertions.
 //
-// This is the structural successor to integration_pipeline_test.go (the Phase A
-// SYNCHRONOUS golden), which asserted items were enriched AT SCAN RETURN. B1
+// This is the structural successor to the retired Phase A SYNCHRONOUS golden,
+// which asserted items were enriched AT SCAN RETURN. B1
 // inverts that premise (INV-async-is-the-point): items are 'pending' at scan
 // return; enrichment is observed transitioning via ?status= over a bounded poll.
 //

@@ -19,10 +19,9 @@ import (
 
 // Result is the structured emission of one start-to-end parse. Honesty rules:
 // a season with no marker is Season 0 with SeasonExplicit false (the adapter
-// owns its default — serial maps 0 → 1 at confidence 0.6); an episode number
-// below 1 is Episode 0; release fields with no matching token are absent
-// values, never zeroed stand-ins. Singular roles (resolution/source/year)
-// take the LAST matching token; list roles (codec/language) keep token order.
+// owns its default); an episode number below 1 is Episode 0; release fields
+// with no matching token are absent values, never zeroed stand-ins. Singular
+// roles take the LAST matching token; list roles keep token order.
 type Result struct {
 	Title          string
 	Season         int    // 0 = no marker; >= 1 when SeasonExplicit
@@ -38,9 +37,8 @@ type Result struct {
 
 // ParseName parses a raw series/film NAME (a serial directory name, or a
 // file-backed serial's raw file name — extension stripped) start-to-end:
-// title, season, and the release fields. A name carrying no season and no
-// episode parses as the degenerate film case: title plus release fields,
-// Season 0, Episode 0.
+// title, season, and the release fields. A name carrying neither parses as
+// the degenerate film case: title plus release fields, Season 0, Episode 0.
 func ParseName(name string) Result {
 	raw := stripVideoExt(name)
 	res := Result{}
@@ -172,11 +170,11 @@ func stripVideoExt(name string) string {
 	return strings.TrimSuffix(name, filepath.Ext(name))
 }
 
-// cutSeasonMarker finds the first anchored season marker in a name and returns
-// the name with that marker's span replaced by a space, its number, and true.
-// Priority: Nth Season, Season N, standalone Sxx, TV <N>. Anchored forms only
-// — an internal digit ("Title_3_The_End") or a trailing bare digit ("Title 0")
-// is never a marker.
+// cutSeasonMarker finds the first anchored season marker (priority: Nth Season,
+// Season N, standalone Sxx, TV <N>) and returns the name with that marker's
+// span replaced by a space, its number, and true. Anchored forms only — an
+// internal digit ("Title_3_The_End") or a trailing bare digit ("Title 0") is
+// never a marker.
 func cutSeasonMarker(name string) (rest string, n int, ok bool) {
 	for _, re := range []*regexp.Regexp{nthSeasonRe, seasonWordRe} {
 		if m := re.FindStringSubmatchIndex(name); m != nil {
@@ -215,12 +213,10 @@ func seasonTokenIndex(s string) []int {
 
 // bareEpisodeNumberOf extracts the episode number a stem carries WITHOUT an
 // SxxExx token: the first of a "<N> серия" marker, a pure-number bracket, or
-// the last standalone 1-3 digit number after bracket segments and resolution
-// tokens are stripped (last number wins — the sidecar bare-number convention).
-// The pure-number bracket is a candidate WHEREVER it occurs in the stem and
-// the rightmost one wins, so a trailing decoration bracket ("Show_II_[01]_
-// [HEVC]") no longer displaces the episode number. A number below 1 is no
-// number (a "Title 0" stays numberless).
+// the last standalone 1-3 digit number after bracket/release stripping (last
+// number wins — the sidecar bare-number convention). The rightmost bracket
+// wins wherever it occurs, so a trailing decoration bracket ("Show_II_[01]_
+// [HEVC]") never displaces the episode number. A number below 1 is no number.
 func bareEpisodeNumberOf(stem string) (episode int, ok bool) {
 	if m := cyrillicEpisodeRe.FindStringSubmatch(stem); m != nil {
 		if n := atoi(m[1]); n > 0 {
@@ -252,8 +248,7 @@ func bareEpisodeNumberOf(stem string) (episode int, ok bool) {
 // episode stem, so a season pack's marker ("Show.S01") is never read as a
 // bare episode number — a numberless season-marker name belongs to the film
 // path. SxxExx tokens never reach here (the seasonEpisodeRe branch runs
-// first); a digit inside a codec/source tag ("H.264") is already gone via
-// stripReleaseTagTokens.
+// first); tag digits ("H.264") are already gone via stripReleaseTagTokens.
 func blankSeasonTokens(name string) string {
 	spans := seasonTokenRe.FindAllStringSubmatchIndex(name, -1)
 	if len(spans) == 0 {

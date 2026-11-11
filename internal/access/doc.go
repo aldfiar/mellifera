@@ -6,28 +6,6 @@
 // and imports NOTHING — internal/store imports it (D2: one trailing
 // access.Viewer parameter per gated read); nothing imports down into it.
 //
-// # Public API (7 symbols — the 1.1 quintet plus the 1.3 request-context
-// carrier pair; inside the ≤8 budget)
-//
-//   - Viewer: the per-request authority scope (admin flag, user id,
-//     visible-library-id set, chain mutes).
-//
-//   - System: the internal trusted scope — write-time reads, learning,
-//     boot backfill, queue/scan/janitor; sees everything.
-//
-//   - Admin: the authenticated human administrator scope; sees everything.
-//
-//   - User: a scoped user principal — sees exactly the visible-library set
-//     passed at construction (the union of their groups' member
-//     Collections), with the group chain mutes applied.
-//
-//   - LegacyDevice: the unbound-device scope — today's see-all posture
-//     (documented residual until the restricted-library floor lands).
-//
-//   - WithViewer / FromContext: the request-context carrier pair — stash a
-//     viewer under the package-private key, read it back anywhere on the
-//     context chain; an absent stash reads the zero Viewer (fail closed).
-//
 // # Contract
 //
 //   - FAIL CLOSED: the zero Viewer hides everything. A Viewer with no Admin

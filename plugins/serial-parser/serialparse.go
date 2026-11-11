@@ -10,15 +10,11 @@ import (
 	"github.com/mellifera/mellifera/pkg/releasename"
 )
 
-// The series + episode grammars MOVED to pkg/releasename (unified-parser box
-// 1.1): one shared grammar every binary derives its parsing from. What stays
-// here are the plugin's thin adapters — its namespace keys, Match/apply rule,
-// skip reasons, and confidence semantics are adapter-owned. Two adapter
-// defaults live here by design: the always-season rule (a shared Season 0 → 1,
-// confidence steering via the explicit flag) and episode n ≥ 1 acceptance for
-// SxxExx tokens. The namespace emission mapping (unified-parser D-2) is also
-// adapter-owned: resolution/source/year as scalars, codec/language as arrays,
-// absent fields omitted.
+// The series + episode grammars are pkg/releasename's (unified-parser box 1.1) —
+// this file keeps only thin adapters. Adapter-owned by design: the always-season
+// rule (a shared Season 0 → 1, confidence steering via the explicit flag), the
+// episode n ≥ 1 acceptance gate for SxxExx tokens, and the namespace emission
+// mapping (unified-parser D-2).
 
 // parseSeriesDir parses a raw serial directory name (or a file-backed serial's
 // raw file name) into the shared Result — the cleaned display title plus the

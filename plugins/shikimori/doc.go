@@ -25,9 +25,6 @@
 //     only describes the request spec; the core executes, paces
 //     (min_interval_ms), and hands the raw response back to Convert.
 //
-// PUBLIC API  (package main has no exported symbols; main wires sdk.Serve)
-//   - func main()
-//
 // INVARIANTS
 //   - STATELESS SUBPROCESS (arch §0.2). No state between RPCs; all output is
 //     a pure function of the request.

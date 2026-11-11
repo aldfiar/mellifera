@@ -81,10 +81,10 @@ func TestConvertPosterGraphQLFallback(t *testing.T) {
 	}
 
 	cases := []struct {
-		name      string
-		payload   string
-		extras    []*metadatav1.FetchedResponse
-		want      string // want poster value; "" = want the key ABSENT
+		name    string
+		payload string
+		extras  []*metadatav1.FetchedResponse
+		want    string // want poster value; "" = want the key ABSENT
 	}{
 		{
 			name:    "missing-art REST poster is filled from the GraphQL answer",

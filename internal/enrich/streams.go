@@ -53,16 +53,13 @@ func (q *Queue) EnqueuePack(itemID string) error {
 }
 
 // EnqueuePackUrgent is the preferred lane's dispatch entry (play-priority
-// pack dispatch): a pack requested by an actual play — the play verb's
-// enqueue seam — buffers here and every worker takes urgent tasks before the
-// shared buffer, so a play's pack never queues behind background work. The
-// contract is EnqueuePack's exactly: an error when the queue is not running
-// or the lane is momentarily full — never a blocking send, never a spill
-// into the shared buffer (honest backpressure the play verb answers
-// queued:false with). The lane's capacity is the locked urgentCapacity — no
-// env knob. Background work must keep EnqueuePack: nothing but the play
-// closures belongs in this lane. The send is serialized against Stop's close
-// by sendMu like EnqueuePack's.
+// pack dispatch): the play verb's enqueue buffers here and workers take
+// urgent tasks before the shared buffer, so a play's pack never queues
+// behind background work. The contract is EnqueuePack's exactly — error when
+// not running or the lane is momentarily full, never a blocking send, never
+// a spill into the shared buffer (honest backpressure, the queued:false
+// answer). Capacity is the locked urgentCapacity — no env knob; only the
+// play closures belong in this lane.
 func (q *Queue) EnqueuePackUrgent(itemID string) error {
 	q.sendMu.Lock()
 	defer q.sendMu.Unlock()
@@ -88,17 +85,14 @@ type laneTask struct {
 // workStreams is the streams lane's per-item driver (the dedicated dispatch
 // branch, D-10): acquire the item's lease, renew it while the packaging run
 // proceeds, run the PackItem seam, and persist the outcome by REPLACING ONLY
-// the document's `streams` namespace — via the lane's persist path (a fresh
-// row reload immediately before the writeMu-guarded write) so a concurrent
-// metadata write can never be clobbered. Terminal failure records a
-// pack_failed ledger row under __streams__ (flat 30-day cooldown, no
-// doubling); a refusal.PolicyRefusal — the pack gate closed after enqueue,
-// playback-capability-gate D4 — branches BEFORE the ledger: it persists the
-// failed state with the gate token and writes NO row, so a knob setting
-// never charges the cooldown. Success clears the row (reset-on-success).
-// Metadata completion —
-// lifecycle states, metadata namespaces, _stages — is untouched either way.
-// A lane with a nil PackItem seam is disabled: the task is a no-op.
+// doc["streams"] — via persistStreams' fresh reload so a concurrent metadata
+// write is never clobbered. Terminal failure records a pack_failed ledger row
+// under __streams__ (flat 30-day cooldown); a refusal.PolicyRefusal — the
+// gate closed after enqueue, playback-capability-gate D4 — branches BEFORE
+// the ledger: the failed state persists with the gate token, no row, so a
+// knob setting never charges the cooldown. Success clears the row
+// (reset-on-success). Metadata completion is untouched either way. A nil
+// PackItem seam disables the lane.
 func (q *Queue) workStreams(ctx context.Context, itemID string) {
 	if q.deps.PackItem == nil {
 		return // lane not armed; nothing to do

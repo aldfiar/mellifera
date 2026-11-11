@@ -69,69 +69,28 @@ const (
 // Describe projects one item's stored document into the read-only playback
 // descriptor (Interface 3; the GET /playback handler's ONE domain call). Pure:
 // the document is read, never written, and the only computed secret is the
-// freshly minted play token, returned via the play URL.
+// freshly minted play token returned via the play URL.
 //
-//   - mode: hls when the stored streams namespace carries a playable build
-//     (state partial or complete with its artifact pointer), direct otherwise —
-//     every item keeps the direct floor regardless (INV-floor).
-//   - state: none | partial | complete | failed, exactly as the lane persisted.
-//   - playURL: the /media URL for the mode, carrying a fresh 4 h media token
-//     as the query-parameter fallback (the descriptor handler separately sets
-//     the cookie-primary delivery).
-//   - sections: the stored ffprobe chapters projected to
-//     {kind:"chapter", start, end?, title?}, ordered by start. The marker kind
-//     is never produced in v1.
-//   - voiceovers: the episode document's episode-linked audio sidecars
-//     projected to {index, label} in document order (serial-watch-flow D-2) —
-//     stored facts only, never a re-probe, never a packaging-state write.
-//   - stateReason: why the direct floor is not <video>-playable, one of the
-//     Reason* constants ("" otherwise). Honesty projection (tv-playback-unblock
-//     D1/D3 — stored facts only, never a re-probe, never client input): the
-//     ffprobe format_name decides whether the floor's container is <video>-
-//     native (mp4 family or webm; EVERYTHING else — matroska/mkv, avi,
-//     mpegts, … — is not, judged from format_name substrings). A non-native
-//     none-state floor projects state preparing (a pack can land: class pack,
-//     or opt_in while the Service's opt-in knob is on) or unsupported
-//     (direct_only codecs; opt_in with the knob off) with the reason naming
-//     which: non_native_container, codec_not_opted_in, or codec_unsupported.
-//     The matroska family's shared demuxer reports "matroska,webm" for MKV
-//     and WebM alike, so a format_name containing "matroska" reads NOT native
-//     even though it also names webm — an MKV misread as native would hand
-//     the player an undecodable floor, while a WebM misread as not-native
-//     merely answers preparing for a pack that will land anyway. A failed
-//     state keeps its value and retry affordance, carrying only the
-//     non-native marker when the floor itself is not <video>-native; partial/
-//     complete/broken-build states keep their persisted value with no reason
-//     (the D5 guard's wire shape is byte-identical). Cooldown-blind by design:
-//     a preparing item whose enqueue would be cooldown-refused stalls
-//     honestly — the ledger is not a document fact.
-//   - codecs: the RFC 6381 codec strings of the published pack, video first
-//     then audio in rendition order (playback-capability-gate D2/D6) —
-//     answered on hls answers only, nil on every direct answer. The recorded
-//     value (doc["streams"].codecs, persisted at publish) wins; a namespace
-//     predating the record composes the same strings read-side from the
-//     stored source ffprobe facts (a remux carries the source's streams);
-//     a build whose codecs cannot be composed either way answers none
-//     (fail-open). Stored facts only — never a re-probe, never a write.
-//   - codecsSrc: WHICH half answered the codecs field, one of the
-//     codecsSrc* tokens (pack-manifest-audio D7 — "recorded" when the
-//     stored record was used, "legacy" when the read-side composition
-//     answered, "none" when the descriptor carries no codecs, including
-//     every direct answer). A plain string, the stateReason pattern —
-//     never the codec strings themselves (INV4: the source rides the
-//     decision log, the wire is untouched).
-//   - layout: the build's audio layout (fix-tv-unblock-2 Interfaces 1 —
-//     "single-variant" | "rendition", the lane's layoutName decision at
-//     publish, persisted in doc["streams"].layout) — answered on hls
-//     answers only, empty on every direct answer; a namespace predating
-//     the record answers empty too (fail-open: the client mounts as
-//     before). The stored record answers verbatim — there is no read-side
-//     layout composition (D5).
-//   - integrity guard (D5): a COMPLETE state additionally runs the read-only
-//     ValidateBuild over the nonce the namespace carries; a broken or evicted
-//     build answers the direct floor instead of a playlist the player would
-//     die on. Partial builds and nonce-less namespaces are exempt — their
-//     wire shape is byte-identical to the pre-guard descriptor.
+// hls answers only over a partial/complete state whose stored playlist exists
+// and whose build passes the D5 integrity guard (buildHealthy — read-only
+// ValidateBuild; a broken or evicted build floors direct, partial builds and
+// nonce-less namespaces exempt); every other item keeps the direct floor
+// (INV-floor) with stateReason from floorReason — the honesty projection
+// (tv-playback-unblock D1/D3: stored facts only, never a re-probe, never
+// client input; the container law is containerNative, the matroska-asymmetry
+// canonical; the pack verdicts ride PackGate, playback-capability-gate D1).
+// A none-state non-native floor answers preparing (a pack can land) or
+// unsupported (the codecs are the unmet gate); a failed state keeps its value
+// and retry affordance, carrying only the non-native marker; nothing is
+// persisted — doc["streams"] keeps its value. Cooldown-blind by design: a
+// preparing item whose enqueue would be cooldown-refused stalls honestly (the
+// ledger is not a document fact). codecs/codecsSrc are describeCodecs'
+// recorded-wins answer, hls answers only (playback-capability-gate D2,
+// pack-manifest-audio D7 — INV4: the source rides the decision log, the wire
+// is untouched); layout is the lane's persisted layoutName, hls answers only
+// (streamLayout — fix-tv-unblock-2 Interfaces 1); sections and voiceovers
+// project stored facts only (projectChapters, projectVoiceovers —
+// serial-watch-flow D-2), ordered, never a re-probe, never a write.
 func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, playURL string, sections, voiceovers []map[string]any, stateReason string, codecs []string, codecsSrc, layout string) {
 	s.normalize()
 	state = streamState(doc["streams"])
@@ -147,10 +106,9 @@ func (s *Service) Describe(itemID string, doc map[string]any) (mode, state, play
 	reason := s.floorReason(doc["ffprobe"], state)
 	if state == StateNone && reason != "" {
 		// The honesty projection (D1): a none-state floor the client cannot
-		// decode answers a descriptor-only state — preparing when a pack can
-		// land (the reason is the container alone), unsupported when the
-		// codecs are the unmet gate. Never persisted: doc["streams"] keeps
-		// its none value.
+		// decode answers preparing (the reason is the container alone) or
+		// unsupported (the codecs are the unmet gate) — never persisted:
+		// doc["streams"] keeps its none value.
 		state = StateUnsupported
 		if reason == ReasonNonNativeContainer {
 			state = StatePreparing
@@ -232,10 +190,7 @@ func recordedCodecs(streams any) []string {
 // failed state only the non-native marker (the state itself keeps its value
 // and its retry affordance); for a none-state non-native floor the PackGate
 // verdict rides through (playback-capability-gate D1 — the same single judge
-// every pack seam consults): gate open → a pack can land (the reason is the
-// container alone), codec_not_opted_in → the opt-in codecs with the knob off,
-// codec_unsupported (the gate's fail-safe for direct_only and absent facts
-// too, INV2) → packaging cannot help.
+// every pack seam consults, its refusal tokens verbatim).
 func (s *Service) floorReason(ffprobe any, state string) string {
 	if containerNative(ffprobe) {
 		return ""
@@ -266,6 +221,14 @@ func (s *Service) floorReason(ffprobe any, state string) string {
 // blob's format_name substrings; absent or unreadable facts read NOT native
 // (fail-safe, INV2 — a floor disclaimed by mistake merely answers preparing,
 // while an undecodable floor presented as native breaks playback).
+//
+// The matroska asymmetry's CANONICAL home (classification.go's
+// containerAcceptable points here): ffprobe's shared demuxer reports
+// "matroska,webm" for MKV and WebM alike, so the tag cannot disambiguate —
+// any format_name containing "matroska" reads NOT native even though it also
+// names webm. An MKV misread as native would hand the player an undecodable
+// floor, while a WebM misread as not-native merely answers preparing for a
+// pack that will land anyway.
 func containerNative(ffprobe any) bool {
 	f, ok := ffprobe.(map[string]any)
 	if !ok {
@@ -310,11 +273,10 @@ func (s *Service) buildHealthy(itemID string, state string, streams any) bool {
 // descriptor's read-only voiceovers shape (serial-watch-flow D-2): document
 // order, each entry {index, label} — index is the sidecar's document index
 // (the same index the sidecar media variant resolves against), the label
-// resolved as the language fact when present, else the containing folder
-// name, else the file name. Only AUDIO sidecars are voiceovers; subtitle
-// sidecars and serial-level sidecars (parsed.series_sidecars) never project.
-// An episode with no audio sidecars carries an empty list. Stored facts only —
-// never a re-probe, never a write.
+// resolved by voiceoverLabel. Only AUDIO sidecars are voiceovers; subtitle
+// sidecars and serial-level sidecars (parsed.series_sidecars) never project;
+// no audio sidecars → an empty list. Stored facts only — never a re-probe,
+// never a write.
 func projectVoiceovers(parsed any) []map[string]any {
 	out := []map[string]any{}
 	p, ok := parsed.(map[string]any)

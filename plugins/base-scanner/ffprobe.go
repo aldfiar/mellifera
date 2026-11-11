@@ -17,25 +17,18 @@ const (
 )
 
 // probe runs ffprobe on absPath and returns its verbatim JSON stdout. Args are
-// passed as a slice to exec.CommandContext — NEVER a shell — so a hostile
-// filename cannot inject command syntax (golang-security; kickoff hard rule).
-//
-// Every failure mode is SOFT (AC-6): on a missing binary, non-zero exit, ctx
-// deadline, or non-JSON stdout it returns empty bytes + a human-readable warning
-// and a nil err — the caller still emits the file so it is identified without
-// ffprobe data. The err return is part of the signature and reserved for
-// caller-fatal signals; it is always nil today because INV3 makes every ffprobe
-// problem a soft-fail.
+// passed as a slice — NEVER a shell — so a hostile filename cannot inject
+// command syntax (golang-security). Every failure is SOFT (AC-6, INV3): empty
+// bytes + a human-readable warning + nil err — the caller still emits the file;
+// the err return is reserved for caller-fatal signals and is always nil today.
 func probe(ctx context.Context, absPath string) ([]byte, string, error) {
 	if _, err := exec.LookPath(ffprobeBin); err != nil {
 		return nil, "ffprobe not found on PATH", nil
 	}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	// Arg-slice ONLY. absPath is a single argument; never shelled out.
-	// -show_chapters adds container chapters to the same verbatim JSON blob
-	// (packaged-playback Interfaces §5: chapters ride the stored ffprobe facts;
-	// no new parsing here — the blob is persisted verbatim).
+	// -show_chapters rides the same verbatim JSON blob (packaged-playback
+	// Interfaces §5) — persisted verbatim, no parsing here.
 	cmd := exec.CommandContext(pctx, ffprobeBin,
 		"-v", "quiet",
 		"-print_format", "json",

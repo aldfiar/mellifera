@@ -93,9 +93,12 @@ type playResponse struct {
 // cookie-primary media token → write playbackResponse. Read-only by contract:
 // it never enqueues, never persists, never mutates packaging state. Nil
 // closure → 503 (degrades cleanly like Deps.Status); a missing item → 404.
-// The pre-mint visibility precheck (l6-accounts 6.3) resolves the item
-// through the viewer-scoped GetItem BEFORE the descriptor closure: a hidden
-// item is 404 not_found and no media token is ever minted for it.
+//
+// PRE-MINT VISIBILITY PRECHECK (l6-accounts 6.3, this file's canonical —
+// shared by itemPlayback and itemPlay): the viewer-scoped GetItem is the
+// FIRST store interaction and gates the domain closure — a hidden item is
+// 404 not_found (no existence oracle; any read error fails closed the same
+// way), and neither a media token nor the play enqueue ever runs for it.
 //
 // @Summary      Playback descriptor for one item
 // @Tags         items
@@ -111,10 +114,7 @@ func (a *app) itemPlayback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "playback endpoint disabled", false)
 		return
 	}
-	// Pre-mint visibility precheck (l6-accounts 6.3): the viewer-scoped
-	// GetItem is the FIRST store interaction and gates the closure — hidden
-	// ≡ 404 (no existence oracle), any read error fails closed the same way,
-	// and no media token is minted on this path.
+	// PRE-MINT VISIBILITY PRECHECK (6.3) — itemPlayback's doc.
 	if _, err := a.deps.Store.GetItem(ctx, chi.URLParam(r, "id"), v); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "item "+chi.URLParam(r, "id")+" not found", false)
 		return
@@ -168,10 +168,9 @@ func wireArray[T any](s []T) []T {
 // otherwise, 400 carrying the gate token when the pack gate refuses — D4);
 // retry absent/false is a plain acknowledgement (200). An
 // unknown item → 404; a malformed body or a negative from_seconds → 400
-// BEFORE the domain call. from_seconds is otherwise reserved (no-op in v1).
-// The pre-mint visibility precheck (l6-accounts 6.3) resolves the item
-// through the viewer-scoped GetItem BEFORE the mutation closure: a hidden
-// item is 404 not_found and the play enqueue never runs for it.
+// BEFORE the domain call; the PRE-MINT VISIBILITY PRECHECK (6.3 —
+// itemPlayback's doc) gates the mutation. from_seconds is otherwise reserved
+// (no-op in v1).
 //
 // @Summary      Play one item (the only playback mutation)
 // @Tags         items
@@ -200,10 +199,7 @@ func (a *app) itemPlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	retry := req.Retry != nil && *req.Retry
-	// Pre-mint visibility precheck (l6-accounts 6.3): the viewer-scoped
-	// GetItem is the FIRST store interaction and gates the mutation — hidden
-	// ≡ 404 (no existence oracle), any read error fails closed the same way,
-	// and the play enqueue never runs on this path.
+	// PRE-MINT VISIBILITY PRECHECK (6.3) — itemPlayback's doc.
 	if _, err := a.deps.Store.GetItem(ctx, chi.URLParam(r, "id"), v); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "item "+chi.URLParam(r, "id")+" not found", false)
 		return

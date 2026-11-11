@@ -10,24 +10,12 @@ import (
 )
 
 // visibleWhere is THE ONE visibility fragment every gated content read
-// applies (l6-accounts D3). It returns a WHERE conjunct over the row's
-// library-identity column — `library_id` on items/series/progress reads,
-// `id` on library reads — plus the bound args to append to the call.
-//
-// Shapes, keyed ONLY on Viewer.Admin (the see-all discriminator — System,
-// Admin, and LegacyDevice all carry it; the scope value shapes are not
-// distinguished):
-//
-//   - see-all (Admin true) → ("", nil): callers append NOTHING, so the SQL
-//     stays byte-identical to pre-accounts.
-//   - scoped user with a non-empty visible set → ("col IN (?,?,…)", args):
-//     the ids ride as BOUND int64 args, never interpolated into the SQL
-//     text — injection-safe by construction.
-//   - scoped user with an empty/nil set, or the ZERO Viewer → ("1=0", nil):
-//     fail closed — an authority-less principal sees no rows.
-//
-// This is the store-internal home of the fragment (4.2–4.4 thread it into
-// the reads; they add nothing new — same package). Never exported.
+// applies (l6-accounts D3): a WHERE conjunct over the row's library-identity
+// column plus the bound args to append — see-all (Viewer.Admin, the sole
+// discriminator) → ("", nil); scoped with a non-empty set → ("col IN
+// (?,?,…)", args), ids always BOUND, never interpolated; empty set or zero
+// Viewer → ("1=0", nil), fail closed. Ledger composition is D7, canonical at
+// ledgerSlotWhere.
 func visibleWhere(v access.Viewer, col string) (clause string, args []any) {
 	if v.Admin {
 		return "", nil
@@ -52,25 +40,30 @@ func visibleWhere(v access.Viewer, col string) (clause string, args []any) {
 	return b.String(), args
 }
 
-// ledgerSlotWhere is THE OWN-SLOT conjunct every per-user ledger read applies
-// (playback_progress / watched_items — l6-accounts D7, task 5.2), keyed on
-// the same see-all discriminator as visibleWhere. It states the ledger-read
-// scoping law:
+// ledgerSlotWhere is the OWN-SLOT conjunct every per-user ledger read
+// applies (playback_progress / watched_items) — and the CANONICAL home of
+// the ledger-scoping law (l6-accounts D7), stated once here:
 //
+//   - Every ledger read composes BOTH conjuncts: this one ("col = ?" over
+//     the table's user_id column) and the visibility one (visibleWhere over
+//     the row's library identity). Both fragments are "" exactly when
+//     v.Admin is true, so a caller can compose them with andVisible and
+//     detect "no conjuncts at all" from the empty result — the SQL then
+//     stays byte-identical to pre-accounts (the runtime-legacy law; zero-user
+//     mode included).
 //   - SEE-ALL viewer (Admin true — System, Admin, LegacyDevice) → ("", nil):
 //     ALL slots and ALL libraries. The learning and boot-backfill paths read
-//     across slots by design, and zero-user mode stays byte-identical to
-//     pre-accounts (the runtime-legacy law) — the clause is appended
-//     nowhere for them.
-//   - USER-scope viewer (and the zero Viewer) → ("col = ?", [v.UserID]):
-//     OWN slot only. Another user's rows never surface (own-slot), and rows
-//     in no-longer-granted libraries never leak existence (the visibility
-//     conjunct visibleWhere carries the other half — a ledger read is BOTH
-//     conjuncts together).
+//     across slots by design (global through System).
+//   - USER-scope viewer (and the zero Viewer, whose UserID 0 IS the legacy
+//     single-profile slot) → ("col = ?", [v.UserID]): OWN slot only —
+//     another user's rows never surface, and rows in no-longer-granted
+//     libraries never leak existence (hidden ≡ absent).
+//   - The write side keys the same way: ledger writes (PutProgress,
+//     InsertWatched, DeleteWatched) target (v.UserID, item_id), so each
+//     user's row is independent and legacy viewers land in the user_id=0
+//     slot.
 //
-// The two fragments are both "" exactly when v.Admin is true, so a caller
-// can compose them with andVisible and detect "no conjuncts at all" from the
-// empty result. Never exported.
+// Never exported.
 func ledgerSlotWhere(v access.Viewer, col string) (clause string, args []any) {
 	if v.Admin {
 		return "", nil
@@ -78,11 +71,10 @@ func ledgerSlotWhere(v access.Viewer, col string) (clause string, args []any) {
 	return col + " = ?", []any{v.UserID}
 }
 
-// andVisible appends a non-empty visibility clause onto an existing WHERE
-// conjunct list — "a = ?" becomes "a = ? AND <clause>". An empty clause (a
-// see-all viewer: System/Admin/LegacyDevice) returns the input unchanged so
-// the SQL stays byte-identical to pre-accounts. The clause's bound args are
-// appended by the caller AFTER the base conjunct's args (positional order).
+// andVisible appends a visibility clause onto a WHERE conjunct list; an
+// empty clause (see-all viewer) returns the input unchanged so the SQL
+// stays byte-identical to pre-accounts. The clause's args append AFTER
+// the base conjunct's (positional order).
 func andVisible(where, clause string) string {
 	if clause == "" {
 		return where

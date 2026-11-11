@@ -4,9 +4,6 @@
 package main
 
 // The release-decoration vocabulary (bracket-segment rules, whole-token
-// release-tag tables, group-tag shape rule) MOVED to pkg/releasename
-// (unified-parser box 1.1): one shared grammar every binary derives its
-// parsing from. The plugin's adapter surface is parseSeriesDir and
-// parseEpisodeFilename in serialparse.go — thin wrappers over the shared
-// package that keep this plugin's namespace keys, Match/apply rule, skip
-// reasons, and confidence semantics (full adapter surgery is box 2.1).
+// release-tag tables, group-tag shape rule) lives in pkg/releasename
+// (unified-parser box 1.1); the plugin's adapter surface is parseSeriesDir and
+// parseEpisodeFilename in serialparse.go.

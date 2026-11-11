@@ -30,13 +30,9 @@ var exiftoolTags = []string{
 
 // runExiftool runs `exiftool -j -n <selected tags> <absPath>` (arg-slice ONLY,
 // NEVER a shell — absPath is a single argument; a hostile filename cannot inject)
-// and returns the first JSON object as a tag map. EVERY failure (missing binary /
-// non-zero exit / timeout / non-JSON / empty array) is SOFT: returns an empty map
-// + a human-readable warning + nil error (AC-softfail; the caller yields an empty
-// namespace -> B1 no_data terminal -> cooldown -> settle). Mirrors probe
-// (plugins/base-scanner/ffprobe.go:29-53). Only a cancelled context surfaces as
-// an error to the caller (the B1 hard-fail invariant), handled by the caller via
-// ctx.Err() — this helper never returns a non-nil error today (INV3 soft-fail).
+// and returns the first JSON object as a tag map. EVERY failure is SOFT — an
+// empty map + a human-readable warning + nil error (SOFT-FAIL, doc.go). Mirrors
+// probe (plugins/base-scanner/ffprobe.go:29-53).
 func runExiftool(ctx context.Context, absPath string) (tags map[string]any, warning string) {
 	if _, err := exec.LookPath(exiftoolBin); err != nil {
 		return map[string]any{}, "exiftool not found on PATH"

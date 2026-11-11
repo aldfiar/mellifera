@@ -8,40 +8,26 @@ import (
 	"fmt"
 )
 
-// The tombstone-lifecycle adoption moves (tombstone-lifecycle D5): the two
-// ledger tables (playback_progress, watched_items) survive a tombstoned item
-// untouched — retained for identity adoption, never deleted — and these
+// The tombstone-lifecycle adoption moves (tombstone-lifecycle D5): the ledger
+// tables survive a tombstoned item untouched for identity adoption; these
 // transactions RE-KEY that state onto the item's identity-matched successor.
-// Both follow the same mechanics: one transaction, INSERT ... SELECT into the
-// target item for viewer slots that DON'T already exist there (NOT EXISTS per
-// (user_id) slot), then DELETE the source rows (no ghost stock — a retained
-// dead-id row would be re-consumed by the boot backfill and the ledger
-// janitor forever). The returned count is the MOVED-ROW count — the caller's
-// carry signal (a 0 means the candidate carried nothing). The live item's own
-// rows always win, including an explicit zero-position slot (an unwatched
-// reset — adopting over it would resurrect a state the viewer cleared); the
-// NOT EXISTS guards make every move idempotent and race-safe against a
-// viewer writing the live row mid-adoption (their write IS the target row;
-// the DELETE touches only the dead id). Table shapes are untouched — the
-// moves re-key rows, they never reshape them. A move's source and target are
-// always distinct ids — the enrich fire guard + derive-walk exclusion (D4
-// amendment) make a self-move unreachable — and the self-move guard makes it
-// harmless: from == to returns (0, nil) BEFORE any transaction, because the
-// self-move's NOT EXISTS insert would add nothing while the unconditional
-// DELETE would destroy that id's whole retained stock (task 2.6).
+// Shared mechanics and guards: one transaction, INSERT ... SELECT into the
+// target for viewer slots absent there (NOT EXISTS per (user_id) slot), then
+// DELETE the source rows (no ghost stock — a retained dead-id row would be
+// re-consumed by the boot backfill and the ledger janitor forever). The
+// returned count is the MOVED-ROW count — the caller's carry signal. The
+// live item's own rows always win, including an explicit zero-position slot;
+// the moves are idempotent and race-safe against a viewer writing the live
+// row mid-move (their write IS the target row; the DELETE touches only the
+// dead id). Table shapes are untouched. A self-move (from == to) returns
+// (0, nil) BEFORE any transaction: the NOT EXISTS insert would add nothing
+// while the unconditional DELETE would destroy that id's whole retained
+// stock (task 2.6).
 
 // MoveItemProgress moves every playback_progress row of fromItemID into
-// toItemID's absent viewer slots, returning the MOVED-ROW COUNT. Per viewer
-// slot: when toItemID already holds a row for that user_id — any row, a
-// positive position or an explicit zero-position unwatched-reset alike — the
-// live item's row wins and the source row is NOT moved (it is deleted with
-// the rest of the dead id's stock); when the slot is absent at the target,
-// the source row moves with position_seconds and updated_at verbatim. A
-// viewer writing toItemID mid-move is race-safe by construction: their write
-// is the target row, the NOT EXISTS guard sees it inside the same
-// transaction's serialization, and their dead-id row is simply deleted.
-// Idempotent: a re-run finds no source rows, inserts nothing, and returns 0.
-// Self-move guard: from == to returns (0, nil) with no transaction begun.
+// toItemID's absent viewer slots, returning the MOVED-ROW COUNT (shared
+// mechanics and guards: the file block above). position_seconds and
+// updated_at move verbatim.
 func (s *Store) MoveItemProgress(ctx context.Context, fromItemID, toItemID string) (int, error) {
 	if fromItemID == toItemID {
 		return 0, nil // a self-move would DELETE the id's own stock (task 2.6)
@@ -78,19 +64,11 @@ WHERE src.item_id = ?
 }
 
 // MoveItemWatched moves every watched_items ledger row of fromItemID into
-// toItemID's absent viewer slots, returning the MOVED-ROW COUNT. Each moved
-// row carries completed_at AND applied_at VERBATIM (an applied completion
-// never re-learns — the consumed-once law; an unapplied one learns exactly
-// once, now from the new item), library_id verbatim (same library by
-// construction), and series_relative_path re-pointed to seriesPath when it is
-// non-empty (derivable successor series) or kept at the source value when
-// empty ("" moves as NULL — the film/tv convention). The live item's own
-// ledger row wins its (user_id) slot: where toItemID already carries the
-// viewer's completion the source row is not moved, only deleted with the rest
-// of the dead id's stock. Idempotent, and
-// race-safe against a viewer completing the live item mid-move, exactly as
-// MoveItemProgress documents. Self-move guard: from == to returns (0, nil)
-// with no transaction begun.
+// toItemID's absent viewer slots, returning the MOVED-ROW COUNT (shared
+// mechanics and guards: the file block above). completed_at, applied_at and
+// library_id move verbatim (same library by construction);
+// series_relative_path re-points to seriesPath when non-empty and keeps the
+// source value when empty.
 func (s *Store) MoveItemWatched(ctx context.Context, fromItemID, toItemID, seriesPath string) (int, error) {
 	if fromItemID == toItemID {
 		return 0, nil // a self-move would DELETE the id's own stock (task 2.6)

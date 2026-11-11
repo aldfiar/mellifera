@@ -14,33 +14,29 @@ import (
 )
 
 // pluginSvcPlugin registers the domain Plugin service (Handshake/Health/Shutdown)
-// on the SAME gRPC server as the scanner capability. Mirrors
-// plugins/base-scanner/pluginsvc.go byte-for-byte in shape: without this service
-// the core's Manager lifecycle RPCs would fail and the end-to-end subprocess flow
-// (seam S5) would break. It is included in the PluginSet passed to sdk.Serve
-// alongside sdk.ScannerPlugin.
+// on the SAME gRPC server as the scanner capability — without it the Manager's
+// lifecycle RPCs fail (seam S5). Mirrors plugins/base-scanner/pluginsvc.go
+// byte-for-byte in shape.
 type pluginSvcPlugin struct {
 	goplugin.NetRPCUnsupportedPlugin
 }
 
-// GRPCServer registers the Plugin service on the shared gRPC server. go-plugin's
-// GRPCServer.Init calls this once per plugin in the set, wiring every service.
+// GRPCServer registers the Plugin service on the shared gRPC server (go-plugin
+// calls this once per plugin in the set).
 func (*pluginSvcPlugin) GRPCServer(_ *goplugin.GRPCBroker, s *grpc.Server) error {
 	pluginv1.RegisterPluginServer(s, &pluginServiceImpl{})
 	return nil
 }
 
-// GRPCClient is server-only: serial-scanner never acts as a core-side client.
-// Returns an error so a misuse fails loudly rather than silently. Satisfies the
-// GRPCPlugin interface.
+// GRPCClient is server-only: serial-scanner never acts as a core-side client —
+// a misuse fails loudly.
 func (*pluginSvcPlugin) GRPCClient(context.Context, *goplugin.GRPCBroker, *grpc.ClientConn) (interface{}, error) {
 	return nil, errors.New("serial-scanner is a server-only plugin")
 }
 
-// pluginServiceImpl is the domain Plugin service stub: a stable Handshake
-// advertising this scanner's capability, a serving Health, and a no-op Shutdown
-// (clean teardown is parent-driven: the Manager sends Shutdown then SIGTERM,
-// architecture §7.4; the go-plugin substrate owns process exit).
+// pluginServiceImpl is the domain Plugin service stub: a stable Handshake, a
+// serving Health, and a no-op Shutdown (teardown is parent-driven — Manager
+// sends Shutdown then SIGTERM, arch §7.4).
 type pluginServiceImpl struct {
 	pluginv1.UnimplementedPluginServer
 }
@@ -67,8 +63,7 @@ func (*pluginServiceImpl) Health(_ context.Context, _ *pluginv1.HealthRequest) (
 	return &pluginv1.HealthResponse{Status: pluginv1.HealthResponse_SERVING}, nil
 }
 
-// Shutdown acknowledges a graceful stop request. The actual process exit is
-// handled by the go-plugin substrate after the Manager's SIGTERM grace window.
+// Shutdown acknowledges a graceful stop request.
 func (*pluginServiceImpl) Shutdown(_ context.Context, _ *pluginv1.ShutdownRequest) (*pluginv1.ShutdownResponse, error) {
 	return &pluginv1.ShutdownResponse{}, nil
 }

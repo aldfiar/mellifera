@@ -10,40 +10,6 @@
 // ledger state transitions complete the domain. No HTTP lives here; handlers
 // translate its errors (404/409) and shapes.
 //
-// # Public API (5 counted symbols — grouped errors excluded by the check.sh
-// counter, the pairing grouped-errors precedent)
-//
-//   - Service: the mechanism, one injectable value (store + clock). Methods:
-//     Create, Get, SetRole, SetDisabled, SetPrefs, DeleteUser (last-user
-//     guard; the one-tx cascade kills the user's session credentials,
-//     playback_progress + watched_items rows, and group_members rows with
-//     the user), ResetPassword (rehash; auto-revokes the user's sessions in
-//     the same tx), VerifyPassword (argon2id credential check, no
-//     disabled/user-existence signal — mint folds it into one uniform auth
-//     failure), CreateGroup, GetGroup, RenameGroup, DeleteGroup (membership
-//     cascade), AddUser/RemoveUser, AddCollection/RemoveCollection,
-//     SetGroupDoc, CollectionOrder, MintSession (the ONLY argon2id password
-//     check; wrong password / unknown user / disabled all collapse into
-//     ErrAuth), VerifySession (token → user facts, disabled re-checked —
-//     fails closed into the unknown-session error), RevokeSession (deletes
-//     only the presented session row, kind-guarded from devices), HasUsers
-//     (the legacy-mode gate), ResolveViewer (ONE grant query, live library
-//     intersection — orphan-tolerant; MUTE-WINS chain-mute merge; admin →
-//     all-seeing; the legacy collapse is the CALLER's law — viewerFor,
-//     api task 6.1), AdoptLegacyRows (one-shot newer-wins-by-stamp merge of
-//     the legacy user_id=0 ledger slots into a user's slots — progress by
-//     updated_at, watched by completed_at; slot 0 drains; rerun a no-op).
-//   - User: the row as the domain sees it — the password hash is material,
-//     never plaintext; Prefs is the opaque JSON document passthrough.
-//   - Group: the admin-composed named scope — Doc is the schema-versioned
-//     operator document (per-source mutes, D8), stored verbatim;
-//     CollectionOrder: one user's resolved display order (min position, tie
-//     by lower group id).
-//   - Session: a session credential and the principal facts it resolves to —
-//     Token set only at MintSession (raw, shown once; SHA-256 at rest),
-//     VerifySession returns it empty.
-//   - NewService: the constructor (nil now defaults to time.Now).
-//
 // Errors: ErrLastUser (grouped var — budget-exempt) refuses deleting the
 // sole user; ErrAuth (grouped var — budget-exempt) is the uniform mint
 // refusal (D6: no enumeration); unknown users surface as wrapped

@@ -21,9 +21,6 @@
 //     another namespace, never _provenance/_view/_stages (those are core-stamped).
 //   - Cyrillic titles are first-class — the moved regexes never assume ASCII.
 //
-// PUBLIC API  (package main has no exported symbols; main wires sdk.Serve)
-//   - func main()
-//
 // INVARIANTS
 //   - STATELESS SUBPROCESS (arch §0.2). No state between RPCs; all output is a
 //     pure function of the request. A crash loses no in-flight work (the core

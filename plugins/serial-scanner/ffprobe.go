@@ -16,29 +16,21 @@ const (
 	probeTimeout = 30 * time.Second // per-file ffprobe deadline (Q11/D13)
 )
 
-// probe runs ffprobe on absPath and returns its verbatim JSON stdout. Replicated
-// from plugins/base-scanner/ffprobe.go (episodes are probed EXACTLY like the
-// shipped video walk — design.md D2 rule 2): args are passed as a slice to
-// exec.CommandContext — NEVER a shell — so a hostile filename cannot inject
-// command syntax (golang-security; kickoff hard rule).
-//
-// Every failure mode is SOFT (AC-6): on a missing binary, non-zero exit, ctx
-// deadline, or non-JSON stdout it returns empty bytes + a human-readable warning
-// and a nil err — the caller still emits the episode so it is identified without
-// ffprobe data. The err return is part of the signature and reserved for
-// caller-fatal signals; it is always nil today because INV3 makes every ffprobe
-// problem a soft-fail. Sidecars NEVER reach this function (they are classified,
-// never probed).
+// probe runs ffprobe on absPath and returns its verbatim JSON stdout.
+// Replicated from plugins/base-scanner/ffprobe.go (episodes are probed exactly
+// like the shipped video walk — design.md D2 rule 2). Args go as a slice —
+// NEVER a shell — so a hostile filename cannot inject command syntax
+// (golang-security). Every failure is SOFT (AC-6, INV3): warning + nil err, the
+// caller still emits the episode. Sidecars never reach this function —
+// classified, never probed.
 func probe(ctx context.Context, absPath string) ([]byte, string, error) {
 	if _, err := exec.LookPath(ffprobeBin); err != nil {
 		return nil, "ffprobe not found on PATH", nil
 	}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	// Arg-slice ONLY. absPath is a single argument; never shelled out.
-	// -show_chapters adds container chapters to the same verbatim JSON blob
-	// (packaged-playback Interfaces §5: chapters ride the stored ffprobe facts;
-	// no new parsing here — the blob is persisted verbatim).
+	// -show_chapters rides the same verbatim JSON blob (packaged-playback
+	// Interfaces §5) — persisted verbatim, no parsing here.
 	cmd := exec.CommandContext(pctx, ffprobeBin,
 		"-v", "quiet",
 		"-print_format", "json",

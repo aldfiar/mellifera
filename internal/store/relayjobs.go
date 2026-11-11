@@ -23,26 +23,16 @@ import (
 
 // relayJobClaimSQL is the ONE conditional statement behind every claim
 // (design D3): the WHERE id = (SELECT ...) subselect picks the oldest
-// claimable row — pending, or claimed with an expired lease — and the single
-// UPDATE flips it to claimed with the incoming principal's stamps. SQLite's
-// serialized writes make concurrent claimants race-free by construction: the
-// loser's update matches 0 rows. RETURNING hands back the claimed row so the
-// winner is known without a second statement. No SELECT-then-UPDATE two-step
-// exists anywhere on this path. The lease comparison is RFC3339Nano TEXT
-// ordering; its only skew is sub-second trailing-zero truncation — immaterial
-// at the minute-scale leases the caller hands out.
-//
-// The %s slot takes the claimant's visibility conjunct (relayClaimWhere): the
-// empty string for a see-all viewer — the predicate is then the pre-accounts
-// claim SQL byte-for-byte — or "(library_id = 0 OR library_id IN (?,?,…))"
-// for a scoped principal. The slot rides INSIDE the claimability subselect,
-// so a job outside the claimant's visible set is never picked: no descriptor
-// and no title can cross the conjunct, and an invisible library's job reads
-// as nothing-to-claim (invisible ≡ absent — the caller answers 204, learning
-// nothing about the parked row). When a conjunct is appended the claimability
-// OR is parenthesized first — AND binds tighter than OR, and the conjunct
-// must gate the WHOLE claimability, not just its pending half (a claimed row
-// whose lease lapses re-enters the pool under the same visibility law).
+// claimable row (relayClaimableSQL) and the single UPDATE flips it to
+// claimed with the incoming principal's stamps — SQLite's serialized writes
+// make concurrent claimants race-free (the loser matches 0 rows); RETURNING
+// hands back the winner without a second statement. The %s slot takes the
+// claimant's visibility conjunct (relayClaimWhere), INSIDE the claimability
+// subselect: a job outside the claimant's visible set is never picked — an
+// invisible library's job reads as nothing-to-claim (invisible ≡ absent).
+// When a conjunct is appended the claimability OR is parenthesized first —
+// AND binds tighter than OR, and the conjunct must gate the WHOLE
+// claimability (a lapsed-lease row re-enters under the same visibility law).
 const relayJobClaimSQL = `
 UPDATE relay_jobs SET
   state                = 'claimed',
@@ -64,33 +54,15 @@ RETURNING id, purpose, row_id, library_id, plugin_id, plan, state,
 // inside the claim predicate, the pairing precedent).
 const relayClaimableSQL = "state = 'pending' OR (state = 'claimed' AND lease_until < ?)"
 
-// relayClaimWhere is the relay claim's visibility conjunct over relay_jobs
-// (l6-accounts 11.1 — the same scoping law the content reads apply through
-// visibleWhere, plus the 0-job disjunct). It returns the WHERE fragment to
-// splice into relayJobClaimSQL's %s slot plus the bound args to append after
-// the claim's own stamps.
-//
-// The conjunct is `(library_id = 0 OR library_id IN (claimant's visible
-// set))`: a 0-job (search — library_id 0) carries NO titles, so it is
-// provably safe to hand to any authenticated principal, while a
-// library-backed job must sit inside the claimant's grant union.
-//
-// Shapes, keyed on the SAME see-all discriminator as visibleWhere:
-//
-//   - see-all (Admin true: System, Admin, LegacyDevice) → ("", nil): the
-//     all-seeing pass is the DISTINCT empty-clause form, reachable only
-//     through v.Admin — never through a visible set's shape. The spliced SQL
-//     is byte-identical to pre-accounts.
-//   - scoped principal with a nil OR empty visible set → ("library_id = 0",
-//     nil): nil and empty are the SAME case — both mean "no grants". Fail
-//     closed: such a claimant sees only the title-free 0-jobs, never a
-//     library-backed row. The widening is structurally impossible — the
-//     empty grant set produces a NARROWER conjunct, never the empty clause.
-//   - scoped principal with a non-empty visible set → ("(library_id = 0 OR
-//     library_id IN (?,?,…))", args): the ids ride as BOUND int64 args,
-//     never interpolated SQL text (injection-safe, the visibleWhere law).
-//
-// Never exported — the claim path is its only consumer.
+// relayClaimWhere is the claim's visibility conjunct over relay_jobs
+// (l6-accounts 11.1) — the WHERE fragment for relayJobClaimSQL's %s slot
+// plus the bound args to append after the claim's own stamps. Same shape
+// law as visibleWhere (D3/D7 — canonical there); the relay delta is the
+// 0-job disjunct: "(library_id = 0 OR library_id IN (?,?,…))" — a 0-job
+// (search, library_id 0) carries NO titles, so it is safe for any
+// authenticated principal while library-backed jobs must sit in the
+// claimant's grant union. A nil or empty visible set fails closed to
+// "library_id = 0" — a NARROWER conjunct, never the empty clause.
 func relayClaimWhere(v access.Viewer) (clause string, args []any) {
 	if v.Admin {
 		return "", nil
@@ -118,8 +90,8 @@ func relayClaimWhere(v access.Viewer) (clause string, args []any) {
 // plan is marshaled to the JSON blob column; state/consumed/result ride the
 // column defaults (pending / 0 / NULL). The caller owns the clock: a zero
 // CreatedAt is stamped now (the PutItem precedent). Purpose, row and plugin
-// ids are not validated — the store is value-agnostic, the caller owns the
-// enrich|search vocabulary.
+// ids are not validated — value-agnostic store (ERROR-FLOOR LAW, doc.go #
+// Invariants); the caller owns the enrich|search vocabulary.
 func (s *Store) CreateRelayJob(ctx context.Context, job relay.RelayJob) (int64, error) {
 	plan, err := json.Marshal(job.Plan)
 	if err != nil {
@@ -144,17 +116,13 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 	return id, nil
 }
 
-// ClaimOldestRelayJob claims the oldest claimable job for principalHash: the
-// single conditional UPDATE (relayJobClaimSQL, its %s slot spliced with
-// v's relayClaimWhere conjunct) picks and flips the row atomically, so
-// exactly one concurrent claimant wins and every loser reads not-found
-// (found=false, nil error) — the caller never spins. The claim pool is
-// scoped to v's visible set (l6-accounts 11.1): a job from a library outside
-// it is never handed out — it reads as nothing claimable, and stays parked
-// for principals whose set carries it. See-all viewers (v.Admin) claim the
-// unfiltered pool, byte-identical to pre-accounts. now is the caller's clock
-// (stamps claimed_at, bounds lease expiry); leaseUntil is the handout the
-// caller computes from its TTL.
+// ClaimOldestRelayJob claims the oldest claimable job for principalHash:
+// the single conditional UPDATE (relayJobClaimSQL spliced with
+// relayClaimWhere(v)) picks and flips the row atomically — exactly one
+// concurrent claimant wins, every loser reads (false, nil), and a job
+// outside v's visible set reads as nothing claimable (l6-accounts 11.1).
+// See-all viewers claim the unfiltered pool, byte-identical to
+// pre-accounts; now and leaseUntil are the caller's clock.
 func (s *Store) ClaimOldestRelayJob(ctx context.Context, principalHash string, v access.Viewer, now, leaseUntil time.Time) (relay.RelayJob, bool, error) {
 	clause, visArgs := relayClaimWhere(v)
 	claimable := relayClaimableSQL
@@ -204,22 +172,14 @@ const relayClaimReleaseSQL = `UPDATE relay_jobs SET
 WHERE id = ? AND state = 'claimed' AND claim_principal_hash = ?`
 
 // CompleteRelayJob moves a claimed job to the caller's terminal state (the
-// done|failed vocabulary is the caller's) and stores its result. The guard is
-// the SAME principal hash and a LIVE lease — a lost or expired claim is a
-// wrapped sql.ErrNoRows and the row is left untouched (the api layer maps it
-// to 409). completed_at is stamped with the caller's now; result_bytes is
-// derived from the stored body length — the caller never passes it.
-//
-// v is the claimant's CURRENT viewer (l6-accounts 11.2 — the RESULT-time
-// re-check): relayClaimWhere(v)'s conjunct ANDs INTO the guard, so the row's
-// library_id is tested at statement time inside the same atomic UPDATE — a
-// principal narrowed since the claim can never ingest, not even in a race
-// with a concurrent grant change. A see-all viewer (v.Admin) splices the
-// empty clause: the guard is the pre-accounts SQL byte-for-byte. When the
-// conjunct refuses a live claim, the claim is RELEASED back to the pool
-// (refuseRelayCompletion) and the same wrapped sql.ErrNoRows carries a
-// narrowed note — the one 409 family upstream, and an eligible claimant can
-// take the job from pending.
+// done|failed vocabulary is the caller's) and stores its result;
+// result_bytes derives from the stored body length. The guard is the SAME
+// principal hash, a LIVE lease, and v's CURRENT visibility conjunct
+// (l6-accounts 11.2 — the result-time re-check inside the same atomic
+// UPDATE: a principal narrowed since the claim can never ingest; see-all
+// splices the empty clause, pre-accounts SQL byte-for-byte). A refusal
+// wraps sql.ErrNoRows — the one 409 family upstream (ERROR-FLOOR LAW,
+// doc.go # Invariants); completed_at is stamped with the caller's now.
 func (s *Store) CompleteRelayJob(ctx context.Context, id int64, principalHash, state string, v access.Viewer, result relay.RelayResult, now time.Time) error {
 	blob, err := json.Marshal(result)
 	if err != nil {
@@ -251,20 +211,15 @@ WHERE `+guard,
 	return nil
 }
 
-// refuseRelayCompletion classifies a 0-row completion (uncounted — the
-// l6-accounts 11.2 release is the flow that demanded it). A stale, foreign,
-// or unknown claim is refused with the wrapped sql.ErrNoRows and the row left
-// untouched (the pre-accounts law — a foreign post must never free another
-// principal's live claim). A claim LIVE under this principal whose visibility
-// conjunct refused — the claimant narrowed since the claim — is RELEASED to
-// the claim pool: state back to pending, the claim stamps cleared
-// (relayClaimReleaseSQL), so a principal whose visible set still carries the
-// library can claim it. The release re-checks state+hash in its WHERE: a row
-// re-claimed meanwhile (the lease lapsed in the classify window) is left to
-// its new holder. Both shapes return the wrapped sql.ErrNoRows — the one 409
-// family upstream; which of the two fired is never observable there. A
-// see-all viewer (v.Admin) is never narrowed relative to a library: straight
-// refusal, no classification read.
+// refuseRelayCompletion classifies a 0-row completion (l6-accounts 11.2).
+// A stale, foreign, or unknown claim is refused — wrapped sql.ErrNoRows,
+// row untouched (a foreign post never frees another principal's live
+// claim). A claim LIVE under this principal whose visibility conjunct
+// refused (the claimant narrowed since the claim) is RELEASED to the pool
+// via relayClaimReleaseSQL, re-checking state+hash against a re-claim.
+// Both shapes return the wrapped sql.ErrNoRows; which fired is never
+// observable upstream. A see-all viewer is never narrowed: straight
+// refusal.
 func (s *Store) refuseRelayCompletion(ctx context.Context, id int64, principalHash string, v access.Viewer, now time.Time) error {
 	if v.Admin {
 		return fmt.Errorf("store: complete relay job %d: %w", id, sql.ErrNoRows)
@@ -284,8 +239,9 @@ func (s *Store) refuseRelayCompletion(ctx context.Context, id int64, principalHa
 }
 
 // MarkRelayConsumed flags a job's stored result as consumed (the consult read
-// that fed it to Convert — D4). An unknown id is a wrapped sql.ErrNoRows;
-// re-marking an already-consumed row is a harmless rewrite, never an error.
+// that fed it to Convert — D4). An unknown id floors per the ERROR-FLOOR LAW
+// (doc.go # Invariants); re-marking an already-consumed row is a harmless
+// rewrite, never an error.
 // Whether the row was claimable/done first is the caller's transition graph —
 // the store validates none (the SetPairingStatus precedent).
 func (s *Store) MarkRelayConsumed(ctx context.Context, id int64) error {

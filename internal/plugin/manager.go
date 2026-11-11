@@ -270,7 +270,7 @@ func (m *Manager) RequiredSecrets(pluginID string) []string {
 	return secrets
 }
 
-// errNotLoaded is the sentinel returned by Status/Stop for an unknown plugin.
+// notLoadedErr is the sentinel returned by Status/Stop for an unknown plugin.
 func notLoadedErr(pluginID string) error {
 	return fmt.Errorf("plugin: %q not loaded", pluginID)
 }

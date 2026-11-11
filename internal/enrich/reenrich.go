@@ -22,40 +22,24 @@ const reenrichOwner = "reenrich"
 const reenrichRetryDelay = 20 * time.Millisecond
 
 // ReenrichSource is the explicit, operator-triggered refresh of ONE plugin's
-// namespace over the scoped rows (enrichment D-1/D-2 — the change's only +1
-// exported symbol). Empty rowIDs scopes the whole library: every row carrying
-// the plugin's namespace or a within-cooldown ledger row for the plugin (the
-// rows a refresh can change — a row with neither has nothing to refresh).
-// Explicit rowIDs scope exactly the named rows — plus, when a named row is a
-// SERIES row, that series' episode items (the routed episode-title side-output
-// must refresh with its series or it goes stale forever; episode-titles D6).
-//
-// Per scoped row, under that row's own non-blocking lease (the workers' lease
-// primitive — a held row is NEVER stripped mid-flight, because persistRow on
-// the worker path is unconditional and would silently resurrect an unleased
-// strip): purge doc.sources.<pluginID>, the _provenance entries with
-// plugin_id == pluginID, and the _view entries with source == pluginID; clear
-// the plugin's ledger row (the explicit-action cooldown bypass — automatic
-// paths never bypass); register the (row, plugin) pair as explicitly-triggered
-// so its terminal failure cools flat (explicitSet, enrichment 3.4). The purge
-// NEVER touches doc.identifiers (the id anchor, enrichment D-4) or any other
-// plugin's namespace, and title_overrides is structurally unreachable (a
-// separate control table).
-//
-// Rows the sweep actually stripped (the namespace was present) flip to pending
-// via the refresh transition (enrichment D-3); rows with nothing to strip keep
-// their status, so pending stays a truthful will-fetch signal. Lease-held rows
-// are re-attempted once after reenrichRetryDelay — the one bounded retry pass
-// (enrichment D-2); rows that stay held are counted as deferred and keep their
-// namespace intact. The sweep finishes with Notify(libraryID) so the unchanged
-// derivation gates re-derive the stripped pairs — no predicate extension, no
-// new trigger machinery.
-//
-// stripped counts scoped rows processed to completion (namespace removed, or
-// nothing to remove for an explicitly named row); deferred counts rows that
-// stayed lease-held through the retry pass. Rows deleted between scope
-// resolution and strip are counted as neither. A store read failure aborts
-// scope resolution with the error; per-row failures soft-fail (skipped).
+// namespace over the scoped rows (enrichment D-1/D-2). Empty rowIDs scopes
+// the whole library: every row carrying the plugin's namespace or a
+// within-cooldown ledger row. Explicit rowIDs scope exactly the named rows,
+// plus a named SERIES row's episode items (episode-titles D6 — the routed
+// side-output must refresh with its series or it goes stale forever). Per
+// scoped row, under the row's own non-blocking lease (a held row is NEVER
+// stripped mid-flight — persistRow is unconditional and would resurrect an
+// unleased strip): purge the plugin's sources/_provenance/_view entries,
+// clear its ledger row (the explicit-action cooldown bypass, enrichment 3.4),
+// and register the pair explicitly-triggered (explicitSet). The purge never
+// touches doc.identifiers (enrichment D-4). Rows actually stripped flip to
+// pending (D-3); rows with nothing to strip keep their status; lease-held
+// rows get the one bounded retry pass (reenrichRetryDelay, D-2), then count
+// as deferred with their namespace intact. The sweep finishes with
+// Notify(libraryID) — no predicate extension, no new trigger machinery.
+// stripped counts rows processed to completion, deferred rows that stayed
+// held; rows deleted between scope and strip count as neither; per-row
+// failures soft-fail.
 func (q *Queue) ReenrichSource(ctx context.Context, libraryID int64, pluginID string, rowIDs ...string) (stripped, deferred int, err error) {
 	scope, err := q.reenrichScope(ctx, libraryID, pluginID, rowIDs)
 	if err != nil {
@@ -118,17 +102,11 @@ func (q *Queue) reenrichScope(ctx context.Context, libraryID int64, pluginID str
 	return scope, nil
 }
 
-// scopeWithEpisodes grows an explicit rowID scope: a named SERIES row also
-// scopes its episode items (QueryItemsBySeries — the same directory-backed
-// read the routing uses; a routed sources.<plugin> on an episode doc is the
-// series run's side-output and must refresh with the series strip or it goes
-// stale forever, episode-titles D6 — the pair gate skips on namespace
-// presence, so nothing else would ever rewrite it). A row id naming an item
-// (or a gone row) cascades nothing — item-only explicit scopes stay exactly
-// as before; a file-backed series cascades nothing (the routing never routes
-// episode docs onto one). The strip itself is the unchanged per-row purge;
-// this only widens WHO is scoped. Order-preserving, deduplicated (a caller
-// naming both a series and one of its episodes strips each row once).
+// scopeWithEpisodes grows an explicit rowID scope: a named directory-backed
+// SERIES row also scopes its episode items (episode-titles D6 — the pair gate
+// skips on namespace presence, so nothing else would ever rewrite a routed
+// episode doc). Item ids, gone rows, and file-backed series cascade nothing.
+// Order-preserving, deduplicated.
 func (q *Queue) scopeWithEpisodes(ctx context.Context, rowIDs []string) []string {
 	scope := make([]string, 0, len(rowIDs))
 	seen := make(map[string]struct{}, len(rowIDs))

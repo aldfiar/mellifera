@@ -15,37 +15,19 @@ import (
 
 // ResolveViewer resolves ONE user principal's per-request authority scope
 // (accounts design.md §2): the UNION of the user's groups' member
-// Collections, intersected LIVE with the libraries table, with the groups'
-// chain mutes merged MUTE-WINS on top. It runs ONCE per request — the api's
-// viewerFor is the production caller (task 6.1).
-//
-// isAdmin is the CALLER-passed ROLE fact (an admin-role user, or the env
-// admin): the all-seeing access.Admin() Viewer comes back immediately —
-// grants and mutes are never queried, an admin is never narrowed.
-//
-// The grant work is ONE query: group_members ⋈ group_collections (the
-// union) joined to groups (the doc_json mutes) and to libraries (the live
-// intersection, D5). A grant row whose library row is gone — deleted while
-// the grant stayed — is ORPHAN-TOLERANT: it joins to nothing, is skipped
-// silently, and never errors (the store's DeleteLibrary cascade stays
-// untouched; the stale grant row is harmless and invisible). A user in no
-// group — or in groups carrying no live collections — resolves to the
-// ZERO-VISIBLE access.User: an EMPTY visible set (never the zero Viewer),
-// with UserID carried so ledger writes stamp the right slot; the store's
-// visibility fragment turns the empty set into `1=0` — fail closed.
-//
-// Mutes (D8) parse ONLY the doc document's "mutes" vocabulary:
-// {"mutes": {pluginID: true}} — unknown keys read as absent, and a
-// MALFORMED document skips that group's mutes silently (no error; the
-// group's grants still resolve — a broken operator document must never
-// break visibility). MUTE-WINS across groups: muted in ANY of the user's
-// groups = muted (a group without a mute never lifts another's).
-//
-// Runtime-legacy collapse (design §1) is DECIDED BY THE CALLER, not here:
-// when Service.HasUsers(ctx) is false, viewerFor collapses every principal
-// (including this method's result) to today's unrestricted scope. This
-// method always resolves the scoped truth; its tests run with users
-// present, and it performs no HasUsers probe of its own.
+// Collections intersected LIVE with the libraries table, chain mutes merged
+// MUTE-WINS on top (D8). isAdmin is the CALLER-passed ROLE fact — the
+// all-seeing access.Admin() comes back immediately, grants never queried.
+// A grant row whose library row is gone joins to nothing and is skipped
+// silently (orphan-tolerant, D5); a user in no group — or in groups with no
+// live collections — resolves to the ZERO-VISIBLE access.User: an EMPTY
+// visible set (never the zero Viewer) with UserID carried so ledger writes
+// stamp the right slot; the store's fragment turns the empty set into
+// `1=0` — fail closed. A MALFORMED group doc skips that group's mutes
+// silently — a broken operator document must never break visibility.
+// Runtime-legacy collapse is DECIDED BY THE CALLER (design §1 —
+// viewerFor's HasUsers probe); this method always resolves the scoped
+// truth and performs no probe of its own.
 func (s *Service) ResolveViewer(ctx context.Context, userID int64, isAdmin bool) (access.Viewer, error) {
 	if isAdmin {
 		return access.Admin(), nil
@@ -100,13 +82,10 @@ WHERE gm.user_id = ?`, userID)
 	return access.User(userID, ids, mutes), nil
 }
 
-// mergeMutes parses the collected group documents and merges their "mutes"
-// MUTE-WINS: an entry lands true when ANY group mutes the plugin; false and
-// absent entries never write. A document that does not unmarshal — or whose
-// "mutes" is not an object of bools — is skipped whole, silently (the
-// documented malformed-doc decision: visibility never depends on doc
-// hygiene). The "mutes" key is the ONLY vocabulary read here; every other
-// document key is ignored.
+// mergeMutes merges the collected group documents' "mutes" MUTE-WINS: an
+// entry lands true when ANY group mutes the plugin. A document that does
+// not unmarshal — or whose "mutes" is not an object of bools — is skipped
+// whole, silently (visibility never depends on doc hygiene).
 func mergeMutes(docs map[int64]string) map[string]bool {
 	mutes := map[string]bool{}
 	for _, doc := range docs {

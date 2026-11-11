@@ -30,9 +30,6 @@
 //     scanner capability, so the core's Manager can drive lifecycle over the
 //     shared gRPC connection.
 //
-// PUBLIC API  (package main has no exported symbols; main wires sdk.Serve)
-//   - func main()
-//
 // INVARIANTS
 //   - SERIAL RECORD FIRST. The serial record is emitted before its episodes —
 //     the drain creates the series row before the episode items (design.md D2

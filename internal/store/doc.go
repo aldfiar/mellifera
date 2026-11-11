@@ -14,89 +14,6 @@
 // small set of generated-column paths defined at migration time and never
 // parses the document body in Go.
 //
-// # Public API (12 symbols — WARN >8, <12; pre-justified, R10)
-//
-//   - Store: wraps *sql.DB; the single SQLite connection owner.
-//
-//   - Item: a persisted media item (document + denormalized query fields +
-//     a core-managed lifecycle status; the canonical set new/pending/parsed/
-//     enriched/failed/deleted is owned by internal/enrich, not store).
-//
-//   - Series: a persisted serial-level entity (serials-library) keyed by
-//     (library_id, relative_path) with the SAME opaque-document discipline as
-//     items (INV3 applies verbatim — the store never parses a series document).
-//
-//   - SeriesBackings: the two backing-kind constants QueryItemsBySeries takes
-//     as a plain argument (the store never derives a backing from the document).
-//
-//   - Library: a configured scan root bound to a module.
-//
-//   - FolderCount: one depth-1 item-path prefix + its count (LibraryFolders).
-//
-//   - Open: opens SQLite, sets WAL, runs idempotent migrations, returns *Store.
-//
-//   - Close: releases the database handle.
-//
-//   - DB: returns the *sql.DB for trusted internal consumers (seam S10).
-//
-//   - CreateLibrary: inserts a library row (optional description), returns its id.
-//
-//   - GetLibrary: loads a library by id.
-//
-//   - UpdateLibrary: partial display_name/description/streams_enabled/
-//     naming_group_style/naming_element_name update (nil = unchanged; a
-//     non-nil "" on a naming column stores the module-default marker).
-//
-//   - LibrarySummary: constant-time item count + last-update stamp (404-able).
-//
-//   - LibraryFolders: depth-1 path prefixes + counts, path-ordered (404-able).
-//
-//   - GetItem: loads an item by id.
-//
-//   - PutItem: upserts an item keyed by file_id (idempotent re-scan).
-//
-//   - QueryItems: lists items for a library with LIMIT/OFFSET; a non-empty
-//     status arg filters by exact lifecycle-state match (empty = all statuses).
-//
-//   - PutSeries/GetSeries/QuerySeries/ListSeriesIDs/QueryItemsBySeries: the
-//     series CRUD set (methods — outside the symbol budget). PutSeries upserts
-//     by (library_id, relative_path) and mints the deterministic
-//     ser_<libraryID>_<sha16hex16(relative_path)> id; QueryItemsBySeries
-//     derives episodes by backing (exact match vs prefix + depth-1 filter)
-//     without a join column.
-//
-//   - PairingRequest: one device-pairing request row (device-pairing D6); the
-//     lifecycle pending → approved | denied | expired → consumed is owned by
-//     internal/pairing — expiry is lazy on read, the store never sweeps.
-//
-//   - DeviceToken: one paired-device credential row (accounts D6 — lives in
-//     credentials kind='device') — the SHA-256 hash of the bearer token only,
-//     never the raw value (device-pairing D4); revocation = DeleteDevice.
-//
-//   - CreatePairingRequest/GetPairingRequest/SetPairingStatus/
-//     ListPendingPairings/InsertDeviceCredential/LookupDeviceCredentialByHash/
-//     ListDevices/DeleteDevice: the pairing control-table CRUD set (methods —
-//     outside the symbol budget). The legacy device_tokens table is dormant:
-//     migrateDeviceTokens copies it into credentials once at Open
-//     (hash-preserving, guarded by token_hash), and nothing writes it after.
-//
-//   - UpsertArtOverride/GetArtOverride/DeleteArtOverride: the per-entity
-//     artwork-selection set, and InsertArtFetch/LookupArtFetch/DeleteArtFetch/
-//     ListArtFetchRefs: the url-hash fetch-record set whose ListArtFetchRefs
-//     is the artwork GC reference union (artwork). Methods — outside the
-//     symbol budget; primitive string signatures only (no new exported
-//     types), the store never parses an art value.
-//
-//   - InsertWatched/ListWatched/ListUnappliedWatched/ApplyTagWeights/
-//     ListTagWeights:
-//     the recommendation-sorting control set (methods — outside the symbol
-//     budget; primitive signatures, no new exported types, the art.go
-//     precedent). watched_items is the completion ledger whose applied_at
-//     IS NULL rows ARE the learning queue (the derived-work posture, no
-//     jobs table); tag_weights holds the learned affinity. The l6-accounts
-//     ledger rebuild (2.3) gave watched_items a user_id column — per-user
-//     slots, the legacy rows collapsing to user_id 0 until adopted.
-//
 // # Invariants
 //
 //   - INV1: PARAMETERIZED SQL ONLY. Every value flows through ? placeholders;
@@ -114,12 +31,27 @@
 //     serials-library series table (plain columns, NO generated columns) —
 //     additively (CREATE ... IF NOT EXISTS). Methods for reserved tables
 //     (RecordProgress/GetResume) are DEFERRED to a later feature.
-//   - INV5: store imports stdlib + modernc.org/sqlite only. It MAY NOT import
-//     any internal/*, any proto, or pkg/sdk — it is the bottom of the stack
-//     (contracts.md §10 import map).
+//   - INV5: store is the bottom of the stack (contracts.md §10 import map):
+//     stdlib + modernc.org/sqlite, plus exactly two sanctioned seams —
+//     internal/access for the Viewer vocabulary and internal/relay for the
+//     relay descriptor vocabulary. Every other internal/* package, proto,
+//     and pkg/sdk sits above it.
 //   - INV6: 12 exported symbols (11 types + 1 func), AT the 12 hard-fail
 //     ceiling (device-pairing D6 — the two pairing row structs are the whole
 //     addition; future store growth goes through the S10 DB() seam or a trim
 //     pass). The DB accessor is the seam-S10 connection share for
 //     internal/module; store remains the sole opener/closer.
+//   - ERROR-FLOOR LAW: absence floors, it never invents state and never
+//     leaks existence. A write whose parent row is missing or hidden
+//     surfaces a wrapped sql.ErrNoRows with NOTHING written (hidden ≡
+//     unknown); single-row reads floor the same way and the api layer maps
+//     that error to 404 (409 on the relay completion guard); orphan-tolerant
+//     joins — a row whose parent item/library is gone — read as absent
+//     (ErrNoRows for single-row reads, an empty non-nil slice for lists),
+//     so a hidden or reaped row is indistinguishable from a missing one.
+//     The same honesty runs on content: the store stays VALUE-AGNOSTIC
+//     about column vocabularies — lifecycle sets, tag rules, clocks,
+//     transition graphs, and config documents belong to the callers (INV3
+//     is the same discipline for documents). Sites restating these floors
+//     point here instead of re-narrating.
 package store

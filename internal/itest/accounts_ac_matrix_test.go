@@ -4,85 +4,45 @@
 // QA black-box AC matrix for l6-accounts (11.5): every endpoint class × every
 // principal kind, over REAL cmd/mellifera server subprocesses (the
 // qaSerialStartServer harness — production middleware, viewerFor, the wired
-// Deps.Identity), asserting the SHIPPED spec deltas' outcomes:
+// Deps.Identity). Spec floor: accounts "Grant-based default visibility" +
+// "Runtime legacy mode and the one-way door", media-serving "Playback
+// visibility pre-check", playback-progress "The write lands in the caller's
+// own slot" + "An invisible item answers unknown" + "Continue rows follow the
+// viewer", client-relayed-fetch "An invisible library's job is never handed
+// out" + "Nothing to claim".
 //
-//   - accounts "Grant-based default visibility" — hidden ≡ 404 on direct
-//     routes, 200-empty on listing slots, never 403, never an existence
-//     signal; see-all kinds carry every library.
-//   - media-serving "Playback visibility pre-check" — a hidden item answers
-//     404 not_found on BOTH /play and /playback (no token, no closure).
-//   - playback-progress "The write lands in the caller's own slot" /
-//     "An invisible item answers unknown" / "Continue rows follow the
-//     viewer" — per-user slots, writes refused invisible, reads own-slot.
-//   - client-relayed-fetch "An invisible library's job is never handed out"
-//     / "Nothing to claim" — the claim pool's visibility conjunct on the
-//     wire, with production-enqueued jobs.
-//   - accounts "Runtime legacy mode and the one-way door" — "Zero users
-//     means today": the no-users server stays byte-identical see-all for
-//     every principal that can exist there.
+// THREE server instances, each clean-postured: 1) principal_matrix — a server
+// WITH users, five principal kinds (env-admin token / user session / scoped
+// zero-group user / unbound device / device BOUND to the grouped user) × 21
+// endpoint-class rows through one assertion engine, plus per-kind SET blocks
+// and ledger WRITE scripts with direct store reads proving slot isolation;
+// 2) zero_user_legacy_mode — booted with NO users ever created, the same
+// engine over the two principals that can exist there, the legacy see-all
+// collapse plus the uniform login refusal; 3) relay_claim_scoping — the
+// shikimori upstream dead-pinned so the REAL derivation chain enqueues two
+// library-backed enrich jobs (libA granted, libB not) and the REAL identify
+// search passthrough the 0-library search job, then the claim sequence walks
+// the visibility conjunct per principal kind.
 //
-// THREE server instances, each clean-postured:
-//
-//  1. principal_matrix — a server WITH users: five principal kinds
-//     (env-admin token / user session / scoped zero-group user / unbound
-//     device / device BOUND to the grouped user) × 21 endpoint-class rows
-//     each (libraries listing + detail, summary, folders, items + series
-//     listings + details, episodes, playback GET+POST, progress GET single
-//     ×2), one assertion engine. Plus a per-kind SET block (the resolved
-//     library set + the own-slot progress list) and a ledger WRITE script
-//     with direct store reads proving slot isolation (own vs slot 0 vs
-//     another user's).
-//  2. zero_user_legacy_mode — a server booted with NO users ever created:
-//     the same 21-class engine over the two principals that can exist there
-//     (env-admin token, unbound device), asserting the legacy collapse
-//     (see-all everywhere, ledger writes land the user_id=0 slot), plus the
-//     uniform login refusal.
-//  3. relay_claim_scoping — a server with the shikimori upstream dead-pinned
-//     so the REAL derivation chain enqueues two library-backed enrich jobs
-//     (libA granted, libB not) and the REAL identify search passthrough
-//     enqueues the 0-library search job. The claim sequence then walks the
-//     conjunct: the scoped zero-group user is handed ONLY the 0-job, the
-//     grant-carrying session its OWN library's job (never the invisible one),
-//     the bound device (riding the user's grants) finds nothing while only
-//     the invisible job pends, and the see-all principals take what remains.
-//
-// DELIBERATE NON-ASSERTIONS (honesty, not coverage gaps):
-//
-//   - A see-all principal GETting /progress/{itA} on the multi-slot matrix
-//     server: ledgerSlotWhere gives see-all viewers an EMPTY slot clause, so
-//     which of the three staged rows a no-filter single-row query returns is
-//     unspecified by any delta — those rows assert 200 only; the position
-//     discriminator lives on the slot-scoped kinds and on the single-slot
-//     itB/zero-user rows.
-//   - No Set-Cookie probe on hidden playback: doRequest exposes only the
-//     status + body, and the precheck-BEFORE-closure order (no token minted)
-//     is pinned by 6.3's unit law; the matrix pins the wire outcome (404
-//     not_found on both verbs).
-//   - POST /play rows on an ALLOWED path assert the acknowledgement FAMILY
-//     {200, 202}, not one shape: the real cmd closure rides pack-on-play
-//     (D-8), whose packaging enqueue answers 202 queued and whose
-//     already-queued/no-op path answers 200 — the delta's law here is the
-//     unchanged allowed flow plus the canonical hidden-404, both pinned.
-//   - Summary/folders 200 rows assert STATUS only — their aggregate shapes
-//     are their own suites' contracts.
-//   - The search passthrough HTTP call is fired with a 3 s client timeout and
-//     its outcome IGNORED: relaySearchBudget holds the request up to 60 s
-//     waiting for a claimant (production behavior, out of scope) — the
-//     assertion is the enqueued purpose=search job row it leaves pending.
-//   - Relay lease-expiry re-claim and the 11.2 result-time viewer re-check
-//     are NOT re-asserted here (their own tasks' suites); the matrix pins
-//     the claim scoping conjunct only.
-//   - An admin-role USER is not a matrix kind (the task's six kinds are the
-//     env-admin token, sessions, the scoped user, devices, zero-user mode);
-//     role projection onto admin routes is the 9.x suites' contract.
+// DELIBERATE NON-ASSERTIONS (honesty, not coverage gaps; per-row reasons live
+// with the rows): see-all single-row /progress reads on the multi-slot server
+// assert 200 only — which staged row a no-filter query returns is unspecified
+// by any delta; hidden playback pins the 404 not_found wire outcome, no
+// Set-Cookie probe (the precheck-before-closure order is 6.3's unit law);
+// allowed POST /play rows accept the acknowledgement FAMILY {200, 202}
+// (pack-on-play D-8: 202 queued, already-queued/no-op 200); summary/folders
+// assert status only; the search passthrough's HTTP outcome is ignored (its
+// 3 s timeout vs relaySearchBudget's 60 s claim wait is out of scope) — the
+// assertion is the pending purpose=search job row; relay lease-expiry
+// re-claim, 11.2's result-time viewer re-check, and admin-role USER
+// projection are their own suites' contracts.
 //
 // HERMETIC: library roots anchor under t.TempDir(); the 404-stub upstream
 // keeps the matrix servers' derivations log-and-skip (rows settle ready,
-// zero relay jobs); the relay server pins a dead upstream instead. Fixture
-// identity constants are independent of every other qa fixture
-// (no-coincidence discipline); every helper is acMatrix-prefixed to stay
-// collision-free in package itest, and the qaAcct*/qaSerial* harness helpers
-// are REUSED, not duplicated.
+// zero relay jobs), the relay server a dead-pinned one; fixture identity
+// constants independent of every other qa fixture (no-coincidence
+// discipline); acMatrix-prefixed helpers reusing the qaAcct*/qaSerial*
+// harness, never duplicating it.
 package itest
 
 import (

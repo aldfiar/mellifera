@@ -114,29 +114,15 @@ func (n Namer) SeriesName(sr store.Series, override string) string {
 	return lastSegment(sr.RelativePath)
 }
 
-// SourceTitle walks the module's config-ordered title sources across a row
-// document's sources.* namespaces (plugin-title-enrichment) — the walk leg
-// of BOTH chains: above the serial-parser title in SeriesName, and as the
-// floor between the composed element name and _view.title in ItemName (over
-// the item's OWN namespaces — items carry plugin namespaces via
-// element-attached extras). The bindings arrive ALREADY
-// gate-resolved — upstream cmd-side via enrich.ResolveGates; this composer
-// is pure, imports no enrich symbol, and just skips disabled entries — and,
-// per l6-accounts 10.4, entries muted in the calling Viewer's ChainMutes
-// (the namer's Mutes field, threaded in by namerFor): the mute floors THIS
-// response's walk to the first UNMUTED source exactly like a gate disable,
-// per-response only, storage untouched. The legs BELOW the walk are not
-// sources and stay mute-blind on purpose: the serial-parser title is the
-// parser's own fact leg (below the walk in SeriesName's precedence — the
-// parser namespace is only reached when every walk source floored), and
-// _view.title is the document's own floor. Per binding, in order: a
-// disabled entry, a viewer-muted entry, a missing namespace, an empty string
-// title, a mistyped title (neither string nor object), or an empty language
-// pick all floor to the NEXT source. A string title passes through
-// verbatim; an object title is picked by the module's language_preference.
-// Returns "" when nothing resolves — the caller floors to its next leg
-// (the serial-parser title in SeriesName, _view.title in ItemName). No
-// plugin id literal appears here: the ids come only from the bindings.
+// SourceTitle walks the config-ordered title sources across the document's
+// sources.* namespaces (plugin-title-enrichment) — the walk leg of both
+// SeriesName and ItemName. Bindings arrive already gate-resolved upstream;
+// disabled and viewer-muted entries (the namer's Mutes, l6-accounts 10.4 — a
+// per-response floor, storage untouched) are skipped exactly alike. Any
+// empty or mistyped title floors to the NEXT source; "" when nothing
+// resolves (the caller floors to its next leg). The legs below the walk
+// (the serial-parser title, _view.title) are mute-blind on purpose — they
+// are not sources.
 func (n Namer) SourceTitle(doc map[string]any) string {
 	if len(n.TitleSources) == 0 {
 		return ""

@@ -84,10 +84,9 @@ func (*enricherImpl) Match(_ context.Context, req *metadatav1.MatchRequest) (*me
 	}, nil
 }
 
-// BuildRequest returns an empty RequestSpec: image-enricher performs no external
-// fetch (the local EXIF "fetch" is the file read done in Convert; an external
-// reverse-image/EXIF fetch is deferred to B3). The query is carried forward to
-// Convert by the core. Mirrors parser.go:58-60.
+// BuildRequest is a nop: image-enricher performs no external fetch (the local
+// EXIF "fetch" is the file read done in Convert; a remote fetch is deferred to
+// B3). Mirrors parser.go:58-60.
 func (*enricherImpl) BuildRequest(_ context.Context, _ *metadatav1.BuildRequestRequest) (*metadatav1.BuildRequestResponse, error) {
 	return &metadatav1.BuildRequestResponse{Spec: &metadatav1.RequestSpec{}}, nil
 }
@@ -96,10 +95,8 @@ func (*enricherImpl) BuildRequest(_ context.Context, _ *metadatav1.BuildRequestR
 // subprocess and returns the mapped namespace. On success the metadata carries at
 // least {width,height,format} (so a valid image is a clean success, not a spurious
 // no_data) plus make/model/date_taken/orientation/gps_lat/gps_lon when exiftool
-// returns them; each present field gets a per-field provenance hint. On any
-// exiftool failure (missing/failing/timeout/non-JSON) it returns EMPTY metadata +
-// a Warning (a soft-fail, NOT a gRPC error and NOT ConvertResult.Error) -> the
-// empty namespace -> B1 no_data terminal -> settle (AC-6). Mirrors parser.go
+// returns them; each present field gets a per-field provenance hint. Any exiftool
+// failure is the SOFT-FAIL (doc.go): empty metadata + a Warning. Mirrors parser.go
 // shape; exec pattern mirrors ffprobe.go.
 func (*enricherImpl) Convert(ctx context.Context, req *metadatav1.ConvertRequest) (*metadatav1.ConvertResult, error) {
 	absPath := req.GetQuery().GetFields()["absolute_path"].GetStringValue()
@@ -111,8 +108,7 @@ func (*enricherImpl) Convert(ctx context.Context, req *metadatav1.ConvertRequest
 		result.Metadata = st
 		result.Provenance = provenanceHints(st)
 	}
-	// Soft-fail (AC-softfail): empty metadata -> B1 no_data. NEVER a gRPC error
-	// for exiftool-missing/non-zero/timeout/non-JSON; only a cancelled context is.
+	// SOFT-FAIL (doc.go): a warning, never a gRPC error; only ctx cancellation is.
 	if warning != "" {
 		result.Warnings = []string{warning}
 	} else if len(meta) == 0 {
@@ -121,11 +117,10 @@ func (*enricherImpl) Convert(ctx context.Context, req *metadatav1.ConvertRequest
 	return result, nil
 }
 
-// Merge integrates image-enricher's metadata into the core document, writing ONLY
-// the sources.<plugin_id> namespace ("image-enricher"). The plugin never touches
-// _provenance/_view/_stages — the core owns those and validates the namespace
-// (arch §3.3). The returned View bindings are a proposal; the core recomputes
-// _view authoritatively. Verbatim mirror of parser.go:83-103 (only pluginID).
+// Merge writes ONLY the sources.<plugin_id> namespace ("image-enricher") — never
+// _provenance/_view/_stages (the core stamps + validates those, arch §3.3); the
+// View bindings are a proposal the core recomputes _view over. Verbatim mirror
+// of parser.go:83-103 (only pluginID).
 func (*enricherImpl) Merge(_ context.Context, req *metadatav1.MergeRequest) (*metadatav1.MergeResult, error) {
 	id := req.GetPluginId() // the namespace id the core directs this plugin to write
 	if id == "" {
@@ -230,9 +225,9 @@ func strVal(tags map[string]any, key string) (string, bool) {
 }
 
 // provenanceHints builds the per-field provenance hint map the core merges over
-// its authoritative _provenance stamp. Each field names image-enricher + its
-// version + the fetch time. Confidence is left to the core (it uses the Match
-// confidence when the hint omits it). Verbatim mirror of parser.go:141-153.
+// its authoritative _provenance stamp; confidence is left to the core (it uses
+// the Match confidence when the hint omits it). Verbatim mirror of
+// parser.go:141-153.
 func provenanceHints(meta *structpb.Struct) map[string]*commonv1.Provenance {
 	fields := meta.GetFields()
 	out := make(map[string]*commonv1.Provenance, len(fields))

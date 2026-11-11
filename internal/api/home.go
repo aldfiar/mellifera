@@ -6,40 +6,25 @@
 // caller's FULL positive-progress set grouped into touched entities (one
 // card per series, films/tv items per item), scored through the SAME recs
 // composition, ordered score-then-recency, THEN cut to the ≤50-CARD bound,
-// each surviving entity composed into one ContinueRow. The route takes no
-// parameters by design (D5's declined alternatives): the rail has no paging
-// or shape-branching seam in v1.
+// each surviving entity composed into one ContinueRow. No parameters by
+// design (D5): no paging or shape-branching seam in v1.
 //
-// The row's two offers are constructive, never decorative — each is present
+// The row's two offers are constructive, never decorative — each present
 // exactly when its pick resolves, so the wire cannot carry either lie:
+// `current` (the resume body) iff the entity's resume-max pick resolves (the
+// highest-STARTED touched row that is NOT watched-ledgered; every touched
+// row ledgered = spent position = the ANCHOR CARD, current omitted — never
+// null), `next` iff homeNextPick finds an episode strictly after the
+// started-max (ledgered rows INCLUDED — a fully-watched series honestly
+// resumes from its final watched episode). The two are never the same item.
 //
-//   - `current` (the resume body) is present iff the entity's resume-max
-//     pick resolves — the highest-STARTED touched row that is NOT
-//     watched-ledgered. Every touched row ledgered means the position is
-//     spent: the field is OMITTED from the wire (omitempty — gone, never
-//     null) and the row serves as the ANCHOR CARD — the series block and
-//     the next offer alone.
-//   - `next` is present iff homeNextPick finds an episode strictly after
-//     the entity's started-max — the highest-STARTED touched row, ledgered
-//     rows INCLUDED (the last-known frontier a fully-watched series honest
-//     resumes from is its final watched episode).
-//
-// `current` and `next` are therefore never the same item (next is strictly
-// after the resume pick's own pair), and a spent position never renders.
-//
-// Viewer posture (6.2, the recommendation-sorting visibility mandate carried
-// onto this route): every read below — the ledger read inside recsFactsFor,
-// the entity walk's item reads, the scoring, the episode reads — is the
-// CALLING VIEWER's, so a library outside the visible set contributes no rows
-// at all (no ids, no names, no counts), and the shared namers receive
-// v.ChainMutes so names and artwork mute exactly like every other
-// browse-group route. The watched-ledger rows are NOT withdrawn here (the
-// /progress default's withdrawal does not carry over): a completed episode
-// keeps its positive progress row, and that row is the started-max anchor
-// its series' pick derives from — the fused next affordance is exactly what
-// the SPA's separate Next-up section consumed the served rows for. The wire
-// carries no watched flag, ever; a row renders as a resume point or an
-// anchor card, never both lies at once.
+// Viewer posture (6.2): every read below is the CALLING VIEWER's — an
+// invisible library contributes no rows at all — and the shared namers
+// receive v.ChainMutes, muting names and artwork like every browse-group
+// route. Watched-ledger rows are NOT withdrawn here (unlike /progress's
+// default): a completed episode keeps its positive progress row, and that
+// row is the started-max anchor its series' next pick derives from. The
+// wire carries no watched flag, ever.
 
 package api
 
@@ -135,9 +120,7 @@ type continueNext struct {
 // @Success      200 {object} homeResponse
 // @Failure      500 {object} errorBody
 func (a *app) home(w http.ResponseWriter, r *http.Request) {
-	// The caller's ledger scope (6.2): the composition below — the batched
-	// reads, the entity walk's item reads, the score — is the requesting
-	// viewer's own slot over its visible libraries.
+	// The caller's ledger scope (6.2) — the file-head viewer posture.
 	v, ctx := a.viewerFor(r)
 	facts, err := a.recsFactsFor(ctx, v)
 	if err != nil {

@@ -119,30 +119,17 @@ func exhaustedDoublings(priorAttempts, maxAttempts int) int {
 	return rounds
 }
 
-// reconstructBase rebuilds the per-row *scannerv1.IdentifyResult the chain's Match
-// step consumes, FROM THE PERSISTED DOCUMENT (D-Q2 / S7): Parsed is read out of
-// doc["parsed"]; no re-probe of the file. tv-parser reads only the parsed Struct
-// (relative_path/stem), which a freshly scanned item carries, so a minimal base
-// suffices. B3 may re-Identify if a source needs richer base. A missing/empty
-// parsed yields an empty Struct (downstream pathFromParsed handles nil/empty).
-//
-// When the document carries a probe JSON (doc["ffprobe"], stamped by scan), the
-// reported duration is surfaced to the chain as a well-known parsed fact,
-// probe_duration_seconds (serials-library D3: a frame-grab source clamps its
-// seek to a fraction of the probe-reported duration so short files still yield
-// a frame). The fact is advisory — sources that never read it are unaffected,
-// and a missing/unparseable probe simply leaves it absent.
-//
-// When the document carries a committed source namespace season fact
-// (doc["sources"] — seriesSeason reads it namespace-agnostically, serial-parser
-// first, the same law the episode-titles router uses), the season is surfaced
-// as parsed season (tmdb-enrichment addendum 7: the serial-parser writes season
-// ONLY into its document namespace, but the anchored series plan keys the
-// season fetch on the parsed fact — without this stamp an anchored series query
-// carries {tmdb_id} alone and silently degrades to the movie path). The fact is
-// stamped only when present and >0 (the parser's marker law); a marker-only,
-// zero, or absent value leaves the parsed fact unset, and sources that never
-// read it are unaffected.
+// reconstructBase rebuilds the per-row *scannerv1.IdentifyResult the chain's
+// Match step consumes FROM THE PERSISTED DOCUMENT (D-Q2/S7) — Parsed is read
+// out of doc["parsed"], no file re-probe; tv-parser reads only the parsed
+// Struct, so a minimal base suffices (B3 may re-Identify for richer base).
+// Two advisory parsed facts are surfaced when the document carries them:
+// probe_duration_seconds from the scan-stamped ffprobe JSON (serials-library
+// D3 — the frame-grab seek clamp), and the committed namespace season as
+// parsed season (tmdb-enrichment addendum 7 — without this stamp an anchored
+// series query silently degrades to the movie path). Both are advisory:
+// sources that never read them are unaffected, and an absent/unparseable
+// value leaves the fact unset.
 func reconstructBase(doc map[string]any) *scannerv1.IdentifyResult {
 	st, err := toStruct(doc["parsed"]) // nil -> &structpb.Struct{} (empty)
 	if st == nil {
