@@ -6,6 +6,7 @@ package web
 import (
 	"embed"
 	"html"
+	"io/fs"
 	"net/http"
 	"path"
 	"strings"
@@ -40,13 +41,20 @@ type Options struct {
 	// media token); web adds none. Nil = no playback surface (the mount is
 	// skipped — tests and playback-disabled deployments).
 	Media http.Handler
+	// ApkFS is the FS the /apk route discovers packaged TV client APKs in
+	// (lexically-first mellifera-tv-*.apk under dist/assets). Nil = the
+	// embedded dist — the production value; tests inject a synthetic fs.FS
+	// (fstest.MapFS) to exercise APK-present/absent/multiple without
+	// rebuilding the embed. See apk.go.
+	ApkFS fs.FS
 }
 
 // Handler composes the api router with the embedded SPA. apiHandler is mounted
 // at /api/* (it carries its own auth middleware); everything else is served
 // from the embedded dist with client-route fallback. A nil apiHandler is valid
 // — the /api/* mount is skipped, so tests can exercise the SPA/swagger surface
-// alone. /openapi.{yaml,json} + /docs are registered by swagger.go.
+// alone. /openapi.{yaml,json} + /docs are registered by swagger.go; /apk by
+// apk.go.
 func Handler(apiHandler http.Handler, opts Options) http.Handler {
 	r := chi.NewRouter()
 	if apiHandler != nil {
@@ -60,7 +68,8 @@ func Handler(apiHandler http.Handler, opts Options) http.Handler {
 		r.Handle("/media", opts.Media)
 		r.Handle("/media/*", opts.Media)
 	}
-	registerSwagger(r) // /openapi.{yaml,json} + /docs — ahead of the SPA fallback.
+	registerSwagger(r)           // /openapi.{yaml,json} + /docs — ahead of the SPA fallback.
+	registerApk(r, opts.apkFS()) // /apk GET+HEAD — ahead of the SPA fallback (never leaks index.html).
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) { serveIndex(w, r, opts) })
 	r.Get("/assets/*", func(w http.ResponseWriter, r *http.Request) { serveAsset(w, r, opts) })
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
