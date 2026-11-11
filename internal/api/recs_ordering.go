@@ -490,18 +490,6 @@ func (a *app) scoreProgress(ctx context.Context, v access.Viewer, rows []store.P
 	return scores, nil
 }
 
-// seriesStartedFact derives the startedness fact SERIES-SCOPED (D2/D3 — the
-// scoreSeries rule: started = ANY episode of the series carrying a progress
-// OR watched row) by reading that one series' episode rows. The single-item
-// progress route's scored composition hands scoreItems a ONE-item slice, so
-// it cannot see a series started by a sibling episode or by the target's own
-// ZERO-position row (a valid write excluded from the positive-progress
-// facts); this read restores the same startedness the grid composes from its
-// full set. One point read for ONE entity — never in a listing loop, so the
-// batched-read rule's anti-N+1 posture holds. The namer's seriesByPath
-// carries the series row the store read needs; a series row that is gone
-// reports not-started — honest absence, the same floor ItemTags serves for
-// the identical loss.
 // homeEntity is ONE continue-rail entity at entity grain (home-rail design
 // §Interfaces): a touched series — its started-max over ALL touched progress
 // rows (ledgered included), its resume-max row (the highest-started
@@ -728,6 +716,8 @@ func orderHomeEntities(ents []homeEntity) {
 	})
 }
 
+// seriesStartedFact derives the startedness fact SERIES-scoped: any episode
+// of the series with a progress or watched row; one point read, never in a listing loop.
 func (a *app) seriesStartedFact(ctx context.Context, v access.Viewer, n naming.Namer, path string, f recsFacts) (bool, error) {
 	sr, ok := n.SeriesByPath[path]
 	if !ok {

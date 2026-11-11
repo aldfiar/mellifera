@@ -37,8 +37,7 @@ import (
 //     publishes the files at <build>/t/rendN/... — those refs 404 for the
 //     player and end playback in the fatal banner.
 //
-// This test is EXPECTED TO FAIL until the fix lands; it is the first probe
-// the fix change anchors on.
+// The fix landed 2026-10-11; this test pins the regression.
 func TestReproTailSegmentsPlayable(t *testing.T) {
 	ctx := context.Background()
 

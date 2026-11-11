@@ -46,9 +46,7 @@ type Options struct {
 // at /api/* (it carries its own auth middleware); everything else is served
 // from the embedded dist with client-route fallback. A nil apiHandler is valid
 // — the /api/* mount is skipped, so tests can exercise the SPA/swagger surface
-// alone. /openapi.{yaml,json} + /docs are registered by swagger.go (Task 12);
-// until then they fall through to the SPA fallback (a known gap Task 12
-// closes).
+// alone. /openapi.{yaml,json} + /docs are registered by swagger.go.
 func Handler(apiHandler http.Handler, opts Options) http.Handler {
 	r := chi.NewRouter()
 	if apiHandler != nil {

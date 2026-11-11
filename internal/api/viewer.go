@@ -23,14 +23,6 @@ import (
 // already carried by the request context is returned as-is, so repeat calls
 // down a threaded chain never re-resolve and never re-stash.
 //
-// THE CALLING PATTERN (task 6.2 — every content-read handler):
-//
-//	v, ctx := a.viewerFor(r)
-//	// store reads take v (the trailing access.Viewer param); Deps closures
-//	// invoked downstream take ctx — the context RETURNED HERE, which carries
-//	// the stash, never a re-derived r.Context(). The cmd-side closures read
-//	// access.FromContext(ctx) to see the same viewer.
-//
 // Mapping (accounts design §2, D1/D9; the auth-chain legs landed in 7.1):
 //   - env-admin principal → access.Admin() (all-seeing, ledger slot 0).
 //   - device principal → the bound user's resolved scope

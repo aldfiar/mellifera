@@ -114,9 +114,11 @@
 //     serials-library series table (plain columns, NO generated columns) —
 //     additively (CREATE ... IF NOT EXISTS). Methods for reserved tables
 //     (RecordProgress/GetResume) are DEFERRED to a later feature.
-//   - INV5: store imports stdlib + modernc.org/sqlite only. It MAY NOT import
-//     any internal/*, any proto, or pkg/sdk — it is the bottom of the stack
-//     (contracts.md §10 import map).
+//   - INV5: store is the bottom of the stack (contracts.md §10 import map):
+//     stdlib + modernc.org/sqlite, plus exactly two sanctioned seams —
+//     internal/access for the Viewer vocabulary and internal/relay for the
+//     relay descriptor vocabulary. Every other internal/* package, proto,
+//     and pkg/sdk sits above it.
 //   - INV6: 12 exported symbols (11 types + 1 func), AT the 12 hard-fail
 //     ceiling (device-pairing D6 — the two pairing row structs are the whole
 //     addition; future store growth goes through the S10 DB() seam or a trim
