@@ -5,16 +5,20 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- TV box may not report a touchscreen; never require one -->
-    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
 
     <application
-        android:label="Mellifera T0 Probe"
+        android:label="Mellifera"
         android:usesCleartextTraffic="true"
-        android:theme="@style/ProbeTheme">
+        android:theme="@style/Theme.Mellifera">
 
         <activity
-            android:name=".ProbeActivity"
+            android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|keyboardHidden|density|uiMode">

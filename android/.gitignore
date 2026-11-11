@@ -1,0 +1,10 @@
+# Module-local build residue — the repo .gitignore deliberately stays
+# untouched by the android tasks (5.1 scope), so the ignores live here.
+.gradle/
+build/
+
+# Keystore + IDE-local config are also ignored at repo root; kept here so a
+# bare `android/` checkout never leaks them either.
+keystore.properties
+local.properties
+.idea/

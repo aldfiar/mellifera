@@ -1,4 +1,3 @@
-// Throwaway T0 probe — DELETED by task 5.1. Do not depend on anything here.
 pluginManagement {
     repositories {
         google()
@@ -14,5 +13,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "android-tvprobe"
-include(":app")
+rootProject.name = "mellifera-tv"
