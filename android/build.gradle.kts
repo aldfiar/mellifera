@@ -7,6 +7,7 @@ import java.util.Properties
 plugins {
     id("com.android.application") version "8.7.3"
     id("org.jetbrains.kotlin.android") version "2.0.21"
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.0.21"
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"
 }
 
@@ -128,5 +129,15 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:$media3")
     implementation("androidx.media3:media3-session:$media3")
 
+    // 5.3 transport pins: Retrofit + kotlinx.serialization over OkHttp,
+    // bearer-token interceptor; MockWebServer drives the JVM contract tests.
+    val okhttp = "4.12.0"
+    implementation("com.squareup.okhttp3:okhttp:$okhttp")
+    val retrofit = "2.11.0"
+    implementation("com.squareup.retrofit2:retrofit:$retrofit")
+    implementation("com.squareup.retrofit2:converter-kotlinx-serialization:$retrofit")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+
+    testImplementation("com.squareup.okhttp3:mockwebserver:$okhttp")
     testImplementation("junit:junit:4.13.2")
 }
