@@ -120,10 +120,14 @@ describe("Login — the unified credential entry (l6-accounts 8.2)", () => {
     // key the api client's Authorization assembly reads (getBearerToken).
     expect(localStorage.getItem(TOKEN_KEY)).toBe("sess-token-1");
 
-    // The wire shape: the unauthenticated bootstrap verb, credentials in the body.
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [path, init] = fetchSpy.mock.calls[0];
-    expect(path).toBe("/api/v1/auth/login");
+    // The wire shape: the unauthenticated bootstrap verb, credentials in the
+    // body. The page also probes HEAD /apk (the 6.2 footer affordance), so
+    // the login call is located by path, not by position.
+    const loginCall = fetchSpy.mock.calls.find(
+      ([path]) => path === "/api/v1/auth/login",
+    );
+    expect(loginCall).toBeDefined();
+    const [, init] = loginCall!;
     expect(init?.method).toBe("POST");
     expect(JSON.parse(String(init?.body))).toEqual({
       username: "alice",
@@ -147,7 +151,11 @@ describe("Login — the unified credential entry (l6-accounts 8.2)", () => {
     // entry — the login verb is exempt from the wrapper's rotation).
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
     expect(assignSpy).not.toHaveBeenCalled();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // Exactly one LOGIN call answered 401 (the 6.2 footer's /apk probe is
+    // a separate, ungated fetch and never touches the auth verb).
+    expect(
+      fetchSpy.mock.calls.filter(([path]) => path === "/api/v1/auth/login"),
+    ).toHaveLength(1);
   });
 
   it("a 429 renders the rate-limited message", async () => {
@@ -179,8 +187,11 @@ describe("Login — the unified credential entry (l6-accounts 8.2)", () => {
     // Stored under the SAME credential slot, paste semantics byte-identical
     // to the MVP surface: trimmed, stored as-is after the trim.
     expect(localStorage.getItem(TOKEN_KEY)).toBe("admin-token-9");
-    // The paste flow is purely local — it never calls the API.
-    expect(fetchSpy).not.toHaveBeenCalled();
+    // The paste flow is purely local — it never calls the API (the only
+    // fetch on this page, if any, is the 6.2 footer's /apk probe).
+    expect(
+      fetchSpy.mock.calls.filter(([path]) => path !== "/apk"),
+    ).toHaveLength(0);
   });
 
   it("links the TV pairing entry: the ROOT-route deep link, pinning unchanged", async () => {
@@ -191,10 +202,19 @@ describe("Login — the unified credential entry (l6-accounts 8.2)", () => {
   });
 
   it("401-rotation reuse: a session token in the slot rotates through the EXISTING handle401 seam exactly like the admin token", async () => {
-    // Sign in for real first — the session token lands in the credential slot.
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(ok200("sess-token-1"))
-      .mockResolvedValueOnce(unauthorized401());
+    // Sign in for real first — the session token lands in the credential
+    // slot. URL-dispatched (the 6.2 footer probe answers 404 on its own
+    // path so it never consumes the login answer).
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const path = String(input);
+      if (path === "/apk") {
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }
+      if (path === "/api/v1/auth/login") {
+        return Promise.resolve(ok200("sess-token-1"));
+      }
+      return Promise.resolve(unauthorized401());
+    });
     const assignSpy = stubLocationAssign();
 
     renderLogin();

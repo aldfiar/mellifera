@@ -11,6 +11,7 @@ import { useLibraries, useLibrarySummary } from "@/lib/queries";
 import Profile, { isAdminProfile, useProfile } from "@/components/Profile";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { TvModeToggle } from "@/components/TvModeToggle";
+import ApkDownload from "@/components/ApkDownload";
 import { cn } from "@/lib/utils";
 
 // Sidebar — the SPA shell (web-ui-phase-3 group 3): a 224px left panel that is
@@ -286,6 +287,10 @@ function SideFoot(): ReactElement {
         <TvModeToggle />
         <ThemeToggle />
       </div>
+      {/* android-tv-app 6.2: the settings placement — the foot is the
+          display-preferences surface (reachable on a TV through the menu
+          FAB); ungated, the probe renders nothing on an APK-less build. */}
+      <ApkDownload />
     </div>
   );
 }
