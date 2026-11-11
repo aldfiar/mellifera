@@ -336,7 +336,9 @@ var schemaSQL = []string{
 	// legacy device_tokens rows at Open, hash-preserving; the pairing mint
 	// writes device rows here directly post-migration). user_id NULL = unbound
 	// device; expires_at NULL = non-expiring (the pairing lazy-expiry posture);
-	// revocation = DELETE row.
+	// revocation = DELETE row. debug is the per-device telemetry gate the
+	// admin flip route writes (android-tv-app 3.1 — ensureCredentialsDebug for
+	// pre-existing DBs), DEFAULT 0 = every existing device reads debug-off.
 	`CREATE TABLE IF NOT EXISTS credentials (
   id         INTEGER PRIMARY KEY,
   kind       TEXT NOT NULL CHECK (kind IN ('device','session')),
@@ -344,7 +346,8 @@ var schemaSQL = []string{
   user_id    INTEGER NULL REFERENCES users(id),
   label      TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  expires_at TEXT NULL
+  expires_at TEXT NULL,
+  debug      INTEGER NOT NULL DEFAULT 0
 )`,
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
@@ -409,6 +412,10 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, err
 	}
 	if err := ensurePlaybackProgressSeconds(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureCredentialsDebug(ctx, db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -552,6 +559,18 @@ func ensureLibrariesNamingElementName(ctx context.Context, db *sql.DB) error {
 func ensurePlaybackProgressSeconds(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "playback_progress", "position_seconds",
 		"ALTER TABLE playback_progress ADD COLUMN position_seconds INTEGER NOT NULL DEFAULT 0 CHECK (position_seconds >= 0)")
+}
+
+// ensureCredentialsDebug makes Open additive for credentials.debug
+// (android-tv-app 3.1 — see ensureColumn): the per-device telemetry gate the
+// admin flip route writes, DEFAULT 0 so every existing device row reads
+// debug-off — the flag only ever becomes true through an explicit admin flip,
+// never through the migration. What the flag gates is the paired client's
+// debug telemetry posture (device-telemetry spec) — value-agnostic store
+// (ERROR-FLOOR LAW, doc.go # Invariants).
+func ensureCredentialsDebug(ctx context.Context, db *sql.DB) error {
+	return ensureColumn(ctx, db, "credentials", "debug",
+		"ALTER TABLE credentials ADD COLUMN debug INTEGER NOT NULL DEFAULT 0")
 }
 
 // migrateLedgersUserScoped is THE repo's first table-rebuild migration

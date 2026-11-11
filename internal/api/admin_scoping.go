@@ -99,6 +99,55 @@ func (a *app) adminDeviceBind(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// adminDeviceDebug: PUT /api/v1/admin/devices/{id}/debug — flip one device
+// credential's debug telemetry flag (android-tv-app 3.1). Body
+// {"debug": <bool>} IS the new state (the whole-replacement convention: the
+// boolean replaces the column verbatim — the paired client reads the flag
+// back through its own /profile answer and gates its debug beacons on it,
+// so the flip lands on the client's next profile refetch). Validation-first
+// (the adminDeviceBind posture): a non-integer path id or malformed body is
+// a 400, nothing written; an unknown rowid — or a session credential
+// addressed by its rowid, the store's kind='device' guard — is the wrapped
+// sql.ErrNoRows shape → 404. 200 on success: the read-back is the device
+// registry list and the device's own /profile, never this write.
+//
+// @Summary     Flip a device's debug telemetry flag
+// @Tags        admin
+// @ID          admin-devices-debug
+// @Router      /admin/devices/{id}/debug [put]
+// @Param       id   path int    true "device id (the credentials rowid the device list shows)"
+// @Param       body body object true "{debug: bool}"
+// @Success     200 "flag written (the device's next /profile answer and the registry list carry the new state)"
+// @Failure     400 {object} errorBody "malformed body or non-integer device id"
+// @Failure     401 {object} errorBody
+// @Failure     403 {object} errorBody
+// @Failure     404 {object} errorBody "unknown device id"
+// @Failure     500 {object} errorBody
+// @Failure     503 {object} errorBody
+func (a *app) adminDeviceDebug(w http.ResponseWriter, r *http.Request) {
+	rowID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "device id must be an integer", false)
+		return
+	}
+	var req struct {
+		Debug bool `json:"debug"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON body", false)
+		return
+	}
+	if err := a.deps.Store.SetDeviceDebug(r.Context(), rowID, req.Debug); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "device not found", false)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // adminUserAdopt: POST /api/v1/admin/users/{id}/adopt-legacy — the ONE-SHOT
 // explicit adoption of the user_id=0 legacy ledger slot into the user's
 // slots (design D7: never automatic seed-on-first-login). PURE DELEGATION to

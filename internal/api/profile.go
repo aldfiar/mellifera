@@ -59,9 +59,12 @@ type profileGroup struct {
 }
 
 // profileResponse is the GET /profile wire shape: {kind, user_id?, name,
-// role, groups, prefs}. user_id is omitted for the kinds with no backing
-// user (admin, device); prefs is a RawMessage so each user's stored
-// document crosses the wire byte-verbatim.
+// role, groups, prefs, debug?}. user_id is omitted for the kinds with no
+// backing user (admin, device); prefs is a RawMessage so each user's stored
+// document crosses the wire byte-verbatim. Debug is the paired device's
+// telemetry gate (android-tv-app 3.1), carried on the device kind only and
+// omitted while false (omitempty — the admin and user kinds' answers are
+// byte-unchanged by the field's existence).
 type profileResponse struct {
 	Kind   string          `json:"kind"`
 	UserID int64           `json:"user_id,omitempty"`
@@ -69,6 +72,7 @@ type profileResponse struct {
 	Role   string          `json:"role"`
 	Groups []profileGroup  `json:"groups"`
 	Prefs  json.RawMessage `json:"prefs"`
+	Debug  bool            `json:"debug,omitempty"`
 }
 
 // profilePrefsRaw renders a stored prefs document for the wire. The empty
@@ -157,13 +161,27 @@ func (a *app) profile(w http.ResponseWriter, r *http.Request) {
 		})
 	default:
 		// The unbound device (RoleClient, UserID 0) — today's principal
-		// with no user facts behind it.
+		// with no user facts behind it. The device's debug telemetry gate
+		// (android-tv-app 3.1) rides the credential row, not the Principal:
+		// re-read the credential through the SAME lookup the auth chain's
+		// device leg used (the bearer's hash — never a second derivation of
+		// anything visibility-shaped). A store failure is a real failure →
+		// 500 (fail-fast, like every other read); a miss between the
+		// middleware and here is a mid-request revocation — debug-off is
+		// then the only truthful answer.
+		tok, err := a.deps.Store.LookupDeviceCredentialByHash(r.Context(),
+			hashBearerToken(bearerCredentials(r.Header.Get("Authorization"))))
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), true)
+			return
+		}
 		writeJSON(w, http.StatusOK, profileResponse{
 			Kind:   profileKindDevice,
 			Name:   "device",
 			Role:   string(RoleClient),
 			Groups: []profileGroup{},
 			Prefs:  json.RawMessage("null"),
+			Debug:  err == nil && tok.Debug,
 		})
 	}
 }
