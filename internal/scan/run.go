@@ -23,17 +23,11 @@ import (
 	scannerv1 "github.com/mellifera/mellifera/proto/mellifera/scanner/v1"
 )
 
-// Deps are the collaborators Run orchestrates: the storage layer, the module
-// registry (resolves a library's scanner capability binding from its config),
-// the plugin manager (dispenses the typed sdk.Scanner client for a binding), the
-// enrich collaborators (the serial seam, retained for sync/test — B6), and the
-// async-enqueue hook Notify. Scan no longer drives the metadata_source chain
-// inline between Identify and PutItem (AC-async): it persists each item "pending"
-// with the base §3.1 document, then — once the stream has drained — calls
-// Notify(ctx, libraryID) so the enrich queue (re)derives the library's pending
-// work and drains it on its worker pool. Enrich/Notify are exported fields, not
-// symbols; the composition root (cmd/mellifera) constructs enrich.Deps and wires
-// queue.Notify into Notify.
+// Deps are the collaborators Run orchestrates: storage, the module registry,
+// the plugin manager, the enrich collaborators (the serial seam, retained for
+// sync/test — B6), and the async-enqueue hook Notify. Scan persists items
+// "pending" and hands the library to the enrich queue via Notify after the
+// drain (AC-async); cmd/mellifera wires enrich.Queue.Notify in.
 type Deps struct {
 	Store   *store.Store
 	Plugins *plugin.Manager
@@ -58,38 +52,29 @@ type Result struct {
 	FinishedAt time.Time
 }
 
-// Run orchestrates one scan of a library: GetLibrary → resolve the module →
-// resolve the scanner capability → stream DiscoveredFiles → Identify each →
-// assemble the base §3.1 document → PutItem (upsert by file_id) at status
-// "pending" → after the stream drains, Notify(ctx, libraryID) so the enrich
-// queue derives the library's pending work and drains it async. It is the ONLY
-// function the api scan handler calls (pure-delegation rule, INV1). Enrichment
-// is NOT awaited here (AC-async): scan returns once items are persisted pending.
-//
-// Hard failures (return an error, partial Result): the library, module, or
-// scanner cannot be resolved, the scanner stream cannot be opened, or the
-// context is cancelled. Soft failures (recorded in Result.Warnings, scan
-// continues): malformed scanner options, a scanner per-file warning (e.g. an
-// ffprobe soft-fail), an Identify error, or a PutItem error — AC-6 philosophy:
-// one bad file never aborts the library.
+// Run orchestrates one scan of a library: resolve the module and scanner,
+// stream DiscoveredFiles, Identify each, assemble the base §3.1 document,
+// PutItem at "pending", then Notify after the stream drains so the enrich
+// queue derives the library's pending work (AC-async — enrichment is never
+// awaited). It is the ONLY function the api scan handler calls
+// (pure-delegation, INV1). Hard failures (an error, partial Result):
+// unresolvable library/module/scanner, an unopenable stream, or cancellation.
+// Soft failures (Result.Warnings, scan continues): malformed options, a
+// per-file scanner/Identify/PutItem warning — AC-6: one bad file never
+// aborts the library.
 func Run(ctx context.Context, deps Deps, libraryID int64) (Result, error) {
 	return runScan(ctx, deps.Store, deps.Modules, deps.Plugins.Scanner,
 		prodEnricher(deps.Enrich), notifier(deps.Notify), libraryID)
 }
 
 // scannerResolver obtains the typed scanner client for a module's capability
-// binding. Run supplies the production resolver (plugin.Manager.Scanner); the
-// in-package test injects one returning a fake sdk.Scanner (R8 — the scanner
-// interface's second implementation). It is an unexported test seam and does
-// not count toward the package's exported-symbol budget.
+// binding — Run supplies plugin.Manager.Scanner; in-package tests inject a
+// fake (R8). Unexported test seam, outside the exported-symbol budget.
 type scannerResolver func(pluginID, capabilityID string) (sdk.Scanner, error)
 
-// enricher runs the metadata_source chain for one item, mirroring scannerResolver
-// as the enrich analog (seam S6). Run supplies the production closure
-// (prodEnricher over deps.Enrich); the in-package test injects a fake returning
-// canned documents/status/warnings without a real subprocess (R8). It is an
-// unexported test seam and does not count toward the package's exported-symbol
-// budget.
+// enricher runs the metadata_source chain for one item — the enrich analog of
+// scannerResolver (seam S6); the production closure is prodEnricher. Unexported
+// test seam, outside the exported-symbol budget.
 type enricher func(ctx context.Context, mod module.Module, doc map[string]any, base *scannerv1.IdentifyResult) (map[string]any, string, enrich.Result, error)
 
 // prodEnricher returns the production enrich closure over deps.Enrich — the
@@ -100,26 +85,19 @@ func prodEnricher(d enrich.Deps) enricher {
 	}
 }
 
-// notifier is the async-enqueue seam: runScan calls it once after it has drained
-// the scanner stream and persisted the library's items, so the enrich queue
-// (re)derives their pending (item, plugin) work. It is the Notify analog of the
-// enricher seam (S5). Run supplies the production notifier (deps.Notify, wired
-// to enrich.Queue.Notify by cmd/mellifera); the in-package test injects a fake
-// that records the call. Unexported test seam; it does not count toward the
-// package's exported-symbol budget.
+// notifier is the async-enqueue seam: runScan calls it once after the drain,
+// so the enrich queue re-derives the library's pending work (S5, the Notify
+// analog of enricher). Unexported test seam, outside the exported-symbol
+// budget.
 type notifier func(ctx context.Context, libraryID int64)
 
-// runScan is the orchestrator body, factored out so the test can inject a fake
-// scanner resolver, a fake enricher (the retained serial seam, B6), and a fake
-// notifier (the async-enqueue seam, S5). Run is the verbatim contracts.md §7
-// entrypoint. enrichItem is the retained serial-path seam — scan no longer
-// invokes it from persist (enrichment is async via notify); it stays wired so
-// the serial path remains available and tests can assert it is NOT called
-// inline. (It is named enrichItem, not enrich, so the enrich package stays
-// addressable for the gate resolution below.) A clean
-// drain — the precondition for the sweep and the notify — is a CONFIRMED clean
-// completion (the scanner stream reported nil) plus a live context; anything
-// less is a warning and neither sweep nor notify runs.
+// runScan is the orchestrator body, factored out for test injection of the
+// scanner resolver, the enricher (the retained serial seam, B6), and the
+// notifier (S5). enrichItem is named so the enrich package stays addressable
+// below and stays wired though persist never invokes it (tests assert it is
+// NOT called inline). A clean drain — the precondition for the sweeps and
+// the notify — is a CONFIRMED clean completion (the stream reported nil)
+// plus a live context; anything less is a warning and neither runs.
 func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolve scannerResolver, enrichItem enricher, notify notifier, libraryID int64) (Result, error) {
 	res := Result{LibraryID: libraryID, StartedAt: time.Now().UTC()}
 
@@ -163,20 +141,15 @@ func runScan(ctx context.Context, st *store.Store, mods *module.Registry, resolv
 		return finish(res), fmt.Errorf("scan: open stream: %w", err)
 	}
 
-	// Drain at store-write speed (INV4, R9). The select on ctx.Done() lets a
-	// cancelled context abort even while blocked waiting for the next file
-	// (B6); the scanner subprocess observes the same ctx and closes up cleanly.
-	// notify and the series sweep fire ONLY after a provably clean drain — a
-	// CONFIRMED clean completion (the stream reported nil) plus a live context.
-	// A closed Files channel alone proves nothing: a cancelled context returns
-	// the context error, and a stream that ended before completing (a
-	// mid-stream error, or a bare close carrying no terminal confirmation)
-	// records a warning and returns WITHOUT sweeping or notifying (the B7
-	// analog: a half-drained scan never signals the queue). The series sweep
-	// and the item sweep run in that confirmed-clean branch and NOWHERE else:
-	// a scan whose stream did not drain cleanly must never advance a series
-	// row it never observed to "deleted" (serials-library box 1.6) nor
-	// tombstone an item it never had the chance to re-check.
+	// Drain at store-write speed (INV4, R9); ctx.Done() aborts even while
+	// blocked on the next file (B6). notify and the sweeps fire ONLY after a
+	// provably clean drain — a CONFIRMED clean completion (the stream
+	// reported nil) plus a live context. A closed Files channel alone proves
+	// nothing: a stream that ended before completing records a warning and
+	// returns WITHOUT sweeping or notifying (a half-drained scan never
+	// signals the queue, the B7 analog — it must never advance a series row
+	// it never observed to "deleted", serials-library box 1.6, nor tombstone
+	// an item it never re-checked).
 	observed := make(map[string]bool)
 	for {
 		select {
@@ -270,27 +243,17 @@ func sweepSeries(ctx context.Context, st *store.Store, libraryID int64, observed
 const itemSweepPageSize = 200
 
 // sweepItems tombstones every active item of the library whose source file has
-// vanished from disk (tombstone-lifecycle D1): a paged walk of the library's
-// rows — already-deleted rows skip in-loop without a stat and without any
-// write, so a repeated clean re-scan does not churn their updated_at — then
-// one os.Stat per active item over the document's stamped absolute path
-// (parsed.absolute_path, the assembleBaseDoc stamp and the same channel
-// originalResolver reads to serve /media). The stat decides — disk truth, not
-// the pass's observation set: a vanish between scans is invisible to
-// observation history, while a present file never tombstones no matter how
-// long ago the pass last saw it. A stat miss advances status to
-// scanStatusDeleted via the PutItem upsert with the row's OWN document passed
-// back — soft delete, document bytes untouched, progress and ledger rows
-// preserved for identity adoption and audit. Guards: an absent/unreadable
-// stamp skips with a warning (a missing stamp is an assembly anomaly, never
-// evidence of vanishing — tombstoning on it would mass-delete data); a stat
-// error that is not a clean miss (permission, I/O) also skips with a warning
-// — a transient read failure must not tombstone a file that may be present;
-// a write failure is a per-row soft-fail warning and the sweep continues
-// (AC-6). A cancelled context aborts. Silent on success — warnings ride
-// scan.Result like every soft-fail. The caller runs this ONLY after a
-// provably clean drain — the same gate as sweepSeries, beside which it runs:
-// a stream that ends before completing sweeps neither.
+// vanished from disk (tombstone-lifecycle D1): a paged walk — already-deleted
+// rows skip without a stat or write (no updated_at churn) — then one os.Stat
+// per active item over the document's stamped absolute path. The stat
+// decides — disk truth, not the pass's observation set. A stat miss advances
+// the status via the PutItem upsert with the row's OWN document passed back —
+// soft delete, progress and ledger rows preserved for adoption. Guards: a
+// missing/unreadable stamp skips with a warning (an assembly anomaly, never
+// vanishing evidence); a non-ErrNotExist stat error skips too — a transient
+// read failure must not tombstone a file that may be present; a write failure
+// is a per-row soft-fail (AC-6). Runs ONLY after a provably clean drain
+// (sweepSeries's gate).
 func sweepItems(ctx context.Context, st *store.Store, libraryID int64, res *Result) error {
 	for offset := 0; ; offset += itemSweepPageSize {
 		// MUST-be-true read (access.System — scan is operator work, never a
@@ -352,26 +315,17 @@ func stampedAbsolutePath(doc json.RawMessage) (string, bool) {
 }
 
 // persist identifies one discovered file and routes it by the serial-record
-// marker fact (serials-library boxes 1.3/1.4): facts carrying
-// `serial_record: true` assemble a serial-level base document (design.md
-// §Interfaces §4 — parsed marker facts, ffprobe) and persist via PutSeries in
-// the SAME drain loop as PutItem; every other file is an episode item, whose
-// parsed (already carrying series_relative_path + sidecars when the scanner
-// stamps them — §Interfaces §2) flows through assembleBaseDoc verbatim.
-// Enrichment is NO LONGER driven inline (B1/AC-async): scan persists the base
-// document — carrying parsed + ffprobe so the worker reconstructs the per-item
-// base WITHOUT a re-probe (D-Q2 / S7, INV-persist-base) — and hands the library
-// to the queue via runScan's post-drain notify. The retained serial enricher
-// seam (B6) is not invoked here. A re-scan whose base identity changed
-// advances the record to "stale" (AC-states(c)); an unchanged re-scan preserves
-// the prior status so a settled record is not regressed. Identify/persist
-// failures are soft (AC-6); a cancelled context is returned as an error so
-// runScan stops draining (B6) and takes precedence over any concurrent soft
-// failure. A parsed-unchanged re-scan additionally carries the prior
-// document's derived namespaces forward (two-tier, D-11 — packaging state keys
-// on the parsed+ffprobe base, so a drifted ffprobe drops `streams` alone); a
-// parsed change drops them all (the changed identity invalidates every
-// derived namespace).
+// marker fact (serials-library boxes 1.3/1.4): `serial_record: true` facts
+// assemble a serial-level base document and persist via PutSeries in the
+// SAME drain loop; every other file is an episode item through
+// assembleBaseDoc. Enrichment is NOT driven inline (B1/AC-async): scan
+// persists the base document (parsed + ffprobe, so the worker reconstructs
+// the base WITHOUT a re-probe, D-Q2/S7) and hands the library to the queue
+// via runScan's post-drain notify. Status and derived-namespace carry follow
+// nextScanState/nextSeriesState (two-tier, D-11: a parsed-unchanged re-scan
+// carries the prior derived namespaces, a drifted ffprobe drops `streams`
+// alone). Identify/persist failures are soft (AC-6); a cancelled context
+// returns as an error so runScan stops draining (B6).
 func persist(ctx context.Context, st *store.Store, sc sdk.Scanner, f *scannerv1.DiscoveredFile, mod module.Module, rootPath string, libraryID int64, observed map[string]bool, res *Result) error {
 	identified, err := sc.Identify(ctx, &scannerv1.IdentifyRequest{File: f, ModuleType: mod.MediaType})
 	if err != nil {
@@ -485,20 +439,13 @@ func assembleSeriesDoc(f *scannerv1.DiscoveredFile, parsed map[string]any, rootP
 }
 
 // nextSeriesState decides the lifecycle status scan persists for one serial
-// record AND which derived namespaces survive the re-scan — the series mirror
-// of nextScanState over the same two-tier basis: "pending" for a first sight
-// (or an unreadable prior), "stale" when the parsed serial identity changed
-// (AC-states(c)), and the prior status preserved for any parsed-unchanged
-// re-scan — including the `deleted → ready` self-heal of a re-observed
-// tombstone (fix-truncated-scan-sweep D3: a truncated pass no longer sweeps,
-// and a healthy re-scan lifts the tombstones a historical truncated pass
-// wrote). A "deleted" row the pass does not re-observe keeps "deleted"
-// (sweepSeries's existing skip — no updated_at churn). Every parsed-unchanged
-// leg carries the prior derived namespaces forward verbatim via derivedCarry
-// with dropStreams=false: a series record is never packaged, so tier B's
-// streams drop does not apply — ffprobe drift alone keeps both the status and
-// the carry. A lookup error is soft (AC-6): it falls back to "pending" — the
-// queue re-derives either way.
+// record AND which derived namespaces survive the re-scan — the series
+// mirror of nextScanState over the same two-tier basis (pending on first
+// sight, stale on a parsed identity change, prior status preserved
+// otherwise, with the `deleted → ready` self-heal of a re-observed tombstone,
+// fix-truncated-scan-sweep D3). dropStreams is always false — a series record
+// is never packaged, so even ffprobe drift keeps both status and carry. A
+// lookup error is soft (AC-6): "pending" fallback.
 func nextSeriesState(ctx context.Context, st *store.Store, libraryID int64, rel string, refreshed map[string]any, res *Result) (string, map[string]any) {
 	// MUST-be-true read (access.System): a false not-found makes the rescan
 	// treat an existing series as first sight — parsed-identity carry lost,
@@ -534,27 +481,16 @@ const (
 )
 
 // nextScanState decides the lifecycle status scan persists for one file AND
-// which derived namespaces survive the re-scan (two-tier unchanged test):
-// "pending" for a first scan (no prior row) or an unreadable prior; "stale" for
-// a re-scan whose parsed identity changed (AC-states(c)); and the prior status
-// preserved for any parsed-unchanged re-scan (so a settled/ready item is not
-// regressed back to pending) — EXCEPT a prior "deleted": the item sweep's
-// tombstone lifts on re-observation (tombstone-lifecycle D3, the series
-// self-heal's mirror). Without the heal leg the prior-status preservation
-// would keep a restored file dead forever and the offline-root mass tombstone
-// (design R1) would be permanent. The comparison runs in two tiers over the
-// prior document vs the refreshed base: tier A keys on parsed alone
-// (parsedSignature) and carries every prior derived namespace forward verbatim
-// (derivedCarry); tier B — parsed equal but ffprobe drifted (baseChanged) —
-// carries the same namespaces MINUS `streams`, because packaging state and
-// artifact pointers key on parsed+ffprobe and the changed media invalidates
-// any packaged artifact. The heal rides the same tiers: parsed unchanged →
-// "ready" with namespaces carried forward; ffprobe-only drift → "ready" with
-// `streams` dropped; parsed changed → "stale" (baseChanged fires before the
-// heal — a stale row must not mask a changed identity). The prior document is
-// loaded exactly once here. A GetItem error is soft (AC-6): it falls back to
-// "pending" — the queue re-derives either way, and a transient read failure
-// must never abort the scan.
+// which derived namespaces survive the re-scan (the two-tier unchanged
+// test): "pending" for a first scan or an unreadable prior; "stale" for a
+// re-scan whose parsed identity changed (AC-states(c)); the prior status
+// preserved for a parsed-unchanged re-scan — EXCEPT a prior "deleted", which
+// heals to "ready" on re-observation (tombstone-lifecycle D3; without the
+// heal a restored file stays dead forever). Tier A keys on parsed alone and
+// carries every derived namespace forward verbatim; tier B (parsed equal,
+// ffprobe drifted, baseChanged) carries them MINUS `streams` — packaging
+// state keys on parsed+ffprobe, so drifted media invalidates any packaged
+// artifact. A GetItem error is soft (AC-6): "pending" fallback.
 func nextScanState(ctx context.Context, st *store.Store, libraryID int64, fileID string, refreshed map[string]any, res *Result) (string, map[string]any) {
 	// MUST-be-true read (access.System): a false not-found makes the rescan
 	// treat an existing item as new — status churn plus derived-namespace loss
@@ -606,14 +542,9 @@ func parsedChanged(priorRaw json.RawMessage, refreshed map[string]any) bool {
 
 // derivedCarry returns the prior document's derived namespaces — every key
 // EXCEPT the reserved base set {parsed, ffprobe}, plus `streams` when
-// dropStreams (tier B) — for the caller to merge onto the freshly assembled
-// base. The reserved keys are never carried, so the new scan's facts are the
-// new truth (a stale anchor must never mask a real identity change). The
-// subtraction is key-set-driven, not an enumerated namespace list: any future
-// derived namespace survives a re-scan without a code change. An unreadable
-// prior document yields nil (nothing to carry). refreshed is the same basis
-// both tiers compared; it is not consulted here — the fresh base wins by merge
-// order at the call site.
+// dropStreams (tier B) — for the caller to merge onto the fresh base. The
+// subtraction is key-set-driven, so any future derived namespace survives a
+// re-scan without a code change. An unreadable prior yields nil.
 func derivedCarry(priorRaw json.RawMessage, refreshed map[string]any, dropStreams bool) map[string]any {
 	var prior map[string]any
 	if len(priorRaw) == 0 || json.Unmarshal(priorRaw, &prior) != nil || prior == nil {
@@ -632,16 +563,12 @@ func derivedCarry(priorRaw json.RawMessage, refreshed map[string]any, dropStream
 	return carry
 }
 
-// baseChanged is the tier B comparison (packaged-playback D-11, byte-identical
-// to what shipped there): it reports whether the identity-bearing base fields
-// (parsed + ffprobe) of a re-scan differ from the previously-persisted
+// baseChanged is the tier B comparison (packaged-playback D-11): whether the
+// identity-bearing base fields (parsed + ffprobe) differ from the persisted
 // document — the basis for dropping `streams`, since packaging state keys on
-// parsed+ffprobe. file_id/module_type/schema_version are stable for a re-scan
-// of the same file in the same module, so they are excluded (including them
-// would only re-detect "same file, same module"). Both sides are normalized
-// via canonicalJSON so comparison is byte-stable regardless of JSON key order
-// (a scanner/plugin may emit parsed/ffprobe keys in any order; Go sorts map
-// keys on marshal).
+// parsed+ffprobe. file_id/module_type/schema_version are stable for a
+// re-scan of the same file and are excluded. Both sides are normalized via
+// canonicalJSON, so comparison is byte-stable regardless of key order.
 func baseChanged(priorRaw json.RawMessage, refreshed map[string]any) bool {
 	var prior map[string]any
 	if len(priorRaw) > 0 {
@@ -701,23 +628,20 @@ func newItem(f *scannerv1.DiscoveredFile, mod module.Module, libraryID int64, do
 	}
 }
 
-// itemID mints a stable, globally-unique item id from (libraryID, file_id). It
-// is deterministic so an idempotent re-scan maps a file back to the same item
-// (PutItem upserts by file_id and preserves id on conflict). A real ULID is the
-// long-term intent (contracts.md §4), but no ULID library is in the task's
-// allowed_imports, so a deterministic composite serves the MVP.
+// itemID mints a stable, globally-unique item id from (libraryID, file_id) —
+// deterministic, so an idempotent re-scan maps a file back to the same item
+// (PutItem upserts by file_id and preserves id on conflict). A real ULID is
+// the long-term intent (contracts.md §4).
 func itemID(libraryID int64, fileID string) string {
 	return fmt.Sprintf("itm_%d_%s", libraryID, fileID)
 }
 
-// buildScanRequest constructs the scanner RPC request, forwarding the module's
-// scanner options verbatim. options is a json.RawMessage from the module config;
-// ScanRequest.Options is a *structpb.Struct. structpb is deliberately NOT
-// imported (it is outside the task's allowed_imports): the options are wrapped
-// under the ScanRequest "options" key and unmarshaled, so the generated
-// structpb.UnmarshalJSON builds the *structpb.Struct without this package naming
-// that type. Malformed options yield a warning (soft); the scan proceeds with a
-// nil Options and the scanner's module_type still guides parsing.
+// buildScanRequest constructs the scanner RPC request, forwarding the
+// module's scanner options verbatim. structpb is deliberately NOT imported:
+// the options are wrapped under the ScanRequest "options" key and
+// unmarshaled, so the generated structpb.UnmarshalJSON builds the
+// *structpb.Struct without this package naming that type. Malformed options
+// yield a warning (soft); the scan proceeds with a nil Options.
 func buildScanRequest(libraryPath, moduleType string, options json.RawMessage) (*scannerv1.ScanRequest, string) {
 	req := &scannerv1.ScanRequest{LibraryPath: libraryPath, ModuleType: moduleType}
 	if len(options) == 0 {
@@ -731,27 +655,17 @@ func buildScanRequest(libraryPath, moduleType string, options json.RawMessage) (
 	return req, ""
 }
 
-// assembleBaseDoc builds the base architecture §3.1 document for one discovered
-// file as a mutable map, so enrich can extend it with sources/_provenance/
-// _view/_stages. A freshly scanned item carries only the raw ffprobe blob
-// (verbatim bytes), the filename-parsed fields (lossless), and the core-managed
-// identity fields — the per-source namespaces and computed view populate only as
-// metadata plugins enrich it (§3.1 "Simple by default"). Precision is preserved:
-// nothing is averaged or collapsed. The parsed Struct is read via its generated
-// json marshaler (no structpb import); ffprobe bytes are embedded verbatim.
-//
-// rootPath is the resolved library root (store.Library.RootPath): when non-empty,
-// parsed gains absolute_path = filepath.Join(rootPath, rel) for EVERY item (D-6)
-// — the ONLY channel through which the image-enricher can open the file (the B1
-// chain passes an empty Merge document and reconstructs the base from doc["parsed"]
-// only, chain.go:115-122). Generic and media-type-agnostic (INV2): tv-parser
-// ignores the new key; existing parsed keys are preserved. The stamp is
-// deterministic for (rootPath, rel), so baseChanged (stale-on-rescan) is unaffected.
-//
-// created_at / updated_at are intentionally NOT duplicated into the opaque
-// document: the store maintains them as authoritative columns (items.created_at
-// is preserved across re-scans by the PutItem upsert), and a document copy could
-// neither stay in sync nor preserve created_at on a re-scan.
+// assembleBaseDoc builds the base architecture §3.1 document for one
+// discovered file as a mutable map: the raw ffprobe blob (verbatim, INV3),
+// the filename-parsed fields (lossless), and the core-managed identity
+// fields — per-source namespaces populate only as plugins enrich (§3.1
+// "Simple by default"). When rootPath is non-empty, parsed gains
+// absolute_path = filepath.Join(rootPath, rel) (D-6) — the only channel
+// through which an enricher can open the file (the chain reconstructs the
+// base from doc["parsed"] alone). Generic and media-type-agnostic (INV2);
+// the stamp is deterministic for (rootPath, rel), so baseChanged is
+// unaffected. created_at / updated_at stay out of the opaque document — the
+// store's columns are authoritative.
 func assembleBaseDoc(f *scannerv1.DiscoveredFile, id *scannerv1.IdentifyResult, moduleType string, schemaVersion int, rootPath string) map[string]any {
 	doc := map[string]any{
 		"file_id":        f.GetFileId(),

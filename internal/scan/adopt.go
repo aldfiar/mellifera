@@ -17,25 +17,18 @@ import (
 )
 
 // Identity adoption (tombstone-lifecycle D4, as amended 2026-11-09 — the
-// post-red series bridge): when a library's rescan replaces a vanished file
-// with a new one, the tombstoned predecessor's progress and ledger rows stay
-// keyed to the dead id — retained by D5, join-dropped from every served
-// read. AdoptStranded re-keys that stranded state onto the identity-matched
-// live item. Episode pairs (episode legs on BOTH sides) match through the
-// SERIES BRIDGE: both sides' series rows — each doc's parsed.series_relative_path
-// resolved via store.GetSeriesByPath in the live item's library, the dead
-// series row itself tombstoned and read status-unfiltered — must carry EQUAL
-// and NON-EMPTY parser-composed series titles (the serial-parser title,
-// SeriesName's one parser leg; tv-parser never writes series docs) before the
-// (season, episode) legs decide, and the series path itself is never compared
-// (renames change it — the bug class this change serves). Film pairs (absent
-// legs on BOTH sides) match on the item title floors, equal AND NON-EMPTY on
-// both sides — an empty floor on either side never matches (D4's non-goal
-// restored: no identity facts, no adoption). No fuzzy matching: an
-// approximate identity moving watch state silently is worse than a visible
-// no-op (design R2). The hook fires from the enrich queue at a row's settle —
-// the served identity facts exist only after the parser chain settles the
-// document, so this is what makes ONE rescan converge.
+// post-red series bridge): when a rescan replaces a vanished file, the
+// tombstoned predecessor's progress and ledger rows stay keyed to the dead
+// id (retained by D5, join-dropped from served reads). AdoptStranded re-keys
+// that stranded state onto the identity-matched live item. Episode pairs
+// (legs on BOTH sides) match through the SERIES BRIDGE — equal, non-empty
+// parser-composed series titles before the (season, episode) legs decide;
+// the series path itself is never compared (renames change it). Film pairs
+// match on equal AND non-empty item title floors (no identity facts, no
+// adoption). No fuzzy matching: exact floors or a visible no-op (design
+// R2). The hook fires from the enrich queue at a row's settle — the served
+// identity facts exist only then, so this is what makes ONE rescan
+// converge.
 //
 // adoptSweepPageSize is the candidate walk's page (store QueryItems
 // LIMIT/OFFSET, id-ordered) — the item sweep's page width, for the same
@@ -44,17 +37,14 @@ import (
 const adoptSweepPageSize = itemSweepPageSize
 
 // AdoptStranded moves every tombstoned library sibling's stranded watch state
-// onto the live item itemID when their served identities match. Candidates are
-// EVERY status="deleted" row of the live item's library (exact status key, the
-// live item itself never appearing — it is not deleted); there is NO
-// carries-rows pre-filter: every joined progress read hides deleted rows and
-// would see the candidates as empty — the carry signal is each MOVE's own
-// returned count instead. Per candidate: MoveItemProgress + MoveItemWatched
-// (the 2.1 transactions — live row always wins, no ghost stock, idempotent);
-// a (0, 0) return carried nothing and is a no-op skip. Every failure is
-// log-and-skip — adoption NEVER fails its caller (the enrich settle); the
-// returned error is only the live-item read failing, which the queue logs and
-// moves past. A cancelled context stops the walk.
+// onto the live item itemID when their served identities match. Candidates
+// are EVERY status="deleted" row of the library — no carries-rows pre-filter
+// (joined progress reads hide deleted rows and would see the candidates as
+// empty; each MOVE's own returned count is the carry signal). Per candidate:
+// MoveItemProgress + MoveItemWatched (the 2.1 transactions — idempotent); a
+// (0, 0) return is a no-op skip. Every failure is log-and-skip — adoption
+// NEVER fails its caller; the returned error is only the live-item read
+// failing. A cancelled context stops the walk.
 func AdoptStranded(ctx context.Context, st *store.Store, itemID string) error {
 	// MUST-be-true read (access.System): the hook drives watch-state re-keying
 	// — a scoped window could strand the live item's own identity unread.
@@ -121,14 +111,10 @@ type adoptIdentity struct {
 }
 
 // adoptIdentityMatch reports whether candDoc's served identity equals the
-// live item's under the amended D4 law (2026-11-09). Episode pairs (legs on
-// BOTH sides) decide through the SERIES BRIDGE first: both sides' series
-// rows must resolve and carry EQUAL and NON-EMPTY parser-composed series
-// titles; then the (season, episode) legs agree. Film pairs (absent legs on
-// both sides) match on the item title floors, equal AND NON-EMPTY on both
-// sides. A one-legged pair never matches: an episode's state must not land
-// on a title-colliding film, nor a film's on an episode. No fuzzy matching:
-// exact floors or no match (design R2).
+// live item's under the amended D4 law (2026-11-09): episode pairs decide
+// through the series bridge (equal non-empty parser-composed series titles,
+// then the (season, episode) legs); film pairs on equal non-empty title
+// floors. A one-legged pair never matches. No fuzzy matching (design R2).
 func adoptIdentityMatch(ctx context.Context, st *store.Store, libraryID int64, live adoptIdentity, candDoc map[string]any) bool {
 	candPath, candSeason, candEpisode, candHasLegs := naming.EpisodeFacts(candDoc)
 	if candHasLegs != live.hasLegs {
@@ -150,15 +136,11 @@ func adoptIdentityMatch(ctx context.Context, st *store.Store, libraryID int64, l
 }
 
 // adoptSeriesTitleFloor resolves one side's bridge floor — the
-// parser-composed series title: the doc's parsed.series_relative_path via
-// store.GetSeriesByPath in the live item's library (status-unfiltered — the
-// dead side's series row is itself tombstoned and must still read), then the
-// series doc's single serial-parser title leg (SeriesName's ONE parser leg,
-// read inline — no namer/config dependency; tv-parser never writes series
-// docs, so no second parser leg exists). Any miss — empty path, missing
-// series row, absent or empty parser title — floors to "": the
-// anti-degenerate law makes an empty floor a no-match. The series path itself
-// is never compared (renames change it).
+// parser-composed series title: parsed.series_relative_path via
+// GetSeriesByPath (status-unfiltered — the dead side's row is itself
+// tombstoned and must still read), then the serial-parser title leg read
+// inline (no namer dependency; tv-parser never writes series docs). Any miss
+// floors to "": an empty floor is a no-match.
 func adoptSeriesTitleFloor(ctx context.Context, st *store.Store, libraryID int64, seriesPath string) string {
 	if seriesPath == "" {
 		return ""

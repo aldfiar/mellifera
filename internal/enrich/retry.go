@@ -22,30 +22,17 @@ const (
 )
 
 // runSourceRetryable wraps runSource (chain.go) with bounded in-memory
-// exponential backoff, classifying the outcome for the dispatch (Task 05) to map
-// onto the ledger. It is a PURE transform over runSource: it returns a
-// classification (ledgerStatus) + the last sourceResult; it does NOT touch the
-// store (INV-no-store-here) — the dispatch calls RecordFailure/ClearFailure.
-//
-// Outcomes:
-//   - success (non-empty namespace): short-circuits, ledgerStatus="" (B2).
-//   - success with an empty namespace: terminal-immediate no_data (B5).
-//   - skipped (disabled / Match.applies=false) / unavailable (plugin not loaded):
-//     no retry, ledgerStatus="" (B6).
-//   - deferred (client-relayed-fetch D4: a network-class failure handed to
-//     Deps.Relay): returns immediately — NO backoff, NO exhausted write; the
-//     relayed ledger row Enqueue wrote IS the loop-safety write, and the
-//     returned ledgerStatus="" keeps applyOutcome off every write path.
-//   - transient failure: retries with backoff = base<<(attempt-1) while
-//     attempt < maxAttempts; on the maxAttempts-th failure, terminal exhausted (B3/B4).
-//   - ctx cancellation: the only hard abort; returns the in-flight result with
-//     ledgerStatus="" (the queue's hard-fail path owns the failed transition, B7).
-//
-// maxAttempts/backoff are split out of QueueConfig (Task 05) so this file
-// compiles standalone before queue.go lands; the dispatch passes cfg.MaxAttempts
-// and cfg.Backoff at the call site (spec out_of_scope blesses this split).
-// doc, gate, scope, and requiredSecrets pass through to runSource (identity
-// anchor, fetch pacing, relay scope, the SERVER auth leg).
+// exponential backoff and returns (last sourceResult, ledgerStatus, attempts)
+// for the dispatch to map onto the ledger. A PURE transform: no store writes
+// (INV-no-store-here) — the dispatch calls RecordFailure/ClearFailure.
+// Outcomes (the B-tags are the dispatch's mapping): success short-circuits
+// (empty namespace → terminal no_data, B5); skipped / unavailable / deferred
+// return immediately — no retry, ledgerStatus="" (a deferred run's relayed
+// ledger row Enqueue wrote IS the loop-safety write, client-relayed-fetch D4);
+// transient failure retries at backoff<<(attempt-1) until maxAttempts, then
+// terminal exhausted (B3/B4); ctx cancellation is the only hard abort,
+// returning the in-flight result with ledgerStatus="" (B7). maxAttempts and
+// backoff are passed from QueueConfig at the call site.
 func runSourceRetryable(ctx context.Context, resolve metadataResolver, src module.MetadataSourceBinding, mod module.Module, base *scannerv1.IdentifyResult, doc map[string]any, gate *FetchGate, scope *relayScope, requiredSecrets func(pluginID string) []string, maxAttempts int, backoff time.Duration) (sourceResult, string, int) {
 	// sr defaults to a NON-success kind so an early ctx-cancel (before any attempt
 	// runs) is never mistaken for outcomeSucceeded — whose iota is the zero value 0.

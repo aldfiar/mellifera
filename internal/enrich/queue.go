@@ -102,11 +102,10 @@ type Stats struct {
 // pending (row, plugin) work from items AND series rows + the document
 // namespaces + the item_parsers attachments (element-pages D-4, items only) +
 // the enrichment_failures ledger (there is NO queue/claim/lease table —
-// INV-derived-not-stored), feeds a bounded channel, and a worker pool drains it
-// under per-row leases (one per row id; serials-library D5). Row ids never
-// collide across the two stores (opaque itm_/ser_ prefixes). Single-instance
-// MVP: leases are in-memory and vanish on restart; pending work is re-derived
-// from the rows on the next Start.
+// INV-derived-not-stored), feeds a bounded channel, and a worker pool drains
+// it under per-row leases (serials-library D5; row ids never collide across
+// the two stores — opaque itm_/ser_ prefixes). Single-instance MVP: leases
+// are in-memory and vanish on restart; pending work is re-derived on Start.
 type Queue struct {
 	deps    Deps
 	cfg     QueueConfig
@@ -229,14 +228,11 @@ func (q *Queue) registerLib(libraryID int64) {
 	q.libsMu.Unlock()
 }
 
-// seedLibs backfills the known-library registry from the store's library list
-// when the in-memory registry is empty (enrichment D-8, the backlog's
-// "enrichment restart sweep is vacuous on fresh boot"): until now only a scan
-// registered a library in-process, so a fresh boot's initial sweep saw no
-// libraries and drained nothing, even over items persisted by a previous
-// process. A non-empty registry (any Notify already seen) is left untouched,
-// and a store read error leaves the registry empty (soft: the sweep stays
-// vacuous for this Start; the next Notify re-derives normally).
+// seedLibs backfills the known-library registry from the store when the
+// in-memory registry is empty (enrichment D-8 — a fresh boot's initial sweep
+// saw no libraries, since only a scan registered one). A non-empty registry
+// is left untouched; a store read error leaves it empty (the next Notify
+// re-derives normally).
 func (q *Queue) seedLibs(ctx context.Context) {
 	if q.deps.Store == nil {
 		return
@@ -319,19 +315,15 @@ func uniqueItems(tasks []queueTask) []string {
 }
 
 // worker is one pool goroutine. Each turn first tries a NON-BLOCKING urgent
-// receive (select with default): when the preferred lane holds a ready task
-// it dispatches ahead of any buffered background work — deterministically,
-// which the blocking select alone cannot guarantee (Go picks randomly among
-// ready cases, the TestUrgentLanePreferred flake D7 pins). With no urgent
-// task ready it falls back to the blocking two-case select over BOTH lanes,
-// urgent first: a worker parked there wakes directly on an urgent arrival
-// (the idle-queue invariant, D4 — the old non-blocking urgent pre-check plus
-// a bare shared receive parked the worker where an urgent send could not wake
-// it, the joint 5.1 finding). Background work never enters the urgent lane
-// (EnqueuePack vs EnqueuePackUrgent), so the preference cannot starve the
-// shared dispatch. The driver honors ctx per-source (a cancelled ctx
-// hard-aborts the in-flight row to failed, then the loop continues draining
-// both lanes' remaining buffered tasks until Stop's closes end them).
+// receive: a ready preferred-lane task dispatches ahead of buffered background
+// work — deterministically, which a blocking select alone cannot guarantee
+// (Go picks randomly among ready cases; the TestUrgentLanePreferred flake,
+// D7). With no urgent task ready it parks in the blocking two-case select,
+// urgent first, so an idle worker wakes directly on an urgent arrival (the
+// idle-queue invariant, D4 — the joint 5.1 finding). Background work never
+// enters the urgent lane, so the preference cannot starve the shared
+// dispatch. A cancelled ctx hard-aborts the in-flight row; the loop keeps
+// draining buffered tasks until Stop's closes end it.
 func (q *Queue) worker(ctx context.Context) {
 	defer q.wg.Done()
 	for {
@@ -407,15 +399,12 @@ type task = queueTask
 // deriveLibrary computes the pending (row, plugin) set for one library per the
 // §4.4 derivation predicate (B8) applied IDENTICALLY to both stores
 // (serials-library D5): row EXISTS, source applicable + Enabled + AuthMode !=
-// CLIENT (D-Q1), namespace ABSENT (not done), NOT in-ledger-cooldown. The
-// collection-common candidates iterate in the library's stored parser-chain
-// order (element-pages 3.1: the chain is the enrichment queue priority; absent
-// chain = config order). Items add one input the chain does not have: the
-// element-attached plugins (item_parsers, element-pages D-4) under the SAME
-// predicate (pendingExtras). It reads the library's LIVE rows only (the
-// allItems/allSeries walks post-filter deleted rows — D4 amendment (iii)) +
-// the attachments + the ledger; it never touches a queue
-// table (INV-derived-not-stored). Parameterized SQL only.
+// CLIENT (D-Q1), namespace ABSENT, NOT in-ledger-cooldown. Collection-common
+// candidates iterate in the library's stored parser-chain order (element-pages
+// 3.1; absent chain = config order); items add their element-attached plugins
+// (item_parsers, D-4) under the SAME predicate (pendingExtras). Live rows
+// only (D4 amendment iii); never touches a queue table
+// (INV-derived-not-stored). Parameterized SQL only.
 func (q *Queue) deriveLibrary(ctx context.Context, libraryID int64) ([]queueTask, error) {
 	items, err := q.allItems(ctx, libraryID)
 	if err != nil {
@@ -532,16 +521,11 @@ func pendingSources(srcs []module.MetadataSourceBinding, doc map[string]any, row
 
 // pendingExtras derives one item's (item, element-attached plugin) work
 // (element-pages D-4): each item_parsers attachment is a task candidate under
-// the SAME predicate as the chain — queueable (D-Q1: a CLIENT-locked attachment
-// is never queued; its declared AuthMode is the lock), namespace absent, not in
-// ledger-cooldown. Attachments the chain already queued this pass are skipped
-// (one task per (item, plugin), never two). Attachments are item-keyed only —
-// series rows have none (the control table joins the items table). The
-// resolution — declared bindings AND the synthesized defaults (Enabled: true) —
-// passes through ResolveGates, so an attachment gated at module or library
-// scope derives nothing (plugin-title-enrichment D3). A store read error leaves
-// the item's extras underived for this pass (soft; re-derived on the next
-// sweep).
+// the SAME predicate as the chain (D-Q1's declared AuthMode is the CLIENT
+// lock); attachments the chain already queued this pass are skipped. The
+// resolution — declared bindings AND synthesized defaults — passes through
+// ResolveGates, so a gated attachment derives nothing (plugin-title-enrichment
+// D3). A store read error leaves the extras underived this pass (soft).
 func (q *Queue) pendingExtras(
 	ctx context.Context, mod module.Module, prefs []store.MetadataSourcePref, libraryID int64,
 	doc map[string]any, itemID string, chainPending []string, idx failureIndex, nowt time.Time,
@@ -570,23 +554,14 @@ func (q *Queue) pendingExtras(
 	return out
 }
 
-// allItems paginates QueryItems across ALL statuses (empty status = no filter)
-// for a library, then post-filters to LIVE rows only (tombstone-lifecycle D4
-// amendment (iii), the ruled re-dispatch seam): a deleted row is never derived,
-// never dispatched, never stripped — dead rows have nothing to enrich, a
-// self-healed row (status ready after the re-scan upsert) re-enters on the very
-// next walk, and the reenrich exclusion protects self-heal's namespace
-// carry-forward from a strip. The store's no-filter invariant is untouched —
-// the exclusion is queue-side; pending/failed/stale/ready all pass unchanged.
-// The filter does not perturb pagination: offsets page over the store's
-// unfiltered batches, survivors are appended per batch.
-//
-// Layering (tombstone-lifecycle 3.2): empty status = no-filter at the STORE
-// read, everywhere; the DEFAULT EXCLUSION on listings lives at the API layer
-// (the shared allFilteredItems walk, internal/api/recs_ordering.go). The
-// derive predicate never needs deleted rows — a dead row has no document
-// work — so this walk's queue-side post-filter and the api serve law
-// compose without either touching the store contract.
+// allItems paginates QueryItems across ALL statuses (empty status = no
+// filter) for a library, then post-filters to LIVE rows only
+// (tombstone-lifecycle D4 amendment (iii)): a deleted row is never derived,
+// dispatched, or stripped — the exclusion is queue-side, the store's
+// no-filter invariant untouched (the listing-side default exclusion lives at
+// the api layer, internal/api/recs_ordering.go — tombstone-lifecycle 3.2).
+// Offsets page over the store's unfiltered batches; survivors are appended
+// per batch, so the filter never perturbs pagination.
 func (q *Queue) allItems(ctx context.Context, libraryID int64) ([]store.Item, error) {
 	var out []store.Item
 	for offset := 0; ; offset += deriveBatch {
@@ -796,22 +771,16 @@ func (q *Queue) workItem(ctx context.Context, rowID string) {
 	q.persistRow(ctx, row, status, doc)
 	if row.series == nil && row.status != statusDeleted && q.deps.Adopt != nil {
 		// Identity adoption (tombstone-lifecycle D4): fired beside the settle,
-		// after persistRow — the served identity facts (_view title floor,
-		// episode namespaces) are durably in the store only now. ITEM lane
-		// only: __streams__ rows dispatch to workStreams, series rows (the
-		// serial seam) skip the guard — the hook reads the ITEMS table.
-		// Live-status guard (D4 amendment ruling (i), defense-in-depth behind
-		// the derive-walk exclusion): a dead row's settle never fires — its
-		// retained stock must survive, and AdoptStranded would otherwise match
+		// after persistRow — the served identity facts are durably in the
+		// store only now. ITEM lane only (the hook reads the ITEMS table);
+		// the live-status guard is defense-in-depth (D4 amendment (i)): a
+		// dead row's settle never fires — AdoptStranded would otherwise match
 		// the row against itself and destroy it (the 2.4 red evidence).
-		// Adoption never fails the row's settle: every failure inside the hook
-		// (and its wiring) is log-and-skip, the fire carries no error.
+		// Adoption never fails the settle — hook failures are log-and-skip.
 		q.deps.Adopt(ctx, rowID)
 	}
 	if row.series != nil && len(dr.episodeRuns) > 0 {
-		// A series run that returned episode-title entries routes them onto the
-		// series' episode documents (episode-titles D5) — after the run's own
-		// namespace is durably committed, never part of the run result itself.
+		// Routed after the run's namespace is durably committed (episode-titles D5).
 		q.routeEpisodeTitles(ctx, *row.series, doc, dr.episodeRuns)
 	}
 	if status == statusReady {

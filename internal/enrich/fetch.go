@@ -75,18 +75,14 @@ func withFetchClass(class string, err error) error {
 	return &fetchClassError{class: class, err: err}
 }
 
-// classifyFetchError is the pure unexported classifier over a fetch failure:
-// (error) -> one of the closed class tokens above. A failure annotated at its
-// failure point (every fetchSource path stamps its class via withFetchClass)
-// answers the carried class through errors.As; the structural branches map
-// the raw shapes the Go http client returns for un-annotated errors — a
-// *url.Error wrapping dial/DNS/TLS/deadline failures is network, except an
-// Op "parse" one (the spec's url template failing to compile: spec); direct
-// net.DNSError, TLS/x509 certificate shapes, and context
-// deadline/cancellation are network. The closed set's default for anything
-// unrecognized is network: an unknown failure is conservatively a transport
-// condition (and the extension point — a new failure shape gets an explicit
-// withFetchClass at its path), never silently re-labeled spec.
+// classifyFetchError is the pure classifier over a fetch failure: (error) ->
+// one of the closed class tokens above. An annotated failure answers its
+// carried class via errors.As; the structural branches map the raw shapes the
+// Go http client returns (a *url.Error over dial/DNS/TLS/deadline is network,
+// an Op "parse" one is spec; direct DNS/TLS/x509/deadline shapes are
+// network). The default for anything unrecognized is network — an unknown
+// failure is conservatively a transport condition (the extension point: a new
+// shape gets an explicit withFetchClass at its path), never re-labeled spec.
 func classifyFetchError(err error) string {
 	if err == nil {
 		return ""
@@ -179,17 +175,14 @@ func (g *FetchGate) reserve(pluginID string, minInterval time.Duration) time.Dur
 // fetchSource executes one plugin's fetch spec server-side (mode A,
 // enrichment D-5): validate the spec (GET/POST; every {var} resolvable; a
 // redacted_ref only through the server-scope secret map — "client:" and
-// unresolved refs stay the Mode B hook, contract-present, unbuilt), substitute
-// percent-encoded values into the url template, honor timeout_seconds, and
-// return the body/status/headers Convert consumes. gate paces the send per
-// the spec's min_interval_ms (nil = unpaced). secrets is the resolved
-// server-scope map (tmdb-enrichment D4); the variadic form keeps every
-// existing call shape byte-identical — absent/nil keeps the pre-SERVER
-// behavior (any redacted_ref is the spec-class errRedactedRef). A transport
-// error, a deadline miss, or any validation failure is a chain failure
-// (soft-fail upstream); every failure path annotates its machine class via
-// withFetchClass (the annotation is text- and wrap-chain-invisible —
-// classifyFetchError reads it back) without otherwise changing the error.
+// unresolved refs stay the Mode B hook, errRedactedRef), substitute into the
+// url template, honor timeout_seconds, and return the body/status/headers
+// Convert consumes. gate paces the send per min_interval_ms (nil = unpaced);
+// secrets is the resolved server-scope map (tmdb-enrichment D4 — the
+// variadic form keeps existing call shapes byte-identical). Every failure
+// path annotates its machine class via withFetchClass (text- and
+// wrap-chain-invisible; classifyFetchError reads it back) and soft-fails the
+// chain.
 func fetchSource(ctx context.Context, gate *FetchGate, pluginID string, spec *metadatav1.RequestSpec, secrets ...map[string]string) ([]byte, int32, map[string]string, error) {
 	method := strings.ToUpper(spec.GetMethod())
 	if method != http.MethodGet && method != http.MethodPost {
@@ -251,16 +244,11 @@ func fetchSource(ctx context.Context, gate *FetchGate, pluginID string, spec *me
 
 // fetchExtras executes the request plan's extra specs in order (media-data
 // convention D4): each extra goes through the same fetchSource validation and
-// the plugin's FetchGate slot, so pacing spans the whole plan. secrets is the
-// resolved server-scope map (tmdb-enrichment D4) — extras carry server-scoped
-// secret refs (the credits/season fetches) exactly like the primary. A failed
-// extra soft-fails its own entry ({fetched:false, error}) and the run
-// continues — Convert decides what the namespace gains from what arrived. The
-// returned classes ride positionally beside the entries ("" for a fetched
-// one): the entries carry only free text, and the call site's deferred
-// conversion (client-relayed-fetch D4) needs the machine class to recognize a
-// NETWORK-class extra failure. The primary spec's failure path lives at the
-// call site and is untouched.
+// FetchGate slot, so pacing spans the whole plan. A failed extra soft-fails
+// its own entry ({fetched:false, error}) and the run continues. The returned
+// classes ride positionally beside the entries ("" for a fetched one) — the
+// entries carry only free text, so the call site's deferred conversion (D4)
+// needs the machine class to recognize a NETWORK-class extra failure.
 func fetchExtras(ctx context.Context, gate *FetchGate, pluginID string, extras []*metadatav1.RequestSpec, secrets map[string]string) ([]*metadatav1.FetchedResponse, []string) {
 	if len(extras) == 0 {
 		return nil, nil
@@ -285,12 +273,10 @@ func fetchExtras(ctx context.Context, gate *FetchGate, pluginID string, extras [
 // resolveVariables renders each spec variable to its string form. A
 // redacted_ref scoped "server:<name>" resolves from the resolved-secrets map
 // (tmdb-enrichment D4: one substitution seam serves fetch, search, and relay
-// — the values stay core-side, never past the executor). Any other
-// redacted_ref — an unresolved server name, any "client:" ref, a ref with no
-// recognized scope — and any nil kind stay the explicit unsupported error
-// (errRedactedRef, spec class, never relayed), and the caller aborts before
-// any network attempt. A nil/absent secrets map keeps the pre-SERVER behavior
-// byte-identical (every redacted_ref errors).
+// — values stay core-side). Any other redacted_ref and any nil kind stay the
+// explicit errRedactedRef (spec class, never relayed) — the caller aborts
+// before any network attempt. A nil/absent secrets map keeps the pre-SERVER
+// behavior (every redacted_ref errors).
 func resolveVariables(vars map[string]*metadatav1.VariableValue, secrets map[string]string) (map[string]string, error) {
 	out := make(map[string]string, len(vars))
 	for name, v := range vars {

@@ -3,44 +3,26 @@
 
 // The convention projection (media-data-convention D5, browse-scale OQ2 —
 // moved verbatim from internal/api/metadata.go): a serve-side, read-time
-// composition of the additive `metadata` block on itemDTO and seriesDTO. The
-// resolver walks the module's gate-resolved source_chain — served data, never
-// document key order — over the document's sources.* namespaces and resolves
-// each convention group WHOLE from the FIRST effectively-enabled namespace
-// that carries it: the synopsis group (a description with its ride-along
-// genres/score/kind/status/episodes/aired_on facts), the cast group, and the
-// episode group (an episode document's own title/description). Consumers never
-// combine members of one group across sources; a group its winner carries only
-// partially serves with just the members the winner has (honest partial), and
-// a group with no carrier serves no key at all (honest absence — no empty
-// about, no empty cast, no empty episode). Composition mirrors the
-// display-naming posture: read-time over the dynamic document, never
-// persisted, tolerant — a corrupt or mistyped field floors to absent, never
-// errors the read. Cyrillic (and every value) passes through VERBATIM; numbers
-// stay byte-lossless via the DocMap json.Number decode.
+// composition of the additive `metadata` block. Each convention group
+// (synopsis, cast, episode) resolves WHOLE from the FIRST effectively-enabled
+// namespace that carries it — honest partial, honest absence — with every
+// value verbatim and a corrupt field flooring to absent, never erroring the
+// read (media-data-convention D5/D8 own the group and ride-along law).
 
 package naming
 
 import "encoding/json"
 
-// metadataFactKeys are the synopsis group's ride-along fact members, in the
-// order the resolver copies them (media-data-convention D8 — spec-izing the
-// shipped Synopsis.tsx cohesion): facts ALONE never claim the group — the
-// carrier test is the description — but a winner's facts ride along whole
-// from ITS namespace, never stitched from a later one.
+// metadataFactKeys are the synopsis group's ride-along fact members (D8):
+// facts alone never claim the group — the carrier test is the description —
+// but a winner's facts ride along whole from ITS namespace.
 var metadataFactKeys = []string{"genres", "score", "kind", "status", "episodes", "aired_on"}
 
 // MetadataFor resolves one row document's convention metadata block against
-// the namer's gate-resolved source chain: a map with an "about", "cast",
-// and/or "episode" key — only the groups some effectively-enabled namespace
-// carries — or nil when the chain is empty, the document unreadable, or no
-// carrier exists (honest absence: the DTO's omitempty then omits the block
-// entirely). The chain arrives ALREADY gate-resolved upstream (cmd-side via
-// enrich.ResolveGates); the disabled check here is the walk honoring the
-// served mute — a gate-disabled source never wins a group. The api DTO seam
-// calls this per row (handlers.go toItemDTO/toSeriesDTO); internal/browse's
-// facet aggregates run the SAME resolver (browse-scale OQ2 — keeping the
-// projection api-side would make browse depend on api).
+// the namer's already gate-resolved source chain: a map with an "about",
+// "cast", and/or "episode" key, or nil when the chain is empty, the document
+// is unreadable, or no carrier exists (honest absence). Internal/browse's
+// facet aggregates run the SAME resolver (browse-scale OQ2).
 func (n Namer) MetadataFor(raw json.RawMessage) map[string]any {
 	if len(n.Chain) == 0 {
 		return nil
@@ -49,21 +31,14 @@ func (n Namer) MetadataFor(raw json.RawMessage) map[string]any {
 	if doc == nil {
 		return nil
 	}
-	// The groups are document-kind-partitioned per the convention (D2): the
-	// synopsis group is a series/film-document group; the episode group is
-	// the episode document's own. The same parsed-anchor test the display
-	// composer uses decides whether THIS document is an episode document —
-	// a series row (no anchor) never serves an episode block, and an
-	// episode's own description is NEVER mislabeled as the show's about.
-	// The cast group applies to any document.
+	// Document-kind partition (D2): the episode group is the episode
+	// document's own (same parsed-anchor test the display composer uses);
+	// the cast group applies to any document.
 	_, _, _, episodeDoc := EpisodeFacts(doc)
 	sources, _ := doc["sources"].(map[string]any)
 	var md map[string]any
-	// put appends one won group — the map materializes only when a group
-	// actually resolves, so a no-carrier document serves nil (honest
-	// absence), never an empty block. The served check is the FIRST-carrier
-	// rule itself: a group already won is never re-resolved by a later
-	// namespace.
+	// put: lazy map (a no-carrier document serves nil, never an empty block);
+	// the served check is the first-carrier rule itself.
 	put := func(key string, v any) {
 		if _, served := md[key]; served {
 			return
@@ -101,15 +76,10 @@ func (n Namer) MetadataFor(raw json.RawMessage) map[string]any {
 	return md
 }
 
-// aboutBlock resolves the synopsis group from one namespace: the FIRST
-// effectively-enabled namespace carrying a description wins WHOLE — its
-// description plus whichever of the ride-along facts ITS namespace has, the
-// values verbatim. The caller applies this block only to series/film
-// documents (an episode document's description is the episode's own data —
-// D2 — never the show's about). Facts alone never claim the group (D8): a
-// namespace with genres but no description is not a synopsis carrier. A
-// winner carrying only the description serves an about block with just the
-// description (honest partial — a later namespace's genres never stitch in).
+// aboutBlock resolves the synopsis group from one namespace: a description
+// present wins WHOLE — description plus whichever ride-along facts ITS
+// namespace has (facts alone never claim the group, D8; a later namespace's
+// facts never stitch in).
 func aboutBlock(source string, ns map[string]any) map[string]any {
 	desc, ok := verbatimMember(ns, "description")
 	if !ok {
@@ -124,11 +94,8 @@ func aboutBlock(source string, ns map[string]any) map[string]any {
 	return about
 }
 
-// castBlock resolves the cast group from one namespace: the namespace's cast
-// array verbatim when it is a usable carrier (a present, non-empty array —
-// D8), nil otherwise. Entries pass through exactly as the source wrote them
-// ({name, role?, photo_url?} per the convention); the projection never
-// reshapes people data.
+// castBlock resolves the cast group from one namespace: the cast array
+// verbatim when present and non-empty (D8), nil otherwise.
 func castBlock(ns map[string]any) []any {
 	arr, ok := ns["cast"].([]any)
 	if !ok || len(arr) == 0 {
@@ -138,9 +105,8 @@ func castBlock(ns map[string]any) []any {
 }
 
 // episodeBlock resolves the episode group from one namespace: the episode's
-// own title and/or description (D2 — the episode document's own data only),
-// served as the members the winner carries (honest partial — {title} alone is
-// a served episode block). A namespace carrying neither is not a carrier.
+// own title and/or description (D2), honest partial; carrying neither is no
+// carrier.
 func episodeBlock(ns map[string]any) map[string]any {
 	var ep map[string]any
 	for _, key := range []string{"title", "description"} {
@@ -154,11 +120,9 @@ func episodeBlock(ns map[string]any) map[string]any {
 	return ep
 }
 
-// verbatimMember reads one convention member the way the dynamic accessors
-// read every document field: present means a non-nil value that is not the
-// empty string (the convention forbids placeholder empties — a field the
-// upstream does not provide is ABSENT, so an empty string read is absent),
-// copied through exactly as stored; anything else floors to !ok.
+// verbatimMember reads one convention member verbatim: present means a
+// non-nil value that is not the empty string (the convention forbids
+// placeholder empties — an empty string read is absent).
 func verbatimMember(ns map[string]any, key string) (any, bool) {
 	v, ok := ns[key]
 	if !ok || v == nil {

@@ -21,31 +21,20 @@ import (
 const routeOwner = "route"
 
 // routeEpisodeTitles routes one successful SERIES run's ConvertResult
-// episode-title entries onto the series' episode documents (episode-titles D5).
-// The entries are the run's side-output: metadata wraps into the RUN document's
-// namespace as usual, and each EpisodeTitle lands on the matching EPISODE
-// document as sources.<plugin> plus the core's _provenance/_view stamps.
-//
-// The route is best-effort and fact-guarded: a series with no parsed season
-// fact, a file-backed series (no episode documents), or an empty/unreadable
-// episode set routes nothing. An episode is matched by its parse facts read
-// namespace-agnostically (the display composer's episodeFacts rule — any
-// sources namespace carrying BOTH season and episode as integers) against the
-// series' own season fact read the same way: entry when episode-doc season ==
-// series season AND episode number == entry.episode. No matching entry — the
-// document is untouched; the season guard keeps a multi-season directory
-// honest (another season's episode stays titleless instead of wrong).
-//
-// Writes are taken under THAT episode row's own lease (the workers' primitive,
-// non-blocking — an unleased write could be resurrected by an in-flight
-// episode worker's unconditional persistRow); lease-held rows are re-attempted
-// once after reenrichRetryDelay (the sweep's one bounded retry pass) and a row
-// that stays held keeps its document byte-identical. The episode's lifecycle
-// status, the series run result, derivation, and Match are untouched: episode
-// documents still never match at Match, and a routed namespace simply makes
-// the episode's own (item, plugin) pair terminal through the unchanged
-// has-namespace gate. No _stages entry is written (routing is not a chain
-// run) — the stamps are the trace.
+// episode-title entries onto the series' episode documents (episode-titles
+// D5): each EpisodeTitle lands on the matching EPISODE document as
+// sources.<plugin> plus the core's _provenance/_view stamps. Best-effort and
+// fact-guarded: no parsed season fact, a file-backed series, or an
+// empty/unreadable episode set routes nothing. Matching is namespace-agnostic
+// (episodeFacts — the display composer's rule): episode-doc season == series
+// season AND episode number == entry.episode; the season guard keeps a
+// multi-season directory honest (another season's episode stays titleless
+// instead of wrong). Writes go under THAT episode row's own lease (an
+// unleased write could be resurrected by an in-flight worker's unconditional
+// persistRow); held rows get the one reenrichRetryDelay retry pass. The
+// episode's lifecycle status, derivation, and Match are untouched; no
+// _stages entry is written (routing is not a chain run) — the stamps are the
+// trace.
 func (q *Queue) routeEpisodeTitles(ctx context.Context, sr store.Series, seriesDoc map[string]any, runs []sourceResult) {
 	if len(runs) == 0 {
 		return // no entries: routing does nothing
@@ -93,15 +82,11 @@ type episodeTitleMatch struct {
 	entry  *metadatav1.EpisodeTitle
 }
 
-// routePass runs one routing write pass over the planned matches. Each write is
-// taken under THAT episode row's own lease (non-blocking): the row is re-read
-// under the lease, its facts re-checked against the plan, and the matched
-// entry's namespace lands with its _provenance/_view stamps — built over the
-// entry's own fields and the run's Convert hints and Match confidence, the
-// same inputs the run document's stamps used. The episode's lifecycle status
-// is never advanced. Returns the matches it could not attempt (a live lease
-// held); a row that stays held keeps its document byte-identical (the row is
-// never loaded before its lease is claimed).
+// routePass runs one routing write pass over the planned matches: each write
+// is taken under THAT episode row's own lease, the row re-read and its facts
+// re-checked against the plan before the matched entry's namespace lands with
+// its stamps (the same inputs the run document's stamps used). Returns the
+// matches it could not attempt (a live lease held).
 func (q *Queue) routePass(ctx context.Context, season int64, matches []episodeTitleMatch) (held []episodeTitleMatch) {
 	for _, m := range matches {
 		if !q.leases.acquire(m.itemID, routeOwner, q.cfg.LeaseTTL) {
