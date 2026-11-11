@@ -26,34 +26,25 @@ import (
 )
 
 // Packaged-playback orchestrator wiring (D-8/D-9): the composition root's
-// thin shell around the internal/orchestrator POLICY core. This file reads
-// the store + artifact root into the narrow snapshots the policies judge,
-// EXECUTES the decisions they return (enrich.Queue method values over the
-// two lanes: EnqueuePackUrgent for the play closures, EnqueuePack for the
-// sweep — eviction D4; artifact dirs moved to a .trash sibling then
-// deleted), and owns the clocks — the
-// policy package itself never execs ffmpeg, never writes item documents,
-// and never touches a library directory.
+// thin shell around the internal/orchestrator POLICY core — this file reads
+// the snapshots the policies judge and EXECUTES their decisions (the two
+// enqueue lanes; the policy package never execs ffmpeg or writes documents).
 
 const (
-	// streamsFailureLane is the enrich streams lane's ledger key (enrich's
-	// streamsLaneID — duplicated here because that constant is internal to
-	// enrich; a drift breaks cooldown gating, so the itest pins it).
+	// streamsFailureLane duplicates enrich's internal streamsLaneID ledger
+	// key; a drift breaks cooldown gating, so the itest pins it.
 	streamsFailureLane = "__streams__"
 
-	// sweepInterval is the frontier/eviction/integrity ticker period — the
-	// spec floor is ≥60 s; exactly 60 s keeps watch-driven lag bounded and
-	// the sweep cost negligible (a handful of indexed reads per tick).
+	// sweepInterval is the frontier/eviction/integrity ticker — the spec
+	// floor is ≥60 s; exactly 60 s keeps watch-driven lag bounded at
+	// negligible sweep cost.
 	sweepInterval = 60 * time.Second
 
-	// retentionGrace is the retention pass's dual-anchor grace window
-	// (fix-reheal-eviction D2): a superseded build stays live until it is
-	// this old on BOTH anchors — its directory mtime and its item row's
-	// updated_at. The observed kill window is one buffer (~30 s) until the
-	// session's next descriptor fetch; 10 min is ~20x margin and covers a
-	// pause-and-resume inside the window. Locked like sweepInterval: a rule
-	// bump re-heals every packed item at once, so a longer window would sit
-	// the whole library at 2x disk against the budget cap for hours.
+	// retentionGrace is the retention pass's dual-anchor grace
+	// (fix-reheal-eviction D2): a superseded build stays live until this old
+	// on BOTH its dir mtime and its row's updated_at — ~20x the observed
+	// kill window. Locked like sweepInterval (a rule bump re-heals
+	// everything at once).
 	retentionGrace = 10 * time.Minute
 
 	// watchScanLimit is the playback-progress scan depth per sweep: the LRU
@@ -64,14 +55,8 @@ const (
 
 // packOnPlay executes the pack-on-play decision (D-8) for POST /play: the
 // played item is enqueued into the streams lane exactly when the policy says
-// so (packable, nothing published yet, outside its failure cooldown) — a
-// play-requested pack rides the PREFERRED lane (eviction D4: the
-// composition hands the closure EnqueuePackUrgent, so the shared buffer's
-// background backlog never delays it); the direct floor serves everything
-// else. queued reports the enqueue so the
-// play verb can answer 202. optInCodecs is the opt-in codec knob (D-2's env
-// surface — MELLIFERA_STREAM_OPT_IN_CODECS, default off): HEVC/AC-3 items
-// are packable only while it is enabled.
+// so, via the PREFERRED lane (eviction D4); the direct floor serves
+// everything else. queued reports the enqueue (202).
 func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error, row store.Item, optInCodecs bool) (bool, error) {
 	doc := decodeItemDoc(row.Document)
 	if queued, handled := legacyRepackOnPlay(enqueue, doc, row.ID, optInCodecs); handled {
@@ -82,11 +67,9 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 		return false, nil // direct floor serves it — never pre-warm (D-8)
 	}
 	if err := enqueue(row.ID); err != nil {
-		// A momentarily full (or stopped) queue must never break the play
-		// itself: fall back to the direct floor (queued=false, no 202) and
-		// let the next sweep tick — or the user's retry — re-attempt the
-		// pack. The enqueue seam's contract: an error here is transient
-		// backpressure, not a play-blocking condition.
+		// A momentarily full (or stopped) queue must never break the play:
+		// an error here is transient backpressure, not play-blocking — the
+		// next tick or the user's retry re-attempts the pack.
 		slog.Warn("orchestrator: pack-on-play enqueue deferred", "item", row.ID, "error", err)
 		return false, nil
 	}
@@ -95,27 +78,12 @@ func packOnPlay(ctx context.Context, st *store.Store, enqueue func(string) error
 }
 
 // legacyRepackOnPlay is the lazy re-heal decision (pack-manifest-audio D5,
-// re-versioned by fix-tv-unblock-2 Interfaces 2): a stored namespace in state
-// complete with a build nonce whose pack-lane RULE VERSION is older than
-// pack.MasterRuleVersion predates the current pack rule — boolean `true`
-// reads as v1 (the legacy unversioned write), a JSON number as its integer
-// version, absence (or anything else) as 0 — and the play that asked for it
-// enqueues exactly ONE repack through the play's preferred lane — the
-// enqueue seam packOnPlay hands it (eviction D4: EnqueuePackUrgent); plays
-// landing while the repack is pending or running are absorbed by the lane's
-// per-item lease (never re-enqueued per tick), and the success persist
-// rewrites the version, closing the window. The decision reads ONLY the
-// stored namespace doc — never the playlist on disk. A gate-closed stale
-// item (the PackGate pre-check, the retry-path precedent) skips with ONE
-// INFO line naming the gate token — no enqueue, no state change, no ledger
-// row: the old build keeps serving until the knob opens (the sweep-refusal
-// pattern). A queue-full enqueue is transient backpressure, the pack-on-play
-// contract: the old build keeps serving and a later play or the frontier
-// re-attempts. handled reports that the stale-build decision answered the
-// play; queued reports the enqueue (202). A build at the current version —
-// or a FUTURE one, so an older constant never re-heals a newer build — or
-// any non-complete state is not stale: handled=false hands the play back to
-// the ordinary pack-on-play decision.
+// re-versioned by fix-tv-unblock-2 Interfaces 2): a complete-state build
+// older than pack.MasterRuleVersion enqueues exactly ONE repack through the
+// play's preferred lane (eviction D4). A gate-closed stale item skips with
+// ONE INFO line — the old build keeps serving until the knob opens. A
+// current- or FUTURE-version build is not stale (an older constant never
+// re-heals a newer build): handled=false hands back to the ordinary decision.
 func legacyRepackOnPlay(enqueue func(string) error, doc map[string]any, itemID string, optInCodecs bool) (queued, handled bool) {
 	streams, _ := doc["streams"].(map[string]any)
 	state, _ := streams["state"].(string)
@@ -136,11 +104,9 @@ func legacyRepackOnPlay(enqueue func(string) error, doc map[string]any, itemID s
 }
 
 // masterRuleVersion reads the pack-lane rule version off a stored streams
-// namespace (fix-tv-unblock-2 Interfaces 2): boolean `true` is the legacy v1
-// write, a JSON number its integer version, anything else or absent 0.
-// JSON decoding shapes namespace numbers as float64 — the version is read
-// through a `case float64`, never a raw int type-assert, or every recorded
-// version would read 0 and the re-heal wave would loop forever.
+// namespace (fix-tv-unblock-2 Interfaces 2): bool true = legacy v1, number =
+// its version, else 0. Read through a `case float64` — numbers decode as
+// float64, so a raw int assert would read every version 0 and loop forever.
 func masterRuleVersion(streams map[string]any) int {
 	switch v := streams["master"].(type) {
 	case bool:
@@ -154,16 +120,9 @@ func masterRuleVersion(streams map[string]any) int {
 }
 
 // retryFailedPack executes the retry decision for POST /play {retry:true}
-// (playback-capability-gate D4): a failed packaging run re-enqueues exactly
-// when the pack gate opens for the item, through the preferred lane (the
-// same EnqueuePackUrgent seam packOnPlay carries — eviction D4) — the same
-// single judge the
-// descriptor and every pack seam consult (D1), so a knob-off opt-in item
-// refuses with its own state_reason token (refusal.PlayRefusal → 400) instead
-// of re-enqueueing a build the knob refuses, and a capable or knob-enabled item
-// re-enqueues exactly as before. Nothing failed → (false, nil), the
-// handler's 400 nothing_failed. The refusal is a policy verdict, never a
-// pack failure: no ledger row is written on this path.
+// (playback-capability-gate D4): a failed run re-enqueues exactly when the
+// pack gate opens — a knob-off item refuses with its state_reason token.
+// Nothing failed → (false, nil), the handler's 400 nothing_failed.
 func retryFailedPack(ctx context.Context, st *store.Store, enqueue func(string) error, row store.Item, optInCodecs bool) (bool, error) {
 	doc := decodeItemDoc(row.Document)
 	streams, _ := doc["streams"].(map[string]any)
@@ -180,25 +139,17 @@ func retryFailedPack(ctx context.Context, st *store.Store, enqueue func(string) 
 	return true, nil // 202 accepted
 }
 
-// itemFacts reads the stored ffprobe blob out of an item document — the
-// verbatim facts every PackGate verdict judges (INV1/INV2). Absent or
-// unreadable facts read as nil, which PackGate fails safe on.
+// itemFacts reads the stored ffprobe blob — the verbatim facts every PackGate
+// verdict judges (INV1/INV2); absent reads nil, which PackGate fails safe on.
 func itemFacts(doc map[string]any) map[string]any {
 	ff, _ := doc["ffprobe"].(map[string]any)
 	return ff
 }
 
 // newPlayClosure builds the api Deps.Play verb (D-7 — the ONLY playback
-// mutation): retry re-enqueues a failed packaging run through the streams
-// lane's preferred dispatch (eviction D4: enqueue is the composition's
-// enrich.Queue.EnqueuePackUrgent — both pack decisions below inherit it;
-// the sweep and the descriptor's lazy re-heal keep the plain EnqueuePack);
-// fromSeconds is reserved (a v1 no-op carried through). The eviction
-// re-arm (eviction D3 — see suppressionSet) lives HERE; never inside
-// packOnPlay / retryFailedPack (their signatures are pinned by their
-// playback_gate_test call sites). The failed check reads the item's stored
-// streams namespace —
-// the lane is its only writer.
+// mutation): retry rides EnqueuePackUrgent (eviction D4). The eviction
+// re-arm (D3 — see suppressionSet) lives HERE, not inside the pack decisions
+// (their signatures are pinned by tests).
 func newPlayClosure(st *store.Store, enqueue func(string) error, optInCodecs bool, sup *suppressionSet) func(ctx context.Context, itemID string, retry bool, fromSeconds *float64) (bool, error) {
 	return func(ctx context.Context, itemID string, retry bool, _ *float64) (bool, error) {
 		row, err := st.GetItem(ctx, itemID, access.System())
@@ -219,13 +170,9 @@ func newPlayClosure(st *store.Store, enqueue func(string) error, optInCodecs boo
 }
 
 // packGateRefusal judges the BUILD-TIME gate (playback-capability-gate D4):
-// a job may have been enqueued while the opt-in knob was enabled and reach
-// the executor after it was disabled — the PackItem closure re-consults the
-// same single judge (D1) right before Pack, and a closed verdict is wrapped
-// in refusal.PolicyRefusal carrying the gate's state_reason token. workStreams
-// branches that error BEFORE the failure ledger: the run ends failed with the
-// token persisted, NO pack_failed row — a knob setting never charges the
-// 30-day cooldown, and re-enabling the knob heals through the frontier.
+// a job enqueued under an enabled knob re-consults the same judge right
+// before Pack; a closed verdict wraps refusal.PolicyRefusal BEFORE the
+// failure ledger — a knob setting never charges the 30-day cooldown.
 func packGateRefusal(ff map[string]any, optInCodecs bool) error {
 	if gate := stream.PackGate(ff, optInCodecs); gate != stream.GateOpen {
 		return refusal.PolicyRefusal{Reason: string(gate)}
@@ -234,17 +181,9 @@ func packGateRefusal(ff map[string]any, optInCodecs bool) error {
 }
 
 // logPackGate emits the job-start line (pack-manifest-audio D7): ONE
-// "pack: gate" INFO line per pack job, logged immediately before Pack runs —
-// item, class, gate, codecs. The class is the codecs' nature judged with the
-// knob out of the way (Classify(ff, true) — the same primitive verdict
-// PackGate judges), so the pair stays informative under every knob position:
-// a knob-off opt-in item reads class=opt_in gate=codec_not_opted_in instead
-// of folding into the unsupported crowd; the gate field owns the knob's
-// verdict (`open` or the refusal token — on a refusal the token rides here
-// and the flow ends with the closure's PolicyRefusal, enrich stays
-// line-silent, the persisted failed state is the record). INV4: item id,
-// class name, gate token, codec-fact rendering only — never a token value, a
-// play URL, or a path.
+// "pack: gate" INFO line per pack job — item, class, gate, codecs. The class
+// is judged with the knob out of the way (Classify(ff, true)); INV4: ids and
+// tokens only — never a token value, a play URL, or a path.
 func logPackGate(itemID string, ff map[string]any, gate stream.Gate) {
 	verdict := "open"
 	if gate != stream.GateOpen {
@@ -254,13 +193,9 @@ func logPackGate(itemID string, ff map[string]any, gate stream.Gate) {
 		"gate", verdict, "codecs", packGateCodecs(ff))
 }
 
-// packGateCodecs renders the stored ffprobe facts into one compact codec-fact
-// string (pack-manifest-audio D7): the first video stream's codec/profile,
-// then the audio codecs with multiplicity — the real Matroska shape renders
-// `hevc Main 10, aac LC ×2`; a single h264/aac pair renders `h264, aac`.
-// Pure over the verbatim facts: absent, empty, or unreadable facts render
-// `none`; a panic is impossible by construction — every map/array read is a
-// checked assertion and fully-empty renders are skipped, never joined.
+// packGateCodecs renders the ffprobe facts into one compact codec-fact
+// string (pack-manifest-audio D7): video codec/profile, then audio with
+// multiplicity — `hevc Main 10, aac LC ×2`; absent facts render `none`.
 func packGateCodecs(ff map[string]any) string {
 	streams, _ := ff["streams"].([]any)
 	var video map[string]any
@@ -310,7 +245,7 @@ func packGateCodecs(ff map[string]any) string {
 
 // streamFactRender renders one stream's codec facts as `codec profile`
 // (either half omitted when the facts lack it); a stream with neither reads
-// empty and the caller skips it. Facts are verbatim — never trust casing.
+// empty and the caller skips it.
 func streamFactRender(s map[string]any) string {
 	if s == nil {
 		return ""
@@ -386,9 +321,8 @@ func (s *suppressionSet) contains(itemID string) bool {
 	return s.items[itemID]
 }
 
-// snapshot copies the set for FrontierIn.Suppressed — the policies stay pure
-// (they read their own map while the shell keeps mutating the set). A nil
-// receiver reads as nothing-suppressed.
+// snapshot copies the set for FrontierIn.Suppressed — the policies stay
+// pure; a nil receiver reads as nothing-suppressed.
 func (s *suppressionSet) snapshot() map[string]bool {
 	if s == nil {
 		return nil
@@ -402,20 +336,11 @@ func (s *suppressionSet) snapshot() map[string]bool {
 	return out
 }
 
-// newSweep returns the periodic sweep closure: one pass = the watch-driven
-// frontier (enqueue decisions → the streams lane) + the completion-driven
-// demotion (a fully-watched serial's builds → .trash sibling then delete —
-// unconditional, never budget-gated, BEFORE the budget pass so the bytes it
-// frees count in that pass's accounting) + the retention pass (superseded
-// builds past the dual grace anchor → .trash sibling then delete) + budget
-// accounting with LRU eviction (evict decisions → .trash sibling then
-// delete) + the integrity sweep (broken published builds → repack jobs →
-// the streams lane). sup is the suppression set (eviction D3 — see
-// suppressionSet; a nil set reads as nothing suppressed). Errors are logged,
-// never fatal — a sweep is best-effort background work and the next tick
-// retries. validate is the wired stream.Service.ValidateBuild, injected as a
-// func (the enqueue seam's pattern) so the sweep stays testable without
-// package main.
+// newSweep returns the periodic sweep closure: one pass = the frontier →
+// demotion → retention → budget eviction → integrity sweep (each below).
+// sup is the suppression set (eviction D3 — see suppressionSet); validate
+// rides in as stream.Service.ValidateBuild so the sweep stays testable.
+// Never fatal — the next tick retries.
 func newSweep(st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, budgetBytes int64, optInCodecs bool, sup *suppressionSet) func(context.Context) {
 	return func(ctx context.Context) {
 		fronted, demote := sweepFrontier(ctx, st, root, enqueue, budgetBytes, optInCodecs, sup)
@@ -426,22 +351,13 @@ func newSweep(st *store.Store, root string, validate func(itemID, nonce string) 
 	}
 }
 
-// sweepFrontier builds the frontier's input snapshot from the store — every
-// library's serials with their gate, the watched set, the cooldown map, the
-// playback-progress recency stamps, the per-item build bytes (dirSize over
-// the artifact root), and the pin cap (budgetBytes×3/5, locked; <=0 =
-// unbounded) — and executes the returned jobs through the streams lane's
-// enqueue seam. It returns the PINNED item-ID set — the frontier's bounded
-// WORKING SET (the policy owns the recency order and the cap prefix),
-// wanted built whether or not this pass could enqueue it (a queue-full
-// defer is still pinned) — which the budget sweep pins against eviction
-// (see Evictions): the set of things the frontier will (re)pack must not be
-// its own recurring eviction victim. It also returns the DEMOTE list —
-// every fully-watched serial's episode ids (Frontier's third return, the
-// policy's judgment) — for the shell's demotion executor (sweepDemotion),
-// which the same pass runs ahead of the budget accounting. sup is the
-// suppression set (eviction D3 — see suppressionSet); its snapshot feeds
-// FrontierIn.Suppressed.
+// sweepFrontier builds the frontier's input snapshot from the store and
+// executes the returned jobs through the enqueue seam. It returns the PINNED
+// working set — wanted whether or not this pass could enqueue it (a
+// queue-full defer is still pinned) — which the budget sweep pins against
+// eviction: the frontier's (re)pack set must not evict itself. Also returns
+// the DEMOTE list (Frontier's judgment) for sweepDemotion; sup = suppression
+// set (eviction D3 — see suppressionSet).
 func sweepFrontier(ctx context.Context, st *store.Store, root string, enqueue func(string) error, budgetBytes int64, optInCodecs bool, sup *suppressionSet) (map[string]bool, []string) {
 	libs, err := st.ListLibraries(ctx, access.System())
 	if err != nil {
@@ -491,15 +407,10 @@ func sweepFrontier(ctx context.Context, st *store.Store, root string, enqueue fu
 }
 
 // sweepDemotion executes the completion-driven demotion (eviction D2 — the
-// judgment is the policy's, Frontier's third return; this is the shell's
-// executor pass): every demoted episode's build directories die through the
-// existing evictDir vocabulary, and the item's packaging record is
-// unpublished — a document-named build in state complete OR partial resets
-// the streams record to none, because a demoted partial must replay-repack
-// through pack-on-play, which requires none. Demotion is UNCONDITIONAL —
-// never gated on budget pressure — and newSweep positions this pass BEFORE
-// sweepBudget so the bytes it frees count in that pass's accounting.
-// Best-effort like every sweep: a failed eviction retries on the next tick.
+// judgment is Frontier's, this the shell's executor): every demoted episode's
+// build dirs die through evictDir, the record unpublishes — a demoted PARTIAL
+// must reset to none so pack-on-play can replay-repack it. UNCONDITIONAL,
+// positioned before sweepBudget so freed bytes count in its accounting.
 func sweepDemotion(ctx context.Context, st *store.Store, root string, demote []string, sup *suppressionSet) {
 	for _, itemID := range demote {
 		itemDir := filepath.Join(root, itemID)
@@ -515,19 +426,12 @@ func sweepDemotion(ctx context.Context, st *store.Store, root string, demote []s
 }
 
 // sweepBudget walks the artifact root into the disk-truth snapshot (build
-// dirs under <itemID>/<nonce>, orphans included — a directory whose item row
-// is gone or deleted) and executes the returned evictions. Each directory's
-// Stale flag (fix-reheal-eviction D4) comes off the row the walk already
-// reads: a directory is stale when it is not the one doc.streams names, and
-// every directory of an orphan or deleted-status row is stale (pure waste —
-// the orphan-first principle at directory granularity). Stale .tmp- staging
-// stays budget-untouchable: the in-flight skip inside Evictions stands —
-// retention owns staging. fronted is the frontier's working set
-// (sweepFrontier's return) — pinned against eviction; if the budget cannot
-// be met without evicting pinned builds, that is the operator signal that
-// the budget sits below the working set, logged loudly. An unreadable store
-// read marks the item live (never evict blind); a missing root means nothing
-// was ever packaged. sup is the suppression set (eviction D3 — see
+// dirs under <itemID>/<nonce>, orphans included) and executes the returned
+// evictions. Stale (fix-reheal-eviction D4) = not the build doc.streams
+// names; stale .tmp- staging stays untouchable (retention owns staging).
+// fronted is pinned against eviction — failing it without evicting pinned
+// builds is the operator signal, logged loudly. Never evict blind on an
+// unreadable store read. sup = suppression set (eviction D3 — see
 // suppressionSet).
 func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes int64, fronted map[string]bool, sup *suppressionSet) {
 	if budgetBytes <= 0 {
@@ -578,10 +482,9 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 	}
 	for _, path := range orchestrator.Evictions(dirs, recency, fronted, budgetBytes) {
 		if id := owner[path]; fronted[id] {
-			// The budget could not be met from non-fronted artifacts alone:
-			// the frontier will repack this and evict it again — the churn
-			// the pin exists to break. Loud and rare: the operator's signal
-			// to raise MELLIFERA_ORCH_BUDGET_GB above the working set.
+			// The budget could not be met from non-fronted artifacts alone —
+			// the frontier will repack this and evict it again (the churn
+			// the pin breaks): the operator's signal to raise the budget.
 			slog.Warn("orchestrator: budget below frontier working set — evicting a fronted build", "item", id, "path", path)
 		}
 		if evictDir(path) {
@@ -595,24 +498,12 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 }
 
 // sweepRetention is the retention pass (fix-reheal-eviction Interface 2,
-// D5): it reclaims superseded build directories once they are past the grace
-// on BOTH anchors — the directory's own mtime (protects in-flight packs:
-// staging and the renamed head-first build grow, so they read fresh) and the
-// item row's updated_at (the success persist stamps it at the supersede
-// moment, so it protects just-superseded builds a live session may still hold
-// URLs for; any later doc write only extends the window — the safe
-// direction). It runs regardless of the budget cap (D5): the cap's off
-// position must not immortalize stale builds. A stale directory is any
-// directory the item document does not name: doc.streams.nonce when complete;
-// a none/failed or nameless doc leaves every directory stale (any packaging
-// state); an orphan item (row gone) leaves every directory stale too, judged
-// on mtime alone. There is no prefix carve-out: fresh .tmp- staging is
-// protected by its own mtime anchor, and stale staging plus stale .trash
-// (crash hygiene) are reclaimed like any other stale directory. Reclamation
-// rides evictDir only — retention never touches the document-named build, so
-// there is nothing to unpublish (no resetStreamsState) — and adds no log
-// lines of its own. An unreadable store read skips the item (never evict
-// blind — the sweepBudget precedent).
+// D5): reclaims superseded build directories past the grace on BOTH anchors —
+// directory mtime (protects in-flight packs) and row updated_at (protects
+// just-superseded builds a live session still holds URLs for). Runs
+// regardless of the budget cap — the cap's off position must not immortalize
+// stale builds. Stale = any dir the item doc does not name; orphans judge on
+// mtime alone. Rides evictDir only — an unreadable store read skips the item.
 func sweepRetention(ctx context.Context, st *store.Store, root string, grace time.Duration) {
 	idDirs, err := os.ReadDir(root)
 	if err != nil {
@@ -653,15 +544,11 @@ func sweepRetention(ctx context.Context, st *store.Store, root string, grace tim
 	}
 }
 
-// evictDir reclaims one artifact directory. A directory already carrying the
-// .trash suffix (an earlier pass's removal-failure leftover, or crash
-// hygiene) is ALREADY evicted: it is deleted on sight, never renamed aside
-// again — a failed removal retries the same name on the next pass, so the
-// suffix never grows. Any other directory first moves aside (the .trash
-// sibling — a client mid-fetch never sees a half-deleted tree) and then
-// deletes. Best-effort: a failed step leaves the artifact for the next
-// sweep. It reports whether the directory is gone — the caller's cue to
-// unpublish the build record.
+// evictDir reclaims one artifact directory: move aside to the .trash sibling
+// (a client mid-fetch never sees a half-deleted tree), then delete. A
+// directory already carrying the suffix is deleted on sight, never renamed
+// aside again — the suffix never grows (fix-trash-rerename). Best-effort.
+// Reports whether the directory is gone — the caller's cue to unpublish.
 func evictDir(path string) bool {
 	if strings.HasSuffix(path, ".trash") {
 		if err := os.RemoveAll(path); err != nil {
@@ -685,21 +572,11 @@ func evictDir(path string) bool {
 }
 
 // resetStreamsState unpublishes the item's build record after a policy
-// eviction took its directory: eviction is a policy act, not corruption, so
-// the record must not keep advertising a build the disk no longer has — the
-// integrity sweep would heal it straight back into the lane and the budget
-// sweep would evict it again (the evict→repack loop). The write follows the
-// lane's persistStreams pattern (Interfaces §1): a fresh row reload,
-// replace only doc["streams"], PutItem — never a blind overwrite of the
-// row. Only the published build's own nonce is reset: a stale-nonce
-// directory is not the build the record points at. The budget-eviction
-// contract stays COMPLETE-only (partial belongs to the floor guard, failed
-// to the cooldown); demoted is the completion-driven demotion path's
-// extension (eviction D2): it resets a PARTIAL named build to none as well,
-// because a demoted partial must replay-repack through pack-on-play, which
-// requires none. Best-effort, like the sweep itself: a failed write leaves
-// the loop in place for one more pass — the next eviction of the same item
-// retries the unpublish.
+// eviction took its directory — the record must not advertise a build the
+// disk lacks, or the integrity sweep heals it straight back and the budget
+// evicts it again (the evict→repack loop). Only the published build's own
+// nonce resets; demoted (eviction D2) extends that to PARTIAL — a demoted
+// partial must replay-repack through pack-on-play, which requires none.
 func resetStreamsState(ctx context.Context, st *store.Store, itemID, nonce string, demoted bool) {
 	row, err := st.GetItem(ctx, itemID, access.System())
 	if err != nil {
@@ -732,22 +609,14 @@ func resetStreamsState(ctx context.Context, st *store.Store, itemID, nonce strin
 	slog.Info("orchestrator: evicted build unpublished", "item", itemID)
 }
 
-// sweepIntegrity walks the artifact root like sweepBudget (item dirs, live
-// rows only) into the integrity snapshot (D4): every live item row whose
-// published-build state is complete gets the build its streams namespace
-// points at validated, the judge returns exactly the broken ones as repack
-// jobs, and each job re-enters the streams lane under a fresh build nonce. A
-// gate-closed job (playback-capability-gate D4 — the pack lane cannot serve
-// the item's codecs under the current knob) is refused with ONE INFO line
-// naming the gate token and nothing else: no enqueue, and no ledger row — a
-// policy refusal is never a pack failure, and the sweep must not loop on a
-// refusal it can never heal; flipping the knob lets the next pass front it
-// again. A failed repack flips the state to failed + cooldown — out of this
-// pass's complete-state scope, so no re-enqueue storm; a SUPPRESSED item
-// (eviction D3 — see suppressionSet) is skipped ahead of the gate with ONE
-// INFO line naming the suppression — no enqueue, no ledger row; the
-// best-effort contract stands and every error is logged, never fatal — the
-// next sweep retries.
+// sweepIntegrity walks the artifact root like sweepBudget (live rows only)
+// into the integrity snapshot (D4): every live row whose published build is
+// complete gets the doc-named build validated, broken ones re-enter the
+// streams lane under a fresh nonce. A gate-closed job
+// (playback-capability-gate D4) gets ONE INFO line — no enqueue, no ledger
+// row: a policy refusal is never a pack failure, and the sweep must not loop
+// on a refusal it can never heal. SUPPRESSED items (eviction D3 — see
+// suppressionSet) skip ahead of the gate. Never fatal.
 func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, optInCodecs bool, sup *suppressionSet) {
 	idDirs, err := os.ReadDir(root)
 	if err != nil {
@@ -804,10 +673,9 @@ func sweepIntegrity(ctx context.Context, st *store.Store, root string, validate 
 }
 
 // episodeFromDoc projects one item document into the orchestrator's narrow
-// Episode input: the pack gate (playback-capability-gate D1 — the same single
-// judge the descriptor and every pack seam consult), the published-build
-// state (partial or complete = already packaged), and the pack_failed
-// cooldown deadline (zero when none).
+// Episode input: the pack gate (D1 — the single judge every pack seam
+// consults), the published-build state, and the pack_failed cooldown
+// deadline (zero when none).
 func episodeFromDoc(itemID string, doc map[string]any, cool map[string]time.Time, optInCodecs bool) orchestrator.Episode {
 	streams, _ := doc["streams"].(map[string]any)
 	state, _ := streams["state"].(string)
@@ -836,12 +704,10 @@ func streamCooldowns(ctx context.Context, st *store.Store) map[string]time.Time 
 	return cool
 }
 
-// watchState reads the playback-progress LRU clock once per sweep: the
-// per-item positions (the completion-aware watched predicate's input — this
-// read carries no watch judgment; the fold lives where the episode documents
-// are, in the serial loop's projectEpisodes) and the per-item recency stamps
-// (eviction order — any-progress-based, deliberately untouched by the watched
-// predicate: the budget LRU clock is a separate signal, design D5).
+// watchState reads the playback-progress LRU clock once per sweep: per-item
+// positions (no watch judgment — the fold lives in projectEpisodes) and
+// per-item recency stamps, deliberately any-progress-based — the budget LRU
+// clock is a separate signal from the watched predicate (design D5).
 func watchState(ctx context.Context, st *store.Store) (map[string]float64, map[string]time.Time) {
 	rows, err := st.ListProgress(ctx, watchScanLimit, access.System())
 	if err != nil {
@@ -874,10 +740,8 @@ func nonces(itemDir string) []string {
 	return out
 }
 
-// buildBytes sums each item's artifact-directory bytes off the artifact
-// root (dirSize per item directory — disk truth, the same ledger-free
-// source the budget sweep reads; a missing root or an item without a
-// directory on disk is simply absent from the map = zero bytes).
+// buildBytes sums each item's artifact-directory bytes off the artifact root
+// (dirSize per item — disk truth, the budget sweep's ledger-free source).
 func buildBytes(root string) map[string]int64 {
 	out := make(map[string]int64)
 	idDirs, err := os.ReadDir(root)
@@ -908,9 +772,8 @@ func dirSize(path string) int64 {
 }
 
 // seriesBacking extracts the `parsed.backing` marker fact from a series
-// document (the one fact QueryItemsBySeries takes as an argument; the store
-// never reads documents). Mirrors the api handler's read — same fallback:
-// absent/unreadable means the directory backing.
+// document (the one fact QueryItemsBySeries takes; the store never reads
+// documents) — absent/unreadable means the directory backing.
 func seriesBacking(raw json.RawMessage) string {
 	var doc struct {
 		Parsed struct {
@@ -924,8 +787,8 @@ func seriesBacking(raw json.RawMessage) string {
 }
 
 // decodeItemDoc decodes an item document into the map shape every doc-reading
-// closure uses. An unreadable document reads as an empty map (the episode
-// projection then fails safe to unpackable/direct-floor).
+// closure uses; an unreadable document reads as an empty map (fails safe to
+// unpackable/direct-floor).
 func decodeItemDoc(raw json.RawMessage) map[string]any {
 	doc := map[string]any{}
 	_ = json.Unmarshal(raw, &doc)
