@@ -5,13 +5,15 @@ skip_specs (non-behavioral, comment-only). Amended per surveyor recs over 2 roun
 frontier EMPTY at approval. Registered: 17 tasks (16 authored + built-in git-check).
 Worktree attached to the header (branch feature/cleanup, base 792031a).
 
-Progress: groups 1–6 green (…5.1–5.2 @ 19629e8, 6.1 @ fa058c3; one superseded red
-receipt on 2.3 — baseline gofmt debt fixed session-side @ 55d8fd8). 13/17.
+Progress: groups 1–7 green (…6.1 @ fa058c3, 7.1–7.2 @ 08f10cb amended — a stray
+18.6 MB plugin build binary swept in by git add -A was removed from disk and the
+commit; one superseded red receipt on 2.3, baseline gofmt debt fixed @ 55d8fd8).
+15/17.
 Reviewer notes: (1) 3.1 KEEP-floor densities 23%/21%/19%; (2) 4.1 router.go 56.5%
 (exported surface mandates docs), handlers.go 21.2% (swaggo), EXPORT-BUDGET canonical
 = Deps.SourceInventory, 6 whitespace-only gofmt struct-alignment lines disclosed.
 Read diffs, don't re-trim mechanically.
-Next: task 7.1. Apply order = tasks.md group order (G1: 1.1–1.4 → G2: 2.1–2.3 → G3: 3.1
+Next: task 8.1. Apply order = tasks.md group order (G1: 1.1–1.4 → G2: 2.1–2.3 → G3: 3.1
 → G4: 4.1–4.2 → G5: 5.1–5.2 → G6: 6.1 → G7: 7.1–7.2 → G8: 8.1), ≤3 concurrent, ONE
 fresh wf-coder per task, each ending `bash /Users/aldfiar/.claude/bin/wf pipeline
 verify cleanup <id> --by wf-coder` (run from the worktree).
