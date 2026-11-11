@@ -42,8 +42,12 @@ COPY internal/ internal/
 COPY pkg/ pkg/
 COPY plugins/ plugins/
 COPY proto/ proto/
-# the go:embed target — freshly built SPA, replaces the committed dist bytes
+# the go:embed target — dir COPY MERGES contents into the committed dist bytes
 COPY --from=web /src/internal/web/dist internal/web/dist
+# TV APK drop slot: build-arg-less optional layer — if android/apk/ holds an
+# APK it lands in dist/assets and /apk serves it; empty dir (only .gitkeep)
+# merges nothing and /apk stays 404 (APK-optional green proof)
+COPY android/apk/ internal/web/dist/assets/
 RUN CGO_ENABLED=0 go build -trimpath -o out/mellifera ./cmd/mellifera \
  && CGO_ENABLED=0 go build -trimpath -o out/base-scanner ./plugins/base-scanner \
  && CGO_ENABLED=0 go build -trimpath -o out/serial-scanner ./plugins/serial-scanner \

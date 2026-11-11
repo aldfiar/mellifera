@@ -43,3 +43,10 @@ android-tvprobe/build/
 android-tvprobe/app/build/
 android-tvprobe/.gradle/
 android-tvprobe/local.properties
+
+# Android TV app: APK drop dir is kept, APKs are local artifacts; signing and
+# IDE-local config never enter the tree
+android/apk/*.apk
+!android/apk/.gitkeep
+android/keystore.properties
+android/local.properties

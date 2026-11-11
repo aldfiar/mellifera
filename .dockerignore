@@ -15,3 +15,7 @@ node_modules
 coverage.out
 coverage.html
 internal/itest/data
+android-tvprobe
+android/build
+android/app/build
+android/.gradle
