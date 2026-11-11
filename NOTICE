@@ -32,3 +32,11 @@ code-generated from in-source annotations by the swaggo/swag CLI
 (dev/CI tool, not a runtime dependency) and committed under
 internal/web/api/.
 
+
+This product uses github.com/fsnotify/fsnotify for filesystem change
+notification, which drives per-library scan triggering. fsnotify is
+Copyright the fsnotify authors and contributors and is licensed under
+the BSD 3-Clause "New" or "Revised" License
+(https://github.com/fsnotify/fsnotify/blob/main/LICENSE). fsnotify is
+a pure-Go, CGO-free dependency, consistent with this product's single
+static binary posture.

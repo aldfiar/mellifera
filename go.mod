@@ -5,6 +5,7 @@ go 1.25.0
 toolchain go1.25.3
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/swaggo/http-swagger v1.3.4

@@ -53,6 +53,7 @@ import (
 	"github.com/mellifera/mellifera/internal/sourcestate"
 	"github.com/mellifera/mellifera/internal/store"
 	"github.com/mellifera/mellifera/internal/stream"
+	"github.com/mellifera/mellifera/internal/watch"
 	"github.com/mellifera/mellifera/internal/web"
 	"github.com/mellifera/mellifera/pkg/sdk"
 )
@@ -394,6 +395,18 @@ func main() {
 	// accepted edge.
 	suppress := newSuppressionSet()
 
+	// The per-library scan single-flight (watch-scan D4): ONE instance shared
+	// by BOTH trigger sources, so a manual POST and a watcher fire join the
+	// same in-flight run instead of stampeding the store. scanFn adapts
+	// scan.Run to the flight's fn shape; the api.Deps.Scan closure below and
+	// the watcher's watch.Deps.Scan (beside the janitor launch) route through
+	// this one seam. The endpoint contract is unchanged — 200 + the scan
+	// result — only the concurrency discipline behind it changes.
+	flight := newScanFlight()
+	scanFn := func(ctx context.Context, libraryID int64) (scan.Result, error) {
+		return scan.Run(ctx, scanDeps, libraryID)
+	}
+
 	apiHandler := api.New(api.Deps{
 		AdminToken: cfg.adminToken,
 		Store:      st,
@@ -401,7 +414,7 @@ func main() {
 		Identity:   identitySvc,
 		Art:        artSvc,
 		Scan: func(ctx context.Context, libraryID int64) (scan.Result, error) {
-			return scan.Run(ctx, scanDeps, libraryID)
+			return flight.run(ctx, libraryID, scanFn)
 		},
 		Status: statusClosure,
 		// Playback descriptor (D-7): pure delegation over the stream Service's
@@ -667,6 +680,45 @@ func main() {
 	jan.runBoot(ctx)
 	go jan.run(ctx)
 
+	// The filesystem watcher (watch-scan D5), beside the janitor: MELLIFERA_
+	// WATCH_INTERVAL ≤ 0 is the watcher's off position ALONE — no watcher
+	// constructed, nothing launched, and manual POST /libraries/{id}/scan
+	// remains the only trigger (today's behavior byte-for-byte). No boot run
+	// (the non-goal): the first reconcile fires one interval after start, so
+	// changes made while the server was down surface up to one interval late.
+	// Run blocks for the process lifetime; a Run error logs WARN and serving
+	// continues (best-effort background work — the janitor precedent).
+	if wi := watchInterval(); wi > 0 {
+		watchSvc := watch.NewService(watch.Deps{
+			Libraries: func(ctx context.Context) ([]watch.Library, error) {
+				rows, err := st.ListLibraries(ctx, access.System())
+				if err != nil {
+					return nil, err
+				}
+				libs := make([]watch.Library, len(rows))
+				for i, row := range rows {
+					libs[i] = watch.Library{ID: row.ID, RootPath: row.RootPath}
+				}
+				return libs, nil
+			},
+			// The watcher joins the SAME single-flight as the manual POST
+			// (D4 — one seam, both directions join); the (scan.Result, err)
+			// the api closure needs collapses to the error the watcher's
+			// trigger law wants (errors log WARN, never fatal).
+			Scan: func(ctx context.Context, libraryID int64) error {
+				_, err := flight.run(ctx, libraryID, scanFn)
+				return err
+			},
+		}, watch.Config{ReconcileInterval: wi, Debounce: watchDebounce()})
+		go func() {
+			if err := watchSvc.Run(ctx); err != nil {
+				slog.Warn("watch: run loop exited; continuing with manual-only scanning", "error", err)
+			}
+		}()
+	} else {
+		slog.Info("watch: watcher disabled (MELLIFERA_WATCH_INTERVAL <= 0); manual POST /libraries/{id}/scan remains the only trigger")
+	}
+
 	// Single top-level http.Handler: web.Handler composes the api router
 	// (mounted at /api/* inside web.Handler) with the token-gated /media
 	// playback surface (Interface 3, ahead of the SPA fallback) + the embedded
@@ -842,6 +894,29 @@ func envDuration(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// watchInterval resolves the filesystem watcher's reconcile cadence knob
+// (watch-scan D5): MELLIFERA_WATCH_INTERVAL in time.ParseDuration syntax
+// verbatim when set, the default 1h when unset/empty, and the default + a
+// logged warning when malformed (envDuration's INV-env-defaults contract —
+// startup never aborts). Unlike the debounce knob this value passes through
+// UNFLOORED — zero and negative parse verbatim, and run() treats any ≤ 0 as
+// the watcher's off position (the janitor off-position law: the watcher is
+// disabled alone; manual POST /libraries/{id}/scan remains the only trigger).
+// The 1h default bounds how often the reconcile walk re-probes every file.
+func watchInterval() time.Duration {
+	return envDuration("MELLIFERA_WATCH_INTERVAL", time.Hour)
+}
+
+// watchDebounce resolves the watcher's quiet-window knob (watch-scan D5):
+// MELLIFERA_WATCH_DEBOUNCE in time.ParseDuration syntax verbatim when set,
+// the default 30s when unset/empty, and the default + a logged warning when
+// malformed (envDuration's INV-env-defaults contract). The result is floored
+// at 1s — the autoNextCountdownSeconds floor law: a zero or negative window
+// must never fire one scan per event burst.
+func watchDebounce() time.Duration {
+	return max(time.Second, envDuration("MELLIFERA_WATCH_DEBOUNCE", 30*time.Second))
 }
 
 // relayLease resolves the client-relayed-fetch claim-handout knob:

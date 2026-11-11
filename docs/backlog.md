@@ -253,3 +253,15 @@ Seeded non-blocking at the gate (the change's review.md FLAG dispositions):
   `TestSweepRetention`'s closures; reuse required a package-level hoist
   touching tests outside the fix's scope, so it was deferred. Hoist the
   shared fixtures on the file's next touch.
+
+## watch-scan follow-ups (GATE 2 flags, 2026-11-11)
+
+Seeded non-blocking at the gate (the change's review.md P3 observations):
+
+- **P3: cap the failed-scan in-gap retry cadence** — `completed(ok=false)`
+  re-arms every debounce (`internal/watch/engine.go`), so a dead root's
+  in-gap triggers retry each debounce (default 30 s → up to ~120
+  fast-failing attempts + WARN lines per library per 1 h interval) until
+  the reconcile tick drops the root. Design-pinned failure re-arm law,
+  bounded by the tick; documented in the runbook §8. A future refinement
+  could cap in-gap retries.

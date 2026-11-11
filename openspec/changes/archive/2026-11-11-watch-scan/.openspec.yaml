@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-11-11
+goal: Libraries re-scan automatically when their watched folder changes — new,
+  renamed, or removed files — so the catalog (including tombstones for removed
+  files) stays current without any manual REST scan call.
