@@ -2,7 +2,11 @@
 # result is a single static binary with no C-toolchain dependency.
 # See .claude/skills/mellifera-build/SKILL.md for the build gate.
 
-.PHONY: proto build test lint check build-plugin web-build dev
+.PHONY: proto build test lint check build-plugin web-build dev apk
+
+# android: the Android SDK for the apk target (macOS default; override with
+# ANDROID_HOME=<path> make apk on other hosts).
+ANDROID_HOME ?= $(HOME)/Library/Android/sdk
 
 # proto: regenerate gRPC bindings from the .proto definitions (requires
 # protoc + protoc-gen-go/protoc-gen-go-grpc, or buf). Generated *.pb.go are
@@ -81,3 +85,39 @@ web-build:
 # Dev-only convenience (scripts/dev.sh): never part of the build gate.
 dev:
 	@./scripts/dev.sh
+
+# apk: build the signed release TV APK and drop it where the server serves it
+# from (android/apk/ — the /apk surface copies it into the SPA assets at
+# Docker build). VERSION is REQUIRED: the filename
+# android/apk/mellifera-tv-$(VERSION).apk is the version wire contract (D4).
+#
+# Keystore bootstrap (D6 signing law): the first run generates the release
+# keystore ONCE (keytool -genkeypair -validity 10000 → ~/.mellifera/keys/) and
+# writes gitignored android/keystore.properties pointing at it; later runs
+# reuse it. assembleRelease fails loudly without that file (5.1).
+#
+# NO-CLOBBER law: the drop uses `cp -n` — an APK for a given VERSION is
+# written exactly once, so filename↔bytes identity holds and the immutable
+# /assets/ cache key + SPA version label stay sound. Rebuilding the same
+# VERSION produces different bytes (versionCode=$(date +%s)) but never a
+# different drop.
+apk:
+	@test -n "$(VERSION)" || { echo "usage: make apk VERSION=<version>"; exit 2; }
+	@if [ ! -f android/keystore.properties ]; then \
+		mkdir -p "$(HOME)/.mellifera/keys"; \
+		keytool -genkeypair -validity 10000 -keyalg RSA -keysize 2048 \
+			-alias mellifera-tv -storetype PKCS12 \
+			-dname "CN=mellifera-tv" \
+			-keystore "$(HOME)/.mellifera/keys/mellifera-tv.jks" \
+			-storepass mellifera-tv-release -keypass mellifera-tv-release; \
+		printf 'storeFile=%s/.mellifera/keys/mellifera-tv.jks\nstorePassword=mellifera-tv-release\nkeyAlias=mellifera-tv\nkeyPassword=mellifera-tv-release\n' "$$HOME" \
+			> android/keystore.properties; \
+		echo "generated release keystore at ~/\.mellifera/keys/mellifera-tv.jks"; \
+	fi
+	cd android && ANDROID_HOME="$(ANDROID_HOME)" ./gradlew assembleRelease -PversionName=$(VERSION) -PversionCode=$$(date +%s)
+	# `cp -n` skips an existing drop (the no-clobber law); modern cp exits 1
+	# on that skip, so the skip is tolerated — destination must then exist.
+	# A real failure (missing build output) leaves no destination and fails.
+	cp -n android/build/outputs/apk/release/mellifera-tv-$(VERSION).apk android/apk/mellifera-tv-$(VERSION).apk \
+		|| test -f android/apk/mellifera-tv-$(VERSION).apk
+	@shasum -a 256 android/apk/mellifera-tv-$(VERSION).apk
