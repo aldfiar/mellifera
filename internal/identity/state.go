@@ -13,31 +13,19 @@ import (
 // legacy-row adoption and DeleteUser's cascade. Both are single
 // transactions — a partial adopt or a half-deleted user is never visible.
 
-// The legacy ledger slot. Every row written before accounts (and every row
-// still written by a legacy principal — env admin, unbound device,
-// zero-user mode) lands in user_id=0; adoption moves that profile's rows
-// into a named user's slots.
+// The legacy ledger slot: every row written before accounts (and every row
+// still written by a legacy principal) lands in user_id=0.
 const legacySlot = 0
 
 // AdoptLegacyRows merges the user_id=0 legacy ledger slots into the named
 // user's slots — the EXPLICIT admin action (design D7: never automatic
-// seed-on-first-login), one transaction per call.
-//
-// Decided and documented here:
-//
-//   - Adopting claims ALL slot-0 rows. The legacy slot is one shared
-//     profile; the adopt is one-shot — every slot-0 row is either moved
-//     into the user's slot (newer than the user's row, or the user has no
-//     row for that item) or superseded by the user's newer row. Either way
-//     the slot-0 row dies, so slot 0 drains completely and a rerun is a
-//     no-op.
-//   - NEWER-WINS per item. playback_progress compares updated_at (its
-//     write stamp); watched_items carries no updated_at — its monotone
-//     completion stamp completed_at is the comparator. A TIE keeps the
-//     user's existing row (incumbent preference).
-//   - The adopt runs while the user is alive (D7): an unknown userID
-//     refuses with the wrapped sql.ErrNoRows unknown-user convention
-//     before anything is written, so adoption never mints dangling rows.
+// seed-on-first-login), one transaction per call. It claims ALL slot-0
+// rows: each is either moved or superseded, so slot 0 drains completely
+// and a rerun is a no-op. NEWER-WINS per item: updated_at is the
+// playback_progress comparator, completed_at the watched_items one; a TIE
+// keeps the user's existing row (incumbent preference). An unknown userID
+// refuses (wrapped sql.ErrNoRows) before anything is written — adoption
+// never mints dangling rows.
 func (s *Service) AdoptLegacyRows(ctx context.Context, userID int64) error {
 	tx, err := s.st.DB().BeginTx(ctx, nil)
 	if err != nil {

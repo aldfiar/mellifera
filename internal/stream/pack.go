@@ -19,49 +19,37 @@ import (
 
 // Pack remuxes one item's original file into fMP4-HLS (the D-3 pack lane) and
 // publishes the result atomically under a fresh build-nonce directory (D-5):
-// stream copy only — `-c copy -map 0:v:0 -map 0:a -sn -dn`, one video stream
-// and every audio track, subtitles and data streams dropped; no decode and no
-// encode, ever. Head-first (D-4): the first HeadChunk seconds are published
-// playable (EVENT playlist, no ENDLIST) before the remainder packages; on
-// completion the playlist is rewritten atomically (aside, then rename) to the
-// grown, ENDLIST-terminated build. Playlists are byte-identical for a given
-// published build. The single ffmpeg exec site of the whole system is
+// stream copy only — one video stream and every audio track, subtitles and
+// data streams dropped; no decode and no encode, ever. Head-first (D-4): the
+// first HeadChunk seconds are published playable (EVENT playlist, no ENDLIST)
+// before the remainder packages; on completion the playlists rewrite
+// atomically to the grown, ENDLIST-terminated build — byte-identical for a
+// given published build. The single ffmpeg exec site of the whole system is
 // runFFmpeg below — arg-slice only, never a shell.
 //
 // voiceovers are the episode-linked audio sidecar files' absolute paths in
 // document order (serial-watch-flow D-2, carried through the Deps.PackItem
-// seam — derived from stored facts upstream, never from client input). Each
-// path that still exists at build time is remuxed as an alternate audio
-// rendition of the build via stream copy (embedded audio first, then the
-// sidecars in document order — the order the master playlist declares and
-// hls.js exposes as audio tracks); a missing file soft-omits (a vanished dub
-// must not take the episode's playback down). The layout keys on TOTAL audio
-// (fix-tv-unblock-2): the original's embedded audio streams, probed once at
-// build time (embeddedAudioCount — the file is ground truth; a failed probe
-// fails open to 0), plus the resolvable sidecars. More than one audio stream
-// publishes the rendition build, one variant per audio stream; a single
-// audio stream packs the single-variant degenerate — one rend0 variant
-// beneath the composed master, the same shape as a rendition build (D3).
-//
-// ffprobe carries the stored facts for one pack decision: when the probed
-// duration is at most HeadChunk the whole file IS the head chunk, so the tail
-// phase is skipped (a seek past EOF would mint a junk fragment). Absent facts
-// simply run both phases. At the head-first publish each variant's head
-// playlist is probed (one ffprobe per variant — pack-manifest-audio D2) and
-// the facts compose BOTH the returned Build.Codecs record (codecs.go) and the
-// build root's composed master playlist (master.go D1), written into tmp over
-// ffmpeg's generated master before the atomic rename — ffmpeg's double-listed
-// master never survives to a published build. Both compose fail-open: a nil
-// record and an attribute-less master never fail the pack. A cancelled
-// context (or any ffmpeg failure) is an
-// error; partial directories are cleaned up and nothing is returned, so the
-// caller persists no pointer.
+// seam — derived from stored facts upstream, never from client input): each
+// that still exists remuxes as an alternate audio rendition (embedded audio
+// first; resolvableVoiceovers soft-omits a vanished dub). The layout keys on
+// TOTAL audio — the rationale's canonical home is embeddedAudioCount
+// (fix-tv-unblock-2). ffprobe carries the stored facts for one pack decision:
+// a probed duration at most HeadChunk makes the whole file the head chunk
+// (the tail phase would seek past EOF and mint a junk fragment); absent facts
+// run both phases. At the head-first publish each variant's head playlist is
+// probed (probeVariants, pack-manifest-audio D2) and the facts compose BOTH
+// the returned Build.Codecs record (composeCodecs) and the build root's
+// composed master (composeMaster, D1), written over ffmpeg's generated master
+// before the atomic rename — ffmpeg's double-listed master never survives to
+// a published build; both compositions fail-open. A cancelled context (or any
+// ffmpeg failure) is an error; partial directories are cleaned up and nothing
+// is returned, so the caller persists no pointer.
 //
 // The flow reads from logs alone (pack-manifest-audio D7): the success return
 // logs ONE "streams: pack published" INFO line (item, nonce, layout, variants,
 // audio, codecs, probes) and any failure logs ONE "streams: pack failed" WARN
-// naming the failing stage — never per-segment lines, and INV4-clean (item id
-// and nonce are artifact identifiers; no token, no play URL, no paths).
+// naming the failing stage — INV4-clean (item id and nonce are artifact
+// identifiers; no token, no play URL, no paths).
 func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (build Build, err error) {
 	// The D7 error path: exactly ONE WARN per failed Pack, whatever the failing
 	// stage. A staged failure names its stage; anything earlier is "prepare".
@@ -100,13 +88,8 @@ func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[
 	}
 	tmp := filepath.Join(s.Root, itemID, ".tmp-"+nonce)
 	resolved := resolvableVoiceovers(voiceovers)
-	// The layout keys on TOTAL audio (fix-tv-unblock-2 D1/D2): the original's
-	// embedded audio streams — ONE build-time source probe, fail-open to 0 —
-	// plus the resolvable sidecars. A rendition build needs the mapping to
-	// match the file's real stream count, so the file is ground truth at
-	// build time; the stored facts stay the read-side source, never re-probed
-	// here. The probe is layout-decision work, not compose cost: it does not
-	// ride the publish line's probes field (D7).
+	// The layout keys on TOTAL audio (fix-tv-unblock-2 D1/D2) — the
+	// rationale's canonical home is embeddedAudioCount.
 	embedded := s.embeddedAudioCount(ctx, absPath)
 	vs := variantLayout(embedded, len(resolved))
 
@@ -136,31 +119,27 @@ func (s *Service) Pack(ctx context.Context, itemID, absPath string, ffprobe map[
 
 // variantPlaylist is one build's playlist slot in the one layout the lane
 // publishes (D3 — every fresh build, single-variant or rendition, publishes
-// the rendition shape): one variant playlist per rendition directory (rel
-// "rendK" — variant 0 is the video, 1..embedded the embedded audio in source
-// order, then one per voiceover sidecar; a single-variant build is the
-// degenerate rend0-only case) plus the composed
-// master at the build root (composeMaster, D1 — ffmpeg's written master is
-// overwritten before the publish rename). prefix is the tail merge prefix
-// that re-points the tail phase's entries into final/t/, stated RELATIVE TO
-// the receiving playlist's own directory (the base hls.js resolves against):
-// a rendK playlist needs "../t/rendK/".
+// the rendition shape): rel is the rendition directory ("rendK" — variant 0
+// is the video, 1..embedded the embedded audio in source order, then one per
+// voiceover sidecar; a single-variant build is the degenerate rend0-only
+// case), and prefix is the tail merge prefix re-pointing the tail entries
+// into final/t/, stated RELATIVE TO the receiving playlist's own directory
+// (a rendK playlist needs "../t/rendK/"). The composed master at the build
+// root has no slot (composeMaster, D1 — ffmpeg's written master is
+// overwritten before the publish rename).
 type variantPlaylist struct {
 	rel    string
 	prefix string
 }
 
 // variantLayout resolves the playlist slots for TOTAL audio (fix-tv-unblock-2
-// D2): embedded is the original's audio stream count (the build-time source
-// probe), sidecars the resolvable voiceover count. A rendition build has
-// total+1 variants — the video (rend0), then ONE variant per audio stream:
-// rend1..rendEmbedded the embedded audio in source order, then one per
-// voiceover (rendK+1) — mirroring renditionMap's var_stream_map; total <= 1
-// is the single-variant degenerate: rend0 alone, the video variant carrying
-// the muxed audio, exactly as before the rule generalized. The master needs
-// no slot: the lane composes it to the build root at the head publish
-// (composeMaster) and the tail merge never rewrites it — the per-variant
-// playlists it references grow in place. Pure.
+// D2; the embedded count's rationale is embeddedAudioCount's): a rendition
+// build has total+1 variants — rend0 the video, rend1..rendEmbedded the
+// embedded audio in source order, then one per voiceover — mirroring
+// renditionMap's var_stream_map; total <= 1 is the single-variant degenerate
+// (rend0 alone carrying the muxed audio, exactly as before the rule
+// generalized). The master needs no slot: composed to the build root at the
+// head publish (composeMaster), never rewritten by the tail merge. Pure.
 func variantLayout(embedded, sidecars int) []variantPlaylist {
 	if total := embedded + sidecars; total <= 1 { // the single-variant degenerate: the muxed video variant alone
 		return []variantPlaylist{{rel: "rend0", prefix: "../t/rend0/"}}
@@ -176,14 +155,15 @@ func variantLayout(embedded, sidecars int) []variantPlaylist {
 }
 
 // embeddedAudioCount probes the ORIGINAL file once at build time and counts
-// its audio streams (fix-tv-unblock-2 D1 — the mapping must match the file's
-// real stream count or the remux fails, so the file is ground truth at build
-// time; the stored facts stay the read-side source, never re-probed here,
-// and describe.go's read-side paths stay untouched). A failed probe — or an
-// absent ffprobe — fails open to 0: the layout decision degrades to the
-// legacy sidecar discriminator and the pack never fails on the probe. The
-// probe is layout-decision work, not per-variant compose cost: it does not
-// ride the publish line's probes field (D7).
+// its audio streams — the CANONICAL home of the embedded-audio rationale
+// (fix-tv-unblock-2 D1; Pack and variantLayout point here): the variant
+// mapping must match the file's real stream count or the remux fails, so the
+// file is ground truth at build time and the stored facts stay the read-side
+// source, never re-probed here (describe.go's read-side paths untouched). A
+// failed probe — or an absent ffprobe — fails open to 0: the layout decision
+// degrades to the legacy sidecar discriminator and the pack never fails on
+// the probe. The probe is layout-decision work, not per-variant compose
+// cost: it does not ride the publish line's probes field (D7).
 func (s *Service) embeddedAudioCount(ctx context.Context, absPath string) int {
 	streams, err := s.probeMediaStreams(ctx, absPath)
 	if err != nil {
@@ -418,13 +398,12 @@ func (s *Service) packTail(ctx context.Context, itemID, nonce, absPath string, e
 
 // packHeadArgs builds the head-phase ffmpeg argument slice: the first
 // HeadChunk seconds, stream-copy remux to fMP4-HLS (D-3), EVENT playlist with
-// ENDLIST omitted (D-4: its absence marks a partial build). The single-variant
-// branch writes the media playlist, init segment, and segments under
-// outDir/rend0/ (D3 — the root stays the composed master's alone); with more
-// than one audio stream (embedded plus resolvable voiceovers, fix-tv-unblock-2)
-// the same remux shape drives the multi-variant rendition build
-// (renditionArgs). The single-variant -map 0:a stays untouched: on the new
-// rule's reachable path it maps exactly the one stream. Pure.
+// ENDLIST omitted (D-4 — its absence marks a partial build). More than one
+// audio stream (embedded plus resolvable voiceovers, fix-tv-unblock-2) drives
+// the multi-variant rendition build (renditionArgs); the single-variant branch
+// writes the playlist, init segment, and segments under outDir/rend0/ (D3 —
+// the root stays the composed master's alone), its -map 0:a mapping exactly
+// the one stream. Pure.
 func packHeadArgs(src string, embedded int, voiceovers []string, head, segmentTime time.Duration, outDir string) []string {
 	if embedded+len(voiceovers) > 1 {
 		return renditionArgs(src, voiceovers, embedded, head, segmentTime, outDir, false)
@@ -449,12 +428,11 @@ func packHeadArgs(src string, embedded int, voiceovers []string, head, segmentTi
 }
 
 // packTailArgs builds the tail-phase ffmpeg argument slice: the remainder from
-// HeadChunk onward, identical remux flags so the artifact shape matches. With
-// more than one audio stream (embedded plus resolvable voiceovers) it is the
-// rendition build's tail phase. -hls_list_size
-// 0 makes the tail playlist unbounded — the ffmpeg default window of 5 would
-// publish only the last five entries as the complete ENDLIST build, stranding
-// every pre-window tail segment and faking the duration. Pure.
+// HeadChunk onward, identical remux flags so the artifact shape matches
+// (renditionArgs past one audio stream). -hls_list_size 0 makes the tail
+// playlist unbounded — the ffmpeg default window of 5 would publish only the
+// last five entries as the complete ENDLIST build, stranding every pre-window
+// tail segment and faking the duration. Pure.
 func packTailArgs(src string, embedded int, voiceovers []string, head, segmentTime time.Duration, outDir string) []string {
 	if embedded+len(voiceovers) > 1 {
 		return renditionArgs(src, voiceovers, embedded, head, segmentTime, outDir, true)
@@ -484,9 +462,8 @@ func packTailArgs(src string, embedded int, voiceovers []string, head, segmentTi
 // audio first, one -map 0:a:i per stream in source order, then the voiceovers
 // in document order) is a separate audio-only variant joined into one
 // EXT-X-MEDIA group (renditionMap) — the master playlist's audio tracks in
-// hls.js. Stream copy everywhere; no decode and no encode. seek switches to
-// the tail phase (-ss before the inputs, no EVENT flags, -hls_list_size 0 —
-// see packTailArgs). Pure.
+// hls.js. Stream copy everywhere; seek switches to the tail phase (no EVENT
+// flags, -hls_list_size 0 — see packTailArgs). Pure.
 func renditionArgs(src string, voiceovers []string, embedded int, head, segmentTime time.Duration, outDir string, seek bool) []string {
 	t := strconv.FormatFloat(head.Seconds(), 'f', 3, 64)
 	args := []string{"-nostdin"}
@@ -538,10 +515,9 @@ func renditionArgs(src string, voiceovers []string, embedded int, head, segmentT
 // renditionMap is the var_stream_map string: the video variant references one
 // audio group whose renditions are the embedded audio (a:0..a:embedded-1, one
 // per source stream in source order) first, then one entry per voiceover
-// input — the master playlist's EXT-X-MEDIA order, which is the hls.js
-// audio-track order (embedded stream i → track i; sidecar k → track
-// embedded+k). The indices are OUTPUT audio order, which follows the -map
-// order renditionArgs emits (embedded first, then sidecars). Pure.
+// input — the EXT-X-MEDIA order, which is the hls.js audio-track order
+// (embedded stream i → track i; sidecar k → track embedded+k), following the
+// -map order renditionArgs emits. Pure.
 func renditionMap(embedded, sidecars int) string {
 	entries := make([]string, 0, embedded+sidecars+1)
 	entries = append(entries, "v:0,agroup:aud")

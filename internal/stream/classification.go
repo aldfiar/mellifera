@@ -107,15 +107,11 @@ const GateOpen Gate = ""
 // Classify stays the primitive, untouched). The codecs are judged with the
 // knob out of the way (Classify(ff, true)) and the knob folded explicitly, so
 // a knob-off opt-in item names its real reason instead of folding into the
-// unsupported crowd:
-//
-//   - pack-class codecs (browser-decodable, hostile container) → GateOpen;
-//   - opt-in codecs with the knob enabled → GateOpen;
-//   - opt-in codecs with the knob disabled → ReasonCodecNotOptedIn;
-//   - anything else closes with ReasonCodecUnsupported — genuinely
-//     unremuxable codecs and absent/unreadable facts (fail-safe, INV2), and
-//     the direct class (a native, already-decodable item the pack lane never
-//     needs; nothing the lane could remux into service).
+// unsupported crowd: pack-class codecs and knob-enabled opt-ins → GateOpen;
+// knob-disabled opt-ins → ReasonCodecNotOptedIn; anything else — genuinely
+// unremuxable codecs, the absent-facts fail-safe (INV2), and the direct class
+// (a native, already-decodable item the lane never needs) — closes with
+// ReasonCodecUnsupported.
 func PackGate(ff map[string]any, optInCodecs bool) Gate {
 	switch Classify(ff, true) { // judge codecs with the knob out of the way
 	case ClassPack:
@@ -176,14 +172,11 @@ func streamTenBit(s map[string]any) bool {
 
 // containerAcceptable reports whether the probed container is one browsers
 // accept natively (the MP4 family), read from the ffprobe format blob's
-// format_name. The matroska family reads hostile INCLUDING its "webm" tag:
-// ffprobe's shared demuxer reports "matroska,webm" for MKV and WebM alike, so
-// the tag cannot disambiguate — and an MKV misread as acceptable would lose
-// its packaging lane (the spec's canonical pack case), while a WebM misread
-// as hostile merely stays permitted to package, floor intact. An absent or
-// unreadable format also reads hostile (fail-safe, INV2): mis-packaging a
-// genuinely direct item wastes budget; failing to package an exotic one
-// loses nothing — the direct floor holds either way.
+// format_name; an absent or unreadable format also reads hostile (fail-safe,
+// INV2 — mis-packaging a genuinely direct item wastes budget, failing to
+// package an exotic one loses nothing, the direct floor holds either way).
+// The matroska family reads hostile INCLUDING its "webm" tag — the shared-
+// demuxer asymmetry's canonical is containerNative in describe.go.
 func containerAcceptable(ffprobe map[string]any) bool {
 	format, _ := ffprobe["format"].(map[string]any)
 	name, _ := format["format_name"].(string)

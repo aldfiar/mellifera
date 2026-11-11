@@ -23,17 +23,11 @@ type Store struct {
 	db *sql.DB
 }
 
-// schemaSQL is the idempotent migration set: every statement is
-// CREATE ... IF NOT EXISTS so Open is safe to run repeatedly (B7).
-//
-// Tables are the full architecture §9.1 set (control tables + the JSON-column
-// items table + the reserved tables). The §9.2 generated columns are declared
-// INLINE on items rather than via ALTER TABLE ADD COLUMN, because ALTER ADD
-// COLUMN is not idempotent and Open must be re-runnable (B7). The json_extract
-// expressions are verbatim from §9.2; only the DDL mechanism differs.
-//
-// Columns added AFTER a table first shipped (libraries.description) follow the
-// same additive rule (ensureColumn).
+// schemaSQL is the idempotent migration set: every statement is CREATE ... IF
+// NOT EXISTS so Open is safe to run repeatedly (B7); the §9.2 generated columns
+// sit INLINE on items because ALTER ADD COLUMN is not idempotent (the
+// json_extract expressions are verbatim §9.2). Columns added after a table
+// first shipped follow ensureColumn (the additive-migration canonical).
 var schemaSQL = []string{
 	`CREATE TABLE IF NOT EXISTS modules (
   id             TEXT PRIMARY KEY,
@@ -83,12 +77,10 @@ var schemaSQL = []string{
   tmdb_id        INTEGER GENERATED ALWAYS AS (json_extract(document, '$.identifiers.tmdb_id')) VIRTUAL,
   kinopoisk_id   INTEGER GENERATED ALWAYS AS (json_extract(document, '$.identifiers.kinopoisk_id')) VIRTUAL
 )`,
-	// series is the serials-library serial-level entity (serials-library D1):
-	// one row per serial directory (or file-backed stray video), identity
-	// (library_id, relative_path), carrying the §3.1 dynamic JSON document with
-	// the SAME namespace machinery as items — persisted opaque (INV3 applies
-	// verbatim: the store never parses a series document). Plain columns only —
-	// NO generated columns (the known B3b blocker is not touched).
+	// series is the serial-level entity (serials-library D1): one row per serial
+	// directory (or file-backed stray video), identity (library_id,
+	// relative_path), the §3.1 dynamic JSON document persisted opaque (INV3 —
+	// the store never parses it); no generated columns (the B3b blocker).
 	`CREATE TABLE IF NOT EXISTS series (
   id             TEXT PRIMARY KEY,
   library_id     INTEGER NOT NULL,
@@ -131,19 +123,12 @@ var schemaSQL = []string{
   next_eligible_at TEXT NOT NULL,
   PRIMARY KEY (item_id, plugin_id)
 )`,
-	// relay_jobs is the client-relayed-fetch durable relay queue: ONE row per
-	// deferred fetch plan (purpose 'enrich' for an (item, plugin) pair, 'search'
-	// for a plugin-wide identify), executed by a client through the relay API.
-	// The single-claimant guarantee is structural (design D3): the claim is ONE
-	// conditional UPDATE whose WHERE id = (SELECT ...) subselect picks the oldest
-	// pending — or lease-expired claimed — row; SQLite's serialized writes make
-	// concurrent claimants race-free and a loser's 0-row update reads as
-	// not-found. Lease expiry is LAZY — decided inside the claim predicate by the
-	// caller's clock (the pairing lazy-expiry precedent), never swept here. plan
-	// and result persist as JSON blob columns; state is a value-agnostic column
-	// (the enrichment_failures precedent — the closed pending|claimed|done|failed
-	// set is owned by the caller); consumed is the 0/1 consult flag (the
-	// metadata_source_prefs enabled convention).
+	// relay_jobs is the durable relay queue (client-relayed-fetch): ONE row per
+	// deferred fetch plan ('enrich' per (item, plugin), 'search' plugin-wide);
+	// single-claimant by ONE conditional UPDATE (design D3 — serialized writes
+	// make claimants race-free), lease expiry LAZY — the caller's clock decides
+	// inside the claim predicate, never swept here. plan/result are JSON blobs;
+	// state/consumed are value-agnostic columns the caller owns.
 	`CREATE TABLE IF NOT EXISTS relay_jobs (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
   purpose              TEXT NOT NULL,
@@ -161,15 +146,12 @@ var schemaSQL = []string{
   completed_at         TEXT,
   consumed             INTEGER NOT NULL DEFAULT 0
 )`,
-	// playback_progress is the web-ui-phase-3 position store: ONE row per
-	// (user, item) — the composite PK upsert overwrites — plain integer
-	// seconds with a >= 0 CHECK, and the stamp every write refreshes. user_id
-	// is the accounts-era slot key (l6-accounts-access 2.3): INTEGER NOT NULL
-	// DEFAULT 0, and 0 is the LEGACY slot — every pre-accounts write names no
-	// user_id, so the DEFAULT lands it here unchanged, and the pre-accounts
-	// item_id-only table was rebuilt to this shape at Open with every legacy
-	// row carried into slot 0 (migrateLedgersUserScoped). Reads join to items,
-	// so rows whose item is gone are skipped, never an error.
+	// playback_progress is the position store (web-ui-phase-3): ONE row per
+	// (user, item) — the composite PK upsert overwrites, and the stamp every
+	// write refreshes. user_id 0 is the LEGACY slot (l6-accounts-access 2.3):
+	// the pre-accounts item_id-only table was rebuilt at Open with every row
+	// carried into slot 0 (migrateLedgersUserScoped). Reads join to items,
+	// orphan rows skipped, never an error.
 	`CREATE TABLE IF NOT EXISTS playback_progress (
   user_id          INTEGER NOT NULL DEFAULT 0,
   item_id          TEXT NOT NULL,
@@ -177,13 +159,11 @@ var schemaSQL = []string{
   updated_at       TEXT NOT NULL,
   PRIMARY KEY (user_id, item_id)
 )`,
-	// item_parsers is the element-only parser attachment control table
-	// (parser-display D-3): ONE row per attached (item, plugin), position
-	// carrying the attachment order. Attachments follow the item's IDENTITY,
-	// not the file: re-scans upsert the item row preserving its id, so the
-	// rows survive; a re-identified file mints a NEW item id that starts with
-	// no attachments. Reads JOIN to items (orphan-tolerant, the
-	// playback_progress pattern), so rows whose item is gone are skipped.
+	// item_parsers is the parser attachment control table (parser-display
+	// D-3): ONE row per attached (item, plugin), position = attachment order.
+	// Rows follow the item's IDENTITY — re-scans preserve them, a re-identified
+	// file mints a NEW id with none; orphan-tolerant reads (the
+	// playback_progress pattern).
 	`CREATE TABLE IF NOT EXISTS item_parsers (
   item_id   TEXT NOT NULL,
   plugin_id TEXT NOT NULL,
@@ -191,13 +171,11 @@ var schemaSQL = []string{
   PRIMARY KEY (item_id, plugin_id)
 )`,
 	// library_parsers is the library-level parser chain control table
-	// (parser-display): ONE row per chained (library, plugin), position
-	// carrying the chain order — durable per-library state the footer group
-	// order and the enrichment queue priority derive from. The module seed's
-	// chain is the default when the field is absent: an absent chain READS as
-	// an empty slice (seeding is the api layer's concern, not store's). Reads
-	// JOIN to libraries (orphan-tolerant, the item_parsers pattern), so rows
-	// whose library is gone are skipped.
+	// (parser-display): ONE row per chained (library, plugin), position =
+	// chain order — durable per-library state the footer group order and the
+	// enrichment queue priority derive from. An absent chain reads as empty
+	// (seeding is the api layer's concern); orphan-tolerant reads (the
+	// item_parsers pattern).
 	`CREATE TABLE IF NOT EXISTS library_parsers (
   library_id INTEGER NOT NULL,
   plugin_id  TEXT NOT NULL,
@@ -206,12 +184,9 @@ var schemaSQL = []string{
 )`,
 	// title_overrides is the manual display-title override control table
 	// (serial-watch-flow D-1): ONE row per overridden entity id, the upsert
-	// overwriting so the table holds exactly one title per entity. Series ids
-	// carry the ser_ prefix and item ids theirs, so the two id spaces never
-	// collide and share the table (the playback_progress per-id pattern). It
-	// is control state BESIDE the document — a rename never rewrites any
-	// document namespace — and identity-keyed, so it dies with the identity
-	// exactly like parser attachments.
+	// holding exactly one title per entity (ser_ and item ids share the table);
+	// control state BESIDE the document — a rename never rewrites a namespace —
+	// and identity-keyed like parser attachments.
 	`CREATE TABLE IF NOT EXISTS title_overrides (
   entity_id  TEXT PRIMARY KEY,
   title      TEXT NOT NULL,
@@ -219,15 +194,10 @@ var schemaSQL = []string{
 )`,
 	// metadata_source_prefs is the operator gate control table (plugin-title-
 	// enrichment D2): ONE sparse row per gated (module, library, plugin)
-	// triple — an ABSENT row means inherit, so the table only ever holds
-	// explicit overrides. library_id 0 is the module scope (it applies to
-	// every library of the module that carries no library-scope row of its
-	// own); the PK enforces at most one row per triple. It is control state
-	// BESIDE the module config blob on purpose: the schema-guarded config
-	// migrations rewrite config_json WHOLESALE (internal/module), so operator
-	// gates inside the blob would be stomped on every schema bump. enabled is
-	// 0/1 INTEGER. Purely additive and idempotent like every schemaSQL entry:
-	// the table is inert when unread.
+	// triple, an ABSENT row meaning inherit (library_id 0 = module scope;
+	// enabled 0/1). Control state BESIDE the config blob on purpose: the
+	// schema-guarded config migrations rewrite config_json WHOLESALE and
+	// would stomp operator gates inside the blob.
 	`CREATE TABLE IF NOT EXISTS metadata_source_prefs (
   module_id  TEXT NOT NULL,
   library_id INTEGER NOT NULL DEFAULT 0,
@@ -238,12 +208,10 @@ var schemaSQL = []string{
 )`,
 	// pairing_requests is the device-pairing request control table (device-
 	// pairing D6): ONE row per minted pairing request, keyed by the 128-bit
-	// pairing_id — the CAPABILITY (the 8-char code column is only what the
-	// admin visually compares against the TV screen). status moves
-	// pending → approved | denied | expired → consumed, CHECK-guarded;
-	// expiry is LAZY — decided on read by internal/pairing's injected clock,
-	// never swept here (the store stays value-agnostic, the control-state
-	// precedent of metadata_source_prefs).
+	// pairing_id — the CAPABILITY (the 8-char code column is only the admin's
+	// visual compare against the TV screen). status is CHECK-guarded pending →
+	// approved | denied | expired → consumed; expiry is LAZY, decided on read
+	// by internal/pairing's clock, never swept here.
 	`CREATE TABLE IF NOT EXISTS pairing_requests (
   id         TEXT PRIMARY KEY,
   code       TEXT NOT NULL,
@@ -255,8 +223,8 @@ var schemaSQL = []string{
 	// device_tokens is the LEGACY client-credential table (device-pairing
 	// D4/D6), dormant since the accounts credentials migration (2.2/D6): the
 	// one-time guarded copy at Open carried every row into credentials
-	// (hash-preserving) and nothing writes it anymore — it stays only as the
-	// migration's copy source. Paired devices live in credentials kind='device'.
+	// (hash-preserving) — kept only as the migration's copy source; paired
+	// devices live in credentials kind='device'.
 	`CREATE TABLE IF NOT EXISTS device_tokens (
   id         TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,
@@ -264,12 +232,10 @@ var schemaSQL = []string{
   created_at TEXT NOT NULL
 )`,
 	// art_fetches is the artwork fetch-record control table (artwork): ONE row
-	// per fetched upstream (url, kind), keyed by url_hash — the caller's
-	// opaque hash; the store never parses an art value (INV3 discipline). It
-	// is the url→blob dedup cache: sha256 names the content-addressed blob
-	// dir under <data>/art, kind ('poster' default) rides along as an opaque
-	// string. It doubles as the reference set artwork GC reconciles against
-	// that tree (ListArtFetchRefs).
+	// per fetched upstream (url, kind), keyed by the caller's opaque url_hash
+	// (INV3 — the store never parses an art value). The url→blob dedup cache:
+	// sha256 names the content-addressed blob dir under <data>/art; doubles as
+	// the reference set artwork GC reconciles against (ListArtFetchRefs).
 	`CREATE TABLE IF NOT EXISTS art_fetches (
   url_hash   TEXT PRIMARY KEY,
   sha256     TEXT NOT NULL,
@@ -277,11 +243,9 @@ var schemaSQL = []string{
   created_at TEXT NOT NULL
 )`,
 	// art_overrides is the per-entity artwork selection control table
-	// (artwork): ONE row per (entity_id, entity_kind) — the composite PK —
-	// whose selection is the opaque art reference the entity currently pins.
-	// Control state BESIDE the document, the title_overrides pattern: a
-	// selection never rewrites any document namespace, and the store neither
-	// parses the selection nor reads a document to derive one.
+	// (artwork): ONE row per (entity_id, entity_kind) pinning the entity's
+	// opaque art reference — control state BESIDE the document, the
+	// title_overrides pattern (never a namespace rewrite, never parsed).
 	`CREATE TABLE IF NOT EXISTS art_overrides (
   entity_id   TEXT NOT NULL,
   entity_kind TEXT NOT NULL,
@@ -290,18 +254,12 @@ var schemaSQL = []string{
   PRIMARY KEY (entity_id, entity_kind)
 )`,
 	// watched_items is the completion ledger (recommendation-sorting D4/D5):
-	// ONE row per completed (user, item) — the composite PK makes the insert
-	// a no-op on repeat writes and rewatches, so a rewatch never
-	// double-counts. user_id is the accounts-era slot key
-	// (l6-accounts-access 2.3): INTEGER NOT NULL DEFAULT 0, and 0 is the
-	// LEGACY slot — the single implicit profile every pre-accounts statement
-	// reads and writes unchanged (the pre-accounts item_id-only table was
-	// rebuilt to this shape at Open with every legacy row carried into slot
-	// 0, migrateLedgersUserScoped). series_relative_path is NULL for film/tv
-	// items (an episode item carries its series' path for the episode→series
-	// join). applied_at IS NULL is the learning queue — the derived-work
-	// posture, no jobs table: unstamped rows ARE the pending work the recs
-	// janitor consumes.
+	// ONE row per completed (user, item) — the composite PK makes rewatch
+	// writes no-ops; user_id 0 is the LEGACY slot (l6-accounts-access 2.3,
+	// rebuilt at Open — migrateLedgersUserScoped). series_relative_path is
+	// NULL except on episode items (the episode→series join); applied_at IS
+	// NULL is the learning queue — unstamped rows ARE the pending work the
+	// recs janitor consumes (derived-work posture, no jobs table).
 	`CREATE TABLE IF NOT EXISTS watched_items (
   user_id              INTEGER NOT NULL DEFAULT 0,
   item_id              TEXT NOT NULL,
@@ -312,28 +270,21 @@ var schemaSQL = []string{
   PRIMARY KEY (user_id, item_id)
 )`,
 	// tag_weights is the learned tag-affinity store (recommendation-sorting
-	// D5): ONE row per normalized tag (the tag rule — trim + Unicode casefold
-	// — applied by the caller before any write; the store stays
-	// value-agnostic), weight monotonically growing by +1 per completed
-	// watch. v1 bounds the weight's influence with the score cap, not decay.
+	// D5): ONE row per normalized tag (trim + Unicode casefold is the caller's
+	// discipline; the store stays value-agnostic), weight monotonically +1 per
+	// completed watch. v1 bounds its influence with the score cap, not decay.
 	`CREATE TABLE IF NOT EXISTS tag_weights (
   tag        TEXT PRIMARY KEY,
   weight     INTEGER NOT NULL,
   updated_at TEXT NOT NULL
 )`,
 	// users is the personal-account table (accounts spec "User accounts and
-	// roles"): ONE row per user, keyed by a minted id (AUTOINCREMENT — users
-	// are deletable, so rowid reuse after a delete must never alias an old
-	// id). username is lowercase-normalized UNIQUE — normalization is the
-	// caller's discipline (internal/identity), the store stays
-	// value-agnostic. role is CHECK-guarded to the user|admin pair (D11:
-	// roles PROJECT onto the existing principal routing, never fork it);
-	// password_hash holds argon2id material only — no plaintext or reversible
-	// password form ever lands here. prefs_json is the per-user preference
-	// document (opaque JSON, the module config_json discipline — the store
-	// never parses it); disabled is the 0/1 fail-closed gate (the
-	// metadata_source_prefs enabled convention). Timestamps are the repo TEXT
-	// RFC3339 convention.
+	// roles"): ONE row per user, AUTOINCREMENT id (users are deletable — rowid
+	// reuse must never alias an old id). username lowercase-normalized UNIQUE
+	// (internal/identity's discipline); role CHECK-guarded user|admin (D11 —
+	// roles project onto the existing principal routing); password_hash
+	// argon2id material only, never plaintext; prefs_json opaque JSON (the
+	// module config_json discipline); disabled the 0/1 fail-closed gate.
 	`CREATE TABLE IF NOT EXISTS users (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   username      TEXT NOT NULL UNIQUE,
@@ -347,9 +298,8 @@ var schemaSQL = []string{
 )`,
 	// groups is the admin-composed named scope (accounts spec "Groups and
 	// membership"): ONE row per group. doc_json is the schema-versioned
-	// operator document (per-source mutes, D8) with schema_version its
-	// version companion — the modules config_json + schema_version pattern.
-	// Migrations NEVER rewrite an operator-authored document: new knob shapes
+	// operator document (per-source mutes, D8 — the modules config_json +
+	// schema_version pattern); migrations NEVER rewrite it: new knob shapes
 	// read as absent, never backfilled.
 	`CREATE TABLE IF NOT EXISTS groups (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,13 +310,10 @@ var schemaSQL = []string{
   updated_at     TEXT NOT NULL
 )`,
 	// group_collections is the member-Collections membership axis (accounts
-	// spec "Groups and membership"): ONE row per (group, library) — the
-	// composite PK is the UNIQUE pair — position carrying the display
-	// position. Overlapping groups are allowed (two groups may carry the same
-	// library); resolving the per-user display order (min-position, tie by
-	// group id) is the caller's rule, the store stays value-agnostic. Rows
-	// are control state beside the library rows: an orphaned grant row
-	// (library deleted) is harmless and invisible (D5).
+	// spec "Groups and membership"): ONE row per (group, library), position
+	// carrying the display position. Overlapping groups are allowed; the
+	// per-user display order (min position, tie by group id) is the caller's
+	// rule. An orphaned grant row is harmless and invisible (D5).
 	`CREATE TABLE IF NOT EXISTS group_collections (
   group_id   INTEGER NOT NULL,
   library_id INTEGER NOT NULL,
@@ -383,17 +330,13 @@ var schemaSQL = []string{
   PRIMARY KEY (group_id, user_id)
 )`,
 	// credentials is the unified client-credential table (accounts D6): ONE
-	// row per device binding or session, kind CHECK-guarded to the
-	// device|session pair. token_hash carries ONLY the SHA-256 hash of the
-	// bearer token — the raw value is handed out exactly once and never
-	// persisted (the device_tokens discipline, whose rows this table
-	// supersedes: migrateDeviceTokens copies the legacy rows at Open,
-	// hash-preserving and guarded by the hash, and the pairing mint writes
-	// device rows here directly post-migration). user_id is NULL for unbound
-	// devices, REFERENCES users(id) for a bound device or a session; label is
-	// the human name (for device rows, the minting pairing's approval code);
-	// expires_at NULL is a non-expiring credential (device tokens never
-	// expire — the pairing lazy-expiry posture). Revocation = DELETE row.
+	// row per device binding or session, kind CHECK-guarded device|session.
+	// token_hash carries ONLY the SHA-256 hash — the raw bearer token is
+	// handed out exactly once, never persisted (migrateDeviceTokens copies the
+	// legacy device_tokens rows at Open, hash-preserving; the pairing mint
+	// writes device rows here directly post-migration). user_id NULL = unbound
+	// device; expires_at NULL = non-expiring (the pairing lazy-expiry posture);
+	// revocation = DELETE row.
 	`CREATE TABLE IF NOT EXISTS credentials (
   id         INTEGER PRIMARY KEY,
   kind       TEXT NOT NULL CHECK (kind IN ('device','session')),
@@ -406,29 +349,23 @@ var schemaSQL = []string{
 	// items_file_id backs the PutItem upsert (ON CONFLICT(file_id) DO UPDATE, B3).
 	`CREATE UNIQUE INDEX IF NOT EXISTS items_file_id ON items(file_id)`,
 	// series_library backs the per-library series listing/sweep paths
-	// (serials-library D1: index on library_id; the UNIQUE(library_id,
-	// relative_path) constraint is declared inline on the table).
+	// (serials-library D1; the UNIQUE constraint is inline on the table).
 	`CREATE INDEX IF NOT EXISTS series_library ON series(library_id)`,
 	// §9.2 indexes for the common listing/lookup paths.
 	`CREATE INDEX IF NOT EXISTS items_display_title ON items(display_title)`,
 	`CREATE INDEX IF NOT EXISTS items_tmdb_id ON items(tmdb_id)`,
 	`CREATE INDEX IF NOT EXISTS items_kinopoisk_id ON items(kinopoisk_id)`,
 	`CREATE INDEX IF NOT EXISTS items_module ON items(module_id, display_title)`,
-	// Ledger read paths (accounts 2.3): the scorer walks completed_at
-	// (ListWatched/ListUnappliedWatched ORDER BY) and the learning queue
-	// filters and stamps applied_at IS NULL (ListUnappliedWatched /
-	// ApplyTagWeights). Plain (non-per-user) indexes: the 4-arg-era queries
-	// they serve are not user-keyed yet; migrateLedgersUserScoped re-creates
-	// them after the watched_items rebuild (the DROP takes the old ones with
-	// the legacy table), IF NOT EXISTS keeps every path idempotent.
+	// Ledger read paths (accounts 2.3): the scorer walks completed_at, the
+	// learning queue filters applied_at IS NULL. Plain (non-per-user) indexes;
+	// migrateLedgersUserScoped re-creates them after the watched_items rebuild.
 	`CREATE INDEX IF NOT EXISTS watched_items_completed_at ON watched_items(completed_at)`,
 	`CREATE INDEX IF NOT EXISTS watched_items_applied_at ON watched_items(applied_at)`,
 }
 
-// Open opens the SQLite database at dsn, sets WAL journal mode + a 5s
-// busy_timeout, runs the idempotent schema migrations (all §9.1 tables + §9.2
-// generated columns and indexes), and returns a *Store. It is safe to call Open
-// on an existing database: every migration statement is CREATE ... IF NOT EXISTS.
+// Open opens the SQLite database at dsn (WAL journal mode, 5s busy_timeout),
+// runs the idempotent schema migrations, and returns a *Store — safe on an
+// existing database (every statement is CREATE ... IF NOT EXISTS).
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	db, err := sql.Open(sqliteDriver, withBusyTimeout(dsn))
 	if err != nil {
@@ -475,12 +412,10 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	// The one-time guarded ledger rebuild (accounts 2.3): playback_progress
-	// and watched_items gain the user_id slot key via create-new → INSERT
-	// SELECT → drop → rename. It runs LAST because the copy names
-	// position_seconds — the column ensurePlaybackProgressSeconds has just
-	// ALTERed in on pre-phase-3 databases — so every legacy shape Open
-	// supports is rebuild-ready here.
+	// The one-time guarded ledger rebuild (accounts 2.3 — see
+	// migrateLedgersUserScoped) runs LAST: its copy names position_seconds,
+	// the column ensurePlaybackProgressSeconds has just ALTERed in on
+	// pre-phase-3 databases.
 	if err := migrateLedgersUserScoped(ctx, db); err != nil {
 		db.Close()
 		return nil, err
@@ -488,22 +423,18 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// busyTimeoutPragma is the per-write-lock wait budget (milliseconds). 5s is the
-// §4.4 soft bound: long enough to ride out a neighboring write under the async
-// worker pool + concurrent scan PutItems / API reads, short enough never to stall
-// a request thread past the §7.6 RPC timeout window.
+// busyTimeoutPragma is the per-write-lock wait budget (milliseconds): 5s — the
+// §4.4 soft bound, long enough to ride out a neighboring write, short enough
+// never to stall a request past the §7.6 RPC timeout window.
 const busyTimeoutPragma = 5000
 
 // withBusyTimeout appends the busy_timeout PRAGMA to the DSN as a modernc
 // _pragma query parameter. busy_timeout is a PER-CONNECTION setting (unlike
-// journal_mode=WAL, which is persistent on the DB file and so reaches every
-// connection via the ExecContext in Open). database/sql pools connections, and a
-// concurrent writer routed to a different pool connection would otherwise hit
-// "database is locked" immediately (modernc's default busy_timeout is 0). Setting
-// it through the DSN is the only way every pooled connection inherits it, so it
-// is the root-cause fix for the concurrent-write lock errors the async substrate
-// introduces (the queue's writeMu serializes only its own writes; scan PutItem +
-// the API are independent writers).
+// persistent WAL), and database/sql pools connections — the DSN is the only
+// way every pooled connection inherits it (modernc's default is 0), making it
+// the root-cause fix for the async substrate's concurrent-write lock errors
+// (the queue's writeMu serializes only its own writes; scan PutItem + the API
+// are independent writers).
 func withBusyTimeout(dsn string) string {
 	sep := "?"
 	if strings.Contains(dsn, "?") {
@@ -557,11 +488,10 @@ func ensureColumn(ctx context.Context, db *sql.DB, table, column, addDDL string)
 }
 
 // ensureItemsStatus makes Open additive across scan-library databases: the
-// items.status column + its index (additive mechanics — see ensureColumn).
-// The index is created AFTER the column exists so both fresh and migrated DBs
-// end up indexed. Store stays value-agnostic (ERROR-FLOOR LAW, doc.go #
-// Invariants): only the column DEFAULT 'new' is owned here; the lifecycle
-// set/transitions live in internal/enrich.
+// items.status column + its index (additive mechanics — see ensureColumn),
+// the index created AFTER the column so fresh and migrated DBs both end
+// indexed. Value-agnostic store (ERROR-FLOOR LAW, doc.go # Invariants): the
+// lifecycle set lives in internal/enrich.
 func ensureItemsStatus(ctx context.Context, db *sql.DB) error {
 	if err := ensureColumn(ctx, db, "items", "status",
 		"ALTER TABLE items ADD COLUMN status TEXT NOT NULL DEFAULT 'new'"); err != nil {
@@ -575,34 +505,30 @@ func ensureItemsStatus(ctx context.Context, db *sql.DB) error {
 }
 
 // ensureLibrariesDescription makes Open additive for libraries.description
-// (web-ui-phase-3): the human description column (additive mechanics — see
-// ensureColumn), the guarded ALTER carrying the same NOT NULL DEFAULT ” the
-// fresh DDL declares (every existing row reads as ""). The content is an
-// opaque human string — value-agnostic store (ERROR-FLOOR LAW, doc.go #
-// Invariants).
+// (web-ui-phase-3 — see ensureColumn): the guarded ALTER carries the fresh
+// DDL's NOT NULL DEFAULT ” so every existing row reads as "". Opaque human
+// string — value-agnostic store (ERROR-FLOOR LAW, doc.go # Invariants).
 func ensureLibrariesDescription(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "libraries", "description",
 		"ALTER TABLE libraries ADD COLUMN description TEXT NOT NULL DEFAULT ''")
 }
 
 // ensureLibrariesStreamsEnabled makes Open additive for libraries.streams_enabled
-// (packaged-playback D-8): the per-library packaging gate, DEFAULT 1 (ON) —
-// every existing library keeps packaging permitted, and the knob is the
-// rollback (switch a library off; its artifacts are then reaped by the
-// budget policy). Additive mechanics — see ensureColumn. What the flag
-// drives lives in internal/orchestrator via callers — value-agnostic store
-// (ERROR-FLOOR LAW, doc.go # Invariants).
+// (packaged-playback D-8 — see ensureColumn): the per-library packaging gate,
+// DEFAULT 1 so every existing library keeps packaging permitted; the knob is
+// the rollback (its artifacts are then reaped by the budget policy). What it
+// drives is internal/orchestrator's — value-agnostic store (ERROR-FLOOR LAW,
+// doc.go # Invariants).
 func ensureLibrariesStreamsEnabled(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "libraries", "streams_enabled",
 		"ALTER TABLE libraries ADD COLUMN streams_enabled INTEGER NOT NULL DEFAULT 1")
 }
 
 // ensureLibrariesNamingGroupStyle makes Open additive for
-// libraries.naming_group_style (display-naming): the opaque group-style
-// naming knob (additive mechanics — see ensureColumn), the guarded ALTER
-// carrying the same DEFAULT ” the fresh DDL declares (every existing row
-// reads as "" — the module-default marker). Value-agnostic store (ERROR-FLOOR
-// LAW, doc.go # Invariants): an opaque string.
+// libraries.naming_group_style (display-naming — see ensureColumn): the
+// guarded ALTER carries the fresh DDL's DEFAULT ” so existing rows read as
+// "" (the module-default marker); an opaque string, value-agnostic store
+// (ERROR-FLOOR LAW, doc.go # Invariants).
 func ensureLibrariesNamingGroupStyle(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "libraries", "naming_group_style",
 		"ALTER TABLE libraries ADD COLUMN naming_group_style TEXT DEFAULT ''")
@@ -619,12 +545,10 @@ func ensureLibrariesNamingElementName(ctx context.Context, db *sql.DB) error {
 
 // ensurePlaybackProgressSeconds bridges PRE-phase-3 databases whose
 // playback_progress table was created with the never-written §9.1 placeholder
-// shape (position_ms/played/play_count): the spec'd position_seconds column is
-// added via ensureColumn's guarded ALTER when absent (with a DEFAULT 0 —
-// NOT NULL ADD COLUMN requires one; the upsert always supplies the value).
-// The placeholder columns survive the ALTER on migrated DBs; the ledger
-// rebuild below (which nothing needs ordering against — no code ever read or
-// wrote the placeholders) retires them with the legacy table it drops.
+// shape: position_seconds is added via ensureColumn's guarded ALTER when
+// absent (DEFAULT 0 — NOT NULL ADD COLUMN requires one; the upsert always
+// supplies the value). The placeholders survive the ALTER; the ledger rebuild
+// retires them with the legacy table it drops.
 func ensurePlaybackProgressSeconds(ctx context.Context, db *sql.DB) error {
 	return ensureColumn(ctx, db, "playback_progress", "position_seconds",
 		"ALTER TABLE playback_progress ADD COLUMN position_seconds INTEGER NOT NULL DEFAULT 0 CHECK (position_seconds >= 0)")
@@ -757,12 +681,10 @@ func ledgerPKIsUserScoped(ctx context.Context, db *sql.DB, table string) (bool, 
 // Close releases the database handle.
 func (s *Store) Close() error { return s.db.Close() }
 
-// DB returns the underlying *sql.DB. Store stays the sole OPENER and CLOSER of
-// the connection; this accessor only shares the live handle with trusted
-// internal consumers (internal/module) so they can run their own parameterized
-// reads of tables store does not expose methods for. Callers MUST NOT call
-// sql.Open or Close on it. (Seam S10: module owns its SELECT, store owns the
-// connection.)
+// DB shares the live handle with trusted internal consumers (internal/module)
+// for their own parameterized reads (seam S10: module owns its SELECT, store
+// owns the connection); Store stays the sole opener/closer — callers MUST NOT
+// call sql.Open or Close on it.
 func (s *Store) DB() *sql.DB { return s.db }
 
 // formatTime renders a timestamp as the RFC3339Nano TEXT value persisted in

@@ -11,17 +11,11 @@ import (
 
 // visibleWhere is THE ONE visibility fragment every gated content read
 // applies (l6-accounts D3): a WHERE conjunct over the row's library-identity
-// column — `library_id` on items/series/progress reads, `id` on library
-// reads — plus the bound args to append to the call. Shapes key ONLY on
-// Viewer.Admin (the see-all discriminator — System, Admin, and LegacyDevice
-// all carry it): see-all → ("", nil), so the SQL stays byte-identical to
-// pre-accounts; scoped user with a non-empty visible set → ("col IN
-// (?,?,…)", args), the ids as BOUND int64 args, never interpolated into the
-// SQL text (injection-safe by construction); scoped user with an empty/nil
-// set, or the ZERO Viewer → ("1=0", nil) — fail closed, an authority-less
-// principal sees no rows. The ledger-scoping law that composes this fragment
-// with the own-slot conjunct is stated once at ledgerSlotWhere (D7). Never
-// exported.
+// column plus the bound args to append — see-all (Viewer.Admin, the sole
+// discriminator) → ("", nil); scoped with a non-empty set → ("col IN
+// (?,?,…)", args), ids always BOUND, never interpolated; empty set or zero
+// Viewer → ("1=0", nil), fail closed. Ledger composition is D7, canonical at
+// ledgerSlotWhere.
 func visibleWhere(v access.Viewer, col string) (clause string, args []any) {
 	if v.Admin {
 		return "", nil
@@ -77,11 +71,10 @@ func ledgerSlotWhere(v access.Viewer, col string) (clause string, args []any) {
 	return col + " = ?", []any{v.UserID}
 }
 
-// andVisible appends a non-empty visibility clause onto an existing WHERE
-// conjunct list — "a = ?" becomes "a = ? AND <clause>". An empty clause (a
-// see-all viewer: System/Admin/LegacyDevice) returns the input unchanged so
-// the SQL stays byte-identical to pre-accounts. The clause's bound args are
-// appended by the caller AFTER the base conjunct's args (positional order).
+// andVisible appends a visibility clause onto a WHERE conjunct list; an
+// empty clause (see-all viewer) returns the input unchanged so the SQL
+// stays byte-identical to pre-accounts. The clause's args append AFTER
+// the base conjunct's (positional order).
 func andVisible(where, clause string) string {
 	if clause == "" {
 		return where
