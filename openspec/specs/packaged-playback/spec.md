@@ -93,16 +93,25 @@ both safe for the full window; an item whose row is gone has no document
 anchor and is judged on the directory age alone. Reclamation SHALL reuse
 the budget sweep's move-aside-then-delete vocabulary and is best-effort (a
 failed reclaim logs a warning and is retried by a later tick — it never
-fails anything). The retention SHALL never touch `.tmp-*` staging whose
-directory is still fresh (a live pack's staging grows and is never
-reclaimed; stalled staging past the grace is), another item's artifacts, or
-the document-named build itself — for any packaging state, including
-`failed` and after a budget unpublish. Budget pressure may reclaim retained
-superseded builds before their grace passes (Budget-capped artifacts owns
-that precedence). A client holding a superseded build's playlist URL keeps
-serving through the grace window and recovers by refetching the playback
-descriptor, which answers the new build. Playlists SHALL be byte-identical
-for a given published build.
+fails anything). The move-aside step exists for the client mid-fetch (an
+atomic rename hides the deletion from a live session holding the tree's
+segment URLs) and applies to a directory NOT already carrying the
+`.trash` suffix: a directory that already carries the suffix — stranded
+trash, whether crash hygiene or an earlier pass's removal-failure leftover —
+SHALL be deleted on sight, never renamed again, so a failed reclaim retries
+the SAME directory under the SAME name on a later tick and a `.trash`
+suffix never grows beyond the stranded one; a stranded stale trash
+directory is reclaimed like any other stale directory the moment its
+removal can succeed, whatever its suffix depth. The retention SHALL never
+touch `.tmp-*` staging whose directory is still fresh (a live pack's
+staging grows and is never reclaimed; stalled staging past the grace is),
+another item's artifacts, or the document-named build itself — for any
+packaging state, including `failed` and after a budget unpublish. Budget
+pressure may reclaim retained superseded builds before their grace passes
+(Budget-capped artifacts owns that precedence). A client holding a
+superseded build's playlist URL keeps serving through the grace window and
+recovers by refetching the playback descriptor, which answers the new
+build. Playlists SHALL be byte-identical for a given published build.
 
 #### Scenario: Remux drops subtitles without decoding
 
@@ -136,6 +145,16 @@ go test ./internal/stream -run TestPackLane
 
 - **WHEN** a build directory is neither the document-named build nor in-use staging and its age is past the grace on the directory and on the document's last write
 - **THEN** the periodic sweep moves it aside and deletes it with the existing eviction vocabulary, the document-named build and fresh staging remain, and a failed reclaim only logs and waits for a later tick
+
+#### Scenario: Stranded trash never gains a suffix across passes
+
+- **WHEN** a stale directory already carrying the `.trash` suffix sits under an item's artifact directory and its removal fails (a subtree the sweep cannot unlink), and the sweep passes it again and again
+- **THEN** every pass logs the removal warning and leaves the directory under its existing name — no pass renames it aside, no `.trash.trash` name ever appears, and a later pass whose removal succeeds reclaims it outright
+
+#### Scenario: Deeper stranded suffixes are reclaimed on sight
+
+- **WHEN** the sweep passes a stale directory whose name already carries grown `.trash` suffixes (any depth) and its removal can succeed
+- **THEN** the directory is deleted outright that pass — no rename-aside, no deeper name, and no trash-bearing residue remains under the item's artifact directory
 
 ### Requirement: Head-first partial packaging
 
@@ -516,15 +535,17 @@ Stored packaging artifacts SHALL live under a storage budget (default 32 GB,
 `0` disables the cap). Accounting SHALL read the artifact directories on disk
 as the truth — including directories orphaned by moved or deleted library
 files — and eviction SHALL be least-recently-watched first (by playback
-progress recency), moving the artifact aside before deleting it. Originals
-SHALL never be evicted. Retained superseded build directories count against
-the budget like any other artifact directory and SHALL be reclaimed before
-current builds when the budget demands space — stale nonces first, ahead of
-watch recency, regardless of their retention grace — because reclaiming a
-superseded directory unpublishes nothing while reclaiming a current build
-forces a re-pack; only a build directory that is not the item's
-document-named build (and any directory of an item whose row is gone or
-deleted) is stale for this precedence.
+progress recency), moving the artifact aside before deleting it — the aside
+step skipped for a directory already carrying the `.trash` suffix, which is
+deleted on sight under the same stranded-trash law the Remux-only pack lane
+requirement defines. Originals SHALL never be evicted. Retained superseded
+build directories count against the budget like any other artifact directory
+and SHALL be reclaimed before current builds when the budget demands space —
+stale nonces first, ahead of watch recency, regardless of their retention
+grace — because reclaiming a superseded directory unpublishes nothing while
+reclaiming a current build forces a re-pack; only a build directory that is
+not the item's document-named build (and any directory of an item whose row
+is gone or deleted) is stale for this precedence.
 
 The frontier's working set (the bounded pin set the Watch-driven packaging
 frontier requirement defines) SHALL be eviction's last resort: pinned builds

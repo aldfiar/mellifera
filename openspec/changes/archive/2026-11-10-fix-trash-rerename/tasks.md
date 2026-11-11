@@ -1,0 +1,6 @@
+# tasks - fix-trash-rerename
+
+## 1 - evictDir deletes stranded .trash on sight
+
+- [ ] 1.1 cmd/mellifera/playback.go evictDir (~671-683): guard at the top of the body — strings.HasSuffix(path, ".trash") deletes the directory directly via os.RemoveAll(path), best-effort (a failed removal logs the warning and returns false mirroring today's trash-removal-failure shape, success keeps the INFO line and the true exit), instead of renaming the already-suffixed path to a second suffix; the rename-aside branch below the guard stays byte-identical for unsuffixed directories (the client-mid-fetch protection is untouched); no sweep or loop signature changes — all three call sites (retention 661, budget 594, demotion 509) heal through the one guard, and strings is already imported (playback.go:16). TestSweepRetentionTrashDeleteOnSight in cmd/mellifera/retention_test.go (authored red by the diagnose pre-step, growth mechanism reproduced: dead1.trash grows dead1.trash.trash at pass 1) flips green — unremovable stranded trash never gains a suffix across two passes, deeper stranded suffixes delete on sight leaving no trash-bearing residue — and the existing sweep tests stay green as the regression net.
+  verify: go test ./cmd/mellifera -run 'TestSweepRetentionTrashDeleteOnSight|TestSweepRetention|TestSweepBudget' || exit 1

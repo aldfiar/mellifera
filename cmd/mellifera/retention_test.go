@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -434,6 +435,168 @@ func TestSweepBudget(t *testing.T) {
 		}
 		if _, err := os.Stat(cur); err != nil {
 			t.Fatalf("document-named build was evicted: %v", err)
+		}
+	})
+}
+
+// TestSweepRetentionTrashDeleteOnSight pins the already-evicted law for the
+// retention pass (alatoic prod defect, 2026-11-10: every boot re-renamed a
+// stranded streams build dir, 44b3d67ef54a2033.trash×39, until the rename
+// itself failed with ENAMETOOLONG — the WARN-per-boot loop). An
+// already-.trash-suffixed directory is ALREADY evicted: the sweep must
+// DELETE it on sight, never move it aside again. The distinction matters
+// because evictDir's two steps can split — the rename succeeds wherever the
+// removal fails — and then every pass that re-encounters the stranded dir
+// appends another .trash suffix: unbounded growth on a removal the dir may
+// never satisfy. The removal failure is modeled portably with a
+// non-writable trash directory (0o555 — RemoveAll cannot unlink its child)
+// inside a writable item dir, so the rename-aside succeeds while the
+// deletion fails: the exact asymmetry that grew the prod name by one suffix
+// per boot. Root cannot model the failure (write bits are invisible to it).
+func TestSweepRetentionTrashDeleteOnSight(t *testing.T) {
+	// trashSeed seeds one item whose nameless doc (state none) leaves every
+	// directory stale, and returns the store, its context, and the artifact
+	// root (the retentionSeed shape).
+	trashSeed := func(t *testing.T) (*store.Store, context.Context, string, string) {
+		t.Helper()
+		ctx := context.Background()
+		dbPath := filepath.Join(t.TempDir(), "trash.db")
+		st, err := store.Open(ctx, dbPath)
+		if err != nil {
+			t.Fatalf("store.Open: %v", err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		libID, err := st.CreateLibrary(ctx, "tv", "/media/trash", "TV")
+		if err != nil {
+			t.Fatalf("CreateLibrary: %v", err)
+		}
+		raw, err := json.Marshal(map[string]any{
+			"streams": map[string]any{"state": "none"},
+		})
+		if err != nil {
+			t.Fatalf("marshal doc: %v", err)
+		}
+		if err := st.PutItem(ctx, store.Item{
+			ID: "itm_tr", ModuleID: "tv", LibraryID: libID, FileID: "itm_tr",
+			RelativePath: "itm_tr.mkv", MediaType: "tv",
+			Document: raw, SchemaVersion: 1,
+		}); err != nil {
+			t.Fatalf("PutItem: %v", err)
+		}
+		return st, ctx, filepath.Join(t.TempDir(), "streams"), dbPath
+	}
+
+	// trashBuild lays down one aged build directory holding a segment (the
+	// retentionBuild shape — a real tree, so a removal must descend).
+	trashBuild := func(t *testing.T, root, name string) string {
+		t.Helper()
+		p := filepath.Join(root, "itm_tr", name)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", p, err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "seg0.ts"), []byte("segment"), 0o644); err != nil {
+			t.Fatalf("write segment in %s: %v", p, err)
+		}
+		old := time.Now().Add(-2 * time.Hour) // comfortably past the 10-minute grace
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatalf("chtimes %s: %v", p, err)
+		}
+		return p
+	}
+
+	// trashBackdate ages the row anchor past the grace (both anchors stale).
+	trashBackdate := func(t *testing.T, dbPath string) {
+		t.Helper()
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open db for backdate: %v", err)
+		}
+		defer db.Close()
+		stamp := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
+		res, err := db.ExecContext(context.Background(),
+			`UPDATE items SET updated_at = ? WHERE id = ?`, stamp, "itm_tr")
+		if err != nil {
+			t.Fatalf("backdate updated_at: %v", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			t.Fatalf("backdate updated_at: %d rows affected, want 1", n)
+		}
+	}
+
+	// trashSuffixes returns the .trash-bearing names currently on disk under
+	// the item's artifact directory.
+	trashSuffixes := func(t *testing.T, root string) []string {
+		t.Helper()
+		var out []string
+		for _, name := range nonces(filepath.Join(root, "itm_tr")) {
+			if strings.Contains(name, ".trash") {
+				out = append(out, name)
+			}
+		}
+		return out
+	}
+
+	t.Run("unremovable stranded trash never gains a suffix across passes", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory write bits — the removal failure cannot be modeled")
+		}
+		st, ctx, root, dbPath := trashSeed(t)
+		stranded := trashBuild(t, root, "dead1.trash")
+		trashBackdate(t, dbPath)
+		// The dir must be movable but unremovable — the prod asymmetry that
+		// grew one suffix per boot. Renaming a directory rewrites its ..
+		// entry, so it needs write on the dir itself (it stays 0o755); a
+		// removal must empty it first, so a 0o555 subdirectory inside makes
+		// every RemoveAll fail on the child it cannot unlink.
+		blocked := filepath.Join(stranded, "sub")
+		if err := os.MkdirAll(blocked, 0o755); err != nil {
+			t.Fatalf("mkdir blocked sub: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(blocked, "seg1.ts"), []byte("segment"), 0o644); err != nil {
+			t.Fatalf("write segment in blocked sub: %v", err)
+		}
+		if err := os.Chmod(blocked, 0o555); err != nil {
+			t.Fatalf("chmod blocked sub: %v", err)
+		}
+		// The sweep may re-rename the dir before the test ends (that IS the
+		// bug), so the cleanup chases the blocked sub by name, not by the
+		// original path — TempDir removal must never leak.
+		t.Cleanup(func() {
+			entries, _ := os.ReadDir(filepath.Join(root, "itm_tr"))
+			for _, e := range entries {
+				if strings.Contains(e.Name(), "dead1.trash") {
+					_ = os.Chmod(filepath.Join(root, "itm_tr", e.Name(), "sub"), 0o755)
+				}
+			}
+		})
+		// Laying the blocked subtree refreshed the stranded dir's mtime —
+		// re-age it, or the mtime anchor shields it from every pass.
+		old := time.Now().Add(-2 * time.Hour)
+		if err := os.Chtimes(stranded, old, old); err != nil {
+			t.Fatalf("re-age stranded dir: %v", err)
+		}
+
+		// Two passes = two boots. Whatever the removal outcome, the dir's
+		// name may never grow: at most the original single suffix may remain.
+		for pass := 1; pass <= 2; pass++ {
+			sweepRetention(ctx, st, root, retentionGrace)
+			for _, name := range trashSuffixes(t, root) {
+				if name != "dead1.trash" {
+					t.Fatalf("pass %d: stranded trash was re-renamed instead of deleted on sight — %q exists (the .trash suffix grew)", pass, name)
+				}
+			}
+		}
+	})
+
+	t.Run("deeper stranded suffixes delete on sight", func(t *testing.T) {
+		// A dir stranded at depth 2 (already grown once) is deleted outright
+		// — no rename-aside, no depth-3 name, no residue of any depth.
+		st, ctx, root, dbPath := trashSeed(t)
+		trashBuild(t, root, "dead1.trash.trash")
+		trashBackdate(t, dbPath)
+		sweepRetention(ctx, st, root, retentionGrace)
+		if got := trashSuffixes(t, root); len(got) != 0 {
+			t.Fatalf("stranded deep trash was re-renamed or left residue, want none, got %v", got)
 		}
 	})
 }
