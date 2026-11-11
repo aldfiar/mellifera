@@ -310,3 +310,34 @@ func TestHandler_ClientUAMetaInjection(t *testing.T) {
 		}
 	})
 }
+
+// TestAssetsHeadMounted pins the HEAD mount on /assets/* (chi v5.3 does not
+// fold HEAD into Get — an unmounted HEAD 405s): a HEAD of a real embedded
+// asset answers 200 with the immutable cache header and an empty body. It
+// rides a real http.Server so the assertion is the wire truth — the server
+// strips HEAD bodies, which the handler must simply be allowed to run for.
+func TestAssetsHeadMounted(t *testing.T) {
+	srv := httptest.NewServer(Handler(nil, Options{}))
+	t.Cleanup(srv.Close)
+
+	target := srv.URL + firstJSAsset(t)
+	res, err := http.Head(target)
+	if err != nil {
+		t.Fatalf("HEAD %s: %v", target, err)
+	}
+	t.Cleanup(func() { _ = res.Body.Close() })
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD %s status = %d, want 200 (HEAD not mounted → chi 405s)", target, res.StatusCode)
+	}
+	if cc := res.Header.Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+		t.Errorf("HEAD asset Cache-Control = %q, want the immutable header", cc)
+	}
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read HEAD body: %v", err)
+	}
+	if len(body) != 0 {
+		t.Errorf("HEAD asset body = %d bytes, want none", len(body))
+	}
+}

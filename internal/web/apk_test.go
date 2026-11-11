@@ -141,3 +141,18 @@ func TestApkMultipleDeterministicWarns(t *testing.T) {
 		t.Errorf("slog output missing the multiple-APK WARN; got %q", logs.String())
 	}
 }
+
+// TestApkContentTypeRow pins the contentTypeFor row the packaged APK rides on:
+// .apk serves as application/vnd.android.package-archive (what a TV download
+// manager and browser installers key on), and the octet-stream default is
+// unchanged for everything else — only the .apk row was added.
+func TestApkContentTypeRow(t *testing.T) {
+	if got := contentTypeFor("mellifera-tv-1.2.3.apk"); got != "application/vnd.android.package-archive" {
+		t.Errorf("contentTypeFor(.apk) = %q, want application/vnd.android.package-archive", got)
+	}
+	for _, name := range []string{"unknown.txt", "no-extension", "index.aapk"} {
+		if got := contentTypeFor(name); got != "application/octet-stream" {
+			t.Errorf("contentTypeFor(%q) = %q, want the unchanged octet-stream default", name, got)
+		}
+	}
+}

@@ -72,6 +72,9 @@ func Handler(apiHandler http.Handler, opts Options) http.Handler {
 	registerApk(r, opts.apkFS()) // /apk GET+HEAD — ahead of the SPA fallback (never leaks index.html).
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) { serveIndex(w, r, opts) })
 	r.Get("/assets/*", func(w http.ResponseWriter, r *http.Request) { serveAsset(w, r, opts) })
+	// chi v5.3 does not fold HEAD into Get, so HEAD is an explicit mount or it
+	// 405s — the /apk probe heads its 307 target, and the asset must answer it.
+	r.Head("/assets/*", func(w http.ResponseWriter, r *http.Request) { serveAsset(w, r, opts) })
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		// Broken hashed asset URLs fail fast (no fallback) so a stale hash is
 		// visible, not papered over by index.html. Every other unmatched path
@@ -158,6 +161,8 @@ func contentTypeFor(name string) string {
 		return "font/woff"
 	case ".woff2":
 		return "font/woff2"
+	case ".apk":
+		return "application/vnd.android.package-archive"
 	default:
 		return "application/octet-stream"
 	}
