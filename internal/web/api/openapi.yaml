@@ -34,15 +34,13 @@ definitions:
         type: array
       item_name:
         description: |-
-          ItemName is the module's default display.item_name element template
-          (display-naming 3.2/3.3): the composition floor under the library's
-          own naming_element_name option — namerFor uses the library option when
-          set, else this default, else no composition.
+          ItemName is the module's default display.item_name template (display-
+          naming 3.2) — the composition floor under the library's own option.
         type: string
       language_preference:
         description: |-
-          LanguagePreference is the module's display.language_preference order —
-          the pick order the composer applies over object-shaped source titles.
+          LanguagePreference is the module's display.language_preference pick
+          order over object-shaped source titles.
         items:
           type: string
         type: array
@@ -53,42 +51,24 @@ definitions:
       refresh_sources:
         description: |-
           RefreshSources is the module's refreshable-source list (plugin-admin-
-          surfaces, additive): the title_source_priority entries that carry a
-          modeled metadata-source binding, whose plugin is loaded, and whose
-          effective gate resolution is enabled, in config order — the refresh
-          pickers' option list (chain parsers and scanners never appear). The
-          display composition walk ignores the list — title behavior is
-          byte-identical with and without it. Pairs are appended through
-          AddRefreshSource, reusing the titleSourceBinding element type so the
-          package-level export count stays at the complexity budget's cap of 12.
+          surfaces): modeled, loaded, gate-enabled bindings in config order; the
+          display walk ignores it (budget — see Deps.SourceInventory).
         items:
           $ref: '#/definitions/api.titleSourceBinding'
         type: array
       source_chain:
         description: |-
-          SourceChain is the module's gate-resolved metadata-source chain
-          (media-data-convention D6, additive): every bound source in CHAIN order
-          (the module config's m.MetadataSources order, NOT title_source_priority —
-          the title walk's order is the title machine's, deliberately different),
-          each pair carrying its effective enabled flag AFTER gate resolution. The
-          list IS the served resolution order: the convention projection walks it
-          to resolve groups, so priority is served data, never document key order.
-          Pairs are appended through AddChainSource, reusing the titleSourceBinding
-          element type so the package-level export count stays at the complexity
-          budget's cap of 12.
+          SourceChain is the module's gate-resolved source chain in CHAIN order
+          (media-data-convention D6) — the served resolution order the projection
+          walks (budget — see Deps.SourceInventory).
         items:
           $ref: '#/definitions/api.titleSourceBinding'
         type: array
       title_sources:
         description: |-
           TitleSources is the module's resolved title-walk input (plugin-title-
-          enrichment D5, additive): display.title_source_priority in config order,
-          each binding carrying its effective enabled flag AFTER gate resolution.
-          The gate resolution lives upstream (cmd-side, via enrich.ResolveGates per
-          library) — this shape is the pure seam-input; an empty/absent list means
-          the composer skips the walk entirely. Pairs are appended through
-          AddTitleSource — the element type is unexported (complexity budget:
-          package-level exports capped at 12; see titleSourceBinding).
+          enrichment D5): config order, enablement AFTER gate resolution; empty =
+          the composer skips the walk (budget — see Deps.SourceInventory).
         items:
           $ref: '#/definitions/api.titleSourceBinding'
         type: array
@@ -112,10 +92,8 @@ definitions:
         type: string
       message:
         description: |-
-          Message is the plugin's own liveness word from the last status probe
-          (plugin.Health.Message — the failure reason when not serving).
-          ADDITIVE on both health surfaces (/admin/status and /admin/sources,
-          plugin-title-enrichment): omitted on the wire while "".
+          Message is the plugin's own liveness word from the last probe, additive
+          on both health surfaces (plugin-title-enrichment); omitted while "".
         type: string
       restarts:
         type: integer
@@ -342,12 +320,29 @@ definitions:
       root_path:
         type: string
     type: object
+  api.debugEventRequest:
+    properties:
+      code:
+        type: string
+      detail:
+        type: string
+      item_id:
+        type: string
+      kind:
+        type: string
+      mode:
+        type: string
+      phase:
+        type: string
+    type: object
   api.deviceDTO:
     properties:
       code:
         type: string
       created_at:
         type: string
+      debug:
+        type: boolean
       device_id:
         type: string
       user_id:
@@ -450,10 +445,9 @@ definitions:
     properties:
       artwork:
         description: |-
-          Artwork is the additive composed poster URL (artwork) — the same
-          read-time resolution seriesDTO carries: see the field comment there;
-          one shape, one precedence, both wire nouns. The thumbnail leg stays
-          client-side by design.
+          Artwork is the composed poster URL (artwork): override > own poster >
+          owning series (the lazy fallback leg) — omitempty honest absence; the
+          thumbnail leg stays client-side by design.
         type: string
       display_name:
         type: string
@@ -476,21 +470,16 @@ definitions:
       metadata:
         additionalProperties: {}
         description: |-
-          Metadata is the additive convention projection (media-data-convention
-          D5) — the same read-time block seriesDTO carries: see the field comment
-          there; one shape, one resolution rule, both wire nouns.
+          Metadata is the convention projection (media-data-convention D5) — the
+          same read-time block seriesDTO carries.
         type: object
       module_id:
         type: string
       rec_score:
         description: |-
-          RecScore is the additive recommendation score (recommendation-sorting
-          D7): the read-time score the scored default ordered this listing by —
-          1000·inProgress + 500·newEpisode + min(Σ tag weights, 400) — stamped
-          per row so the ordering is observable, never client-input. Present
-          only under the scored default (sort=path computes no scores); omitted
-          (omitempty) when unscored or zero — honest absence, never a
-          fabricated 0.
+          RecScore is the read-time score (recommendation-sorting D7):
+          1000·inProgress + 500·newEpisode + min(Σ tag weights, 400) — only
+          under the scored default; omitempty honest absence, never a fake 0.
         type: number
       relative_path:
         type: string
@@ -499,17 +488,16 @@ definitions:
       status:
         type: string
       title_override:
+        description: |-
+          TitleOverride "" = unset (always on the wire — the SPA's fallback reads
+          ""); Display is the composed name (display-naming 3.1), always on the
+          wire (no omitempty — the SPA renders its em-dash placeholder for "").
         type: string
       watched:
         description: |-
-          Watched is the additive served watched state (watched-states D1): a
-          watched_items ledger row exists for the item — read-time from the
-          batched ledger read, never persisted, never client-input. True-only
-          on the wire (omitempty): absent means unwatched, the same
-          honest-absence posture RecScore serves. Stamped on EVERY serving
-          route — unconditional on the wire even where the score is not (the
-          sort=path opt-out and the detail/episode routes stamp it while
-          serving no rec_score).
+          Watched is the served watched state (watched-states D1): a ledger row
+          exists — read-time, never persisted, never client-input; stamped on
+          EVERY serving route, even where rec_score is not.
         type: boolean
     type: object
   api.itemParsersRequest:
@@ -834,6 +822,8 @@ definitions:
     type: object
   api.profileResponse:
     properties:
+      debug:
+        type: boolean
       groups:
         items:
           $ref: '#/definitions/api.profileGroup'
@@ -862,12 +852,6 @@ definitions:
       updated_at:
         type: string
       watched:
-        description: |-
-          Watched is the additive served watched state (watched-states D1):
-          the row's item carries a watched_items ledger row — stamped from the
-          same batched ledger facts the score composition reads. True-only on
-          the wire (omitempty): absent means unwatched, the honest-absence
-          posture RecScore serves.
         type: boolean
     type: object
   api.progressListResponse:
@@ -931,12 +915,9 @@ definitions:
     properties:
       artwork:
         description: |-
-          Artwork is the additive composed poster URL (artwork): the stored
-          override's value (a staged blob rides the object route's proxy URL),
-          else the first non-placeholder chain poster's URL — proxied when
-          materialized, the raw remote URL while unstaged — else absent
-          (omitempty): honest absence, never a placeholder URL, never an empty
-          one. Read-time only, never persisted into the document.
+          Artwork is the composed poster URL (artwork): the stored override, else
+          the first chain poster's URL — omitempty = honest absence, never a
+          placeholder; read-time only, never persisted.
         type: string
       display_name:
         type: string
@@ -951,20 +932,16 @@ definitions:
       metadata:
         additionalProperties: {}
         description: |-
-          Metadata is the additive convention projection (media-data-convention
-          D5): the about / cast / episode blocks resolved at read from the
-          document's sources.* namespaces over the gate-resolved source_chain —
-          first effectively-enabled carrier wins WHOLE, values verbatim. Absent
-          (omitempty) when the chain is unwired or no group has a carrier —
-          honest absence, never an empty block.
+          Metadata is the convention projection (media-data-convention D5):
+          about/cast/episode resolved over the gate-resolved chain — first
+          enabled carrier wins WHOLE; omitempty when none.
         type: object
       module_id:
         type: string
       rec_score:
         description: |-
-          RecScore is the additive recommendation score (recommendation-sorting
-          D7) — the same read-time field itemDTO carries: see the field comment
-          there; one score model, one stamping rule, both wire nouns.
+          RecScore is the same read-time score itemDTO carries (recommendation-
+          sorting D7) — one model, one stamping rule, both wire nouns.
         type: number
       relative_path:
         type: string
@@ -976,12 +953,9 @@ definitions:
         type: string
       watched:
         description: |-
-          Watched is the additive watched state (watched-states D1): true only
-          when EVERY backing episode carries a watched_items ledger row — the
-          all-episodes law the scoreSeries walk derives (a series with zero
-          episodes is never watched). Absent (omitempty) otherwise — true-only
-          on the wire, exactly as itemDTO's stamp; never persisted into the
-          document.
+          Watched (watched-states D1): true only when EVERY backing episode is
+          ledgered — the all-episodes law the scoreSeries walk derives; zero
+          episodes never watched.
         type: boolean
     type: object
   api.seriesListResponse:
@@ -1237,6 +1211,52 @@ paths:
           schema:
             $ref: '#/definitions/api.errorBody'
       summary: Revoke a paired device's token
+      tags:
+      - admin
+  /admin/devices/{id}/debug:
+    put:
+      operationId: admin-devices-debug
+      parameters:
+      - description: device id (the credentials rowid the device list shows)
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: '{debug: bool}'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "200":
+          description: flag written (the device's next /profile answer and the registry
+            list carry the new state)
+        "400":
+          description: malformed body or non-integer device id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "404":
+          description: unknown device id
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Flip a device's debug telemetry flag
       tags:
       - admin
   /admin/devices/{id}/user:
@@ -2497,6 +2517,30 @@ paths:
       summary: Log out by deleting the presented session
       tags:
       - auth
+  /debug-events:
+    post:
+      operationId: debug-event-ingest
+      parameters:
+      - description: debug event payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.debugEventRequest'
+      responses:
+        "200":
+          description: event accepted; entire effect is one INFO log line
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorBody'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/api.errorBody'
+      summary: Record a device debug event (fire-and-forget diagnostics)
+      tags:
+      - playback
   /enrich/failures:
     get:
       operationId: enrich-failures

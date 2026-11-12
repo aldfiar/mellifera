@@ -82,6 +82,74 @@
                 }
             }
         },
+        "/admin/devices/{id}/debug": {
+            "put": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Flip a device's debug telemetry flag",
+                "operationId": "admin-devices-debug",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "device id (the credentials rowid the device list shows)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "{debug: bool}",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "flag written (the device's next /profile answer and the registry list carry the new state)"
+                    },
+                    "400": {
+                        "description": "malformed body or non-integer device id",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "unknown device id",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/admin/devices/{id}/user": {
             "put": {
                 "tags": [
@@ -1965,6 +2033,43 @@
                     },
                     "503": {
                         "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/debug-events": {
+            "post": {
+                "tags": [
+                    "playback"
+                ],
+                "summary": "Record a device debug event (fire-and-forget diagnostics)",
+                "operationId": "debug-event-ingest",
+                "parameters": [
+                    {
+                        "description": "debug event payload",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.debugEventRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "event accepted; entire effect is one INFO log line"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errorBody"
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
                         "schema": {
                             "$ref": "#/definitions/api.errorBody"
                         }
@@ -4442,11 +4547,11 @@
                     }
                 },
                 "item_name": {
-                    "description": "ItemName is the module's default display.item_name element template\n(display-naming 3.2/3.3): the composition floor under the library's\nown naming_element_name option — namerFor uses the library option when\nset, else this default, else no composition.",
+                    "description": "ItemName is the module's default display.item_name template (display-\nnaming 3.2) — the composition floor under the library's own option.",
                     "type": "string"
                 },
                 "language_preference": {
-                    "description": "LanguagePreference is the module's display.language_preference order —\nthe pick order the composer applies over object-shaped source titles.",
+                    "description": "LanguagePreference is the module's display.language_preference pick\norder over object-shaped source titles.",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -4459,21 +4564,21 @@
                     }
                 },
                 "refresh_sources": {
-                    "description": "RefreshSources is the module's refreshable-source list (plugin-admin-\nsurfaces, additive): the title_source_priority entries that carry a\nmodeled metadata-source binding, whose plugin is loaded, and whose\neffective gate resolution is enabled, in config order — the refresh\npickers' option list (chain parsers and scanners never appear). The\ndisplay composition walk ignores the list — title behavior is\nbyte-identical with and without it. Pairs are appended through\nAddRefreshSource, reusing the titleSourceBinding element type so the\npackage-level export count stays at the complexity budget's cap of 12.",
+                    "description": "RefreshSources is the module's refreshable-source list (plugin-admin-\nsurfaces): modeled, loaded, gate-enabled bindings in config order; the\ndisplay walk ignores it (budget — see Deps.SourceInventory).",
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/api.titleSourceBinding"
                     }
                 },
                 "source_chain": {
-                    "description": "SourceChain is the module's gate-resolved metadata-source chain\n(media-data-convention D6, additive): every bound source in CHAIN order\n(the module config's m.MetadataSources order, NOT title_source_priority —\nthe title walk's order is the title machine's, deliberately different),\neach pair carrying its effective enabled flag AFTER gate resolution. The\nlist IS the served resolution order: the convention projection walks it\nto resolve groups, so priority is served data, never document key order.\nPairs are appended through AddChainSource, reusing the titleSourceBinding\nelement type so the package-level export count stays at the complexity\nbudget's cap of 12.",
+                    "description": "SourceChain is the module's gate-resolved source chain in CHAIN order\n(media-data-convention D6) — the served resolution order the projection\nwalks (budget — see Deps.SourceInventory).",
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/api.titleSourceBinding"
                     }
                 },
                 "title_sources": {
-                    "description": "TitleSources is the module's resolved title-walk input (plugin-title-\nenrichment D5, additive): display.title_source_priority in config order,\neach binding carrying its effective enabled flag AFTER gate resolution.\nThe gate resolution lives upstream (cmd-side, via enrich.ResolveGates per\nlibrary) — this shape is the pure seam-input; an empty/absent list means\nthe composer skips the walk entirely. Pairs are appended through\nAddTitleSource — the element type is unexported (complexity budget:\npackage-level exports capped at 12; see titleSourceBinding).",
+                    "description": "TitleSources is the module's resolved title-walk input (plugin-title-\nenrichment D5): config order, enablement AFTER gate resolution; empty =\nthe composer skips the walk (budget — see Deps.SourceInventory).",
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/api.titleSourceBinding"
@@ -4508,7 +4613,7 @@
                     "type": "string"
                 },
                 "message": {
-                    "description": "Message is the plugin's own liveness word from the last status probe\n(plugin.Health.Message — the failure reason when not serving).\nADDITIVE on both health surfaces (/admin/status and /admin/sources,\nplugin-title-enrichment): omitted on the wire while \"\".",
+                    "description": "Message is the plugin's own liveness word from the last probe, additive\non both health surfaces (plugin-title-enrichment); omitted while \"\".",
                     "type": "string"
                 },
                 "restarts": {
@@ -4840,6 +4945,29 @@
                 }
             }
         },
+        "api.debugEventRequest": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "item_id": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "mode": {
+                    "type": "string"
+                },
+                "phase": {
+                    "type": "string"
+                }
+            }
+        },
         "api.deviceDTO": {
             "type": "object",
             "properties": {
@@ -4848,6 +4976,9 @@
                 },
                 "created_at": {
                     "type": "string"
+                },
+                "debug": {
+                    "type": "boolean"
                 },
                 "device_id": {
                     "type": "string"
@@ -5006,7 +5137,7 @@
             "type": "object",
             "properties": {
                 "artwork": {
-                    "description": "Artwork is the additive composed poster URL (artwork) — the same\nread-time resolution seriesDTO carries: see the field comment there;\none shape, one precedence, both wire nouns. The thumbnail leg stays\nclient-side by design.",
+                    "description": "Artwork is the composed poster URL (artwork): override \u003e own poster \u003e\nowning series (the lazy fallback leg) — omitempty honest absence; the\nthumbnail leg stays client-side by design.",
                     "type": "string"
                 },
                 "display_name": {
@@ -5037,7 +5168,7 @@
                     "type": "string"
                 },
                 "metadata": {
-                    "description": "Metadata is the additive convention projection (media-data-convention\nD5) — the same read-time block seriesDTO carries: see the field comment\nthere; one shape, one resolution rule, both wire nouns.",
+                    "description": "Metadata is the convention projection (media-data-convention D5) — the\nsame read-time block seriesDTO carries.",
                     "type": "object",
                     "additionalProperties": {}
                 },
@@ -5045,7 +5176,7 @@
                     "type": "string"
                 },
                 "rec_score": {
-                    "description": "RecScore is the additive recommendation score (recommendation-sorting\nD7): the read-time score the scored default ordered this listing by —\n1000·inProgress + 500·newEpisode + min(Σ tag weights, 400) — stamped\nper row so the ordering is observable, never client-input. Present\nonly under the scored default (sort=path computes no scores); omitted\n(omitempty) when unscored or zero — honest absence, never a\nfabricated 0.",
+                    "description": "RecScore is the read-time score (recommendation-sorting D7):\n1000·inProgress + 500·newEpisode + min(Σ tag weights, 400) — only\nunder the scored default; omitempty honest absence, never a fake 0.",
                     "type": "number"
                 },
                 "relative_path": {
@@ -5058,10 +5189,11 @@
                     "type": "string"
                 },
                 "title_override": {
+                    "description": "TitleOverride \"\" = unset (always on the wire — the SPA's fallback reads\n\"\"); Display is the composed name (display-naming 3.1), always on the\nwire (no omitempty — the SPA renders its em-dash placeholder for \"\").",
                     "type": "string"
                 },
                 "watched": {
-                    "description": "Watched is the additive served watched state (watched-states D1): a\nwatched_items ledger row exists for the item — read-time from the\nbatched ledger read, never persisted, never client-input. True-only\non the wire (omitempty): absent means unwatched, the same\nhonest-absence posture RecScore serves. Stamped on EVERY serving\nroute — unconditional on the wire even where the score is not (the\nsort=path opt-out and the detail/episode routes stamp it while\nserving no rec_score).",
+                    "description": "Watched is the served watched state (watched-states D1): a ledger row\nexists — read-time, never persisted, never client-input; stamped on\nEVERY serving route, even where rec_score is not.",
                     "type": "boolean"
                 }
             }
@@ -5545,6 +5677,9 @@
         "api.profileResponse": {
             "type": "object",
             "properties": {
+                "debug": {
+                    "type": "boolean"
+                },
                 "groups": {
                     "type": "array",
                     "items": {
@@ -5587,7 +5722,6 @@
                     "type": "string"
                 },
                 "watched": {
-                    "description": "Watched is the additive served watched state (watched-states D1):\nthe row's item carries a watched_items ledger row — stamped from the\nsame batched ledger facts the score composition reads. True-only on\nthe wire (omitempty): absent means unwatched, the honest-absence\nposture RecScore serves.",
                     "type": "boolean"
                 }
             }
@@ -5684,7 +5818,7 @@
             "type": "object",
             "properties": {
                 "artwork": {
-                    "description": "Artwork is the additive composed poster URL (artwork): the stored\noverride's value (a staged blob rides the object route's proxy URL),\nelse the first non-placeholder chain poster's URL — proxied when\nmaterialized, the raw remote URL while unstaged — else absent\n(omitempty): honest absence, never a placeholder URL, never an empty\none. Read-time only, never persisted into the document.",
+                    "description": "Artwork is the composed poster URL (artwork): the stored override, else\nthe first chain poster's URL — omitempty = honest absence, never a\nplaceholder; read-time only, never persisted.",
                     "type": "string"
                 },
                 "display_name": {
@@ -5703,7 +5837,7 @@
                     "type": "integer"
                 },
                 "metadata": {
-                    "description": "Metadata is the additive convention projection (media-data-convention\nD5): the about / cast / episode blocks resolved at read from the\ndocument's sources.* namespaces over the gate-resolved source_chain —\nfirst effectively-enabled carrier wins WHOLE, values verbatim. Absent\n(omitempty) when the chain is unwired or no group has a carrier —\nhonest absence, never an empty block.",
+                    "description": "Metadata is the convention projection (media-data-convention D5):\nabout/cast/episode resolved over the gate-resolved chain — first\nenabled carrier wins WHOLE; omitempty when none.",
                     "type": "object",
                     "additionalProperties": {}
                 },
@@ -5711,7 +5845,7 @@
                     "type": "string"
                 },
                 "rec_score": {
-                    "description": "RecScore is the additive recommendation score (recommendation-sorting\nD7) — the same read-time field itemDTO carries: see the field comment\nthere; one score model, one stamping rule, both wire nouns.",
+                    "description": "RecScore is the same read-time score itemDTO carries (recommendation-\nsorting D7) — one model, one stamping rule, both wire nouns.",
                     "type": "number"
                 },
                 "relative_path": {
@@ -5727,7 +5861,7 @@
                     "type": "string"
                 },
                 "watched": {
-                    "description": "Watched is the additive watched state (watched-states D1): true only\nwhen EVERY backing episode carries a watched_items ledger row — the\nall-episodes law the scoreSeries walk derives (a series with zero\nepisodes is never watched). Absent (omitempty) otherwise — true-only\non the wire, exactly as itemDTO's stamp; never persisted into the\ndocument.",
+                    "description": "Watched (watched-states D1): true only when EVERY backing episode is\nledgered — the all-episodes law the scoreSeries walk derives; zero\nepisodes never watched.",
                     "type": "boolean"
                 }
             }
