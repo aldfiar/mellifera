@@ -7,10 +7,13 @@ import tv.mellifera.AppViewModel
 import tv.mellifera.Screen
 import tv.mellifera.browse.BrowseScreen
 import tv.mellifera.pairing.PairingScreen
+import tv.mellifera.playback.PlayerOverlay
 
 /**
  * The when-screen shell (D1): `when (state.screen)` IS the navigation —
- * no nav library, no DI. The player is an overlay, never a screen.
+ * no nav library, no DI. The player is an overlay, never a screen — it
+ * renders above whatever screen is showing whenever the machine is not
+ * Idle (D8, 5.7).
  */
 @Composable
 fun App(viewModel: AppViewModel) {
@@ -19,4 +22,5 @@ fun App(viewModel: AppViewModel) {
         Screen.Pairing -> PairingScreen(viewModel.pairing)
         Screen.Browse -> BrowseScreen(viewModel)
     }
+    PlayerOverlay(viewModel.playback)
 }

@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
 import tv.mellifera.pairing.SessionStore
 import tv.mellifera.pairing.SharedPreferencesSessionBacking
+import tv.mellifera.player.Media3Controller
 import tv.mellifera.ui.App
 
 class MainActivity : ComponentActivity() {
@@ -16,6 +17,7 @@ class MainActivity : ComponentActivity() {
         viewModel = AppViewModel(
             store = SessionStore(SharedPreferencesSessionBacking(applicationContext)),
             appScope = lifecycleScope,
+            playbackControllerFactory = { Media3Controller(applicationContext) },
         )
         setContent {
             App(viewModel)
