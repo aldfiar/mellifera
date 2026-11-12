@@ -30,9 +30,13 @@ internal fun moduleLabel(moduleId: String): String = when (moduleId) {
  * is an overlay on any of these, D1). The focus cursors ([gridFocus],
  * [episodeFocus]) live here so Back restores the exact prior position —
  * the classic TV failure mode (grid restarts at 0) is pinned by
- * nav/BackRestorationTest (5.9). [summaries] holds the rail's per-collection
- * counts, populated by [BrowseFlow.loadSummaries]; an absent entry IS the
- * count-less row (not fetched or failed — never a placeholder).
+ * nav/BackRestorationTest (5.9). The collections rail (5.15) rides the same
+ * state: [railOpen] IS the rail (an open rail takes Back before the series
+ * page — the BackHandler chain's first link), [railFocus] walks the rows so
+ * reopening lands on the current collection, and [summaries] holds the
+ * rail's per-collection counts, populated by [BrowseFlow.loadSummaries]; an
+ * absent entry IS the count-less row (not fetched or failed — never a
+ * placeholder).
  */
 data class BrowseState(
     val loading: Boolean = false,
@@ -44,6 +48,8 @@ data class BrowseState(
     val episodes: List<ItemDto> = emptyList(),
     val gridFocus: Int = 0,
     val episodeFocus: Int = 0,
+    val railOpen: Boolean = false,
+    val railFocus: Int = 0,
     val summaries: Map<Long, LibrarySummaryResponse> = emptyMap(),
 )
 
@@ -152,6 +158,38 @@ class BrowseFlow(
             }
         }
         _state.value = _state.value.copy(summaries = loaded)
+    }
+
+    /**
+     * The rail-open trigger (5.15 — the grid's left-edge LEFT arrow): the
+     * rail opens with the focus on the CURRENT collection's row (the
+     * initial-focus law carried into the rail) and the per-collection counts
+     * fire through [loadSummaries] ONCE. Idempotent: an already-open rail
+     * neither moves the focus nor re-fires the summaries.
+     */
+    suspend fun openRail() {
+        val current = _state.value
+        if (current.railOpen) return
+        val focus = current.libraries.indexOfFirst { it.id == current.libraryId }.coerceAtLeast(0)
+        _state.value = current.copy(railOpen = true, railFocus = focus)
+        loadSummaries()
+    }
+
+    /**
+     * The rail-close law (LEFT or Back anywhere in the rail): only the rail
+     * closes — [BrowseState.gridFocus] is deliberately NOT touched, so the
+     * grid re-renders with the exact prior cursor (the no-restart law).
+     */
+    fun closeRail() {
+        _state.value = _state.value.copy(railOpen = false)
+    }
+
+    /** The D-pad moved the rail cursor (the moveInList law's landing,
+     * same clamp semantics as [onGridFocusMoved]). */
+    fun onRailFocusMoved(index: Int) {
+        _state.value = _state.value.copy(
+            railFocus = index.coerceIn(0, _state.value.libraries.lastIndex.coerceAtLeast(0)),
+        )
     }
 
     /** Navigate into a series: its episodes, in narrative order. The grid
