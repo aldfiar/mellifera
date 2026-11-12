@@ -7,13 +7,27 @@ package tv.mellifera.browse.fixtures
  * full-shape fixtures; these carry the fields 5.6 consumes.
  */
 
-/** One serial library, one non-browse module the filter must drop. */
+/**
+ * The served collections (5.14): serial + a second collection of another
+ * module — the all-collections law keeps BOTH in served order (the former
+ * serial+tv client filter is retired; the "movie" module stands in for any
+ * type the client has no special knowledge of).
+ */
 fun librariesBody(): String = """
     {"items":[
       {"id":1,"module_id":"serial","root_path":"/media/serial",
        "display_name":"Сериалы","description":"","streams_enabled":true},
       {"id":2,"module_id":"movie","root_path":"/media/movie",
        "display_name":"Фильмы","description":"","streams_enabled":false}
+    ]}
+""".trimIndent()
+
+/** Library 2's series grid — the selectLibrary switch target (5.14). */
+fun moviesBody(): String = """
+    {"items":[
+      {"id":"m-1","library_id":2,"display_name":"Матрица"},
+      {"id":"m-2","library_id":2,"display_name":"Бегущий по лезвию",
+       "artwork":"/artwork/posters/m-2.jpg"}
     ]}
 """.trimIndent()
 

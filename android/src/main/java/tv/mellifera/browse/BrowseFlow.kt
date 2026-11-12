@@ -6,17 +6,33 @@ import kotlinx.coroutines.flow.asStateFlow
 import retrofit2.HttpException
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.LibraryDto
+import tv.mellifera.net.LibrarySummaryResponse
 import tv.mellifera.net.MelliferaApi
 import tv.mellifera.net.SeriesDto
 
 /**
- * The browse session state: the filtered libraries, the current library's
+ * The module-label law (5.14 — the SPA's default-dot law, Sidebar.tsx
+ * dotClass): a pure label per module_id; an unknown id renders its own id —
+ * a server module type the client has never seen still yields a readable
+ * label, never a blank entry.
+ */
+internal fun moduleLabel(moduleId: String): String = when (moduleId) {
+    "serial" -> "Каталоги"
+    "tv" -> "ТВ"
+    "image" -> "Фото"
+    else -> moduleId
+}
+
+/**
+ * The browse session state: the served collections, the current collection's
  * series grid, and the open series' episodes. [selectedSeries] non-null IS
  * the series page (the when-shell never gains a third Screen — the player
  * is an overlay on any of these, D1). The focus cursors ([gridFocus],
  * [episodeFocus]) live here so Back restores the exact prior position —
  * the classic TV failure mode (grid restarts at 0) is pinned by
- * nav/BackRestorationTest (5.9).
+ * nav/BackRestorationTest (5.9). [summaries] holds the rail's per-collection
+ * counts, populated by [BrowseFlow.loadSummaries]; an absent entry IS the
+ * count-less row (not fetched or failed — never a placeholder).
  */
 data class BrowseState(
     val loading: Boolean = false,
@@ -28,14 +44,19 @@ data class BrowseState(
     val episodes: List<ItemDto> = emptyList(),
     val gridFocus: Int = 0,
     val episodeFocus: Int = 0,
+    val summaries: Map<Long, LibrarySummaryResponse> = emptyMap(),
 )
 
 /**
  * The browse flow (5.6): fetch-on-navigate and the player-exit refresh law.
  *
- * - Entering browse fetches /libraries, keeps serial+tv ([LibraryFilter]),
- *   and loads the first library's series.
+ * - Entering browse fetches /libraries and keeps ALL served collections in
+ *   served order (5.14 — the SPA-parity law; the serial+tv client filter is
+ *   retired), then loads the first collection's series.
  * - Opening a series fetches its episodes via /series/{id}/episodes.
+ * - [selectLibrary] swaps the grid to another collection (5.14).
+ * - [loadSummaries] fetches the rail's per-collection counts, best-effort
+ *   and only while the collections rail is open (5.14).
  * - [refresh] is the player-exit hook: the series rows (watched/rec stamps
  *   are read-time) and the open series' episodes re-fetch WITHOUT a manual
  *   reload. 5.7's player-exit path fires it through AppViewModel.
@@ -50,12 +71,12 @@ class BrowseFlow(
     private val _state = MutableStateFlow(BrowseState())
     val state: StateFlow<BrowseState> = _state.asStateFlow()
 
-    /** Navigate into browse: libraries → serial+tv filter → first library. */
+    /** Navigate into browse: libraries → the first served collection. */
     suspend fun enter() {
         _state.value = BrowseState(loading = true)
         try {
             val service = apiFor()
-            val libraries = LibraryFilter.serialAndTv(service.libraries().items)
+            val libraries = service.libraries().items
             if (libraries.isEmpty()) {
                 _state.value = BrowseState(error = MESSAGE_NO_LIBRARIES)
                 return
@@ -75,6 +96,62 @@ class BrowseFlow(
         } catch (e: Exception) {
             fail(MESSAGE_LIBRARIES, e)
         }
+    }
+
+    /**
+     * The collection switch (5.14): fetch-on-navigate over GET /series —
+     * a new collection is a fresh grid, so [BrowseState.gridFocus] resets
+     * to 0. On failure the honest RU error surfaces and the PRIOR grid
+     * stays: rows, cursor and libraryId revert (the flow's failure law —
+     * whatever was on screen is kept, never wiped by a failed fetch).
+     */
+    suspend fun selectLibrary(libraryId: Long) {
+        val prior = _state.value
+        _state.value = prior.copy(
+            libraryId = libraryId,
+            loading = true,
+            error = null,
+            gridFocus = 0,
+        )
+        try {
+            val series = apiFor().series(libraryId).items
+            _state.value = _state.value.copy(series = series, loading = false)
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(
+                libraryId = prior.libraryId,
+                gridFocus = prior.gridFocus,
+            )
+            fail(MESSAGE_SWITCH, e)
+        }
+    }
+
+    /**
+     * The collections rail's counts (5.14 — the SPA's closed-panel D1 law):
+     * fetched ONLY when the rail opens (5.15's rail-open path calls this; a
+     * closed rail fires no summary requests, so [enter]'s request sequence
+     * stays untouched). Per-library BEST-EFFORT: a failed summary degrades
+     * to a count-less row — never an error, never a placeholder. A 401
+     * anywhere still routes through the app shell (the 401-anywhere law).
+     */
+    suspend fun loadSummaries() {
+        val libraries = _state.value.libraries
+        if (libraries.isEmpty()) return
+        val service = apiFor()
+        val loaded = mutableMapOf<Long, LibrarySummaryResponse>()
+        for (library in libraries) {
+            try {
+                loaded[library.id] = service.librarySummary(library.id)
+            } catch (e: HttpException) {
+                if (e.code() == 401) {
+                    onUnauthorized()
+                    return
+                }
+                // best-effort: this row renders without its count
+            } catch (_: Exception) {
+                // best-effort: this row renders without its count
+            }
+        }
+        _state.value = _state.value.copy(summaries = loaded)
     }
 
     /** Navigate into a series: its episodes, in narrative order. The grid
@@ -164,9 +241,10 @@ class BrowseFlow(
     }
 
     private companion object {
-        const val MESSAGE_NO_LIBRARIES = "Подходящих библиотек не найдено"
+        const val MESSAGE_NO_LIBRARIES = "Библиотек не найдено"
         const val MESSAGE_LIBRARIES = "Не удалось загрузить библиотеки — проверьте сервер"
         const val MESSAGE_EPISODES = "Не удалось загрузить эпизоды"
         const val MESSAGE_REFRESH = "Не удалось обновить данные"
+        const val MESSAGE_SWITCH = "Не удалось открыть коллекцию"
     }
 }

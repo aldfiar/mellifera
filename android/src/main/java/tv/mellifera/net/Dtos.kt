@@ -50,6 +50,18 @@ data class LibraryDto(
 data class LibrariesResponse(val items: List<LibraryDto> = emptyList())
 
 /**
+ * GET /libraries/{id}/summary (handlers.go librarySummaryResponse): the
+ * constant-time count aggregate the collections rail reads (5.14). updated_at
+ * is served but deliberately not carried — unconsumed, and the decoder
+ * ignores unknown keys by law.
+ */
+@Serializable
+data class LibrarySummaryResponse(
+    @SerialName("library_id") val libraryId: Long,
+    val items: Long,
+)
+
+/**
  * seriesDTO (handlers.go): served display_name/artwork/watched verbatim —
  * watched/rec_score are omitempty, hence nullable (the field-driven law:
  * absent renders absent, never fabricated — 5.6). The opaque serial document

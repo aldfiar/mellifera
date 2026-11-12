@@ -34,10 +34,15 @@ interface MelliferaApi {
     @GET("api/v1/pair/{id}/wait")
     suspend fun waitPairing(@Path("id") id: String): PairWaitResponse
 
-    /** GET /libraries (listLibraries) — the serial+tv filter is CLIENT law
-     * (5.6); the server returns every visible module. */
+    /** GET /libraries (listLibraries) — every visible module; the client
+     * keeps ALL of them in served order (5.14 SPA-parity collections law). */
     @GET("api/v1/libraries")
     suspend fun libraries(): LibrariesResponse
+
+    /** GET /libraries/{id}/summary (librarySummary) — the rail count
+     * aggregate (5.14); fetched only while the collections rail is open. */
+    @GET("api/v1/libraries/{id}/summary")
+    suspend fun librarySummary(@Path("id") libraryId: Long): LibrarySummaryResponse
 
     /** GET /series?library={id} (listSeries) — scored default order. */
     @GET("api/v1/series")

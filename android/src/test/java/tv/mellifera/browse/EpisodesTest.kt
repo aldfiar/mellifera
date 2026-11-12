@@ -44,7 +44,9 @@ class EpisodesTest {
         server.enqueue(json(seriesBody()))
         server.enqueue(json(episodesBody()))
         flow.enter()
-        assertEquals(listOf("serial"), flow.state.value.libraries.map { it.moduleId })
+        // The all-collections law (5.14): BOTH served collections are kept,
+        // in the served order — the serial+tv client filter is retired.
+        assertEquals(listOf("serial", "movie"), flow.state.value.libraries.map { it.moduleId })
         assertEquals(listOf("s-1", "s-2"), flow.state.value.series.map { it.id })
 
         flow.openSeries(SeriesDto(id = "s-1", displayName = "Сага"))
