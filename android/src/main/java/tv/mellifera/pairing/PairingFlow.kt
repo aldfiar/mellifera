@@ -56,12 +56,25 @@ class PairingFlow(
     private val running = AtomicBoolean(false)
     private var job: Job? = null
 
+    /**
+     * The address draft (5.12): the last text submitted from the entry
+     * screen. Lives here, not in remember{} — the AddressRejected round-trip
+     * recomposes the entry fresh, and the retry must prefill the last-entered
+     * text. Cleared once an address is accepted, so a fresh flow (and a
+     * re-entry after the 401 wipe) still starts empty — the first-run law.
+     */
+    var addressDraft: String = ""
+        private set
+
     /** First-run entry: normalize, persist, move to Ready. */
     fun submitAddress(raw: String) {
-        val normalized = normalizeServerAddress(raw)
+        val trimmed = raw.trim()
+        addressDraft = trimmed
+        val normalized = normalizeServerAddress(trimmed)
         if (normalized == null) {
             _state.value = PairingState.AddressRejected("Проверьте адрес — например 192.168.1.5:8080")
         } else {
+            addressDraft = ""
             store.writeServerAddress(normalized)
             _state.value = PairingState.Ready
         }
