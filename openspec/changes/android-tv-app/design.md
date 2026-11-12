@@ -75,7 +75,7 @@ Build-time defaults (recorded, decide during implementation without touching spe
 | AC-4 | APK rides the image (+ deploy smoke) | 4.1 + operator deploy |
 | AC-5/6/7 | SPA advertises the app (gate, probe, label, pins) | 6.2 |
 | AC-8 | Pairing session + 401 returns to pairing | 5.4, 7.1 |
-| AC-9 | Browse is serial-first and field-driven | 5.6 |
+| AC-9 | Browse shows all collections and is field-driven | 5.6, 5.14, 5.15, 5.16 |
 | AC-10 | (device proof) OQ-T1 | 1.2, 1.3 |
 | AC-11 | Playback flow law (Dead path) | 5.5 + 1.3 |
 | AC-12 | Progress and resume | 5.7, 7.1 |

@@ -19,26 +19,75 @@ T0 on-device probes (1.3) and its consumer (5.10) REQUIRE THE OPERATOR (real
 TV box over adb) — when only those remain, the session stops and asks.
 
 APPLY PROGRESS (receipts are the evidence — `wf pipeline status android-tv-app`):
-GREEN (16): 1.1 SDK · 1.2 T0 probe (0d00b4d; apk PRESERVED at
-.tmp/android-tv-app/t0-probe.apk sha256 bcf99347… — probe SOURCES deleted by
-5.1) · 2.1 /apk route (7b4cfd9) · 2.2 HEAD probes (334dd14) · 3.1 device debug
-flag (47c3127) · 3.2 debug-events ingest (4543bac) · 4.1 release pins (644db17)
-· 6.1 admin debug toggle (aee4198) · 6.2 SPA apk affordances (21f0862) ·
-5.1 scaffold (ae7355c — android/ module, D4 version-in-filename + D6
-fail-loud signing PROVEN; Compose default taken, T0-RESULT absent) ·
-5.2 make apk (0893aa6 — keystore at ~/.mellifera/keys/mellifera-tv.jks,
-cp -n + `|| test -f` guard for POSIX Issue 8) · 5.3 net client (84ae191 —
-Retrofit/kotlinx, resolvePlayUrl) · 5.4 pairing (ea593f8) · 5.5 flow machine
-(9281423 — pure reduce, 9 qa tests) · 5.6 browse (e21b6c4 — field-driven +
-refresh laws) · 5.7 player wiring (ba3947d — Media3Controller + effect ferry +
-BeaconSender seam; machine FROZEN, zero changes needed).
-IN FLIGHT: 5.8 voiceover mapping + beacon worker.
-REMAINING: 5.11 telemetry (←5.7 ✓) · 5.9 D-pad · 7.1 @wf-qa joint (←5.x+3.2)
-· 8.1 last · OPERATOR-GATED: 1.3 (T0 on-device probes) + 5.10 (MediaSession,
-consults 1.3's T0-RESULT; PlaybackService fallback variant if Home-press bar
-missed). STOP AND ASK THE USER when only 1.3 + 5.10 remain.
+GREEN (22/24): all coder/QA tasks DONE — 1.1, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1,
+5.1–5.9, 5.11, 6.1, 6.2, 7.1 (@wf-qa joint, 99af175 — four wire joints green,
+ZERO client defects; one cosmetic Dtos.kt doc note for the reviewer), 8.1
+(932f10a — openapi+dist regen byte-stable, glossary Pack/Beacon), git-check
+(branch pushed: origin/feature/android-tv-app; change folder committed 7729676).
+PROBE APK PRESERVED: .tmp/android-tv-app/t0-probe.apk (sha256 bcf99347…;
+sources deleted by 5.1 — rebuild from 0d00b4d if ever needed).
+REMAINING (OPERATOR-GATED): 1.3 (T0 on-device probes — four T0-RESULT
+sections in tasks/1.3.md: HEVC hw decode, translated multi-EXT-X-MAP
+switching, Home-press 5-min media-keys bar, Compose viability) and 5.10
+(MediaSession — consults 1.3; if the Home-press bar MISSES, the
+PlaybackService fallback variant enters its scope).
 
-DISPATCH NOTES: git index shared — stage-only-own-paths on every dispatch;
-pipeline verbs resolve only from the worktree cwd; gradle android/ tasks
-SERIALIZED (build locks) — one android task at a time; state/Playback.kt is
-FROZEN (defects reported, never patched sideways).
+## LIVE-BOX AMENDMENT CYCLE (12 Nov, operator troubleshooting on alatoic)
+
+The operator installed mellifera-tv-0.1.0-t0.apk on the real TV (192.168.0.215,
+Android 14 box). Findings, all diagnosed from server logs + sources:
+
+1. PAIRING ENTRY UNUSABLE — zero POST /pair arrived: bare unlabeled address
+   field, no format guidance, draft lost on every AddressRejected retry.
+   AMENDMENT 5.12 AUTHORED (planner) + GREEN (coder, commit 999f83a, verify
+   rc 0 — legend/helper constants, PairingFlow.addressDraft, 3 JVM tests;
+   1 honest red round journaled: test data tripped normalize's hostname law).
+2. PAIRING ITSELF WORKS END-TO-END — operator approved from the SPA admin;
+   token pickup + /profile + /libraries + /series (571 KB) all 200 okhttp
+   from the box. Data pipeline healthy.
+3. BLACK-SCREEN RENDER — two stacked defects, fully diagnosed:
+   a. NO androidx.tv.material3.MaterialTheme wrapper anywhere → all
+      tv.material3.Text renders black-on-black (invisible titles/hints/code).
+      Buttons showed only as filled containers — the "dead buttons" report.
+   b. ARTWORK UNRESOLVABLE — server artwork field = relative authed
+      /api/v1/art/object/<token> (art.go:53 artObjectPath) or raw remote URL;
+      app feeds raw into Coil AsyncImage: no base prepend, no Bearer header.
+   AMENDMENT 5.13 GREEN (commit 806c1e9, verify rc 0 — MaterialTheme once
+   at root MainActivity.kt:43; pure resolveArtworkUrl resolver + ArtworkImage
+   leaf with Bearer header only on own-server fetches; 4 JVM tests).
+   REVIEWER NOTE (disclosed deviation): coder touched AppViewModel.kt
+   (+9 lines, additive read-only `val serverAddress` accessor :80) outside
+   the named scope list — the pinned design decision required session facts
+   at render time but no public seam existed; alternatives (CompositionLocal,
+   Api.kt exposure) judged worse altitude. Flag for GATE 2 alongside the
+   7.1 cosmetic Dtos note + Q4 waiver.
+4. SCOPE AMENDMENT DIRECTED BY OPERATOR: TV browse must mirror SPA logic —
+   collections screen (all collections + counts), FAST collection-change
+   menu (D-pad Left rail mapping), per-collection grids. Planner QUEUED
+   behind 5.13 (tasks.md single-writer). Scope line set by session, user
+   notified: IN = collections+switcher+per-collection grids; DEFERRED =
+   home rails, search, facets (SPA-scale, follow-ups).
+
+Current app defect: BrowseFlow.enter() locks onto libraries.first() — no
+collection switching exists at all (gap the amendment kills).
+
+COLLECTIONS AMENDMENT (operator-directed scope expansion, SPA parity):
+planner authored 5.14/5.15/5.16 + spec delta retitle ("Browse shows all
+collections and is field-driven") + 3 scenarios; validate strict rc 0;
+register ok (29 tasks); design.md AC-9 trace row updated by session.
+GREEN SO FAR: 5.14 df178f1 (LibraryFilter RETIRED, all served collections,
+moduleLabel law, selectLibrary swap w/ revert-on-failure, loadSummaries
+best-effort rail-only — enter() request sequence byte-identical, fixtures
+byte-valid; 17 tests green, 2 test-side red rounds journaled); 5.15
+1db97ec (CollectionsRail AnimatedVisibility over grid left edge, LEFT-edge
+arrow = open trigger, BackHandler first link, rail modal — Right consumed
+no-op, focus re-lands on parked card on close, RailLawTest 3 tests green;
+two disclosed law-detail calls: rail-closes-on-failed-select, modal-Right).
+IN FLIGHT: 5.16 @wf-qa (collections wire joint, full-shape fixtures,
+HALT-on-real-defect rule). AFTER IT: consolidated surveyor pass over the
+whole amendment cycle (5.12/5.13/5.14-16), then APK 0.1.0-t1 → deploy →
+operator reinstall-over → live retest + T0.
+REVIEWER NOTES ACCUMULATED FOR GATE 2: Q4 keystore waiver; 7.1 cosmetic
+Dtos.kt doc note; 5.13's disclosed AppViewModel.serverAddress accessor
+(+9 additive lines); 5.15's two law-detail calls (rail modal Right no-op;
+rail closes on failed select).

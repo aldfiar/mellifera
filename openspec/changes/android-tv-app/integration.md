@@ -270,3 +270,194 @@ tasks 3.2 + design D8 as the fixture authority.
 **Axis re-verdicts:** wiring coverage now fully COVERED (the E9/E10 shape authority exists — the round-1
 finding is resolved); QA seam coverage / blast radius / duty honesty unchanged CLEAN (round-1 grounding
 held — anchors unchanged, no source drift); strict validation green.
+
+## 7. Round-3 re-audit — the live-box amendment cycle (5.12 / 5.13 / 5.14–5.16, 2026-11-12)
+
+Method: post-change tree at 846d0e1 on feature/android-tv-app. The five amendment commits (999f83a 5.12,
+806c1e9 5.13, df178f1 5.14, 1db97ec 5.15, 846d0e1 5.16 + hang-fix) were diffed (`git show --stat`) and every
+touched source read in full; every edge below cites `file:line` from the current tree. Grounding posture
+unchanged from round 1: the source map is regex-floor for Go (`wf index query def/callers` → "not in map;
+grep source to confirm" — v2 auto-built at audit start) and has no Kotlin nodes, so the Go anchors cite
+grep evidence and the app-module nodes ground on disk + commits. Read-only: only this §7 and the handoff
+record were written. The green receipts (5.12–5.16, green 06:32–08:54; 27/29 total) are the verify
+evidence — this pass audits the INTEGRATION surface, not the duties' stdout. `openspec validate
+android-tv-app --strict` re-run first-hand: rc 0 "valid" (the amendment artifacts are UNCOMMITTED tree
+edits — see Gate-state facts).
+
+### 7a. The amendment graph — nodes (all grounded)
+
+| Task | New/touched nodes (current-tree anchor) |
+|---|---|
+| 5.12 | `PairingFlow.addressDraft` + submit law (PairingFlow.kt:66, :70–81 — set on submit, cleared on accept); `ADDRESS_FIELD_LEGEND`/`ADDRESS_FIELD_HELPER` top-level consts (PairingScreen.kt:39, :44–45); `AddressEntry` prefill = `remember { mutableStateOf(flow.addressDraft) }` (PairingScreen.kt:83); `AddressEntryTest` 3 qa tests (helper's example additionally proven to normalize under the real law — SessionStore.kt:71) |
+| 5.13 | `MaterialTheme` wrap ONCE at the composition root (MainActivity.kt:42–46, rationale comment :38–41); `ArtworkRequest` + `resolveArtworkUrl` pure resolver (browse/ArtworkUrl.kt:13–31); `ArtworkImage` Coil leaf (BrowseScreen.kt:454–472 — Bearer header only when `authorized`); `AppViewModel.serverAddress` additive read-only accessor (AppViewModel.kt:80 — the session's disclosed scope addition, single consumer BrowseScreen.kt:102); `ArtworkUrlTest` 3 qa + 1 extra (no-base relative → absent) |
+| 5.14 | `moduleLabel` (BrowseFlow.kt:19–24, unknown id renders its own id); `BrowseState` +railOpen/railFocus/summaries (BrowseFlow.kt:41–54); `selectLibrary` fetch-on-navigate + revert-on-failure (:114–132); `loadSummaries` best-effort rail-open-only (:142–161 — 401 routes to the shell, other failures → count-less row); `Api.librarySummary` (Api.kt:44–45) + client `LibrarySummaryResponse{library_id, items}` (Dtos.kt:59–65, updated_at deliberately uncarried); **LibraryFilter + LibraryFilterTest DELETED** (df178f1, zero remaining readers — grep); `Fixtures.librariesBody` second kept collection + `moviesBody` (Fixtures.kt:16–32); EpisodesTest kept-modules assertion flipped (:47–49); `CollectionsTest` 4 qa |
+| 5.15 | `openRail` idempotent, focus = current collection's index, counts fire once (BrowseFlow.kt:170–176); `closeRail` touches ONLY railOpen (:183–185); `onRailFocusMoved` clamp (:189–193); `CollectionsRail`/`RailRow` (BrowseScreen.kt:225–323); BackHandler chain (:94 series composed first, :98 rail composed after); grid LEFT-edge trigger (:201–204); rail modal = AnimatedVisibility over the grid (:133–149 — `railOpen && selected == null`; Right consumed no-op :272; grid holds no focus while railOpen :184); `RailLawTest` 3 qa |
+| 5.16 | `CollectionsWireJointTest` (android/src/test/java/tv/mellifera/joint/, 2 qa tests, full-shape fixtures over the REAL BrowseFlow+Api stack) — the hang-fix folded into the same commit (§7f) |
+
+Register state: 29 derived tasks (23 round-1 authored + 5 amendments + git-check); all five amendments
+receipted green.
+
+### 7b. Edges audited — per-edge verdicts (the seven dispatched edges)
+
+**1. Theme wrap — WIRED.** One `androidx.tv.material3.MaterialTheme` wrap at MainActivity.setContent
+(MainActivity.kt:43); zero per-screen wrappers (grep: MaterialTheme appears in no other main source). Every
+`tv.material3.Text` without an explicit color rides the themed default (white onSurface under the default
+dark scheme); every explicit color site is white/accent/LightGray on a dark surface — the chip backgrounds
+(SettingsSection.kt:21, BrowseScreen.kt:77) and rail panel (:80) carry white/accent text (:308, :312, :495),
+the player scrim (PlayerScreen.kt:142) carries themed-default + LightGray (:146–147), the pairing field is
+explicit white (PairingScreen.kt:99). **Zero `Color.Black` and zero dark-on-dark text anywhere in main
+sources.** The invisibility defect's root cause (raw composition → platform-default black) is killed at the
+root; no patch site can regress it.
+
+**2. Artwork resolution — WIRED end-to-end.** `serverBase = viewModel.serverAddress` + `token = appState.token`
+(BrowseScreen.kt:102–103) thread into SeriesGrid (:124–125) → CardView (:396) and SeriesPage (:114–115) →
+EpisodeRow (:430); both render sites call `resolveArtworkUrl(serverBase, card.artworkUrl)`; the resolver's
+null law (ArtworkUrl.kt:26–31: blank → null; absolute → passthrough `authorized=false`; relative → base
+prepended `authorized=true`; no base → null) matches the task text and `ArtworkUrlTest` (4 tests, incl. the
+no-base leg); `ArtworkImage` (:460–471) attaches `Authorization: Bearer` ONLY when `authorized` and the
+token is non-blank — CDN fetches stay anonymous. Absent artwork renders no block (CardView :397 / EpisodeRow
+:431 `if (artwork != null)`); the wire side is honest absence too (SeriesGrid.kt:34 `takeIf { it.isNotBlank }`
+over the omitempty field; joint test asserts the bare row decodes artwork null). `AsyncImage`/`ImageRequest`
+appear nowhere else in main sources — the leaf is the only image site. The staged-art cite
+(art.go:53 `artObjectPath = "/api/v1/art/object/"`) and the resolvePlayUrl law cite (Api.kt:136 comment /
+:141 fn) both match live source.
+
+**3. Rail↔flow↔net — WIRED; the BackHandler claim is CORRECT, not inverted.** Trigger: the grid's left-edge
+LEFT — `moveInGrid` returns `cursor` for Left at column 0 (KeyRouting.kt:82), so `next == index` and the
+`key == DpadKey.Left` arm (:201–204) opens the rail, consumed; grid-top UP stays unconsumed (KeyRouting.kt:84
+returns 0 == index at top-left → else → false). Flow: `openRail` is idempotent, lands `railFocus` on the
+current library's index, fires `loadSummaries()` once (:170–176); `loadSummaries` walks one summary per
+served library, best-effort (BrowseFlow.kt:142–161); `closeRail` leaves gridFocus untouched (:183–185) and
+the grid's `LaunchedEffect(state.gridFocus, state.railOpen)` (:183–187) re-lands the parked card. Modal law:
+rail renders only `railOpen && selected == null` (:134); grid holds no focus while open (:184); Right is a
+consumed no-op (:272); rail-top UP still crosses natively (:273). **BackHandler ordering:** the series
+handler composes first (:94), the rail handler composes after (:98). androidx.activity's documented
+`OnBackPressedDispatcher` semantics invoke enabled callbacks in REVERSE addition order — the most recently
+composed enabled handler wins — so when both are enabled the RAIL handler takes Back first, closing the rail,
+then Back again reaches the series handler. The coder's claim matches the framework; no inversion. (The two
+can in practice never both be enabled: the rail trigger lives in the grid, composed only when no series is
+open, and the modal is `railOpen && selected == null` — the ordering is defense in depth.)
+
+**4. Orphan check — CLEAN.** `LibraryFilter`/`serialAndTv`: zero remaining readers (grep across android/
+sources; the only hit is the joint test's comment citing the deletion — regression-proof intent). `moduleLabel`:
+def BrowseFlow.kt:19, consumer BrowseScreen.kt:256 (RailRow) + 5 assertions in CollectionsTest. `resolveArtworkUrl`/
+`ArtworkRequest`: def ArtworkUrl.kt, consumers BrowseScreen.kt:396/:430/:456 + 6 test calls. `viewModel.serverAddress`:
+def AppViewModel.kt:80, single consumer BrowseScreen.kt:102. No node from the cycle is unwired.
+
+**5. Wire joints — WIRED.** Fixture-vs-Go spot-check (far more than 5 tags, all against internal/api/handlers.go):
+`libraryDTO` :75 (`module_id`, `root_path`, `display_name`, `description`, `streams_enabled`,
+`naming_group_style`, `naming_element_name` — none omitempty, and lib 2's fixture carries the "" legs the Go
+struct always serves); `ModulePresentation` :99 (`identity_fields`, `parsers`, `item_name`;
+`title_sources`/`language_preference`/`refresh_sources`/`source_chain` omitempty — lib 1's block carries all,
+lib 2's honestly omits; `ParserBinding.capability` omitempty exercised both ways); `librarySummaryResponse`
+:154 (`library_id`, `items`, `updated_at` — "" zero-state matches the doc comment "RFC3339 TEXT ("" when no
+items)"); `seriesDTO` :220 (`relative_path`, `document`, `schema_version`, `status`, `title_override`,
+`display_name`; `artwork`/`metadata`/`rec_score`/`watched` omitempty — m-1 fully stamped, m-2 bare). Wrapper
+shapes `{items:[...]}` match `librariesResponse` :150/:`seriesListResponse` :247. Routes: joint paths
+`/api/v1/libraries/1/summary` ↔ router.go:213, `/api/v1/series?library={id}` ↔ router.go:232 + the handler's
+`Query().Get("library")` (handlers.go:1371); client endpoints Api.kt:44–49. Request-sequence claims:
+enter() = 2 requests (CollectionsTest:66–68 asserts count 2), openRail = +1 per library (RailLawTest:76–78
+asserts the two summary legs in served order), selectLibrary = +1 (CollectionsTest:131) — all asserted by
+the green tests. The decoder side is proven under the FULL shape (`ignoreUnknownKeys = true`, Api.kt:120) —
+the joint's stated purpose ("a strict decoder would throw on the first byte past streams_enabled"). Two
+COMMENT-ONLY line anchors in the test header drift: cited ModulePresentation :97 (actual :99) and seriesDTO
+:229 (actual :220) — **Q6**.
+
+**6. Blast radius — CLEAN.** Every `BrowseState(` constructor site uses named args: five in BrowseFlow.kt
+(:77, :82, :87, :91, :97) and three in FocusLawTest (:47, :58, :59) — the 5.14/5.15 field growth broke
+nothing (and all new fields carry defaults). Existing fixture consumers assert the CURRENT truth:
+EpisodesTest's kept-modules assertion flipped to the served pair (:47–49); RefreshTest and
+BackRestorationTest enqueue the amended `librariesBody`; FocusLawTest's surface-target assertions are
+state-shape-only and unaffected. The cycle touched ONLY the android module: all five commits' paths are
+under `android/` (git show --stat), zero Go source edits — the server-side integration surface is exactly
+the three already-shipped read endpoints (libraries, series, summary), all consumed additively.
+
+**7. The 5.16 hang-fix — CONTAINED and COVERED.** 846d0e1 touches exactly one file (the joint test, +232) —
+the whole joint was committed post-fix, so the containment claim is structural: nothing outside the test
+changed. The fix itself is the bearer-assertion restructure: `takeRequest()` CONSUMES the queue head, so a
+fifth pop for the Authorization check would block forever on a four-response queue (the hang); the committed
+code pops the last request ONCE into `last` and checks path + header on it (:187–189, self-documenting
+comment :182–183), closing with the non-blocking `server.requestCount == 4` (:190). Coverage vs a full-shape
+joint is intact: the four-path sequence (libraries → series?library=1 → both summaries), the library_id
+echo-keyed merge with both counts (37 / 0 — the "" zero-state row absorbed), the all-collections regression
+proof (serial + movie kept in served order), and in test 2 the fetch-on-navigate switch landing the OTHER
+library's grid with the full seriesDTO omitempty legs (m-1 stamped verbatim, m-2 honest absence) and the
+3-path sequence. Both pinned test names match the qa: list (`all_libraries_and_summaries_decode`,
+`switch_fetches_per_library_series`); the 5.16 duty's `--tests` filter matches the class.
+
+### 7c. Check verdicts (round 3)
+
+- **Wiring coverage: COVERED.** Every amendment node carries a live edge into the app's runtime path (§7b
+  edges 1–4); the cycle introduces no new server surface and consumes only shipped endpoints.
+- **QA seam coverage: COVERED.** 5.12–5.16 are all @qa with non-empty lists (3+3+4+3+2 named tests); each
+  duty's gradle `--tests` filter matches every named class (prefix-match law holds); the cross-module
+  collections seam is crossed by the dedicated 5.16 joint. Residual: the qa: entries' FILE PATHS carry a
+  uniform `tests/android/...` prefix while the real layout is `android/src/test/java/...` — pre-existing
+  since propose time (5.1/5.3–5.11/7.1 carry it too), no verb dereferences the path (duties match by class),
+  identity is class::method — **Q5**.
+- **Complexity/blast radius: CLEAN.** Android-module-only cycle (§7b edge 6); no hidden-scope files; the one
+  disclosed scope addition (AppViewModel.serverAddress, +9 lines additive read-only) is verified wired and
+  recorded — the disclosure stands for GATE 2, not re-raised here.
+- **Duty honesty: CLEAN.** The five amendment duties read and checked: gradle filters match their named
+  tests; the two structural greps (5.13's MaterialTheme/Authorization, 5.15's BrowseScreen 'Rail') are
+  honestly labeled source-level assertions in the task text, and both hold in the current tree
+  (MainActivity.kt:43; BrowseScreen.kt:138 `CollectionsRail`); exit law holds (`|| exit 1` chains). Note:
+  5.13's `grep -q 'MaterialTheme' App.kt MainActivity.kt` passes via MainActivity alone (grep -q = any file)
+  — consistent with the task's "MainActivity.setContent or ui/App.kt, either" authoring.
+
+### 7d. Numbered questions (round 3; answers route through the operator as amendments/waivers)
+
+**Q5 (LOW — uniform qa: path-prefix drift, pre-existing; the amendment cycle inherited it).** Every app and
+joint qa: entry cites `tests/android/src/test/java/...`; the real tree has no `tests/` directory — the files
+live at `android/src/test/java/...` (grep + ls; affects 5.1, 5.3–5.11, 7.1 AND the new 5.12–5.16). No verb
+dereferences qa: paths — duties match by gradle `--tests` class filter, so every green receipt is real, and
+the qa: entries' identity is the class::method pair. Note the amend route is expensive: the register's drift
+gate refuses `qa` changes on receipted tasks (`--reason` covers title/prose only), so a mechanical
+prefix-fix would force re-registration churn across 10+ receipted tasks.
+**Recommended answer: WAIVE** as recorded convention (this §7 + the handoff record document the real layout
+for every future reader); optionally a @wf-docs correction only if the change folder is ever regenerated.
+
+**Q6 (LOW — two comment-only line anchors in the 5.16 joint test header).** The fixture-authority comment
+cites ModulePresentation :97 (actual handlers.go:**99**) and seriesDTO :229 (actual handlers.go:**220**);
+libraryDTO :75 and librarySummaryResponse :154 are exact. Comment-only, zero behavior, fixture shapes
+themselves verified correct (§7b edge 5). **Recommended answer: FIX** in a follow-up comment-only commit
+before archive (a two-line edit that keeps the fixture-authority anchors exact for future re-grounds);
+waive is acceptable if the tree must stay frozen.
+
+Non-findings recorded as notes: the 5.12 test pins the helper's example through the real
+`normalizeServerAddress` (the guidance can never promise a form the law rejects — beyond the authored bar);
+the joint's "movie" module stands in for any unknown kind and `moduleLabel("movie") == "movie"` is pinned
+(CollectionsTest:79) — the unknown-id law is exercised, not just claimed.
+
+### 7e. Explicit waiver list (already answered by the operator's live-box context; no question raised)
+
+- The three T0 live-box findings (entry unusable, black-screen render, collections parity) are
+  operator-observed facts; the amendments answer them and no plan contradiction remains.
+- 5.13's disclosed AppViewModel.serverAddress accessor (session.md): verified additive read-only, one
+  consumer — the standing disclosure is sufficient for GATE 2.
+- The theme wrapper's JVM-untestability and the rail slide visual's duty-free status: both are honestly
+  labeled in the task texts (structural source assertions pin them); the real proof is the next on-device
+  deploy (t1 APK), which is the operator's staged next step.
+- The two disclosed law-detail calls in 5.15 (rail closes even on a failed select; modal-Right no-op):
+  verified consistent with the amended spec delta's "Rail Back semantics" scenario and pinned by
+  RailLawTest — recorded, not re-raised.
+
+### 7f. Gate-state facts (process, not audit findings — the reviewer owns the bar)
+
+- **27/29 green.** RED remain: 1.3 (operator T0 on-device evidence, audit:true — expected) and 5.10
+  (MediaSession, consults 1.3's T0-RESULT). GATE 2 cannot close while these stay red; the operator path is
+  staged in session.md.
+- **Stale git-check:** the green git-check receipt (01:28:28) predates the amendment cycle; the tree now
+  carries five uncommitted openspec edits (tasks.md 5.12–5.16 entries, design.md AC-9 row, spec delta
+  retitle + 8 new/retitled scenarios, session.md). The cmd-match law de-greens it on the next status run —
+  commit the change-folder artifacts before the gate.
+- Strict validation re-run at audit time on the UNCOMMITTED artifacts: rc 0 "valid".
+- Deferred set (home rails, search, facets) is recorded in the spec delta Purpose — left there, per the
+  dispatch.
+
+### 7g. Human resolutions (round 3 — awaiting operator ruling)
+
+| Question | Resolution | Round-3 verification |
+|---|---|---|
+| Q5 | (open) | — |
+| Q6 | (open) | — |
