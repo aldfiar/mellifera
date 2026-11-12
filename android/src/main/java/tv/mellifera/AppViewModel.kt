@@ -15,6 +15,7 @@ import tv.mellifera.net.ProgressRequest
 import tv.mellifera.pairing.InMemorySessionBacking
 import tv.mellifera.pairing.PairingFlow
 import tv.mellifera.pairing.SessionStore
+import tv.mellifera.playback.BeaconWorker
 import tv.mellifera.playback.PlayerOrchestration
 import tv.mellifera.playback.PlaybackTransport
 import tv.mellifera.player.PlayerController
@@ -76,7 +77,10 @@ class AppViewModel(
      * machine's effects, the controller events ferried in as machine events,
      * the exit path firing the browse refresh. The player is an OVERLAY on
      * any screen; position/buffering never enter AppState (they ride the
-     * controller's readout, [PlayerOrchestration.readout]).
+     * controller's readout, [PlayerOrchestration.readout]). The beacon
+     * effect rides the production [BeaconWorker] (5.8) — the worker starts
+     * once in init and only touches the shared api when an event actually
+     * posts (i.e. only while paired and playing).
      */
     val playback: PlayerOrchestration by lazy {
         PlayerOrchestration(
@@ -84,11 +88,19 @@ class AppViewModel(
                 "playback needs a controller factory (the device wiring passes Media3Controller)"
             }.invoke(),
             transport = { playbackTransport() },
+            sender = beacon,
             scope = appScope,
             onExitRefresh = { onPlayerExit() },
             onUnauthorized = { onUnauthorized() },
         )
     }
+
+    /** The debug-events beacon worker (5.8): Channel(16), 429 cooldown,
+     * INV4 strip-before-send over the current session's shared client. */
+    private val beacon = BeaconWorker(
+        post = { event -> sharedApi().service.debugEvent(event).code() },
+        scope = appScope,
+    )
 
     /**
      * One shared client per server address + token — a fresh Retrofit per
@@ -130,6 +142,7 @@ class AppViewModel(
         if (_state.value.token != null) {
             _state.value = _state.value.copy(screen = Screen.Browse)
         }
+        beacon.start()
     }
 
     /**

@@ -17,8 +17,10 @@ import tv.mellifera.net.ProgressRequest
 import tv.mellifera.player.PlayerController
 import tv.mellifera.player.PlayerEvent
 import tv.mellifera.player.PlayerReadout
+import tv.mellifera.player.voiceoverTrackIndex
 import tv.mellifera.state.ApiFailure
 import tv.mellifera.state.Phase
+import tv.mellifera.state.RenditionPlan
 import tv.mellifera.state.PlaybackEffect
 import tv.mellifera.state.PlaybackEvent
 import tv.mellifera.state.PlaybackState
@@ -105,7 +107,17 @@ class PlayerOrchestration(
 
     fun seekTo(positionMs: Long) = controller.seekTo(positionMs)
 
-    fun selectVoiceover(index: Int) = controller.selectVoiceover(index)
+    /**
+     * The voiceover pick (5.8): the Active session's rendition plan maps
+     * the pick onto the player track ([voiceoverTrackIndex] — k+1 on a
+     * single-variant master, native passthrough on rendition); NoPicker
+     * (or nothing playing) fail-opens — no selection attempted.
+     */
+    fun selectVoiceover(index: Int) {
+        val plan = (_state.value as? PlaybackState.Active)?.session?.plan ?: RenditionPlan.NoPicker
+        val track = voiceoverTrackIndex(plan, index) ?: return
+        controller.selectVoiceover(track)
+    }
 
     /** The controller's ONE event channel ferried into the machine. */
     fun onPlayerEvent(event: PlayerEvent) = dispatch(event.toMachine())
