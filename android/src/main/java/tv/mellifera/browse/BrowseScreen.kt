@@ -28,6 +28,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.onKeyEvent
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import kotlinx.coroutines.launch
 import tv.mellifera.AppViewModel
 import tv.mellifera.dpad.DpadKey
@@ -73,10 +75,16 @@ private const val GRID_COLUMNS = 4
 fun BrowseScreen(viewModel: AppViewModel) {
     val browse = viewModel.browse
     val state by browse.state.collectAsState()
+    val appState by viewModel.state.collectAsState()
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { browse.enter() }
     val selected = state.selectedSeries
     BackHandler(enabled = selected != null) { browse.closeSeries() }
+    // The render-time session facts (5.13): the stored server base resolves
+    // relative artwork paths, the device token authorizes OUR server's
+    // artwork fetches (Api.kt's interceptor covers Retrofit only, not Coil).
+    val serverBase = viewModel.serverAddress
+    val token = appState.token
     Column(modifier = Modifier.fillMaxSize()) {
         // The minimal settings surface (5.11): the share affordance, gated.
         SettingsSection(viewModel)
@@ -86,6 +94,8 @@ fun BrowseScreen(viewModel: AppViewModel) {
                 episodes = state.episodes,
                 loading = state.loading,
                 focusIndex = state.episodeFocus,
+                serverBase = serverBase,
+                token = token,
                 onFocusMoved = { browse.onEpisodeFocusMoved(it) },
             )
         } else {
@@ -93,6 +103,8 @@ fun BrowseScreen(viewModel: AppViewModel) {
                 state = state,
                 onOpen = { series -> scope.launch { browse.openSeries(series) } },
                 onFocusMoved = { browse.onGridFocusMoved(it) },
+                serverBase = serverBase,
+                token = token,
             )
         }
     }
@@ -103,6 +115,8 @@ private fun SeriesGrid(
     state: BrowseState,
     onOpen: (SeriesDto) -> Unit,
     onFocusMoved: (Int) -> Unit,
+    serverBase: String?,
+    token: String?,
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(32.dp)) {
         val library = state.libraries.firstOrNull { it.id == state.libraryId }
@@ -130,6 +144,8 @@ private fun SeriesGrid(
                         card = series.toCard(),
                         onClick = { onOpen(series) },
                         onFocused = { onFocusMoved(index) },
+                        serverBase = serverBase,
+                        token = token,
                         onDirection = { key ->
                             val next = moveInGrid(index, GRID_COLUMNS, state.series.size, key)
                             if (next != index) {
@@ -153,6 +169,8 @@ private fun SeriesPage(
     episodes: List<ItemDto>,
     loading: Boolean,
     focusIndex: Int,
+    serverBase: String?,
+    token: String?,
     onFocusMoved: (Int) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(32.dp)) {
@@ -178,6 +196,8 @@ private fun SeriesPage(
                     EpisodeRow(
                         card = episode.toCard(),
                         onFocused = { onFocusMoved(index) },
+                        serverBase = serverBase,
+                        token = token,
                         onDirection = { key ->
                             val next = moveInList(index, episodes.size, key)
                             if (next != index) {
@@ -200,6 +220,8 @@ private fun CardView(
     card: DisplayCard,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    serverBase: String? = null,
+    token: String? = null,
     onFocused: () -> Unit = {},
     onDirection: (DpadKey) -> Boolean = { false },
 ) {
@@ -210,11 +232,13 @@ private fun CardView(
             .onKeyEvent { event -> routeDirectionEvent(event, onDirection) }
             .clickable(onClick = onClick),
     ) {
-        // FIELD-DRIVEN: absent artwork → no artwork block, nothing fabricated.
-        if (card.artworkUrl != null) {
-            AsyncImage(
-                model = card.artworkUrl,
-                contentDescription = null,
+        // FIELD-DRIVEN: absent artwork → no artwork block, nothing fabricated
+        // (a relative path with no stored base resolves to absent too).
+        val artwork = resolveArtworkUrl(serverBase, card.artworkUrl)
+        if (artwork != null) {
+            ArtworkImage(
+                artwork = artwork,
+                token = token,
                 modifier = Modifier.fillMaxWidth().height(160.dp),
             )
         }
@@ -231,6 +255,8 @@ private fun CardView(
 private fun EpisodeRow(
     card: DisplayCard,
     modifier: Modifier = Modifier,
+    serverBase: String? = null,
+    token: String? = null,
     onFocused: () -> Unit = {},
     onDirection: (DpadKey) -> Boolean = { false },
 ) {
@@ -242,10 +268,11 @@ private fun EpisodeRow(
             .onKeyEvent { event -> routeDirectionEvent(event, onDirection) }
             .focusable(),
     ) {
-        if (card.artworkUrl != null) {
-            AsyncImage(
-                model = card.artworkUrl,
-                contentDescription = null,
+        val artwork = resolveArtworkUrl(serverBase, card.artworkUrl)
+        if (artwork != null) {
+            ArtworkImage(
+                artwork = artwork,
+                token = token,
                 modifier = Modifier.width(120.dp).height(72.dp),
             )
         }
@@ -258,6 +285,31 @@ private fun EpisodeRow(
             }
         }
     }
+}
+
+/**
+ * The one Coil image request (5.13): the resolved URL, and the bearer token
+ * ONLY on our server's artwork (relative wire path) — a CDN fetch never
+ * carries the device credential.
+ */
+@Composable
+private fun ArtworkImage(
+    artwork: ArtworkRequest,
+    token: String?,
+    modifier: Modifier = Modifier,
+) {
+    AsyncImage(
+        model = ImageRequest.Builder(LocalContext.current)
+            .data(artwork.url)
+            .apply {
+                if (artwork.authorized && !token.isNullOrBlank()) {
+                    setHeader("Authorization", "Bearer $token")
+                }
+            }
+            .build(),
+        contentDescription = null,
+        modifier = modifier,
+    )
 }
 
 /**

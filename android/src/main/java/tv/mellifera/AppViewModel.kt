@@ -72,6 +72,13 @@ class AppViewModel(
     private val _state = MutableStateFlow(AppState(token = store.readToken()))
     val state: StateFlow<AppState> = _state.asStateFlow()
 
+    /**
+     * The stored server base (5.13): the render-time seam artwork URL
+     * resolution reads — the normalized address the session was paired
+     * against. Null while unpaired (nothing has resolved artwork to show).
+     */
+    val serverAddress: String? get() = store.readServerAddress()
+
     val pairing: PairingFlow = PairingFlow(
         apiFor = { address -> apiFactory(address, null).service },
         store = store,

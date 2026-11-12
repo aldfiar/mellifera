@@ -5,6 +5,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
+import androidx.tv.material3.MaterialTheme
 import tv.mellifera.diag.PlaybackTracer
 import tv.mellifera.diag.collectDeviceFacts
 import tv.mellifera.pairing.SessionStore
@@ -34,8 +35,14 @@ class MainActivity : ComponentActivity() {
             deviceFacts = { collectDeviceFacts(applicationContext) },
         )
         tracer.sink = { viewModel.telemetry.emit(it) }
+        // The TV theme wraps the composition root ONCE (5.13): the default
+        // dark scheme gives tv.material3.Text its white onSurface — without
+        // it every label renders platform-default black on the black window
+        // background. Per-screen patches are never added.
         setContent {
-            App(viewModel)
+            MaterialTheme {
+                App(viewModel)
+            }
         }
     }
 
