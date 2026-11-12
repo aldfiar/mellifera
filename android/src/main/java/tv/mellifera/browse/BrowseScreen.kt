@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 import tv.mellifera.AppViewModel
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.SeriesDto
+import tv.mellifera.ui.SettingsSection
 import tv.mellifera.ui.tvInitialFocus
 
 /**
@@ -54,10 +55,14 @@ fun BrowseScreen(viewModel: AppViewModel) {
     LaunchedEffect(Unit) { browse.enter() }
     val selected = state.selectedSeries
     BackHandler(enabled = selected != null) { browse.closeSeries() }
-    if (selected != null) {
-        SeriesPage(selected, state.episodes, state.loading)
-    } else {
-        SeriesGrid(state, onOpen = { series -> scope.launch { browse.openSeries(series) } })
+    Column(modifier = Modifier.fillMaxSize()) {
+        // The minimal settings surface (5.11): the share affordance, gated.
+        SettingsSection(viewModel)
+        if (selected != null) {
+            SeriesPage(selected, state.episodes, state.loading)
+        } else {
+            SeriesGrid(state, onOpen = { series -> scope.launch { browse.openSeries(series) } })
+        }
     }
 }
 

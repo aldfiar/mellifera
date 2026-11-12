@@ -2,12 +2,16 @@ package tv.mellifera
 
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import tv.mellifera.browse.BrowseFlow
+import tv.mellifera.diag.DeviceFacts
+import tv.mellifera.diag.DiagTelemetry
+import tv.mellifera.diag.snapshotEvent
 import tv.mellifera.net.Api
 import tv.mellifera.net.MelliferaApi
 import tv.mellifera.net.PlayRequest
@@ -48,11 +52,22 @@ data class AppState(
  */
 class AppViewModel(
     private val store: SessionStore = SessionStore(InMemorySessionBacking()),
-    appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val apiFactory: (address: String, token: String?) -> Api = { address, token ->
         Api(address, token)
     },
     playbackControllerFactory: (() -> PlayerController)? = null,
+
+    /**
+     * The telemetry tiers' build half (5.11): on device this is
+     * BuildConfig.DEBUG (equivalently FLAG_DEBUGGABLE); JVM tests inject a
+     * plain bool and never construct with the Android framework.
+     */
+    private val debugBuild: Boolean = false,
+
+    /** The device-side facts collector for the capability snapshot; null
+     * keeps the JVM construction framework-free (snapshot never emitted). */
+    private val deviceFacts: (() -> DeviceFacts)? = null,
 ) {
     private val _state = MutableStateFlow(AppState(token = store.readToken()))
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -63,6 +78,9 @@ class AppViewModel(
         scope = appScope,
         onPaired = { token ->
             _state.value = _state.value.copy(screen = Screen.Browse, token = token)
+            // Login (5.11): the fresh profile opens the gate and the
+            // once-per-session capability snapshot rides the first answer.
+            refreshProfile()
         },
     )
 
@@ -103,6 +121,17 @@ class AppViewModel(
     )
 
     /**
+     * The diag telemetry (5.11): the SEPARATE path beside the beacon — own
+     * two-tier gate (debugBuild || profile.debug), own bounded sender over
+     * the same /debug-events endpoint, never merged with the beacon worker.
+     */
+    val telemetry = DiagTelemetry(
+        debugBuild = debugBuild,
+        post = { event -> sharedApi().service.debugEvent(event).code() },
+        scope = appScope,
+    )
+
+    /**
      * One shared client per server address + token — a fresh Retrofit per
      * fetch would build a fresh OkHttp pool on every refresh. A re-pair
      * (new address or token) keys a new entry; the old one is dropped with
@@ -136,6 +165,8 @@ class AppViewModel(
         }
     }
 
+    private var snapshotSent = false
+
     init {
         // A stored address skips the first-run entry; a stored token skips
         // pairing entirely.
@@ -165,5 +196,38 @@ class AppViewModel(
      */
     suspend fun onPlayerExit() {
         browse.refresh()
+    }
+
+    /**
+     * The foreground resume hook (5.11): the gate's profile tier closes
+     * immediately and /profile is REFETCHED, so an admin debug flip lands
+     * within one app-switch; events emitted before the fresh answer lands
+     * are dropped (a debug build stays open across the window).
+     */
+    fun onForegroundResume() {
+        telemetry.onForegroundResume()
+        refreshProfile()
+    }
+
+    /** Fetches /profile and lands it on the gate; best-effort — a failure
+     * leaves the gate closed until the next answer. */
+    private fun refreshProfile() {
+        if (store.readServerAddress() == null) return
+        appScope.launch {
+            val profile = runCatching { sharedApi().service.profile() }.getOrNull()
+                ?: return@launch
+            telemetry.onProfile(profile)
+            maybeEmitSnapshot()
+        }
+    }
+
+    /** The capability snapshot: ONCE per session, riding the first
+     * successful profile answer. A closed gate drops it (correct: a release
+     * build with the flag off must never send). */
+    private fun maybeEmitSnapshot() {
+        if (snapshotSent) return
+        val collector = deviceFacts ?: return
+        snapshotSent = true
+        telemetry.emit(snapshotEvent(collector()))
     }
 }

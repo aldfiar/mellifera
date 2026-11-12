@@ -49,6 +49,13 @@ fun launchPlan(playUrl: String, mode: String, resolve: (String) -> String): Laun
 class Media3Controller(
     context: Context,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main),
+
+    /**
+     * The ONE analytics hook (5.11): invoked per launch with the freshly
+     * built player and the launch facts (itemId+mode) — the tracer attaches
+     * itself. Null (JVM tests, no-telemetry wiring) keeps the player bare.
+     */
+    private val analyticsAttach: ((ExoPlayer, String, String) -> Unit)? = null,
 ) : PlayerController {
 
     private val appContext = context.applicationContext
@@ -75,6 +82,7 @@ class Media3Controller(
                 .apply { if (plan.hls) setMimeType(MimeTypes.APPLICATION_M3U8) }
                 .build()
             val p = ExoPlayer.Builder(appContext).build()
+            analyticsAttach?.invoke(p, itemId, mode)
             p.addListener(object : Player.Listener {
                 override fun onPlayerError(error: PlaybackException) {
                     eventConsumer?.invoke(
