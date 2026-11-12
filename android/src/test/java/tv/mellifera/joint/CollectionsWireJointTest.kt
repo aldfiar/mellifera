@@ -26,7 +26,7 @@ import tv.mellifera.net.Api
  * strict decoder would throw on the first byte past `streams_enabled`.
  * Field order and the omitempty absences are transcribed from the Go structs
  * in internal/api/handlers.go (json tags are the law): libraryDTO :75,
- * ModulePresentation :97, librarySummaryResponse :154, seriesDTO :229.
+ * ModulePresentation :99, librarySummaryResponse :154, seriesDTO :220.
  *
  * The collections cycle pinned here (5.14/5.15):
  * - GET /libraries answers TWO module kinds (serial + movie) and the flow
