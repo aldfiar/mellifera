@@ -42,6 +42,7 @@ fun SettingsSection(viewModel: AppViewModel) {
             modifier = Modifier
                 .padding(top = 12.dp)
                 .background(chipColor, RoundedCornerShape(4.dp))
+                .tvFocusStyle()
                 .clickable { shareDiagnostics(context, viewModel) }
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         )

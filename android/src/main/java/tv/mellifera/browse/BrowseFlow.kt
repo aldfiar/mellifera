@@ -13,7 +13,10 @@ import tv.mellifera.net.SeriesDto
  * The browse session state: the filtered libraries, the current library's
  * series grid, and the open series' episodes. [selectedSeries] non-null IS
  * the series page (the when-shell never gains a third Screen — the player
- * is an overlay on any of these, D1).
+ * is an overlay on any of these, D1). The focus cursors ([gridFocus],
+ * [episodeFocus]) live here so Back restores the exact prior position —
+ * the classic TV failure mode (grid restarts at 0) is pinned by
+ * nav/BackRestorationTest (5.9).
  */
 data class BrowseState(
     val loading: Boolean = false,
@@ -23,6 +26,8 @@ data class BrowseState(
     val series: List<SeriesDto> = emptyList(),
     val selectedSeries: SeriesDto? = null,
     val episodes: List<ItemDto> = emptyList(),
+    val gridFocus: Int = 0,
+    val episodeFocus: Int = 0,
 )
 
 /**
@@ -72,13 +77,16 @@ class BrowseFlow(
         }
     }
 
-    /** Navigate into a series: its episodes, in narrative order. */
+    /** Navigate into a series: its episodes, in narrative order. The grid
+     * cursor PARKS — untouched — so Back restores the exact card; the
+     * episode cursor starts at the first row. */
     suspend fun openSeries(series: SeriesDto) {
         _state.value = _state.value.copy(
             selectedSeries = series,
             episodes = emptyList(),
             loading = true,
             error = null,
+            episodeFocus = 0,
         )
         try {
             val episodes = apiFor().episodes(series.id).items
@@ -92,9 +100,27 @@ class BrowseFlow(
         }
     }
 
-    /** Back from the series page to the grid. */
+    /** Back from the series page to the grid — [BrowseState.gridFocus] is
+     * deliberately NOT reset: restoring the prior focus position is the law
+     * (BackRestorationTest). */
     fun closeSeries() {
         _state.value = _state.value.copy(selectedSeries = null, episodes = emptyList())
+    }
+
+    /** The D-pad moved the grid cursor (5.9): the law's computed position
+     * lands here and drives which card holds focus. Clamped to the live
+     * rows so a shrunken series list never aims past the end. */
+    fun onGridFocusMoved(index: Int) {
+        _state.value = _state.value.copy(
+            gridFocus = index.coerceIn(0, _state.value.series.lastIndex.coerceAtLeast(0)),
+        )
+    }
+
+    /** The D-pad moved the episode cursor (same law, list semantics). */
+    fun onEpisodeFocusMoved(index: Int) {
+        _state.value = _state.value.copy(
+            episodeFocus = index.coerceIn(0, _state.value.episodes.lastIndex.coerceAtLeast(0)),
+        )
     }
 
     /**

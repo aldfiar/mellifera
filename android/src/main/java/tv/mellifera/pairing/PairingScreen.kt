@@ -21,13 +21,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Button
 import androidx.tv.material3.Text
+import tv.mellifera.ui.tvFocusStyle
 import tv.mellifera.ui.tvInitialFocus
 
 /**
  * The pairing screen (5.4): server-address entry on first run, the pairing
  * code display with a live status line, and the honest terminal surfaces.
- * D-pad focus polish is 5.9's — the screen only keeps initial focus on the
- * primary control and does not fight the focus law.
+ * Focus law (5.9): entry targets the address field, ready/rejected target
+ * the primary button (nav/pairingFocusTarget), and the focused element
+ * carries the accent-border + scale visual.
  */
 @Composable
 fun PairingScreen(flow: PairingFlow) {
@@ -66,18 +68,35 @@ private fun AddressEntry(flow: PairingFlow, hint: String?) {
     if (hint != null) {
         Text(hint, modifier = Modifier.padding(bottom = 16.dp))
     }
+    // Initial-focus law (nav/pairingFocusTarget): the entry state's target
+    // is the ADDRESS FIELD, not the submit button.
     BasicTextField(
         value = address,
         onValueChange = { address = it },
-        modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth().padding(bottom = 16.dp),
+        modifier = Modifier
+            .widthIn(max = 480.dp)
+            .fillMaxWidth()
+            .padding(bottom = 16.dp)
+            .tvInitialFocus()
+            .tvFocusStyle(),
         textStyle = TextStyle(color = Color.White, fontSize = 20.sp),
     )
-    PrimaryAction(flow, "Подключить") { flow.submitAddress(address) }
+    PrimaryAction(flow, "Подключить", initial = false) { flow.submitAddress(address) }
 }
 
+/** The screen's primary button; [initial] marks the states whose law
+ * target it is (Ready / Rejected — nav/pairingFocusTarget). */
 @Composable
-private fun PrimaryAction(flow: PairingFlow, label: String, onClick: () -> Unit = flow::startPairing) {
-    Button(onClick = onClick, modifier = Modifier.tvInitialFocus) {
+private fun PrimaryAction(
+    flow: PairingFlow,
+    label: String,
+    initial: Boolean = true,
+    onClick: () -> Unit = flow::startPairing,
+) {
+    Button(
+        onClick = onClick,
+        modifier = if (initial) Modifier.tvInitialFocus().tvFocusStyle() else Modifier.tvFocusStyle(),
+    ) {
         Text(label)
     }
 }
