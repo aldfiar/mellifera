@@ -11,7 +11,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import tv.mellifera.assertDrained
 import tv.mellifera.net.Api
+import tv.mellifera.takeRequestOrFail
 
 /**
  * The 5.4 pairing-flow pins over a real MockWebServer round trip (pure
@@ -66,14 +68,15 @@ class PairingFlowTest {
         assertEquals("tok-7", store.readToken())
         assertEquals(1, backing.tokenWrites)
         // One POST /pair, then the client-cadence polls over the wait route.
-        val first = server.takeRequest()
+        val first = server.takeRequestOrFail("PairingFlowTest.happy_path_stores_once")
         assertEquals("POST", first.method)
         assertEquals("/api/v1/pair", first.path)
         repeat(3) {
-            val poll = server.takeRequest()
+            val poll = server.takeRequestOrFail("PairingFlowTest.happy_path_stores_once")
             assertEquals("GET", poll.method)
             assertEquals("/api/v1/pair/p-1/wait", poll.path)
         }
+        server.assertDrained("PairingFlowTest.happy_path_stores_once", 4)
     }
 
     @Test
@@ -118,6 +121,7 @@ class PairingFlowTest {
         assertEquals("Код больше нельзя подтвердить — запустите сопряжение заново", rejectedMessage(flow))
         assertNull(store.readToken())
         assertEquals(0, backing.tokenWrites)
+        server.assertDrained("PairingFlowTest.denied_expired_conflict_surfaced", 6)
     }
 
     @Test
@@ -153,6 +157,7 @@ class PairingFlowTest {
         flow.runPairing()
         assertEquals(PairingState.Paired, flow.state.value)
         assertEquals("tok-9", store.readToken())
+        server.assertDrained("PairingFlowTest.unauthorized_wipes_token_user_repairs", 2)
     }
 }
 

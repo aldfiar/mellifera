@@ -88,6 +88,25 @@ fun moveInGrid(index: Int, columns: Int, count: Int, key: DpadKey): Int {
 }
 
 /**
+ * The row cursor law (horizontal walkers — the home surface's Continue and
+ * Next-up rows, design D4): Left/Right step and clamp INSIDE the row — the
+ * wiring treats a clamp as "not consumed", which is what lets a LEFT at
+ * x=0 open the collections rail and a RIGHT at the last card stay put.
+ * Up/Down are not row keys — the cursor keeps its position, so the wiring
+ * leaves the arrow UNCONSUMED and Compose's focus search crosses rows,
+ * the settings section and the grid natively (the L2 law).
+ */
+fun moveInRow(index: Int, count: Int, key: DpadKey): Int {
+    val cursor = index.coerceIn(0, (count - 1).coerceAtLeast(0))
+    if (!key.isDirectional || count == 0) return cursor
+    return when (key) {
+        DpadKey.Left -> (cursor - 1).coerceAtLeast(0)
+        DpadKey.Right -> (cursor + 1).coerceAtMost(count - 1)
+        else -> cursor
+    }
+}
+
+/**
  * The list cursor law (episode rows): Up/Down step and clamp; Left/Right
  * are not list keys — the row keeps its position.
  */

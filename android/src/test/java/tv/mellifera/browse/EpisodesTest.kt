@@ -8,11 +8,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
+import tv.mellifera.assertDrained
 import tv.mellifera.browse.fixtures.episodesBody
 import tv.mellifera.browse.fixtures.librariesBody
 import tv.mellifera.browse.fixtures.seriesBody
 import tv.mellifera.net.Api
 import tv.mellifera.net.SeriesDto
+import tv.mellifera.takeRequestOrFail
 
 /**
  * The series page route pin (5.6): navigating into a series fetches
@@ -43,6 +45,12 @@ class EpisodesTest {
         server.enqueue(json(librariesBody()))
         server.enqueue(json(seriesBody()))
         server.enqueue(json(episodesBody()))
+        // The rows' progress walk (2.2): both rows never started — the 404
+        // IS the honest absence. Every walked request needs its answer; an
+        // unanswered one rode OkHttp's 10s read timeout as a swallowed
+        // best-effort failure (the slow-green mechanism 7.1 kills).
+        server.enqueue(MockResponse().setResponseCode(404))
+        server.enqueue(MockResponse().setResponseCode(404))
         flow.enter()
         // The all-collections law (5.14): BOTH served collections are kept,
         // in the served order — the serial+tv client filter is retired.
@@ -53,9 +61,9 @@ class EpisodesTest {
 
         // The walked requests: libraries → series?library=1 → the open
         // series' exact episodes route, over GET.
-        assertEquals("/api/v1/libraries", server.takeRequest().path)
-        assertEquals("/api/v1/series?library=1", server.takeRequest().path)
-        val episodesRequest = server.takeRequest()
+        assertEquals("/api/v1/libraries", server.takeRequestOrFail("EpisodesTest.series_episodes_route").path)
+        assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("EpisodesTest.series_episodes_route").path)
+        val episodesRequest = server.takeRequestOrFail("EpisodesTest.series_episodes_route")
         assertEquals("GET", episodesRequest.method)
         assertEquals("/api/v1/series/s-1/episodes", episodesRequest.path)
 
@@ -72,5 +80,9 @@ class EpisodesTest {
         assertEquals("Серия 2", second.displayName)
         assertEquals("/artwork/thumbs/e-2.jpg", second.artwork)
         assertEquals(true, second.watched)
+
+        // The queue drained: the walk's five requests (libraries → series →
+        // episodes → one progress GET per row) each got their answer.
+        server.assertDrained("EpisodesTest.series_episodes_route", 5)
     }
 }

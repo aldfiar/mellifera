@@ -71,6 +71,18 @@ class Media3Controller(
     private var player: ExoPlayer? = null
     private var readoutPoller: Job? = null
 
+    /**
+     * The latest video surface the holder callbacks handed us — remembered
+     * across player recreation, because surfaceCreated can fire BEFORE
+     * [launch] finishes building the player and the attach must not be
+     * lost: the freshly built player applies it at creation. NOT cleared
+     * by [releasePlayer]: the holder owns the surface's lifecycle
+     * (surfaceDestroyed is what detaches-null), and a fresh play() onto
+     * the still-composed SurfaceView must re-attach immediately — no new
+     * surfaceCreated will fire for an already-created holder.
+     */
+    private var latestSurface: Surface? = null
+
     override fun launch(itemId: String, playUrl: String, mode: String) {
         // Resolution already happened at the wiring (transport.resolvePlayUrl);
         // the plan here only picks the media config by mode.
@@ -82,6 +94,11 @@ class Media3Controller(
                 .apply { if (plan.hls) setMimeType(MimeTypes.APPLICATION_M3U8) }
                 .build()
             val p = ExoPlayer.Builder(appContext).build()
+            // The punch-through law (D7/5.4): a surface the holder handed us
+            // before this player existed is applied HERE, at creation —
+            // null (no holder surface yet) keeps dummy mode until
+            // surfaceCreated attaches.
+            p.setVideoSurface(latestSurface)
             analyticsAttach?.invoke(p, itemId, mode)
             p.addListener(object : Player.Listener {
                 override fun onPlayerError(error: PlaybackException) {
@@ -91,6 +108,15 @@ class Media3Controller(
                             detail = error.message ?: "",
                         ),
                     )
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    // The ended edge (D7, 5.2): STATE_ENDED with no error is
+                    // the AutoNext card's open — the orchestration consumes
+                    // it beside the failure kinds, never into the machine.
+                    if (playbackState == Player.STATE_ENDED) {
+                        eventConsumer?.invoke(PlayerEvent.Ended)
+                    }
                 }
             })
             p.setMediaItem(item)
@@ -118,7 +144,10 @@ class Media3Controller(
     }
 
     override fun attachSurface(surface: Surface?) {
-        scope.launch { player?.setVideoSurface(surface) }
+        scope.launch {
+            latestSurface = surface
+            player?.setVideoSurface(surface)
+        }
     }
 
     override fun end() {
@@ -142,6 +171,7 @@ class Media3Controller(
                     positionMs = p.currentPosition,
                     bufferedMs = p.bufferedPosition,
                     buffering = p.playbackState == Player.STATE_BUFFERING,
+                    durationMs = p.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0,
                 )
                 delay(READOUT_PERIOD_MS)
             }

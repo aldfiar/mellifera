@@ -6,24 +6,34 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Timeline readout pumped OUT of the player (D8): position/buffering never
  * enter AppState — the player leaf reads this flow at render time only.
+ * [durationMs] floors to 0 while the media has none yet (unknown length —
+ * the seek bar's honest absence: no duration, no bar, never a guessed
+ * percent).
  */
 data class PlayerReadout(
     val positionMs: Long = 0,
     val bufferedMs: Long = 0,
     val buffering: Boolean = false,
+    val durationMs: Long = 0,
 )
 
 /**
  * The one player-level event vocabulary (D8, reconciled with the concrete
  * 5.5 event set): the controller REPORTS these to the consumer the wiring
- * installs, and the orchestration (playback/, 5.7) ferries each one into
- * the flow machine as one PlaybackEvent.PlayerFailed. The kinds are the
- * debug-events beacon vocabulary (3.2): fatal | video-error | stalled.
+ * installs. The failure kinds are ferried by the orchestration (playback/,
+ * 5.7) into the flow machine as one PlaybackEvent.PlayerFailed — they are
+ * the debug-events beacon vocabulary (3.2): fatal | video-error | stalled.
+ * [Ended] is the ended EDGE (D7, 5.2): the media reached its end with no
+ * error — the orchestration consumes it as the AutoNext card's open edge,
+ * NEVER ferried into the machine (an ended media is not a flow failure).
  */
 sealed interface PlayerEvent {
     data class Fatal(val code: String, val detail: String = "") : PlayerEvent
     data class VideoError(val code: String, val detail: String = "") : PlayerEvent
     data class Stalled(val code: String, val detail: String = "") : PlayerEvent
+
+    /** The media's ended edge — the AutoNext card's open (D7). */
+    data object Ended : PlayerEvent
 }
 
 /**

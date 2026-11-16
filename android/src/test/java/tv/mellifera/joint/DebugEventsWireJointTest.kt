@@ -27,6 +27,7 @@ import tv.mellifera.playback.BeaconWorker
 import tv.mellifera.playback.PlayerOrchestration
 import tv.mellifera.player.PlayerEvent
 import tv.mellifera.state.PlaybackState
+import tv.mellifera.takeRequestOrFail
 
 /**
  * The 7.1 debug-events wire joint (contract (d)): the REAL machine→beacon
@@ -212,11 +213,11 @@ class DebugEventsWireJointTest {
         // The wire, in order: descriptor → play → progress → the five
         // debug-events POSTs. Field order on every body is the DTO
         // declaration order; the shapes are the handler's accepted bytes.
-        server.takeRequest() // GET playback
-        server.takeRequest() // POST play
-        server.takeRequest() // GET progress
+        server.takeRequestOrFail("DebugEventsWireJointTest.beacon_shape_and_inv4") // GET playback
+        server.takeRequestOrFail("DebugEventsWireJointTest.beacon_shape_and_inv4") // POST play
+        server.takeRequestOrFail("DebugEventsWireJointTest.beacon_shape_and_inv4") // GET progress
 
-        val e1 = server.takeRequest() // video-error — the machine chain, 429'd
+        val e1 = server.takeRequestOrFail("DebugEventsWireJointTest.beacon_shape_and_inv4") // video-error — the machine chain, 429'd
         assertEquals("/api/v1/debug-events", e1.path)
         assertEquals("Bearer qa-bearer", e1.getHeader("Authorization"))
         val b1 = e1.body.readUtf8()
@@ -226,7 +227,7 @@ class DebugEventsWireJointTest {
             b1,
         )
 
-        val e2 = server.takeRequest() // fatal — five-field beacon shape
+        val e2 = server.takeRequestOrFail("DebugEventsWireJointTest.beacon_shape_and_inv4") // fatal — five-field beacon shape
         val b2 = e2.body.readUtf8()
         assertEquals(
             """{"kind":"fatal","item_id":"$item","mode":"hls","phase":"fatal",""" +
@@ -234,7 +235,7 @@ class DebugEventsWireJointTest {
             b2,
         )
 
-        val e3 = server.takeRequest() // stalled — detail stripped at send
+        val e3 = server.takeRequestOrFail("DebugEventsWireJointTest.beacon_shape_and_inv4") // stalled — detail stripped at send
         val b3 = e3.body.readUtf8()
         assertEquals(
             """{"kind":"stalled","item_id":"$item","mode":"hls","phase":"stalled",""" +
@@ -242,7 +243,7 @@ class DebugEventsWireJointTest {
             b3,
         )
 
-        val e4 = server.takeRequest() // playback-trace — phase="trace", code required
+        val e4 = server.takeRequestOrFail("DebugEventsWireJointTest.beacon_shape_and_inv4") // playback-trace — phase="trace", code required
         val b4 = e4.body.readUtf8()
         assertEquals(
             """{"kind":"playback-trace","item_id":"$item","mode":"hls","phase":"trace",""" +
@@ -250,7 +251,7 @@ class DebugEventsWireJointTest {
             b4,
         )
 
-        val e5 = server.takeRequest() // capability-snapshot — not item-scoped
+        val e5 = server.takeRequestOrFail("DebugEventsWireJointTest.beacon_shape_and_inv4") // capability-snapshot — not item-scoped
         // The non-carried legs ride as "" — which the handler's zero-value
         // decode reads as ABSENT (Go: `"item_id":""` and a missing key both
         // decode to ItemID == "", so the != "" law accepts; the Go-side

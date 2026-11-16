@@ -10,6 +10,9 @@ import org.junit.Before
 import org.junit.Test
 import tv.mellifera.browse.BrowseFlow
 import tv.mellifera.net.Api
+import tv.mellifera.net.ItemDto
+import tv.mellifera.net.SeriesDto
+import tv.mellifera.takeRequestOrFail
 
 /**
  * The 5.16 collections wire joint (the 7.1 posture extended to the collections
@@ -37,8 +40,9 @@ import tv.mellifera.net.Api
  *   echo keys the merge and the counts decode per library under the full
  *   shape (updated_at is served on every row and dropped by the client; the
  *   no-items row serves the "" stamp — a real handler shape, still absorbed).
- * - selectLibrary fetches GET /series?library={id} for the OTHER library and
- *   lands its grid (fetch-on-navigate, never a reuse of the first fetch).
+ * - selectLibrary to the unknown module is the HONEST EMPTY path (design D6's
+ *   stated TV divergence): no body fetch fires at all; the tv/image bodies'
+ *   paged-stream wire lives in tv_and_image_bodies_walk_the_paged_stream.
  */
 class CollectionsWireJointTest {
     private lateinit var server: MockWebServer
@@ -84,32 +88,21 @@ class CollectionsWireJointTest {
     """.trimIndent()
 
     /** Library 1's grid: one fully stamped seriesDTO (watched omitted — the
-     * not-yet-watched false is what omitempty drops). */
+     * not-yet-watched false is what omitempty drops). The metadata block is
+     * the typed convention projection (internal/naming/metadata.go): the
+     * about OBJECT (source + description, the first-wins carrier) and cast
+     * entries as {name,...} objects — the api.ts ElementMetadata shape the
+     * client now decodes (2.1). */
     private val serialGrid = """
         {"items":[
           {"id":"s-1","module_id":"serial","library_id":1,"relative_path":"Сага",
            "document":{"title":"Сага","year":2019,"seasons":2},
            "schema_version":4,"status":"active","title_override":"","display_name":"Сага",
            "artwork":"/artwork/posters/s-1.jpg",
-           "metadata":{"about":"Космическая сага о трёх поколениях","cast":["Морено","Соня"]},
+           "metadata":{"about":{"source":"filename",
+                                "description":"Космическая сага о трёх поколениях"},
+                       "cast":[{"name":"Морено"},{"name":"Соня","role":"мать"}]},
            "rec_score":7.5}
-        ]}
-    """.trimIndent()
-
-    /** Library 2's grid — the OTHER collection selectLibrary must land:
-     * m-1 carries every omitempty leg; m-2 is the bare row (artwork,
-     * metadata, rec_score, watched all honestly absent). */
-    private val movieGrid = """
-        {"items":[
-          {"id":"m-1","module_id":"movie","library_id":2,"relative_path":"Матрица (1999).mkv",
-           "document":{"title":"The Matrix","year":1999},
-           "schema_version":4,"status":"active","title_override":"","display_name":"Матрица",
-           "artwork":"/artwork/posters/m-1.jpg",
-           "metadata":{"about":"Реальность — это иллюзия","cast":["Киану Ривз"]},
-           "rec_score":12.5,"watched":true},
-          {"id":"m-2","module_id":"movie","library_id":2,"relative_path":"Бегущий по лезвию (1982).mkv",
-           "document":{"title":"Blade Runner","year":1982},
-           "schema_version":4,"status":"active","title_override":"","display_name":"Бегущий по лезвию"}
         ]}
     """.trimIndent()
 
@@ -159,6 +152,14 @@ class CollectionsWireJointTest {
         // The first served collection is adopted and its grid landed.
         assertEquals(1L, state.libraryId)
         assertEquals(listOf("s-1"), state.series.map { it.id })
+        // The typed metadata block rides the grid row (2.1): the about
+        // object and the cast entries decode through the api.ts
+        // ElementMetadata shape (source ignored-by-name is proven by the
+        // decode landing at all — unknown keys stay absorbed).
+        val s1 = state.series[0]
+        assertEquals("Космическая сага о трёх поколениях", s1.metadata?.about?.description)
+        assertEquals("filename", s1.metadata?.about?.source)
+        assertEquals("мать", s1.metadata?.cast?.lastOrNull()?.role)
         assertFalse(state.loading)
 
         // The rail opens through the 5.15 trigger — openRail fires the
@@ -181,52 +182,171 @@ class CollectionsWireJointTest {
         // series → one summary per served collection, in served order; the
         // bearer rides the browse routes. takeRequest() CONSUMES — the
         // bearer check inspects the last popped request, never pops a fifth.
-        assertEquals("/api/v1/libraries", server.takeRequest().path)
-        assertEquals("/api/v1/series?library=1", server.takeRequest().path)
-        assertEquals("/api/v1/libraries/1/summary", server.takeRequest().path)
-        val last = server.takeRequest()
+        assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode").path)
+        assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode").path)
+        assertEquals("/api/v1/libraries/1/summary", server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode").path)
+        val last = server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode")
         assertEquals("/api/v1/libraries/2/summary", last.path)
         assertEquals("Bearer qa-bearer", last.getHeader("Authorization"))
         assertEquals(4, server.requestCount)
     }
 
     @Test
-    fun switch_fetches_per_library_series() = runBlocking {
+    fun switch_to_unknown_module_is_honest_empty() = runBlocking {
         server.enqueue(json(fullLibraries))
         server.enqueue(json(serialGrid))
-        server.enqueue(json(movieGrid))
 
         flow.enter()
 
-        // The switch walks GET /series?library={id} for the OTHER library —
-        // the OTHER library's id on the query line, fetch-on-navigate.
+        // The unknown module's honest path (design D6's stated TV
+        // divergence): the switch fires NO body fetch — the body renders the
+        // module's own id as label over an empty state, never an error,
+        // never a guessed grid.
         flow.selectLibrary(2L)
 
         val state = flow.state.value
-        // The OTHER library's grid landed — lib 1's rows are gone.
         assertEquals(2L, state.libraryId)
-        assertEquals(listOf("m-1", "m-2"), state.series.map { it.id })
-        // The full seriesDTO decode: the stamped row's display/artwork/
-        // rec_score/watched verbatim; the bare row's omitempty legs decode
-        // as honest absence (never a fabricated 0/false).
-        val m1 = state.series[0]
-        assertEquals("Матрица", m1.displayName)
-        assertEquals("/artwork/posters/m-1.jpg", m1.artwork)
-        assertEquals(12.5, m1.recScore!!, 0.0)
-        assertEquals(true, m1.watched)
-        val m2 = state.series[1]
-        assertEquals("Бегущий по лезвию", m2.displayName)
-        assertNull(m2.artwork)
-        assertNull(m2.recScore)
-        assertNull(m2.watched)
-        // A new collection is a fresh grid: the cursor reset, no churn left.
+        assertEquals("movie", state.libraries.last().moduleId)
+        assertEquals(emptyList<SeriesDto>(), state.series)
+        assertEquals(emptyList<ItemDto>(), state.items)
         assertEquals(0, state.gridFocus)
         assertFalse(state.loading)
         assertNull(state.error)
 
-        assertEquals("/api/v1/libraries", server.takeRequest().path)
-        assertEquals("/api/v1/series?library=1", server.takeRequest().path)
-        assertEquals("/api/v1/series?library=2", server.takeRequest().path)
-        assertEquals(3, server.requestCount)
+        // enter()'s two requests were ALL the traffic.
+        assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsWireJointTest.switch_to_unknown_module_is_honest_empty").path)
+        assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsWireJointTest.switch_to_unknown_module_is_honest_empty").path)
+        assertEquals(2, server.requestCount)
+    }
+
+    /**
+     * GET /items' FULL wire shape (itemsResponse → itemDTO) — every field
+     * the handler serves, transcribed from internal/api/handlers.go :306
+     * (json tags are the law): the stamped row carries every omitempty leg
+     * (artwork/extra_parsers/metadata/rec_score/watched), the bare row
+     * honestly omits them. The document's sources namespaces carry the
+     * parsed facts the MovieCard idiom reads (year/resolution), the ffprobe
+     * duration blob and the frame-grabber thumb fact.
+     */
+    private val tvItemsFull = """
+        {"items":[
+          {"id":"f-1","module_id":"tv","library_id":2,"file_id":"ff-1",
+           "relative_path":"Movie.2019.1080p.mkv","media_type":"tv",
+           "document":{"sources":{"parser":{"year":2019,"resolution":"1080p"}},
+                       "ffprobe":{"format":{"duration":"5400.5"}},
+                       "frame-grabber":{"thumbnail_path":"/thumbs/f-1.jpg"}},
+           "schema_version":1,"status":"active","title_override":"",
+           "display_name":"Матрица","artwork":"/artwork/posters/f-1.jpg",
+           "extra_parsers":["tmdb"],
+           "metadata":{"about":{"source":"filename","description":"Пустыня реальности"}},
+           "rec_score":12.5,"watched":true},
+          {"id":"f-2","module_id":"tv","library_id":2,"file_id":"ff-2",
+           "relative_path":"Бегущий (1982).mkv","media_type":"tv",
+           "document":{},"schema_version":1,"status":"active",
+           "title_override":"","display_name":"Бегущий"}
+        ]}
+    """.trimIndent()
+
+    /** libraryFoldersResponse verbatim: top-level files report path "". */
+    private val foldersFull = """
+        {"folders":[{"path":"","items":12},{"path":"2026","items":9},{"path":"nature","items":30}]}
+    """.trimIndent()
+
+    /** The image library's items page: one RFC3339 capture date, one
+     * verbatim machine stamp (unparseable EXIF passes through untouched). */
+    private val photoItemsFull = """
+        {"items":[
+          {"id":"p-1","module_id":"image","library_id":3,"file_id":"pf-1",
+           "relative_path":"2026/IMG_0001.jpg","media_type":"image",
+           "document":{"sources":{"image-enricher":{"date_taken":"2026-05-01T10:20:30Z",
+                                                     "width":4000,"height":3000}}},
+           "schema_version":1,"status":"active","title_override":"",
+           "display_name":"IMG_0001","watched":false},
+          {"id":"p-2","module_id":"image","library_id":3,"file_id":"pf-2",
+           "relative_path":"2026/IMG_0002.jpg","media_type":"image",
+           "document":{"sources":{"image-enricher":{"date_taken":"май 2026"}}},
+           "schema_version":1,"status":"active","title_override":"",
+           "display_name":"IMG_0002"}
+        ]}
+    """.trimIndent()
+
+    /**
+     * GET /libraries' full wire shape with THREE module kinds in served
+     * order — serial (1), tv (2), image (3) — the D6 bodies' walk targets.
+     */
+    private val fullLibrariesTvImage = """
+        {"items":[
+          {"id":1,"module_id":"serial","root_path":"/media/serial",
+           "display_name":"Сериалы","description":"","streams_enabled":true},
+          {"id":2,"module_id":"tv","root_path":"/media/tv",
+           "display_name":"ТВ","description":"","streams_enabled":false},
+          {"id":3,"module_id":"image","root_path":"/media/photos",
+           "display_name":"Фото","description":"","streams_enabled":false}
+        ]}
+    """.trimIndent()
+
+    @Test
+    fun tv_and_image_bodies_walk_the_paged_stream() = runBlocking {
+        server.enqueue(json(fullLibrariesTvImage))
+        server.enqueue(json(serialGrid))
+        server.enqueue(json(tvItemsFull))
+        server.enqueue(json(tvItemsFull))
+        server.enqueue(json(foldersFull))
+        server.enqueue(json(photoItemsFull))
+        server.enqueue(json(photoItemsFull))
+
+        flow.enter()
+
+        // The tv body (D6): the FIRST page of the paged stream over
+        // GET /items — the full itemDTO decode: relative_path and the
+        // document's source namespaces land verbatim; the bare row's
+        // omitempty legs decode as honest absence.
+        flow.selectLibrary(2L)
+        val tv = flow.state.value
+        assertEquals(2L, tv.libraryId)
+        assertEquals(listOf("f-1", "f-2"), tv.items.map { it.id })
+        assertEquals("Movie.2019.1080p.mkv", tv.items.first().relativePath)
+        assertEquals("Бегущий", tv.items.last().displayName)
+        assertNull(tv.items.last().artwork)
+        assertNull(tv.items.last().watched)
+
+        // A folder chip's pick server-filters the SAME stream (path_prefix
+        // on the query line) and restarts at offset 0 — never a client-side
+        // post-filter.
+        flow.pickFolder("2026")
+        assertEquals(listOf("f-1", "f-2"), flow.state.value.items.map { it.id })
+        assertEquals("2026", flow.state.value.folder)
+        assertEquals(0, flow.state.value.itemsOffset)
+
+        // The image body (D6): the served folder rows beside the same
+        // stream — folders walk their own route, the items stream its own.
+        flow.selectLibrary(3L)
+        assertEquals(3L, flow.state.value.libraryId)
+        assertEquals(listOf("", "2026", "nature"), flow.state.value.folders.map { it.path })
+        assertEquals(listOf(12L, 9L, 30L), flow.state.value.folders.map { it.items })
+        assertEquals(listOf("p-1", "p-2"), flow.state.value.items.map { it.id })
+
+        // The top-level chip (path "") rides top_level=true — the SAME
+        // wire param law the SPA's usePagedItems rides.
+        flow.pickFolder("")
+        assertEquals("", flow.state.value.folder)
+        assertEquals(listOf("p-1", "p-2"), flow.state.value.items.map { it.id })
+
+        // The cycle's request line: every leg's query carries the params
+        // the body walks, in the seam's declaration order.
+        assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
+        assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
+        assertEquals("/api/v1/items?library=2&limit=50&offset=0", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
+        assertEquals(
+            "/api/v1/items?library=2&path_prefix=2026&limit=50&offset=0",
+            server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path,
+        )
+        assertEquals("/api/v1/libraries/3/folders", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
+        assertEquals("/api/v1/items?library=3&limit=50&offset=0", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
+        assertEquals(
+            "/api/v1/items?library=3&top_level=true&limit=50&offset=0",
+            server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path,
+        )
+        assertEquals(7, server.requestCount)
     }
 }

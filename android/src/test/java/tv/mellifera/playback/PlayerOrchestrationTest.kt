@@ -8,6 +8,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import tv.mellifera.net.DebugEventRequest
@@ -90,10 +91,14 @@ private class RecordingSender : BeaconSender {
 }
 
 /** The direct-degrade descriptor the machine launches immediately. */
-private fun directDescriptor(item: String = "i1") = PlaybackDescriptor(
+private fun directDescriptor(
+    item: String = "i1",
+    sections: List<kotlinx.serialization.json.JsonElement> = emptyList(),
+) = PlaybackDescriptor(
     mode = "direct",
     state = "complete",
     playUrl = "/media/$item/original.mkv?token=tok",
+    sections = sections,
 )
 
 private fun unconfinedScope() = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
@@ -215,5 +220,323 @@ class PlayerOrchestrationTest {
         assertEquals("video-error", beacon.phase)
         assertEquals("ERROR_CODE_DECODING_FAILED", beacon.code)
         assertEquals("hevc decode failed", beacon.detail)
+    }
+
+    // ---- the info leg (D7) ----
+
+    /** A served info projection the fake loader answers. */
+    private val infoFixture = PlayerInfoBlocks(
+        eyebrow = "S01E02",
+        heading = "Название серии",
+        episodeDescription = "Описание серии",
+        cast = emptyList(),
+        about = null,
+    )
+
+    @Test
+    fun info_loads_on_active_and_leaves_with_the_session() = runBlocking {
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = directDescriptor(), progress = epoch)
+        val loaded = mutableListOf<String>()
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            infoLoader = {
+                InfoLoader { item ->
+                    loaded += item
+                    infoFixture
+                }
+            },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch.play("i1")
+
+        // Active: the Launch ferry also ran the info leg — once, for the
+        // session's item, and the blocks ride the info flow (never AppState).
+        assertTrue(orch.state.value is PlaybackState.Active)
+        assertEquals(listOf("i1"), loaded)
+        assertEquals(infoFixture, orch.info.value)
+
+        // Exit: the blocks leave with the session.
+        orch.exit()
+        assertEquals(PlaybackState.Idle, orch.state.value)
+        assertNull(orch.info.value)
+    }
+
+    @Test
+    fun info_failure_leaves_blocks_absent_and_playback_intact() = runBlocking {
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = directDescriptor(), progress = epoch)
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            infoLoader = { InfoLoader { throw java.io.IOException("no net") } },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch.play("i1")
+
+        // Best-effort: the failed load surfaces nowhere — still Active, no
+        // blocks (honest absence), playback untouched.
+        assertTrue(orch.state.value is PlaybackState.Active)
+        assertNull(orch.info.value)
+    }
+
+    @Test
+    fun info_arriving_after_the_session_died_is_dropped() = runBlocking {
+        var orchRef: PlayerOrchestration? = null
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = directDescriptor(), progress = epoch)
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            infoLoader = {
+                InfoLoader {
+                    // The session exits mid-load; the resolve lands after.
+                    orchRef!!.exit()
+                    throw java.io.IOException("aborted")
+                }
+            },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orchRef = orch
+        orch.play("i1")
+
+        // The stale resolve is DROPPED — no blocks over a dead session.
+        assertEquals(PlaybackState.Idle, orch.state.value)
+        assertNull(orch.info.value)
+    }
+
+    // ---- the ended edge + skip ranges (D7, 5.2) ----
+
+    /** A descriptor carrying one classified intro range and one dropped
+     * marker section — the served sections the classifier consumes. */
+    private val sectionsFixture = listOf(
+        kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"kind":"chapter","start":10.0,"end":90.0,"title":"intro"}""",
+        ),
+        kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"kind":"marker","start":100.0,"end":110.0,"title":"intro"}""",
+        ),
+    )
+
+    /** The next-up offer fixture: a resolvable pick, countdown UNUSABLE —
+     * the malformed-shape posture (no countdown, never autoplay). */
+    private fun noCountdownOffer() = NextUpOffer(
+        itemId = "i2",
+        nameLine = "Сериал · S01E02",
+        episodeTitle = "Дальше",
+        countdownSeconds = null,
+    )
+
+    @Test
+    fun skip_ranges_ride_the_descriptor_and_leave_with_the_session() = runBlocking {
+        val controller = FakeController()
+        val transport = FakeTransport(
+            descriptor = directDescriptor(sections = sectionsFixture),
+            progress = epoch,
+        )
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch.play("i1")
+
+        // Classified at the describe seam: only the chapter classified —
+        // the marker is honest absence.
+        assertEquals(
+            listOf(SkipSection(SkipKind.Intro, 10.0, 90.0)),
+            orch.skipRanges.value,
+        )
+
+        // Exit: the ranges leave with the session (readout law).
+        orch.exit()
+        assertEquals(PlaybackState.Idle, orch.state.value)
+        assertEquals(emptyList<SkipSection>(), orch.skipRanges.value)
+    }
+
+    @Test
+    fun ended_edge_loads_offer_and_never_enters_the_machine() = runBlocking {
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = directDescriptor(), progress = epoch)
+        val loaded = mutableListOf<String>()
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            nextUpLoader = {
+                NextUpLoader { item ->
+                    loaded += item
+                    noCountdownOffer()
+                }
+            },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch.play("i1")
+        assertTrue(orch.state.value is PlaybackState.Active)
+
+        // The ended edge: the card's offer loads, but the machine is NEVER
+        // told — an ended media is not a flow failure, the state stays
+        // Active (manual Back still exits).
+        controller.emit(PlayerEvent.Ended)
+        assertEquals(listOf("i1"), loaded)
+        assertEquals(noCountdownOffer(), orch.nextUp.value)
+        assertTrue(orch.state.value is PlaybackState.Active)
+        // The unusable countdown shape: NO countdown and NEVER autoplay —
+        // no baked fallback.
+        assertNull(orch.countdown.value)
+    }
+
+    @Test
+    fun loader_failure_answers_no_card_and_playback_intact() = runBlocking {
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = directDescriptor(), progress = epoch)
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            nextUpLoader = { NextUpLoader { throw java.io.IOException("no net") } },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch.play("i1")
+        controller.emit(PlayerEvent.Ended)
+
+        assertTrue(orch.state.value is PlaybackState.Active)
+        assertNull(orch.nextUp.value)
+    }
+
+    @Test
+    fun countdown_ticks_off_the_injected_delay_and_fires_the_next_play() = runBlocking {
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = directDescriptor(), progress = epoch)
+        // Two gates so the ticker (10s cadence) and the countdown (1s ticks)
+        // never steal each other's sends — the ms names the gate.
+        val tickerGate = Channel<Unit>(Channel.UNLIMITED)
+        val countdownGate = Channel<Unit>(Channel.UNLIMITED)
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            nextUpLoader = {
+                NextUpLoader { NextUpOffer("i2", "Сериал · S01E02", "Дальше", countdownSeconds = 2) }
+            },
+            scope = unconfinedScope(),
+            delayer = { ms ->
+                if (ms == PlayerOrchestration.COUNTDOWN_TICK_MS) countdownGate.receive() else tickerGate.receive()
+            },
+        )
+        orch.play("i1")
+        controller.emit(PlayerEvent.Ended)
+
+        // The snapshot at the edge's open: 2s armed, nothing fired.
+        assertEquals(2L, orch.countdown.value)
+        assertTrue(orch.state.value is PlaybackState.Active)
+
+        // Tick 1 → 1s left. Tick 2 → zero fires the «Смотреть» path: exit
+        // the spent session, play the next episode.
+        countdownGate.send(Unit)
+        assertEquals(1L, orch.countdown.value)
+        countdownGate.send(Unit)
+        val next = orch.state.value as? PlaybackState.Active
+        assertTrue(next != null)
+        assertEquals("i2", next?.session?.item)
+        // The edge closed with the departure: no lingering card/countdown.
+        assertNull(orch.nextUp.value)
+        assertNull(orch.countdown.value)
+    }
+
+    @Test
+    fun seek_closes_the_edge_and_never_lets_the_countdown_land() = runBlocking {
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = directDescriptor(), progress = epoch)
+        val countdownGate = Channel<Unit>(Channel.UNLIMITED)
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            nextUpLoader = {
+                NextUpLoader { NextUpOffer("i2", "Сериал · S01E02", "Дальше", countdownSeconds = 5) }
+            },
+            scope = unconfinedScope(),
+            delayer = { ms ->
+                if (ms == PlayerOrchestration.COUNTDOWN_TICK_MS) countdownGate.receive() else awaitCancellation()
+            },
+        )
+        orch.play("i1")
+        controller.emit(PlayerEvent.Ended)
+        assertEquals(5L, orch.countdown.value)
+
+        // A seek is live playback again — the edge closes with its offer
+        // and its countdown (cancellation never lets a countdown land).
+        orch.seekTo(1_000L)
+        assertNull(orch.nextUp.value)
+        assertNull(orch.countdown.value)
+
+        // Drive the gate freely: the cancelled countdown fires nothing.
+        countdownGate.send(Unit)
+        countdownGate.send(Unit)
+        val active = orch.state.value as? PlaybackState.Active
+        assertEquals("i1", active?.session?.item)
+    }
+
+    @Test
+    fun cancel_suppresses_the_card_for_the_session() = runBlocking {
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = directDescriptor(), progress = epoch)
+        var loads = 0
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            nextUpLoader = {
+                NextUpLoader {
+                    loads += 1
+                    noCountdownOffer()
+                }
+            },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch.play("i1")
+        controller.emit(PlayerEvent.Ended)
+        assertEquals(noCountdownOffer(), orch.nextUp.value)
+
+        // «Отмена»: the card drops and every LATER ended edge in this app
+        // session renders nothing — the loader is never even consulted.
+        orch.cancelNextUp()
+        assertNull(orch.nextUp.value)
+        controller.emit(PlayerEvent.Ended)
+        assertEquals(1, loads)
+        assertNull(orch.nextUp.value)
+        assertTrue(orch.state.value is PlaybackState.Active)
+    }
+
+    @Test
+    fun replay_closes_the_edge_before_the_late_offer_lands() = runBlocking {
+        var orchRef: PlayerOrchestration? = null
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = directDescriptor(), progress = epoch)
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            nextUpLoader = {
+                NextUpLoader {
+                    // The replay happens mid-load; the resolve lands after.
+                    orchRef!!.playPause()
+                    noCountdownOffer()
+                }
+            },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orchRef = orch
+        orch.play("i1")
+        controller.emit(PlayerEvent.Ended)
+
+        // The replay closed the edge; the stale offer is DROPPED — never a
+        // card over live playback.
+        assertNull(orch.nextUp.value)
+        assertTrue(orch.state.value is PlaybackState.Active)
     }
 }

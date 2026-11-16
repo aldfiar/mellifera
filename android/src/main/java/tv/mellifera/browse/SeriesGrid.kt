@@ -1,5 +1,10 @@
 package tv.mellifera.browse
 
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.longOrNull
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.SeriesDto
 
@@ -22,27 +27,147 @@ data class DisplayCard(
     /** The composed poster URL — null means "no artwork block". */
     val artworkUrl: String?,
 
-    /** The read-time watched stamp — null means "no watched block";
-     * true/false render as their own chip. */
+    /** The read-time watched stamp — true renders the ✓ glyph + a dimmed
+     * title and NO bar (the D2 tri-state); null/false means not watched. */
     val watched: Boolean?,
+
+    /** The in-progress bar's fill percent — null means "no bar". Follows
+     * [watchedPercent]: a percent exists only when a duration did. */
+    val progress: Int?,
+
+    /** The ONE field-driven meta/facts line — null means "no meta block". */
+    val meta: String?,
+
+    /** The tile's footer line (the photo tile's capture date, D6) — null
+     * means "no footer block" (an absent fact renders no date, never a
+     * faked one). */
+    val footer: String? = null,
+
+    /** The art block's aspect (D13, task 8.2): FIXED by the module's parity
+     * law — serial cards POSTER_ASPECT (2:3), tv file cards STILL_ASPECT
+     * (16:9); photo tiles carry the served width/height ratio
+     * (aspectRatioOf). Null keeps the default fixed-height block (episode
+     * rows size their art themselves). The field-driven served ratio is
+     * RETIRED from serial/tv tiles. */
+    val aspect: Float? = null,
 )
 
-/** A series grid card over the served seriesDTO row. */
+/**
+ * watchedPercent — the SPA's bar law verbatim (WatchedStates.tsx): position
+ * over duration, rounded, clamped to 100. A missing or non-positive duration
+ * → null: the caller renders NO bar — never a guessed percent.
+ */
+fun watchedPercent(positionSeconds: Long, durationSeconds: Long?): Int? {
+    if (durationSeconds == null || durationSeconds <= 0) return null
+    return Math.round(positionSeconds.toDouble() / durationSeconds * 100).toInt().coerceAtMost(100)
+}
+
+/** A series grid card over the served seriesDTO row — the FIXED poster
+ * aspect rides in the mapping (D13: the SPA's aspect-[2/3] poster; the
+ * field-driven TILE aspect is retired from this body). */
 fun SeriesDto.toCard(): DisplayCard = DisplayCard(
     id = id,
     title = titleBlock(displayName),
     artworkUrl = artwork?.takeIf { it.isNotBlank() },
     watched = watched,
+    // No position/duration on the served seriesDTO — the progress wire reads
+    // items, not series; absent → null, never a guessed percent (L1).
+    progress = null,
+    meta = null,
+    aspect = POSTER_ASPECT,
 )
 
-/** An episode row over the served itemDTO row. */
-fun ItemDto.toCard(): DisplayCard = DisplayCard(
-    id = id,
-    title = titleBlock(displayName),
-    artworkUrl = artwork?.takeIf { it.isNotBlank() },
-    watched = watched,
-)
+/**
+ * An episode row over the served itemDTO row. [positionSeconds] is the
+ * stored position off the progress wire (GET /progress/{id} — the exact
+ * read the player's resume already makes); the bar exists only for an
+ * UNwatched row that carries BOTH that position and a real document
+ * duration — watched → NO bar (D2), missing either side → no bar, never a
+ * guessed percent. The meta line is the document's field-driven fact line.
+ */
+fun ItemDto.toCard(positionSeconds: Long? = null): DisplayCard {
+    val duration = documentDuration(document)
+    return DisplayCard(
+        id = id,
+        title = titleBlock(displayName),
+        artworkUrl = artwork?.takeIf { it.isNotBlank() },
+        watched = watched,
+        progress =
+            if (watched == true) {
+                null
+            } else {
+                positionSeconds?.let { watchedPercent(it, duration) }
+            },
+        meta = documentMeta(document),
+    )
+}
 
 /** A blank display name carries no title block — nothing is fabricated. */
 private fun titleBlock(displayName: String): String? =
     displayName.takeIf { it.isNotBlank() }
+
+/**
+ * documentDuration — the item document's total whole-second duration (the
+ * SPA's durationSeconds law verbatim, Collection.tsx): the verbatim ffprobe
+ * blob's format.duration (a decimal-seconds STRING on the ffprobe wire; a
+ * number is accepted too). Missing/unparseable/non-positive → null: the bar
+ * then has no denominator and renders nothing, never a guessed percent.
+ */
+internal fun documentDuration(doc: JsonElement): Long? {
+    val format =
+        ((doc as? JsonObject)?.get("ffprobe") as? JsonObject)
+            ?.get("format") as? JsonObject
+            ?: return null
+    val raw = format["duration"] as? JsonPrimitive ?: return null
+    val seconds = raw.doubleOrNull ?: return null
+    return if (seconds.isFinite() && seconds > 0) Math.round(seconds).toLong() else null
+}
+
+/**
+ * documentMeta — the ONE field-driven fact line (the SPA's metaLine law
+ * verbatim, Collection.tsx): the parsed facts plus the ffprobe duration when
+ * known, dot-separated. No fact at all → null: the row renders NO meta
+ * block, never a padded one (L1).
+ */
+internal fun documentMeta(doc: JsonElement): String? {
+    val facts = parsedFacts(doc)
+    val duration = documentDuration(doc)
+    if (duration != null) facts += formatPosition(duration)
+    return facts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
+
+/**
+ * parsedFacts — the SPA's parsedChips law: the release year and the
+ * resolution read generically across the document's source namespaces — the
+ * FIRST namespace that carries either wins, its partial facts kept (one
+ * parser's facts are enough — never mixed across namespaces). The SxxExx
+ * token is deliberately NOT here: the served display_name carries it.
+ */
+private fun parsedFacts(doc: JsonElement): MutableList<String> {
+    for (namespace in sourceNamespaces(doc)) {
+        val facts = mutableListOf<String>()
+        (namespace["year"] as? JsonPrimitive)?.longOrNull?.let { facts += it.toString() }
+        (namespace["resolution"] as? JsonPrimitive)
+            ?.takeIf { it.isString && it.content.isNotEmpty() }
+            ?.let { facts += it.content }
+        if (facts.isNotEmpty()) return facts
+    }
+    return mutableListOf()
+}
+
+/**
+ * formatPosition — the SPA's formatPosition law verbatim (Home.tsx): whole
+ * seconds as H:MM:SS / MM:SS. Display formatting only — the served value is
+ * rendered, never rewritten.
+ */
+internal fun formatPosition(seconds: Long): String {
+    val s = seconds.coerceAtLeast(0)
+    val h = s / 3600
+    val m = (s % 3600) / 60
+    val ss = (s % 60).toString().padStart(2, '0')
+    return if (h > 0) {
+        "$h:${m.toString().padStart(2, '0')}:$ss"
+    } else {
+        "${m.toString().padStart(2, '0')}:$ss"
+    }
+}

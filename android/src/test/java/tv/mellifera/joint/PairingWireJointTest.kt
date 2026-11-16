@@ -19,6 +19,7 @@ import tv.mellifera.pairing.PollSignal
 import tv.mellifera.pairing.PollVerdict
 import tv.mellifera.pairing.SessionBacking
 import tv.mellifera.pairing.SessionStore
+import tv.mellifera.takeRequestOrFail
 
 /**
  * The 7.1 pairing wire joint (contract (a)): the app's REAL pairing flow
@@ -117,13 +118,13 @@ class PairingWireJointTest {
         // Wire facts of cycle A: POST /pair bare (no Authorization — the
         // unauthenticated pair posture), then the client-cadence GETs on the
         // wait route with NO query string (INV4: the client adds nothing).
-        val pair1 = server.takeRequest()
+        val pair1 = server.takeRequestOrFail("PairingWireJointTest.full_cycle_with_single_use")
         assertEquals("POST", pair1.method)
         assertEquals("/api/v1/pair", pair1.path)
         assertEquals("", pair1.body.readUtf8())
         assertNull(pair1.getHeader("Authorization"))
         repeat(2) {
-            val poll = server.takeRequest()
+            val poll = server.takeRequestOrFail("PairingWireJointTest.full_cycle_with_single_use")
             assertEquals("GET", poll.method)
             assertEquals("/api/v1/pair/$id1/wait", poll.path)
             assertNull(poll.getHeader("Authorization"))
@@ -138,7 +139,7 @@ class PairingWireJointTest {
         assertEquals("consumed", consumed.status)
         assertNull("device_token must be absent after the single pickup (INV2)", consumed.deviceToken)
         assertEquals(PollVerdict.Consumed, PollClassifier.classify(PollSignal.Answer(consumed.status, consumed.deviceToken)))
-        assertEquals("/api/v1/pair/$id1/wait", server.takeRequest().path)
+        assertEquals("/api/v1/pair/$id1/wait", server.takeRequestOrFail("PairingWireJointTest.full_cycle_with_single_use").path)
 
         // --- cycle B: the server-restart shape (approved, raw gone,
         // service.go:180-185) drives the app's re-pair path: surfaced
@@ -151,9 +152,9 @@ class PairingWireJointTest {
         assertEquals("Сервер потерял токен подтверждения — запустите сопряжение заново", rejected?.message)
         assertNull(storeB.readToken())
         assertEquals(0, backingB.tokenWrites)
-        val pair2 = server.takeRequest()
+        val pair2 = server.takeRequestOrFail("PairingWireJointTest.full_cycle_with_single_use")
         assertEquals("/api/v1/pair", pair2.path)
-        val wait4 = server.takeRequest()
+        val wait4 = server.takeRequestOrFail("PairingWireJointTest.full_cycle_with_single_use")
         assertEquals("/api/v1/pair/$id2/wait", wait4.path)
         assertEquals(6, server.requestCount)
     }

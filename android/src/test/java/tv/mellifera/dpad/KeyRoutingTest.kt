@@ -78,4 +78,34 @@ class KeyRoutingTest {
         assertNull(routePlayerKey(DpadKey.Up, controlsShown = true))
         assertNull(routePlayerKey(DpadKey.Down, controlsShown = false))
     }
+
+    @Test
+    fun row_walks_horizontally_and_clamps() {
+        // Left/Right step inside the row.
+        assertEquals(1, moveInRow(0, 4, DpadKey.Right))
+        assertEquals(2, moveInRow(1, 4, DpadKey.Right))
+        assertEquals(0, moveInRow(1, 4, DpadKey.Left))
+        // Edges clamp INSIDE the row — the wiring reads the clamp as
+        // "not consumed" (LEFT at x=0 → the rail trigger; RIGHT at the
+        // last card stays put).
+        assertEquals(0, moveInRow(0, 4, DpadKey.Left))
+        assertEquals(3, moveInRow(3, 4, DpadKey.Right))
+    }
+
+    @Test
+    fun row_up_down_keep_the_cursor_so_arrows_cross_natively() {
+        // Up/Down are not row keys: the cursor keeps its position and the
+        // wiring leaves the arrow unconsumed — Compose's focus search
+        // crosses rows/settings/grid natively (the L2 law).
+        assertEquals(2, moveInRow(2, 4, DpadKey.Up))
+        assertEquals(2, moveInRow(2, 4, DpadKey.Down))
+    }
+
+    @Test
+    fun row_handles_empty_and_out_of_range() {
+        // An empty row never moves; an out-of-range cursor coerces in first.
+        assertEquals(0, moveInRow(0, 0, DpadKey.Right))
+        assertEquals(2, moveInRow(9, 3, DpadKey.Up))
+        assertEquals(1, moveInRow(-1, 3, DpadKey.Right))
+    }
 }

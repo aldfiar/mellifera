@@ -12,6 +12,7 @@ import tv.mellifera.browse.BrowseFlow
 import tv.mellifera.diag.DeviceFacts
 import tv.mellifera.diag.DiagTelemetry
 import tv.mellifera.diag.snapshotEvent
+import tv.mellifera.home.HomeFlow
 import tv.mellifera.net.Api
 import tv.mellifera.net.MelliferaApi
 import tv.mellifera.net.PlayRequest
@@ -22,6 +23,8 @@ import tv.mellifera.pairing.SessionStore
 import tv.mellifera.playback.BeaconWorker
 import tv.mellifera.playback.PlayerOrchestration
 import tv.mellifera.playback.PlaybackTransport
+import tv.mellifera.playback.apiInfoLoader
+import tv.mellifera.playback.apiNextUpLoader
 import tv.mellifera.player.PlayerController
 
 /** Top-level navigation: `when (state.screen)` IS the navigation (D1, no nav library). */
@@ -98,6 +101,16 @@ class AppViewModel(
     )
 
     /**
+     * The home surface's flow (design D4, task 3.2): ONE GET /home
+     * round-trip feeding the Continue/Next-up rows above the collection
+     * grid — the same wire and the same 401/refresh laws as browse.
+     */
+    val home: HomeFlow = HomeFlow(
+        apiFor = { browseApi() },
+        onUnauthorized = { onUnauthorized() },
+    )
+
+    /**
      * The playback machine's ferry (5.7): the effect executor over the
      * machine's effects, the controller events ferried in as machine events,
      * the exit path firing the browse refresh. The player is an OVERLAY on
@@ -113,6 +126,8 @@ class AppViewModel(
                 "playback needs a controller factory (the device wiring passes Media3Controller)"
             }.invoke(),
             transport = { playbackTransport() },
+            infoLoader = { apiInfoLoader(sharedApi().service) },
+            nextUpLoader = { apiNextUpLoader(sharedApi().service) },
             sender = beacon,
             scope = appScope,
             onExitRefresh = { onPlayerExit() },
@@ -203,6 +218,10 @@ class AppViewModel(
      */
     suspend fun onPlayerExit() {
         browse.refresh()
+        // The home rows ride the same law (D4): a resume changed the
+        // stored position, so the served rows re-fetch — the cards' bars
+        // and position lines are current when the cursor comes back.
+        home.load()
     }
 
     /**

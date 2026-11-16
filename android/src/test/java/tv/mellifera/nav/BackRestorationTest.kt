@@ -12,6 +12,7 @@ import org.junit.Before
 import org.junit.Test
 import tv.mellifera.AppViewModel
 import tv.mellifera.Screen
+import tv.mellifera.assertDrained
 import tv.mellifera.dpad.DpadKey
 import tv.mellifera.dpad.moveInGrid
 import tv.mellifera.pairing.InMemorySessionBacking
@@ -92,8 +93,13 @@ class BackRestorationTest {
         }
         assertEquals(3, browse.state.value.gridFocus)
 
-        // Into the series page — the grid cursor PARKS, episodes load.
+        // Into the series page — the grid cursor PARKS, episodes load,
+        // then the rows' progress walk (2.2) fires its GET per row — the
+        // single row never started (the 404 IS the honest absence). An
+        // unanswered walk leg rode OkHttp's 10s read timeout as a swallowed
+        // best-effort failure (the slow-green mechanism 7.1 kills).
         server.enqueue(json(episodesBody("s-4")))
+        server.enqueue(MockResponse().setResponseCode(404))
         browse.openSeries(before.series[3])
         assertEquals("s-4", browse.state.value.selectedSeries?.id)
         assertEquals(3, browse.state.value.gridFocus)
@@ -106,5 +112,9 @@ class BackRestorationTest {
         assertEquals(3, restored.gridFocus)
         assertEquals(8, restored.series.size)
         assertEquals("s-4", restored.series[3].id)
+
+        // The queue drained: the walk's four requests (libraries → series →
+        // episodes → the row's progress GET) each got their answer.
+        server.assertDrained("BackRestorationTest.grid_focus_restored_after_back", 4)
     }
 }

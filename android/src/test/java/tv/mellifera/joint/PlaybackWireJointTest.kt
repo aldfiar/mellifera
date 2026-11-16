@@ -19,6 +19,7 @@ import tv.mellifera.playback.PlayerOrchestration
 import tv.mellifera.state.PlaybackState
 import tv.mellifera.state.PlaySession
 import tv.mellifera.state.RenditionPlan
+import tv.mellifera.takeRequestOrFail
 
 /**
  * The 7.1 descriptor+play degrade wire joint (contract (b)): the REAL flow
@@ -127,7 +128,7 @@ class PlaybackWireJointTest {
 
         // The wire: descriptor → degrade play → progress, in order, all
         // behind the paired bearer credential.
-        val playbackReq = server.takeRequest()
+        val playbackReq = server.takeRequestOrFail("PlaybackWireJointTest.descriptor_play_degrade_relative_url")
         assertEquals("GET", playbackReq.method)
         assertEquals("/api/v1/items/$item/playback", playbackReq.path)
         assertEquals("Bearer qa-bearer", playbackReq.getHeader("Authorization"))
@@ -135,14 +136,14 @@ class PlaybackWireJointTest {
         // The degrade law's body: the ONE optimistic play, retry EXPLICIT
         // false (encodeDefaults), from_seconds absent — exactly 13 bytes of
         // JSON. INV4: no token, no query anywhere in the mutation.
-        val playReq = server.takeRequest()
+        val playReq = server.takeRequestOrFail("PlaybackWireJointTest.descriptor_play_degrade_relative_url")
         val playBody = playReq.body.readUtf8()
         assertEquals("POST", playReq.method)
         assertEquals("/api/v1/items/$item/play", playReq.path)
         assertEquals("""{"retry":false}""", playBody)
         assertFalse(playBody.contains("token"))
 
-        val progressReq = server.takeRequest()
+        val progressReq = server.takeRequestOrFail("PlaybackWireJointTest.descriptor_play_degrade_relative_url")
         assertEquals("GET", progressReq.method)
         assertEquals("/api/v1/progress/$item", progressReq.path)
         assertFalse(progressReq.path!!.contains("token"))

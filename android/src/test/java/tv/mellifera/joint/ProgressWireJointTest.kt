@@ -17,6 +17,7 @@ import tv.mellifera.net.ProgressRequest
 import tv.mellifera.playback.PlayerOrchestration
 import tv.mellifera.player.PlayerReadout
 import tv.mellifera.state.PlaybackState
+import tv.mellifera.takeRequestOrFail
 
 /**
  * The 7.1 progress PUT wire joint (contract (c)): the app's REAL flush path
@@ -117,11 +118,11 @@ class ProgressWireJointTest {
         while (server.requestCount < 4) yield()
 
         // Drain the launch cascade in its pinned order before the PUT.
-        assertEquals("/api/v1/items/$item/playback", server.takeRequest().path)
-        assertEquals("/api/v1/items/$item/play", server.takeRequest().path)
-        assertEquals("/api/v1/progress/$item", server.takeRequest().path)
+        assertEquals("/api/v1/items/$item/playback", server.takeRequestOrFail("ProgressWireJointTest.put_shape_round_trip").path)
+        assertEquals("/api/v1/items/$item/play", server.takeRequestOrFail("ProgressWireJointTest.put_shape_round_trip").path)
+        assertEquals("/api/v1/progress/$item", server.takeRequestOrFail("ProgressWireJointTest.put_shape_round_trip").path)
 
-        val put1 = server.takeRequest()
+        val put1 = server.takeRequestOrFail("ProgressWireJointTest.put_shape_round_trip")
         assertEquals("PUT", put1.method)
         assertEquals("/api/v1/progress/$item", put1.path)
         assertEquals("Bearer qa-bearer", put1.getHeader("Authorization"))
@@ -140,7 +141,7 @@ class ProgressWireJointTest {
         assertEquals(12.5, dto.recScore!!, 0.0)
         assertEquals(true, dto.watched)
 
-        val put2 = server.takeRequest()
+        val put2 = server.takeRequestOrFail("ProgressWireJointTest.put_shape_round_trip")
         assertEquals("PUT", put2.method)
         assertEquals("/api/v1/progress/$item", put2.path)
         assertEquals("""{"position_seconds":83,"completed":true}""", put2.body.readUtf8())

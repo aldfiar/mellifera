@@ -50,6 +50,17 @@ data class LibraryDto(
 data class LibrariesResponse(val items: List<LibraryDto> = emptyList())
 
 /**
+ * One depth-1 folder prefix + its item count (handlers.go folderDTO);
+ * top-level files report path "".
+ */
+@Serializable
+data class FolderDto(val path: String, val items: Long)
+
+/** GET /libraries/{id}/folders' wire shape (handlers.go libraryFoldersResponse). */
+@Serializable
+data class LibraryFoldersResponse(val folders: List<FolderDto> = emptyList())
+
+/**
  * GET /libraries/{id}/summary (handlers.go librarySummaryResponse): the
  * constant-time count aggregate the collections rail reads (5.14). updated_at
  * is served but deliberately not carried — unconsumed, and the decoder
@@ -62,17 +73,72 @@ data class LibrarySummaryResponse(
 )
 
 /**
+ * The served convention projection (media-data-convention; internal/naming/
+ * metadata.go MetadataFor): each group (about/cast/episode) comes WHOLE from
+ * the first effectively-enabled source_chain namespace that carries it —
+ * never stitched across sources, values verbatim — and an absent group means
+ * the block is absent, never fabricated. Dtos.kt mirrors web/src/lib/api.ts
+ * ElementMetadata field-for-field (L6); the opaque whole document stays
+ * uncarried (the client walks no namespaces).
+ */
+@Serializable
+data class MetadataAbout(
+    /** The winning namespace id — who wrote the block. */
+    val source: String = "",
+    /** The carrier: always present on a served about block. */
+    val description: String = "",
+    val genres: List<String>? = null,
+    val score: Double? = null,
+    val kind: String? = null,
+    val status: String? = null,
+    val episodes: Long? = null,
+    @SerialName("aired_on") val airedOn: String? = null,
+)
+
+/** One served cast entry (api.ts MetadataCastEntry). */
+@Serializable
+data class MetadataCastEntry(
+    val name: String,
+    val role: String? = null,
+    @SerialName("photo_url") val photoUrl: String? = null,
+)
+
+/**
+ * The episode document's own fields (api.ts MetadataEpisode) — honest
+ * partial: title alone is a served episode block.
+ */
+@Serializable
+data class MetadataEpisode(
+    val title: String? = null,
+    val description: String? = null,
+)
+
+/** The typed metadata block (api.ts ElementMetadata). */
+@Serializable
+data class ElementMetadata(
+    val about: MetadataAbout? = null,
+    val cast: List<MetadataCastEntry>? = null,
+    val episode: MetadataEpisode? = null,
+)
+
+/**
  * seriesDTO (handlers.go): served display_name/artwork/watched verbatim —
  * watched/rec_score are omitempty, hence nullable (the field-driven law:
- * absent renders absent, never fabricated — 5.6). The opaque serial document
- * is deliberately not carried; episodes come from their own route.
+ * absent renders absent, never fabricated — 5.6). metadata is the served
+ * convention projection (read-time, omitempty — absence means no block,
+ * never an empty one). The opaque serial document is deliberately not
+ * carried; episodes come from their own route.
  */
 @Serializable
 data class SeriesDto(
     val id: String,
     @SerialName("library_id") val libraryId: Long = 0,
+    /** The path fact the player's About matcher runs on (D7): the parsed
+     * series anchor is matched against THIS field (api.ts SeriesDTO). */
+    @SerialName("relative_path") val relativePath: String = "",
     @SerialName("display_name") val displayName: String = "",
     val artwork: String? = null,
+    val metadata: ElementMetadata? = null,
     @SerialName("rec_score") val recScore: Double? = null,
     val watched: Boolean? = null,
 )
@@ -85,21 +151,32 @@ data class SeriesListResponse(val items: List<SeriesDto> = emptyList())
  * itemDTO (handlers.go) as episodes serve it — identity + the composed
  * display and the read-time stamps. Document stays opaque (JsonElement) so a
  * later consumer reads exactly what the server stored, never a projection.
+ * relative_path rides the tv/image file cards' title floor (the MovieCard
+ * idiom — a blank or filename display_name floors to the extension-less stem).
  */
 @Serializable
 data class ItemDto(
     val id: String,
     @SerialName("library_id") val libraryId: Long = 0,
+    @SerialName("relative_path") val relativePath: String = "",
     @SerialName("media_type") val mediaType: String = "",
     val document: JsonElement = JsonNull,
     @SerialName("display_name") val displayName: String = "",
     val artwork: String? = null,
     val watched: Boolean? = null,
+    /** The served convention projection (itemDTO.metadata — the same
+     * read-time block SeriesDto carries; omitempty: absence means no block,
+     * never an empty one). The player's info blocks read THIS (D7). */
+    val metadata: ElementMetadata? = null,
 )
 
 /** GET /series/{id}/episodes and GET /items' shared wire shape. */
 @Serializable
 data class ItemsResponse(val items: List<ItemDto> = emptyList())
+
+/** GET /items/{id}'s wire shape (handlers.go itemResponse — itemDTO as-is). */
+@Serializable
+data class ItemResponse(val item: ItemDto)
 
 /**
  * The playback descriptor (playback.go playbackResponse): mode direct|hls,
@@ -155,6 +232,79 @@ data class ProgressDto(
     @SerialName("updated_at") val updatedAt: String,
     @SerialName("rec_score") val recScore: Double? = null,
     val watched: Boolean? = null,
+)
+
+/**
+ * GET /home's wire shape (internal/api/home.go homeResponse): ONE
+ * server-composed round-trip — the caller's positive-progress set grouped
+ * into entity-grain rows, ordered score-then-recency server-side. `continue`
+ * is a Kotlin keyword, so the wire key rides @SerialName; the client
+ * re-sorts nothing (D4).
+ */
+@Serializable
+data class HomeResponse(@SerialName("continue") val rows: List<ContinueRow> = emptyList())
+
+/**
+ * ONE continue rail row (home.go continueRow): the anchoring series beside
+ * the row's resume facts. The two offers are constructive, never decorative
+ * — `current` present iff the entity's resume-max pick resolves (the resume
+ * card), absent — the omitempty field GONE from the wire, never null — on
+ * the anchor card (every touched row ledgered); `next` present iff a
+ * strictly-after episode resolves. A film row serves the series fields as
+ * "" (honest absence, never a fabricated owner) and never carries next.
+ * artwork is omitempty — absent when nothing composes.
+ */
+@Serializable
+data class ContinueRow(
+    @SerialName("series_id") val seriesId: String = "",
+    @SerialName("series_display_name") val seriesDisplayName: String = "",
+    @SerialName("library_id") val libraryId: Long = 0,
+    @SerialName("library_name") val libraryName: String = "",
+    val artwork: String? = null,
+    val current: ContinueCurrent? = null,
+    val next: ContinueNext? = null,
+)
+
+/**
+ * The row's resume point (home.go continueCurrent): the item to deep-link
+ * into, its served display name, the parsed episode identity when the
+ * document carries it, the episode's own convention title, the stored
+ * position, and the ffprobe duration ONLY when the document stores it
+ * (omitempty — the honest absence a client renders as a bar-less row).
+ */
+@Serializable
+data class ContinueCurrent(
+    @SerialName("item_id") val itemId: String,
+    @SerialName("display_name") val displayName: String = "",
+    val season: Long? = null,
+    val episode: Long? = null,
+    @SerialName("episode_title") val episodeTitle: String = "",
+    @SerialName("position_seconds") val positionSeconds: Long = 0,
+    @SerialName("duration_seconds") val durationSeconds: Long? = null,
+)
+
+/**
+ * The row's Play-able suggestion (home.go continueNext): the episode item
+ * to deep-link into and the server-composed SxxEyy label — the client
+ * composed neither label nor pick (D4).
+ */
+@Serializable
+data class ContinueNext(
+    @SerialName("item_id") val itemId: String,
+    val label: String,
+)
+
+/**
+ * GET /watch-defaults's wire shape (watch_defaults.go watchDefaultsResponse):
+ * ONE configured int — the auto-next countdown seconds, resolved server-side
+ * from MELLIFERA_AUTO_NEXT_COUNTDOWN_SECONDS (default 10, floor 1) and served
+ * verbatim. The client bakes NO countdown value of its own: an unusable value
+ * means no countdown and NEVER autoplay (the SPA servedCountdown law) — the
+ * usable-positive-integer ruling lives in the playback layer's pure mapper.
+ */
+@Serializable
+data class WatchDefaultsDto(
+    @SerialName("auto_next_countdown_seconds") val autoNextCountdownSeconds: Long? = null,
 )
 
 /** One group entry of the profile wire shape: the member facts only. */
