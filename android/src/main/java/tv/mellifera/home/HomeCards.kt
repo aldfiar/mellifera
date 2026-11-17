@@ -24,8 +24,16 @@ data class ResumeCardModel(
     /** The served library — the card's type accent reads its module (D3). */
     val libraryId: Long,
 
+    /** The served series display name — the card's eyebrow (parity P3-3);
+     * null means "no eyebrow block" (a film row serves ""). */
+    val seriesName: String?,
+
     /** The served current display name — null means "no title block". */
     val title: String?,
+
+    /** The served episode title (parity P3-3) — null means "no episode
+     * title block". */
+    val episodeTitle: String?,
 
     /** The served artwork wire path — null means "no artwork block". */
     val artworkUrl: String?,
@@ -58,6 +66,10 @@ data class AnchorCardModel(
     /** The served series display name — null means "no title block". */
     val title: String?,
 
+    /** The served library name (parity P3-3) — null means "no library
+     * block". */
+    val libraryName: String?,
+
     /** The served artwork wire path — null means "no artwork block". */
     val artworkUrl: String?,
 )
@@ -69,7 +81,9 @@ fun ContinueRow.toResumeCard(): ResumeCardModel? {
     return ResumeCardModel(
         itemId = cur.itemId,
         libraryId = libraryId,
+        seriesName = seriesDisplayName.takeIf { it.isNotBlank() },
         title = cur.displayName.takeIf { it.isNotBlank() },
+        episodeTitle = cur.episodeTitle.takeIf { it.isNotBlank() },
         artworkUrl = artwork?.takeIf { it.isNotBlank() },
         percent = percent,
         positionLine = positionLine(percent, cur.positionSeconds, libraryName),
@@ -84,6 +98,7 @@ fun ContinueRow.toAnchorCard(): AnchorCardModel? {
         libraryId = libraryId,
         nextLabel = next?.label?.takeIf { it.isNotBlank() },
         title = seriesDisplayName.takeIf { it.isNotBlank() },
+        libraryName = libraryName.takeIf { it.isNotBlank() },
         artworkUrl = artwork?.takeIf { it.isNotBlank() },
     )
 }

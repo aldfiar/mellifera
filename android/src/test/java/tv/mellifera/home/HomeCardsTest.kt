@@ -26,7 +26,10 @@ class HomeCardsTest {
         ).toResumeCard()!!
 
         assertEquals("e-1", card.itemId)
+        // The served eyebrow + episode title (parity P3-3).
+        assertEquals("Сага", card.seriesName)
         assertEquals("Сага S01E01", card.title)
+        assertEquals("Начало", card.episodeTitle)
         assertEquals("/artwork/posters/s-1.jpg", card.artworkUrl)
         // watchedPercent's law: 300/2400 → 13% (12.5 rounds to 13), clamped.
         assertEquals(13, card.percent)
@@ -45,15 +48,19 @@ class HomeCardsTest {
     @Test
     fun film_resume_row_maps_without_series_identity() {
         // The film row: series fields honest "" — the card's title block is
-        // the served current display name; no library part when absent.
+        // the served current display name; the eyebrow and episode-title
+        // blocks are absent (parity P3-3), no library part when absent.
         val card = row(
             seriesName = "",
             displayName = "Матрица",
+            episodeTitle = "",
             position = 3661,
             duration = 7200,
             libraryName = "",
         ).toResumeCard()!!
+        assertNull(card.seriesName)
         assertEquals("Матрица", card.title)
+        assertNull(card.episodeTitle)
         assertNull(card.artworkUrl)
         assertEquals(51, card.percent)
         assertEquals("51% · 1:01:01", card.positionLine)
@@ -80,6 +87,8 @@ class HomeCardsTest {
         assertEquals("e-9", card.nextItemId)
         assertEquals("S02E01", card.nextLabel)
         assertEquals("Хроники", card.title)
+        // The served library meta line (parity P3-3).
+        assertEquals("Сериалы", card.libraryName)
         assertEquals("/artwork/posters/s-2.jpg", card.artworkUrl)
     }
 
@@ -97,6 +106,20 @@ class HomeCardsTest {
         assertNull(card.nextLabel)
         assertEquals("Осенний вальс", card.title)
         assertNull(card.artworkUrl)
+    }
+
+    @Test
+    fun anchor_row_without_library_name_maps_null_library_block() {
+        // The absent library_name serves "" → no library block (L1).
+        val card = ContinueRow(
+            seriesId = "s-4",
+            seriesDisplayName = "Тихий берег",
+            libraryId = 1,
+            libraryName = "",
+            next = ContinueNext(itemId = "e-12", label = "S01E02"),
+        ).toAnchorCard()!!
+        assertEquals("Тихий берег", card.title)
+        assertNull(card.libraryName)
     }
 
     @Test
@@ -121,6 +144,7 @@ class HomeCardsTest {
     private fun row(
         displayName: String = "Сага S01E01",
         seriesName: String = "Сага",
+        episodeTitle: String = "Начало",
         position: Long = 300,
         duration: Long? = 2400,
         libraryName: String = "Сериалы",
@@ -134,6 +158,7 @@ class HomeCardsTest {
         current = ContinueCurrent(
             itemId = "e-1",
             displayName = displayName,
+            episodeTitle = episodeTitle,
             positionSeconds = position,
             durationSeconds = duration,
         ),

@@ -345,8 +345,24 @@ private fun ResumeCard(
                 modifier = Modifier.padding(top = 3.dp),
             )
         }
+        if (model.seriesName != null) {
+            Text(
+                model.seriesName,
+                fontSize = TYPE_META,
+                color = Color.White.copy(alpha = 0.6f),
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         if (model.title != null) {
             Text(model.title, fontSize = TYPE_HEADING, modifier = Modifier.padding(top = 4.dp))
+        }
+        if (model.episodeTitle != null) {
+            Text(
+                model.episodeTitle,
+                fontSize = TYPE_META,
+                color = Color.White.copy(alpha = 0.6f),
+                modifier = Modifier.padding(top = 2.dp),
+            )
         }
         Text(
             model.positionLine,
@@ -359,10 +375,10 @@ private fun ResumeCard(
 
 /**
  * The anchor card (D4): the 16:9 still, the served series name promoted to
- * the title slot, the served next label verbatim tinted by the row's type
- * accent. OK plays the served next.item_id; a row with no next offer
- * renders BARE — still and title, no OK affordance, never a fabricated
- * link (D4).
+ * the title slot, the served library meta line (parity P3-3) and the served
+ * next label verbatim tinted by the row's type accent. OK plays the served
+ * next.item_id; a row with no next offer renders BARE — still and title, no
+ * OK affordance, never a fabricated link (D4).
  */
 @Composable
 private fun AnchorCard(
@@ -398,6 +414,14 @@ private fun AnchorCard(
         }
         if (model.title != null) {
             Text(model.title, fontSize = TYPE_HEADING, modifier = Modifier.padding(top = 4.dp))
+        }
+        if (model.libraryName != null) {
+            Text(
+                model.libraryName,
+                fontSize = TYPE_META,
+                color = Color.White.copy(alpha = 0.6f),
+                modifier = Modifier.padding(top = 2.dp),
+            )
         }
         if (model.nextLabel != null) {
             Text(
