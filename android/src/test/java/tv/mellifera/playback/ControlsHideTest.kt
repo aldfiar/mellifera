@@ -14,7 +14,7 @@ class ControlsHideTest {
 
     @Test
     fun starts_hidden_and_disarmed() {
-        assertFalse(ControlsVisibility.HIDDEN.shown)
+        assertFalse(ControlsVisibility.HIDDEN.isVisible)
         // Disarmed: no elapsed span can fire a timer that was never armed.
         assertFalse(ControlsVisibility.HIDDEN.hideDue(Long.MAX_VALUE))
     }
@@ -22,7 +22,7 @@ class ControlsHideTest {
     @Test
     fun input_reveals_and_arms_from_now() {
         val revealed = ControlsVisibility.HIDDEN.onPlayerInput(nowMs = 100_000L)
-        assertTrue(revealed.shown)
+        assertTrue(revealed.isVisible)
         assertEquals(100_000L, revealed.armedAtMs)
         // Fires ~6s: not a beat before, exactly at the span.
         assertFalse(revealed.hideDue(100_000L + CONTROLS_HIDE_MS - 1))
@@ -47,7 +47,7 @@ class ControlsHideTest {
         controls = controls.onProgressTick()
         controls = controls.onProgressTick()
         assertEquals(0L, controls.armedAtMs)
-        assertTrue(controls.shown)
+        assertTrue(controls.isVisible)
         // The hide still fires at the ORIGINAL input's 6s mark — the 0.3.2
         // defect was exactly this mark being pushed every frame.
         assertTrue(controls.hideDue(CONTROLS_HIDE_MS))
@@ -59,7 +59,7 @@ class ControlsHideTest {
         val dismissed = ControlsVisibility.HIDDEN
             .onPlayerInput(nowMs = 0L)
             .onDismiss()
-        assertFalse(dismissed.shown)
+        assertFalse(dismissed.isVisible)
         assertFalse(dismissed.hideDue(Long.MAX_VALUE))
     }
 }

@@ -2,7 +2,9 @@ package tv.mellifera.browse
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.aspectRatio
@@ -40,6 +42,8 @@ import tv.mellifera.home.ResumeCardModel
 import tv.mellifera.home.toAnchorCard
 import tv.mellifera.home.toResumeCard
 import tv.mellifera.net.LibraryDto
+import tv.mellifera.ui.TYPE_HEADING
+import tv.mellifera.ui.TYPE_META
 import tv.mellifera.ui.requestFocusSafely
 import tv.mellifera.ui.tvFocusStyle
 
@@ -56,10 +60,16 @@ import tv.mellifera.ui.tvFocusStyle
  * the home flow's state; Up/Down stay UNCONSUMED so Compose's focus search
  * crosses rows, the settings section and the grid natively. LEFT at row-0
  * x=0 opens the collections rail (the 5.15 idiom) — the opener is recorded
- * ([HomeRowWalker.railRestoreHome]) so the rail close restores THIS
- * cursor, never the grid's (L3). Entry focus stays the grid's (the
- * wireframe's focused cell): these cards suppress their own
- * composition-time focus launches.
+ * ([HomeRowWalker.shouldRestoreHome]) so the rail close restores THIS
+ * cursor, never the grid's (L3). Entry focus lands the FIRST VISIBLE card
+ * of the rows while one exists — the first resume card, else the first
+ * Next-up anchor ([entryLandsOnHome], task 8.15's amendment of the
+ * wireframe's grid-entry law: the operator-confirmed #18 defect put the
+ * entry cursor on the INVISIBLE below-fold grid tile, whose OK actuated a
+ * series page while the user was looking at the resume cards) — and the
+ * grid keeps the entry only when the home surface cannot claim it. That
+ * one launch rides [HomeCardShell]'s `takesEntryFocus`; every other
+ * composition-time launch stays suppressed (the walkerArmed law).
  *
  * Copy is RU (L7); the row labels mirror the SPA Home's section headers.
  */
@@ -74,8 +84,8 @@ private const val NEXT_UP_LABEL = "Следующая серия"
 private data class HomeRowWalker(
     val focus: Int,
     val isTopRow: Boolean,
-    val railOpen: Boolean,
-    val railRestoreHome: Boolean,
+    val isRailOpen: Boolean,
+    val shouldRestoreHome: Boolean,
     val onFocusMoved: (Int) -> Unit,
     val onOpenRail: () -> Unit,
 )
@@ -83,8 +93,8 @@ private data class HomeRowWalker(
 @Composable
 internal fun HomeRows(
     home: HomeState,
-    railOpen: Boolean,
-    railRestoreHome: Boolean,
+    isRailOpen: Boolean,
+    shouldRestoreHome: Boolean,
     libraries: List<LibraryDto>,
     serverBase: String?,
     token: String?,
@@ -110,16 +120,16 @@ internal fun HomeRows(
             val continueWalker = HomeRowWalker(
                 focus = home.continueFocus,
                 isTopRow = true,
-                railOpen = railOpen,
-                railRestoreHome = railRestoreHome,
+                isRailOpen = isRailOpen,
+                shouldRestoreHome = shouldRestoreHome,
                 onFocusMoved = onContinueFocusMoved,
                 onOpenRail = onOpenRail,
             )
             val nextUpWalker = HomeRowWalker(
                 focus = home.nextUpFocus,
                 isTopRow = resumes.isEmpty(),
-                railOpen = railOpen,
-                railRestoreHome = railRestoreHome,
+                isRailOpen = isRailOpen,
+                shouldRestoreHome = shouldRestoreHome,
                 onFocusMoved = onNextUpFocusMoved,
                 onOpenRail = onOpenRail,
             )
@@ -132,6 +142,9 @@ internal fun HomeRows(
                         index = index,
                         count = resumes.size,
                         cardWidth = cardWidth,
+                        // The rows' first row owns the entry (task 8.15): its
+                        // first card takes the one-shot entry launch.
+                        takesEntryFocus = index == 0,
                         onResume = onResume,
                         serverBase = serverBase,
                         token = token,
@@ -147,6 +160,9 @@ internal fun HomeRows(
                         index = index,
                         count = anchors.size,
                         cardWidth = cardWidth,
+                        // The entry's fallback row: only when no resumes render
+                        // above it (task 8.15's resume → anchor → grid chain).
+                        takesEntryFocus = resumes.isEmpty() && index == 0,
                         onNext = onNext,
                         serverBase = serverBase,
                         token = token,
@@ -168,10 +184,10 @@ private fun HomeRow(
     cardWidth: Dp,
     card: @Composable (Int) -> Unit,
 ) {
-    Column(modifier = Modifier.padding(top = 12.dp)) {
-        Text(label, fontSize = 18.sp)
+    Column(modifier = Modifier.padding(top = 6.dp)) {
+        Text(label, fontSize = TYPE_HEADING)
         LazyRow(
-            modifier = Modifier.padding(top = 8.dp),
+            modifier = Modifier.padding(top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             items(count) { index -> card(index) }
@@ -193,6 +209,12 @@ private fun HomeCardShell(
     walker: HomeRowWalker,
     cardWidth: Dp,
     onClick: (() -> Unit)?,
+    // The 8.15 entry carve: the rows' FIRST card takes the entry focus with
+    // a one-shot composition-time launch — the ONE sanctioned break of the
+    // suppression law. Gated on the cursor still at rest (focus == this
+    // card, rail closed) so a late-arriving home never yanks a cursor the
+    // walker already moved.
+    takesEntryFocus: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val requester = remember { FocusRequester() }
@@ -206,23 +228,33 @@ private fun HomeCardShell(
     // moves and the rail-close restore re-request through these two
     // effects. Each suppresses its OWN composition-time launch (armed only
     // after the first run) — entry focus stays the grid's, and a stale
-    // railRestoreHome never grabs focus on a fresh composition.
+    // shouldRestoreHome never grabs focus on a fresh composition.
     var walkerArmed by remember { mutableStateOf(false) }
     var restoreArmed by remember { mutableStateOf(false) }
     LaunchedEffect(walker.focus) {
         if (walkerArmed) {
-            if (walker.focus == index && !walker.railOpen) requester.requestFocusSafely()
+            if (walker.focus == index && !walker.isRailOpen) requester.requestFocusSafely()
         } else {
             walkerArmed = true
         }
     }
-    LaunchedEffect(walker.railOpen, walker.railRestoreHome) {
+    LaunchedEffect(walker.isRailOpen, walker.shouldRestoreHome) {
         if (restoreArmed) {
-            if (!walker.railOpen && walker.railRestoreHome && walker.focus == index) {
+            if (!walker.isRailOpen && walker.shouldRestoreHome && walker.focus == index) {
                 requester.requestFocusSafely()
             }
         } else {
             restoreArmed = true
+        }
+    }
+    // The entry launch (task 8.15): a fresh composition of the rows' first
+    // card while the cursor is still at its entry value lands the focus HERE
+    // — the walkerArmed effects above stay suppressed, so this is the only
+    // path a home card ever takes focus on. The composition is stable by the
+    // time effects run (the same idiom PhotoViewer's proven entry uses).
+    LaunchedEffect(Unit) {
+        if (takesEntryFocus && walker.focus == index && !walker.isRailOpen) {
+            requester.requestFocusSafely()
         }
     }
     Column(
@@ -272,6 +304,7 @@ private fun ResumeCard(
     index: Int,
     count: Int,
     cardWidth: Dp,
+    takesEntryFocus: Boolean = false,
     onResume: (String) -> Unit,
     serverBase: String?,
     token: String?,
@@ -282,30 +315,35 @@ private fun ResumeCard(
         walker = walker,
         cardWidth = cardWidth,
         onClick = { onResume(model.itemId) },
+        takesEntryFocus = takesEntryFocus,
     ) {
-        val artwork = resolveArtworkUrl(serverBase, model.artworkUrl)
-        if (artwork != null) {
-            ArtworkImage(
-                artwork = artwork,
-                token = token,
-                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
-            )
+        // The uniform-row law (task 8.10): the 16:9 art block ALWAYS renders —
+        // absent artwork leaves a placeholder surface, never a shorter card.
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+            val artwork = resolveArtworkUrl(serverBase, model.artworkUrl)
+            if (artwork != null) {
+                ArtworkImage(
+                    artwork = artwork,
+                    token = token,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
         if (model.percent != null) {
             InProgressBar(
                 percent = model.percent,
                 accent = accent,
-                modifier = Modifier.padding(top = 6.dp),
+                modifier = Modifier.padding(top = 3.dp),
             )
         }
         if (model.title != null) {
-            Text(model.title, fontSize = 18.sp, modifier = Modifier.padding(top = 8.dp))
+            Text(model.title, fontSize = TYPE_HEADING, modifier = Modifier.padding(top = 4.dp))
         }
         Text(
             model.positionLine,
-            fontSize = 12.sp,
+            fontSize = TYPE_META,
             color = Color.White.copy(alpha = 0.6f),
-            modifier = Modifier.padding(top = 4.dp),
+            modifier = Modifier.padding(top = 2.dp),
         )
     }
 }
@@ -325,6 +363,7 @@ private fun AnchorCard(
     index: Int,
     count: Int,
     cardWidth: Dp,
+    takesEntryFocus: Boolean = false,
     onNext: (String) -> Unit,
     serverBase: String?,
     token: String?,
@@ -335,24 +374,28 @@ private fun AnchorCard(
         walker = walker,
         cardWidth = cardWidth,
         onClick = model.nextItemId?.let { id -> { onNext(id) } },
+        takesEntryFocus = takesEntryFocus,
     ) {
-        val artwork = resolveArtworkUrl(serverBase, model.artworkUrl)
-        if (artwork != null) {
-            ArtworkImage(
-                artwork = artwork,
-                token = token,
-                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
-            )
+        // The uniform-row law (task 8.10): the 16:9 art block ALWAYS renders.
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+            val artwork = resolveArtworkUrl(serverBase, model.artworkUrl)
+            if (artwork != null) {
+                ArtworkImage(
+                    artwork = artwork,
+                    token = token,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
         if (model.title != null) {
-            Text(model.title, fontSize = 18.sp, modifier = Modifier.padding(top = 8.dp))
+            Text(model.title, fontSize = TYPE_HEADING, modifier = Modifier.padding(top = 4.dp))
         }
         if (model.nextLabel != null) {
             Text(
                 model.nextLabel,
-                fontSize = 12.sp,
+                fontSize = TYPE_META,
                 color = accent.copy(alpha = 0.9f),
-                modifier = Modifier.padding(top = 4.dp),
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
     }

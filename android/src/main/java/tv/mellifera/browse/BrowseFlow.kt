@@ -53,7 +53,7 @@ internal val DEFAULT_TYPE_ACCENT = Color(0xFFA4C8F4)
  * [episodeFocus]) live here so Back restores the exact prior position —
  * the classic TV failure mode (grid restarts at 0) is pinned by
  * nav/BackRestorationTest (5.9). The collections rail (5.15) rides the same
- * state: [railOpen] IS the rail (an open rail takes Back before the series
+ * state: [isRailOpen] IS the rail (an open rail takes Back before the series
  * page — the BackHandler chain's first link), [railFocus] walks the rows so
  * reopening lands on the current collection, and [summaries] holds the
  * rail's per-collection counts, populated by [BrowseFlow.loadSummaries]; an
@@ -61,7 +61,7 @@ internal val DEFAULT_TYPE_ACCENT = Color(0xFFA4C8F4)
  * placeholder).
  */
 data class BrowseState(
-    val loading: Boolean = false,
+    val isLoading: Boolean = false,
     val error: String? = null,
     val libraries: List<LibraryDto> = emptyList(),
     val libraryId: Long? = null,
@@ -70,7 +70,7 @@ data class BrowseState(
     val episodes: List<ItemDto> = emptyList(),
     val gridFocus: Int = 0,
     val episodeFocus: Int = 0,
-    val railOpen: Boolean = false,
+    val isRailOpen: Boolean = false,
     val railFocus: Int = 0,
     /**
      * The rail-close restore's owner (task 3.2): true when the rail was
@@ -80,7 +80,20 @@ data class BrowseState(
      * race. Set by every [openRail]; read only by the two surfaces'
      * restore effects, never by the walkers.
      */
-    val railRestoreHome: Boolean = false,
+    val shouldRestoreHome: Boolean = false,
+    /**
+     * True once a collection body was EXPLICITLY opened — the shared
+     * activation commit ([selectLibrary]'s success, task 8.8: EVERY path
+     * that renders the body as the active surface raises it there, the
+     * anchor path alongside the rail-row OK): the body is a route over the
+     * home rows (the SPA parity — the web Collection is a route), and the
+     * body-open Back closes it onto the rows. The default first
+     * collection's body at entry is NOT an opened body — no explicit
+     * activation ran ([enter] loads it directly), so its grid keeps D12's
+     * Back law (exit). Cleared by [closeBody] — the only false transition;
+     * the walkers never read it.
+     */
+    val isBodyOpen: Boolean = false,
     val summaries: Map<Long, LibrarySummaryResponse> = emptyMap(),
     /** The open series' stored positions off the progress wire
      * (GET /progress/{item_id} — the exact read the player's resume makes),
@@ -107,7 +120,7 @@ data class BrowseState(
     val itemsOffset: Int = 0,
     /** True once a page came back short — the append trigger stands down
      * (the honest end-of-stream, never an empty extra request). */
-    val itemsExhausted: Boolean = false,
+    val isStreamExhausted: Boolean = false,
     /** The folder-chips row's cursor; -1 = no chip holds focus (the
      * D12 chips row — its Back and the L2 crossings read this). */
     val chipFocus: Int = -1,
@@ -116,6 +129,16 @@ data class BrowseState(
      * re-requests the parked cursor's card. The walkers never read it.
      */
     val gridFocusNonce: Int = 0,
+    /**
+     * The photo viewer's open index into [items] (task 8.13 — the
+     * operator-reported gap: OK on a photo tile opened nothing); null = the
+     * viewer is closed. The viewer is MODAL — it holds the focus and eats
+     * the dpad — so nothing else can move the body beneath it; the viewer's
+     * own moves walk the LOADED rows only ([movePhoto]'s bounds law). Any
+     * body-content swap (selectLibrary's commit, pickFolder's restart)
+     * closes it — never a viewer pointing into a replaced stream.
+     */
+    val photoIndex: Int? = null,
 )
 
 /**
@@ -143,15 +166,21 @@ class BrowseFlow(
     val state: StateFlow<BrowseState> = _state.asStateFlow()
 
     /**
-     * The rail-OK body swap (task 8.3's visible-swap law): ONE one-shot
-     * signal per SUCCESSFUL [activateRailRow] — the UI actuator reads it to
-     * bring the opened body's top INTO VIEW (the SPA's page shape: the user
-     * SEES the body they opened). A one-shot FLOW, not a state field: a
-     * state nonce would re-fire on every fresh composition of the browse
-     * content (Back from the series page), racing the restored cursor with
-     * a stale page jump. A plain rail close and a FAILED activation emit
-     * nothing — the close restores the parked cursor, the failure keeps the
-     * rail (the 4.3 keep-focus law).
+     * The rail-OK body swap (task 8.3's visible-swap law): TWO one-shot
+     * signals per SUCCESSFUL [activateRailRow], in a pinned order — the
+     * commit-time emit at the [selectLibrary] commit and the post-load
+     * re-emit after the body fetch resolves (task 8.5's determinism law:
+     * one signal after the await is not enough — walkG-debug caught a
+     * started-and-never-completed swap on a no-focus entry home, 0/3 legs
+     * landing). The UI actuator reads them to bring the opened body's top
+     * INTO VIEW (the SPA's page shape: the user SEES the body they opened).
+     * A one-shot FLOW, not a state field: a state nonce would re-fire on
+     * every fresh composition of the browse content (Back from the series
+     * page), racing the restored cursor with a stale page jump. A plain
+     * rail close emits nothing — the close restores the parked cursor. A
+     * FAILED activation emits only the commit-time signal (the fetch fails
+     * after the commit); the RE-emit rides success alone — the failure
+     * keeps the rail (the 4.3 keep-focus law).
      */
     private val _bodySwaps = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     val bodySwaps: SharedFlow<Unit> = _bodySwaps
@@ -159,7 +188,7 @@ class BrowseFlow(
     /** Navigate into browse: libraries → the first served collection's
      * module-keyed body (D6). */
     suspend fun enter() {
-        _state.value = BrowseState(loading = true)
+        _state.value = BrowseState(isLoading = true)
         try {
             val service = apiFor()
             val libraries = service.libraries().items
@@ -171,7 +200,7 @@ class BrowseFlow(
             _state.value = BrowseState(
                 libraries = libraries,
                 libraryId = first.id,
-                loading = true,
+                isLoading = true,
             )
             loadBody(first.id)
         } catch (e: Exception) {
@@ -182,40 +211,74 @@ class BrowseFlow(
     /**
      * The collection switch (5.14): fetch-on-navigate over the module-keyed
      * body law (D6) — a new collection is a fresh body, so the cursors
-     * reset to 0. On failure the honest RU error surfaces and the PRIOR
-     * body stays: rows, cursors and libraryId revert (the flow's failure
-     * law — whatever was on screen is kept, never wiped by a failed fetch).
+     * reset to 0 AND the prior collection's series page closes with it
+     * (task 8.9's fresh-body law: [selectedSeries], [episodes] and
+     * [positions] belong to the OLD collection — the switch lands the new
+     * body, never the old collection's episode page over it). On failure
+     * the honest RU error surfaces and the PRIOR body stays: rows, cursors,
+     * libraryId and the open series page revert (the flow's failure law —
+     * whatever was on screen is kept, never wiped by a failed fetch).
      * Returns whether the body actually opened — the rail-OK law reads it
-     * ([activateRailRow] keeps the rail open when it is false).
+     * ([activateRailRow] keeps the rail open when it is false). A
+     * SUCCESSFUL switch is the SHARED explicit-activation commit (task
+     * 8.8): [BrowseState.isBodyOpen] rises here, so every path that opens a
+     * collection body through this fetch-bearing seam holds the opened
+     * body's Back law; a FAILED switch reverts and raises nothing — the
+     * prior body keeps its own [BrowseState.isBodyOpen].
      */
     suspend fun selectLibrary(libraryId: Long): Boolean {
         val prior = _state.value
         _state.value = prior.copy(
             libraryId = libraryId,
-            loading = true,
+            isLoading = true,
             error = null,
             gridFocus = 0,
             series = emptyList(),
+            selectedSeries = null,
+            episodes = emptyList(),
+            positions = emptyMap(),
             items = emptyList(),
             folders = emptyList(),
             folder = null,
             itemsOffset = 0,
-            itemsExhausted = false,
+            isStreamExhausted = false,
             chipFocus = -1,
+            photoIndex = null,
         )
+        // The commit-time swap signal (task 8.5): the visible swap must not
+        // wait out the body fetch — walkG-debug proved fetch latency is NOT
+        // the killer (a 1972ms fetch still never landed), but a swap that
+        // starts only after the await leaves the no-focus home on screen
+        // for the whole load. Firing at the commit brings the body page
+        // INTO VIEW immediately; the post-load RE-emit in [activateRailRow]
+        // lands the top once the rows are in.
+        _bodySwaps.tryEmit(Unit)
         try {
             loadBody(libraryId)
+            // The shared explicit-activation raise (task 8.8 — the walk36
+            // leg D trap): isBodyOpen was raised ONLY by the rail-row OK's
+            // own commit, so an activation that rode THIS fetch-bearing
+            // path without the rail left the body the active surface with
+            // the BackHandler chain fully disabled — ONE BACK exited to
+            // the launcher. The raise lives at the ONE commit every
+            // explicit activation shares; the entry default body never
+            // runs it ([enter] loads directly — D12's exit law stands),
+            // and [closeBody]'s clear stays the only false transition.
+            _state.value = _state.value.copy(isBodyOpen = true)
             return true
         } catch (e: Exception) {
             _state.value = _state.value.copy(
                 libraryId = prior.libraryId,
                 gridFocus = prior.gridFocus,
                 series = prior.series,
+                selectedSeries = prior.selectedSeries,
+                episodes = prior.episodes,
+                positions = prior.positions,
                 items = prior.items,
                 folders = prior.folders,
                 folder = prior.folder,
                 itemsOffset = prior.itemsOffset,
-                itemsExhausted = prior.itemsExhausted,
+                isStreamExhausted = prior.isStreamExhausted,
             )
             fail(MESSAGE_SWITCH, e)
             return false
@@ -233,14 +296,14 @@ class BrowseFlow(
         when (moduleOf(libraryId)) {
             "serial" -> {
                 val series = apiFor().series(libraryId).items
-                _state.value = _state.value.copy(series = series, loading = false)
+                _state.value = _state.value.copy(series = series, isLoading = false)
             }
             "tv" -> loadItems(libraryId, folder = null, offset = 0)
             "image" -> {
                 loadFolders(libraryId)
                 loadItems(libraryId, folder = null, offset = 0)
             }
-            else -> _state.value = _state.value.copy(loading = false)
+            else -> _state.value = _state.value.copy(isLoading = false)
         }
     }
 
@@ -273,8 +336,8 @@ class BrowseFlow(
         _state.value = _state.value.copy(
             items = if (offset == 0) page else _state.value.items + page,
             itemsOffset = offset,
-            itemsExhausted = page.size < PAGE_SIZE,
-            loading = if (offset == 0) false else _state.value.loading,
+            isStreamExhausted = page.size < PAGE_SIZE,
+            isLoading = if (offset == 0) false else _state.value.isLoading,
         )
     }
 
@@ -311,12 +374,13 @@ class BrowseFlow(
         if (prior.folder == path) return
         _state.value = prior.copy(
             folder = path,
-            loading = true,
+            isLoading = true,
             error = null,
             gridFocus = 0,
             items = emptyList(),
             itemsOffset = 0,
-            itemsExhausted = false,
+            isStreamExhausted = false,
+            photoIndex = null,
         )
         try {
             loadItems(libraryId, path, offset = 0)
@@ -325,7 +389,7 @@ class BrowseFlow(
                 folder = prior.folder,
                 items = prior.items,
                 itemsOffset = prior.itemsOffset,
-                itemsExhausted = prior.itemsExhausted,
+                isStreamExhausted = prior.isStreamExhausted,
             )
             fail(MESSAGE_ITEMS, e)
         }
@@ -344,7 +408,7 @@ class BrowseFlow(
         val libraryId = current.libraryId ?: return
         val module = moduleOf(libraryId) ?: return
         if (module != "tv" && module != "image") return
-        if (current.itemsExhausted || current.loading || extending) return
+        if (current.isStreamExhausted || current.isLoading || extending) return
         extending = true
         try {
             loadItems(libraryId, current.folder, current.itemsOffset + PAGE_SIZE)
@@ -384,6 +448,42 @@ class BrowseFlow(
         )
     }
 
+    /** The photo viewer opened on the tile at [index] (task 8.13). A
+     * out-of-bounds index is a no-op — the viewer only opens on a loaded
+     * row. */
+    fun openPhoto(index: Int) {
+        if (index < 0 || index >= _state.value.items.size) return
+        _state.value = _state.value.copy(photoIndex = index)
+    }
+
+    /**
+     * The viewer's prev/next (task 8.13): [step] ±1 within the LOADED rows —
+     * at either end the index stays (the viewer is modal, there is nothing
+     * to cross to; the key stays consumed, the picture stays).
+     */
+    fun movePhoto(step: Int) {
+        val index = _state.value.photoIndex ?: return
+        val next = index + step
+        if (next < 0 || next >= _state.value.items.size) return
+        _state.value = _state.value.copy(photoIndex = next)
+    }
+
+    /**
+     * The viewer closed (its BACK — task 8.13's close law): the index
+     * clears, the body's filter/cursor are untouched, and the grid's
+     * re-focus nonce bumps so the parked tile re-lands deterministically —
+     * the grid stays composed under the modal viewer, so the nonce
+     * actuator's one-shot request targets an ATTACHED node (the 8.11 drop
+     * class needs a mid-swap mount; this close has none).
+     */
+    fun closePhoto() {
+        if (_state.value.photoIndex == null) return
+        _state.value = _state.value.copy(
+            photoIndex = null,
+            gridFocusNonce = _state.value.gridFocusNonce + 1,
+        )
+    }
+
     /**
      * The collections rail's counts (5.14 — the SPA's closed-panel D1 law):
      * fetched ONLY when the rail opens (5.15's rail-open path calls this; a
@@ -419,17 +519,17 @@ class BrowseFlow(
      * the focus on the CURRENT collection's row (the initial-focus law
      * carried into the rail) and the per-collection counts fire through
      * [loadSummaries] ONCE. [fromHome] records the opener — the close's
-     * restore law reads [BrowseState.railRestoreHome]. Idempotent: an
+     * restore law reads [BrowseState.shouldRestoreHome]. Idempotent: an
      * already-open rail neither moves the focus nor re-fires the summaries.
      */
     suspend fun openRail(fromHome: Boolean = false) {
         val current = _state.value
-        if (current.railOpen) return
+        if (current.isRailOpen) return
         val focus = current.libraries.indexOfFirst { it.id == current.libraryId }.coerceAtLeast(0)
         _state.value = current.copy(
-            railOpen = true,
+            isRailOpen = true,
             railFocus = focus,
-            railRestoreHome = fromHome,
+            shouldRestoreHome = fromHome,
         )
         loadSummaries()
     }
@@ -440,7 +540,27 @@ class BrowseFlow(
      * grid re-renders with the exact prior cursor (the no-restart law).
      */
     fun closeRail() {
-        _state.value = _state.value.copy(railOpen = false)
+        _state.value = _state.value.copy(isRailOpen = false)
+    }
+
+    /**
+     * The opened collection body's Back (task 8.7 — the SPA route parity:
+     * the web Collection is a route, back returns home). Mirrors
+     * [closeSeries]' no-fetch flip: the loaded body's rows, grid cursor,
+     * chips and rail cursor are deliberately untouched (L3, the no-restart
+     * law — DOWN re-enters the same body, reopening the rail lands on the
+     * current collection), [BrowseState.isBodyOpen] falls so the NEXT Back
+     * from the restored home rows is the app's own exit, and
+     * [BrowseState.shouldRestoreHome] rises — the SAME flag the rail close
+     * rides — so HomeRows' restore actuator re-lands the parked home
+     * cursor, whose focus→scroll actuator carries the viewport back to the
+     * rows. Guarded: a body that was never opened stages no restore (Back
+     * there is the app's own exit, D12's grid law).
+     */
+    fun closeBody() {
+        val current = _state.value
+        if (!current.isBodyOpen) return
+        _state.value = current.copy(isBodyOpen = false, shouldRestoreHome = true)
     }
 
     /**
@@ -456,24 +576,30 @@ class BrowseFlow(
      */
     suspend fun activateRailRow(): Boolean {
         val current = _state.value
-        if (!current.railOpen) return false
+        if (!current.isRailOpen) return false
         val library = current.libraries.getOrNull(current.railFocus) ?: return false
         val opened = selectLibrary(library.id)
         if (opened) {
             _state.value = _state.value.copy(
-                railOpen = false,
+                isRailOpen = false,
+                // The body is now an OPENED one: [BrowseState.isBodyOpen]
+                // already rose at the shared selectLibrary commit (task
+                // 8.8) — no second flag-set here.
                 // The activation close restores NOTHING (walk34, task 8.4):
                 // the cursor moves INTO the opened body (4.3's re-land
-                // below) — a cleared [BrowseState.railRestoreHome] stands
+                // below) — a cleared [BrowseState.shouldRestoreHome] stands
                 // HomeRows' restore effect down, so its focus→scroll
                 // actuator cannot drag the viewport back onto the home rows
                 // over the body-top swap. Only the LEFT/RIGHT/BACK closes
                 // ([closeRail]) keep the restore.
-                railRestoreHome = false,
+                shouldRestoreHome = false,
                 gridFocusNonce = _state.value.gridFocusNonce + 1,
             )
-            // The visible-swap law (task 8.3): the opened body's top rides
-            // this signal INTO VIEW — the activation is a VISIBLE swap.
+            // The visible-swap law (tasks 8.3 + 8.5): the POST-LOAD re-emit
+            // — the commit-time emit already fired at the [selectLibrary]
+            // commit; this second signal lands the body top now that the
+            // rows are in, so the swap completes deterministically whatever
+            // the entry home's focus state was.
             _bodySwaps.tryEmit(Unit)
         }
         return opened
@@ -497,7 +623,7 @@ class BrowseFlow(
             selectedSeries = series,
             episodes = emptyList(),
             positions = emptyMap(),
-            loading = true,
+            isLoading = true,
             error = null,
             episodeFocus = 0,
         )
@@ -506,7 +632,7 @@ class BrowseFlow(
             _state.value = _state.value.copy(
                 selectedSeries = series,
                 episodes = episodes,
-                loading = false,
+                isLoading = false,
             )
             _state.value = _state.value.copy(positions = loadPositions(episodes))
         } catch (e: Exception) {
@@ -583,7 +709,7 @@ class BrowseFlow(
                         _state.value = current.copy(
                             items = items,
                             itemsOffset = 0,
-                            itemsExhausted = items.size < PAGE_SIZE,
+                            isStreamExhausted = items.size < PAGE_SIZE,
                             error = null,
                         )
                     }
@@ -632,9 +758,9 @@ class BrowseFlow(
     private fun fail(message: String, e: Exception) {
         if (e is HttpException && e.code() == 401) {
             onUnauthorized()
-            _state.value = _state.value.copy(loading = false, error = null)
+            _state.value = _state.value.copy(isLoading = false, error = null)
         } else {
-            _state.value = _state.value.copy(loading = false, error = message)
+            _state.value = _state.value.copy(isLoading = false, error = message)
         }
     }
 

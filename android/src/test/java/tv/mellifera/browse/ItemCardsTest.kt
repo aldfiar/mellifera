@@ -121,16 +121,16 @@ class ItemCardsTest {
     }
 
     @Test
-    fun photo_tile_uses_the_real_ratio_only_when_both_facts_exist() {
-        val ratio = item(
+    fun photo_tile_ignores_dimension_facts_geometry_rides_the_grid() {
+        // The uniform-row law (8.10): the served width/height facts no longer
+        // size anything — tile geometry is the photo grid's fixed square, and
+        // the per-card aspect carrier is retired. Dimension facts leak into
+        // NO carrier: no artwork fact, no footer.
+        val tiled = item(
             document = doc("""{"sources":{"ns":{"width":4000,"height":3000}}}"""),
         ).toPhotoCard()
-        assertEquals(4000f / 3000f, ratio.aspect!!, 0.0001f)
-        // Half the pair → the default fixed-height block, never a guess.
-        val half = item(
-            document = doc("""{"sources":{"ns":{"width":4000}}}"""),
-        ).toPhotoCard()
-        assertNull(half.aspect)
+        assertNull(tiled.artworkUrl)
+        assertNull(tiled.footer)
     }
 
     @Test
@@ -167,5 +167,32 @@ class ItemCardsTest {
         assertNull(card.meta)
         assertNull(card.watched)
         assertNull(card.progress)
+    }
+
+    // ---- toPhotoViewerUrl: the full-screen viewer's artifact (8.13) --------
+
+    @Test
+    fun photo_viewer_url_prefers_the_original_then_the_thumb_then_nothing() {
+        // Both facts: the viewer shows the PHOTOGRAPH (original-first — the
+        // tile's thumb-first order is for the small square, not full-screen).
+        val both = item(
+            id = "p-1",
+            document = doc(
+                """{"sources":{"frame-grabber":{"thumbnail_path":"/t.jpg"}},
+                    "parsed":{"absolute_path":"/mnt/orig.jpg"}}""",
+            ),
+        ).toPhotoViewerUrl()
+        assertEquals("/api/v1/items/p-1/media", both)
+
+        // Thumb only: the viewer still opens — on the only artifact there is.
+        val thumbOnly = item(
+            id = "p-2",
+            document = doc("""{"sources":{"frame-grabber":{"thumbnail_path":"/t.jpg"}}}"""),
+        ).toPhotoViewerUrl()
+        assertEquals("/api/v1/items/p-2/media?variant=thumb", thumbOnly)
+
+        // No resolvable fact → null: the honest tile opens nothing, never a
+        // broken viewer.
+        assertNull(item(id = "p-3").toPhotoViewerUrl())
     }
 }

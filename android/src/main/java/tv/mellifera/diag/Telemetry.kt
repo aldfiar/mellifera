@@ -24,7 +24,7 @@ class DiagTelemetry(
     val sender = DiagSender(post = post, scope = scope)
 
     private val _open = MutableStateFlow(false)
-    val open: StateFlow<Boolean> = _open.asStateFlow()
+    val isOpen: StateFlow<Boolean> = _open.asStateFlow()
 
     init {
         sender.start()
@@ -32,19 +32,19 @@ class DiagTelemetry(
 
     /** Emits one debug event iff the gate is open (dropped otherwise). */
     fun emit(event: DebugEventRequest) {
-        if (gate.open) sender.send(event)
+        if (gate.isOpen) sender.send(event)
     }
 
     /** Lands a fresh /profile answer; the gate re-opens iff the flag set. */
     fun onProfile(profile: ProfileResponse) {
         gate.onProfile(profile)
-        _open.value = gate.open
+        _open.value = gate.isOpen
     }
 
     /** Foreground resume: the profile tier closes until the refetch lands. */
     fun onForegroundResume() {
         gate.onForegroundResume()
-        _open.value = gate.open
+        _open.value = gate.isOpen
     }
 
     /** The share sheet's text: the session's sent events, full detail. */

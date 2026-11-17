@@ -35,8 +35,8 @@ fun errorJson(code: String, message: String): String =
  */
 fun productionTransport(api: Api): PlaybackTransport = object : PlaybackTransport {
     override suspend fun playback(itemId: String) = api.service.playback(itemId)
-    override suspend fun play(itemId: String, retry: Boolean) =
-        api.service.play(itemId, PlayRequest(retry))
+    override suspend fun play(itemId: String, isRetry: Boolean) =
+        api.service.play(itemId, PlayRequest(isRetry))
 
     override suspend fun progress(itemId: String) = api.service.progress(itemId)
     override suspend fun putProgress(itemId: String, request: ProgressRequest) =

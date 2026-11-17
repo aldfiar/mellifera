@@ -23,41 +23,41 @@ class TelemetryGateTest {
         val gate = TelemetryGate(debugBuild = false)
 
         // No profile yet — closed (events before the first answer drop).
-        assertFalse(gate.open)
+        assertFalse(gate.isOpen)
 
         // The flag off — still silent.
         gate.onProfile(deviceProfile(debug = false))
-        assertFalse(gate.open)
+        assertFalse(gate.isOpen)
 
         // The admin flip lands — the gate opens.
         gate.onProfile(deviceProfile(debug = true))
-        assertTrue(gate.open)
+        assertTrue(gate.isOpen)
     }
 
     @Test
     fun profile_refetch_on_resume() {
         val gate = TelemetryGate(debugBuild = false)
         gate.onProfile(deviceProfile(debug = true))
-        assertTrue(gate.open)
+        assertTrue(gate.isOpen)
 
         // Resume closes the profile tier immediately — the window between
         // resume and the fresh answer DROPS events.
         gate.onForegroundResume()
-        assertFalse(gate.open)
+        assertFalse(gate.isOpen)
 
         // The refetch lands the flag still on — open again.
         gate.onProfile(deviceProfile(debug = true))
-        assertTrue(gate.open)
+        assertTrue(gate.isOpen)
 
         // The flip OFF lands within one app-switch: resume → refetch → closed.
         gate.onForegroundResume()
         gate.onProfile(deviceProfile(debug = false))
-        assertFalse(gate.open)
+        assertFalse(gate.isOpen)
 
         // A debug build never closes across the window (the build tier is
         // unconditional).
         val debugGate = TelemetryGate(debugBuild = true)
         debugGate.onForegroundResume()
-        assertTrue(debugGate.open)
+        assertTrue(debugGate.isOpen)
     }
 }

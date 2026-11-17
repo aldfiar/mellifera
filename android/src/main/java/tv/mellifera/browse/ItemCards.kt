@@ -112,33 +112,12 @@ internal fun formatDatePart(stamp: String): String =
     if (RFC3339_DAY_RE.containsMatchIn(stamp)) stamp.take(10) else stamp
 
 /**
- * aspectRatioOf — the PHOTO tile's real aspect ratio from the enricher's
- * width/height facts (the SPA's aspectRatio law): the first namespace
- * carrying both as positive integers wins. Null otherwise — the tile uses
- * the default fixed-height block. The field-driven TILE aspect is retired
- * from the serial/tv bodies (D13: fixed 2:3 posters / 16:9 stills) — only
- * the image body's masonry keeps the natural photo aspects.
- */
-internal fun aspectRatioOf(doc: JsonElement): Float? {
-    for (namespace in sourceNamespaces(doc)) {
-        val width = (namespace["width"] as? JsonPrimitive)?.longOrNullSafe() ?: continue
-        val height = (namespace["height"] as? JsonPrimitive)?.longOrNullSafe() ?: continue
-        if (width > 0 && height > 0) return width.toFloat() / height
-    }
-    return null
-}
-
-private fun JsonPrimitive.longOrNullSafe(): Long? =
-    if (isString) null else content.toLongOrNull()
-
-/**
  * toFileCard — the tv body's episode file card (the MovieCard idiom, D6):
  * thumb ONLY when the frame-grabber fact exists, the floored served title,
  * ONE parsed-facts meta line (documentMeta — the shared law, SeriesGrid.kt),
  * and the served watched stamp (the D2 ✓/dim law renders it; per-file
- * identity is the tv model, NOT a grouping bug). The still rides the FIXED
- * 16:9 aspect (D13 — the SPA's aspect-video; the field-driven TILE aspect
- * retired from this body).
+ * identity is the tv model, NOT a grouping bug). Geometry rides the tv
+ * grid's STILL_ASPECT (the uniform-row law).
  */
 fun ItemDto.toFileCard(): DisplayCard = DisplayCard(
     id = id,
@@ -147,15 +126,14 @@ fun ItemDto.toFileCard(): DisplayCard = DisplayCard(
     watched = watched,
     progress = null,
     meta = documentMeta(document),
-    aspect = STILL_ASPECT,
 )
 
 /**
  * toPhotoCard — the image body's photo tile (the PhotoTile idiom, D6):
  * media when a fact resolves it (thumb fact first, else the original file),
  * NO title/meta row (photo identity is the thumbnail; INV-no-filenames), the
- * capture-date footer ONLY when date_taken exists, and the real aspect ratio
- * ONLY when the width/height facts exist.
+ * capture-date footer ONLY when date_taken exists. Geometry rides the photo
+ * grid's fixed square (PHOTO_TILE_ASPECT) — Crop fills it either orientation.
  */
 fun ItemDto.toPhotoCard(): DisplayCard {
     val thumb = hasThumbFact(document)
@@ -171,6 +149,19 @@ fun ItemDto.toPhotoCard(): DisplayCard {
         progress = null,
         meta = null,
         footer = captureDate(document)?.let(::formatDatePart),
-        aspect = aspectRatioOf(document),
     )
+}
+
+/**
+ * toPhotoViewerUrl — the full-screen viewer's artifact (task 8.13): the
+ * ORIGINAL file when the scan-stamped fact resolves it (a viewer shows the
+ * photograph, not its tile thumbnail), else the thumb when the frame-grabber
+ * fact exists, else null — the honest no-artifact tile opens nothing (never
+ * a broken viewer). The tile's own order is thumb-first (a small square);
+ * the viewer's is original-first (full-screen Fit).
+ */
+internal fun ItemDto.toPhotoViewerUrl(): String? = when {
+    hasOriginalFile(document) -> mediaWirePath(id, thumb = false)
+    hasThumbFact(document) -> mediaWirePath(id, thumb = true)
+    else -> null
 }

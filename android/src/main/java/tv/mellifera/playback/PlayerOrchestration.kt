@@ -34,7 +34,7 @@ import tv.mellifera.state.reduce
  */
 interface PlaybackTransport {
     suspend fun playback(itemId: String): PlaybackDescriptor
-    suspend fun play(itemId: String, retry: Boolean): PlayResponse
+    suspend fun play(itemId: String, isRetry: Boolean): PlayResponse
     suspend fun progress(itemId: String): ProgressDto
     suspend fun putProgress(itemId: String, request: ProgressRequest): ProgressDto
     fun resolvePlayUrl(playUrl: String): String
@@ -334,7 +334,7 @@ class PlayerOrchestration(
     private fun ferry(effect: PlaybackEffect) {
         when (effect) {
             is PlaybackEffect.Describe -> scope.launch { describeLeg() }
-            is PlaybackEffect.Play -> scope.launch { playLeg(effect.item, effect.retry) }
+            is PlaybackEffect.Play -> scope.launch { playLeg(effect.item, effect.isRetry) }
             is PlaybackEffect.Poll -> {
                 val item = currentItem
                 scope.launch {
@@ -398,9 +398,9 @@ class PlayerOrchestration(
         dispatch(PlaybackEvent.Described(descriptor))
     }
 
-    private suspend fun playLeg(item: String, retry: Boolean) {
+    private suspend fun playLeg(item: String, isRetry: Boolean) {
         try {
-            dispatch(PlaybackEvent.Played(transport().play(item, retry).queued))
+            dispatch(PlaybackEvent.Played(transport().play(item, isRetry).queued))
         } catch (e: CancellationException) {
             throw e
         } catch (e: HttpException) {

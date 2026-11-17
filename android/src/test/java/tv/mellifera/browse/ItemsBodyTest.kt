@@ -71,7 +71,7 @@ class ItemsBodyTest {
         server.takeRequestOrFail("ItemsBodyTest.extend_appends_pages_until_the_stream_ends") // /series?library=1
         server.takeRequestOrFail("ItemsBodyTest.extend_appends_pages_until_the_stream_ends") // /items page 0
         assertEquals(50, flow.state.value.items.size)
-        assertFalse(flow.state.value.itemsExhausted)
+        assertFalse(flow.state.value.isStreamExhausted)
 
         // The cursor landed on the LAST loaded card: the next page fetches
         // and APPENDS — the walk continues into the new rows, offset 50.
@@ -88,7 +88,7 @@ class ItemsBodyTest {
         server.enqueue(json(emptyPage))
         flow.extendItems()
         assertEquals(100, flow.state.value.items.size)
-        assertTrue(flow.state.value.itemsExhausted)
+        assertTrue(flow.state.value.isStreamExhausted)
         flow.extendItems()
         assertEquals(5, server.requestCount)
     }
@@ -198,7 +198,7 @@ class ItemsBodyTest {
         assertEquals("Не удалось загрузить элементы", failed.error)
         assertNull(failed.folder)
         assertEquals(priorItems.map { it.id }, failed.items.map { it.id })
-        assertFalse(failed.loading)
+        assertFalse(failed.isLoading)
         server.assertDrained("ItemsBodyTest.failed_pick_keeps_the_prior_stream", 5)
     }
 

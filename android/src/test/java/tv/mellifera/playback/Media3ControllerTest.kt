@@ -24,16 +24,16 @@ class Media3ControllerTest {
         // hls: the pack's relative play_url against the configured base.
         val hls = launchPlan("/media/e1/master.m3u8?token=tok", "hls", resolve)
         assertEquals("http://192.168.1.10:8080/media/e1/master.m3u8?token=tok", hls.resolvedUrl)
-        assertTrue(hls.hls)
+        assertTrue(hls.isHls)
 
         // direct: same resolution law, non-hls config.
         val direct = launchPlan("/media/e1/original.mkv?token=tok", "direct", resolve)
         assertEquals("http://192.168.1.10:8080/media/e1/original.mkv?token=tok", direct.resolvedUrl)
-        assertFalse(direct.hls)
+        assertFalse(direct.isHls)
 
         // absolute passthrough: never re-prefixed.
         val absolute = launchPlan("http://other-host/media/original.mkv", "direct", resolve)
         assertEquals("http://other-host/media/original.mkv", absolute.resolvedUrl)
-        assertFalse(absolute.hls)
+        assertFalse(absolute.isHls)
     }
 }

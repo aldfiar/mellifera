@@ -64,7 +64,7 @@ class PlaybackReduceTest {
         s = t.state as PlaybackState.Starting
         assertEquals(Phase.Playing, s.phase)
         assertTrue(s.usedMaybePlay)
-        assertEquals(listOf<PlaybackEffect>(PlaybackEffect.Play("i1", retry = false)), t.effects)
+        assertEquals(listOf<PlaybackEffect>(PlaybackEffect.Play("i1", isRetry = false)), t.effects)
 
         t = reduce(s, PlaybackEvent.Played(queued = false))
         val a = t.state as PlaybackState.Active
@@ -90,7 +90,7 @@ class PlaybackReduceTest {
         // 2s→30s poll until playable.
         val s = describing()
         val t1 = reduce(s, PlaybackEvent.Described(desc(state = "preparing")))
-        assertTrue(t1.effects.contains(PlaybackEffect.Play("i1", retry = false)))
+        assertTrue(t1.effects.contains(PlaybackEffect.Play("i1", isRetry = false)))
 
         val t2 = reduce(t1.state, PlaybackEvent.Played(queued = false))
         val p = t2.state as PlaybackState.Starting
@@ -162,7 +162,7 @@ class PlaybackReduceTest {
         val t4 = reduce(f3, PlaybackEvent.RetryRequested)
         val s4 = t4.state as PlaybackState.Starting
         val t5 = reduce(s4, PlaybackEvent.Described(desc(mode = "hls", state = "partial")))
-        assertTrue(t5.effects.contains(PlaybackEffect.Play("i1", retry = true)))
+        assertTrue(t5.effects.contains(PlaybackEffect.Play("i1", isRetry = true)))
 
         // The 400-nothing_failed leg surfaces the descriptor's own
         // state_reason vocabulary verbatim — when the carried descriptor

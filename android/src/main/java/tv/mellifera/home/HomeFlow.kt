@@ -19,14 +19,36 @@ import tv.mellifera.net.MelliferaApi
  * [continueFocus] walks the resume cards, [nextUpFocus] the anchor cards —
  * preserved verbatim across [load]s (coerce-clamped to the live counts) so
  * Back and the rail cycle restore the exact position (L3).
+ *
+ * The state is BORN loading: the home fetch is the entry surface's first
+ * round-trip, so between the flow's construction and the first [load]'s
+ * resolution the surface cannot yet claim the entry focus ([entryLandsOnHome]
+ * reads true — the grid stands down until the home verdict exists, never a
+ * blind launch into the below-fold tile).
  */
 data class HomeState(
-    val loading: Boolean = false,
+    val isLoading: Boolean = true,
     val error: String? = null,
     val rows: List<ContinueRow> = emptyList(),
     val continueFocus: Int = 0,
     val nextUpFocus: Int = 0,
 )
+
+/**
+ * The entry-destination law (task 8.15, the #18 amendment): entry focus
+ * lands the home surface's FIRST VISIBLE card while the home rows hold one
+ * — the first resume card when the Continue row renders, else the first
+ * Next-up anchor — and the collection grid keeps the entry only when the
+ * home surface cannot claim it: while its first fetch is unresolved (the
+ * born-loading state, the grid never launches blind), or once it resolved
+ * to nothing focusable (served-empty, failed, or only BARE rows — an
+ * anchor card with no `next` offer is not focusable and would strand the
+ * focus on a dead node).
+ */
+fun entryLandsOnHome(home: HomeState): Boolean =
+    home.isLoading ||
+        home.rows.any { it.toResumeCard() != null } ||
+        home.rows.any { it.toAnchorCard()?.nextItemId != null }
 
 /**
  * The home flow (design D4): the SPA Home's data layer — ONE
@@ -53,7 +75,7 @@ class HomeFlow(
      * 401-anywhere law).
      */
     suspend fun load() {
-        _state.value = _state.value.copy(loading = true, error = null)
+        _state.value = _state.value.copy(isLoading = true, error = null)
         try {
             val rows = apiFor().home().rows
             // The cursors ride through the replace (the no-restart law, same
@@ -61,6 +83,7 @@ class HomeFlow(
             // served set never aims past the end.
             val prior = _state.value
             _state.value = HomeState(
+                isLoading = false,
                 rows = rows,
                 continueFocus = prior.continueFocus.coerceIn(0, resumeCount(rows)),
                 nextUpFocus = prior.nextUpFocus.coerceIn(0, anchorCount(rows)),
@@ -99,9 +122,9 @@ class HomeFlow(
     private fun fail(e: Exception) {
         if (e is HttpException && e.code() == 401) {
             onUnauthorized()
-            _state.value = _state.value.copy(loading = false, error = null)
+            _state.value = _state.value.copy(isLoading = false, error = null)
         } else {
-            _state.value = _state.value.copy(loading = false, error = MESSAGE_HOME)
+            _state.value = _state.value.copy(isLoading = false, error = MESSAGE_HOME)
         }
     }
 

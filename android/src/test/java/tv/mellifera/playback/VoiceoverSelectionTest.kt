@@ -46,7 +46,7 @@ private class RecordingVoiceoverController : PlayerController {
 /** The transport fake: one fixed descriptor, no other behavior. */
 private class DescriptorTransport(private val descriptor: PlaybackDescriptor) : PlaybackTransport {
     override suspend fun playback(itemId: String) = descriptor
-    override suspend fun play(itemId: String, retry: Boolean) = PlayResponse(false)
+    override suspend fun play(itemId: String, isRetry: Boolean) = PlayResponse(false)
     override suspend fun progress(itemId: String) = ProgressDto("i1", 0, "2026-11-12T00:00:00Z")
 
     override suspend fun putProgress(itemId: String, request: ProgressRequest) =

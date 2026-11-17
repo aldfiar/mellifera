@@ -141,7 +141,7 @@ class HomeFlowTest {
         val state = flow.state.value
         assertTrue(state.rows.isEmpty())
         assertNull(state.error)
-        assertTrue(!state.loading)
+        assertTrue(!state.isLoading)
     }
 
     @Test
@@ -157,7 +157,7 @@ class HomeFlowTest {
         // error surfaces beside it.
         assertEquals(3, state.rows.size)
         assertEquals("Не удалось загрузить продолжения — проверьте сервер", state.error)
-        assertTrue(!state.loading)
+        assertTrue(!state.isLoading)
     }
 
     @Test
@@ -224,5 +224,69 @@ class HomeFlowTest {
         assertEquals(1, state.rows.size)
         assertEquals(0, state.continueFocus) // 1 clamped into one resume row
         assertEquals(0, state.nextUpFocus)
+    }
+
+    // ---- entryLandsOnHome: the entry-destination law (task 8.15, #18) ----
+
+    @Test
+    fun entry_is_held_while_the_first_fetch_is_unresolved() {
+        // The born-loading state: between the flow's construction and the
+        // first load's resolution the home claims the entry — the grid's
+        // actuator stands down and never launches blind into the
+        // below-fold tile (the #18 mechanism).
+        assertEquals(true, entryLandsOnHome(flow.state.value))
+    }
+
+    @Test
+    fun entry_lands_on_home_for_resume_and_anchor_rows() = runBlocking {
+        server.enqueue(json(homeBody()))
+        flow.load()
+        // Resume rows present → the first resume card is the entry.
+        assertEquals(true, entryLandsOnHome(flow.state.value))
+
+        // Anchor-only: no `current`, but the served `next` offer makes the
+        // anchor card focusable — the entry's fallback row.
+        server.enqueue(
+            json(
+                """{"continue":[
+                  {"series_id":"s-2","series_display_name":"Хроники","library_id":1,
+                   "library_name":"Сериалы",
+                   "next":{"item_id":"e-9","label":"S02E01"}}
+                ]}""",
+            ),
+        )
+        flow.load()
+        assertEquals(true, entryLandsOnHome(flow.state.value))
+    }
+
+    @Test
+    fun entry_falls_to_the_grid_when_home_resolves_to_nothing_focusable() = runBlocking {
+        // The served-empty surface: no rows at all.
+        server.enqueue(json("""{"continue":[]}"""))
+        flow.load()
+        assertEquals(false, entryLandsOnHome(flow.state.value))
+
+        // BARE rows only: an anchor card with no `next` offer is NOT
+        // focusable (no OK affordance) — landing the entry there would
+        // strand the focus on a dead node, so the grid keeps the entry.
+        server.enqueue(
+            json(
+                """{"continue":[
+                  {"series_id":"s-9","series_display_name":"Пустая","library_id":1,
+                   "library_name":"Сериалы"}
+                ]}""",
+            ),
+        )
+        flow.load()
+        assertEquals(false, entryLandsOnHome(flow.state.value))
+    }
+
+    @Test
+    fun entry_falls_to_the_grid_after_a_failed_fetch() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(500))
+        flow.load()
+        val state = flow.state.value
+        assertEquals("Не удалось загрузить продолжения — проверьте сервер", state.error)
+        assertEquals(false, entryLandsOnHome(state))
     }
 }

@@ -160,13 +160,13 @@ class CollectionsWireJointTest {
         assertEquals("Космическая сага о трёх поколениях", s1.metadata?.about?.description)
         assertEquals("filename", s1.metadata?.about?.source)
         assertEquals("мать", s1.metadata?.cast?.lastOrNull()?.role)
-        assertFalse(state.loading)
+        assertFalse(state.isLoading)
 
         // The rail opens through the 5.15 trigger — openRail fires the
         // per-collection summaries ONCE, focus lands on the current row.
         flow.openRail()
         val railed = flow.state.value
-        assertEquals(true, railed.railOpen)
+        assertEquals(true, railed.isRailOpen)
         assertEquals(0, railed.railFocus)
         // The summaries decoded under the full shape, merged by the
         // library_id echo: lib 1's count + its echo; lib 2's zero-state row
@@ -210,7 +210,7 @@ class CollectionsWireJointTest {
         assertEquals(emptyList<SeriesDto>(), state.series)
         assertEquals(emptyList<ItemDto>(), state.items)
         assertEquals(0, state.gridFocus)
-        assertFalse(state.loading)
+        assertFalse(state.isLoading)
         assertNull(state.error)
 
         // enter()'s two requests were ALL the traffic.

@@ -43,6 +43,10 @@ import tv.mellifera.dpad.routePlayerKey
 import tv.mellifera.dpad.toDpadKey
 import tv.mellifera.state.Phase
 import tv.mellifera.state.PlaybackState
+import tv.mellifera.ui.TYPE_HEADING
+import tv.mellifera.ui.TYPE_META
+import tv.mellifera.ui.TYPE_READOUT
+import tv.mellifera.ui.TYPE_SMALL
 import tv.mellifera.ui.tvAccent
 import tv.mellifera.ui.tvInitialFocus
 
@@ -142,7 +146,7 @@ private fun ActiveOverlay(playback: PlayerOrchestration) {
     // recomposes WITHOUT touching `controls`, so the timer never restarts
     // on playback (the reset-every-frame defect this restores).
     LaunchedEffect(controls) {
-        if (!controls.shown) return@LaunchedEffect
+        if (!controls.isVisible) return@LaunchedEffect
         delay(CONTROLS_HIDE_MS)
         if (controls.hideDue(SystemClock.elapsedRealtime())) {
             controls = controls.onDismiss()
@@ -150,7 +154,7 @@ private fun ActiveOverlay(playback: PlayerOrchestration) {
     }
 
     BackHandler {
-        routePlayerKey(DpadKey.Back, controlsShown = controls.shown)?.let(::onAction)
+        routePlayerKey(DpadKey.Back, controlsShown = controls.isVisible)?.let(::onAction)
     }
 
     PlayerOverlayShell(
@@ -160,7 +164,7 @@ private fun ActiveOverlay(playback: PlayerOrchestration) {
             .onKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 val key = event.nativeKeyEvent.toDpadKey() ?: return@onKeyEvent false
-                routePlayerKey(key, event.nativeKeyEvent.repeatCount, controls.shown)
+                routePlayerKey(key, event.nativeKeyEvent.repeatCount, controls.isVisible)
                     ?.let { onAction(it); true } ?: false
             },
     ) {
@@ -190,7 +194,7 @@ private fun ActiveOverlay(playback: PlayerOrchestration) {
                 }
             },
         )
-        if (controls.shown) {
+        if (controls.isVisible) {
             ControlsBar(playback)
         }
         activeSkip?.let { SkipChip(it) }
@@ -216,14 +220,14 @@ private fun BoxScope.SkipChip(active: SkipSection) {
     Column(
         modifier = Modifier
             .align(Alignment.BottomEnd)
-            .padding(16.dp)
+            .padding(8.dp)
             .alpha(if (faded) 0f else 1f)
-            .background(chipColor, RoundedCornerShape(8.dp)),
+            .background(chipColor, RoundedCornerShape(4.dp)),
     ) {
         Text(
             active.kind.label,
-            fontSize = 14.sp,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            fontSize = TYPE_SMALL,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
         )
     }
 }
@@ -246,25 +250,25 @@ private fun BoxScope.AutoNextCard(playback: PlayerOrchestration) {
     Column(
         modifier = Modifier
             .align(Alignment.BottomStart)
-            .padding(16.dp)
+            .padding(8.dp)
             .tvInitialFocus()
-            .background(chipColor, RoundedCornerShape(8.dp))
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .background(chipColor, RoundedCornerShape(4.dp))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text("Следующая серия", fontSize = 14.sp)
+        Text("Следующая серия", fontSize = TYPE_SMALL)
         if (next.nameLine.isNotEmpty()) {
-            Text(next.nameLine, fontSize = 12.sp, color = Color.LightGray)
+            Text(next.nameLine, fontSize = TYPE_META, color = Color.LightGray)
         }
         if (next.episodeTitle.isNotEmpty()) {
-            Text(next.episodeTitle, fontSize = 12.sp)
+            Text(next.episodeTitle, fontSize = TYPE_META)
         }
         countdown?.let {
-            Text("Автопереход через $it с", fontSize = 12.sp, color = Color.LightGray)
+            Text("Автопереход через $it с", fontSize = TYPE_META, color = Color.LightGray)
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { playback.play(next.itemId) }) { Text("Смотреть") }
-            Button(onClick = { playback.cancelNextUp() }) { Text("Отмена") }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Button(onClick = { playback.play(next.itemId) }) { Text("Смотреть", fontSize = TYPE_SMALL) }
+            Button(onClick = { playback.cancelNextUp() }) { Text("Отмена", fontSize = TYPE_SMALL) }
         }
     }
 }
@@ -287,8 +291,8 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
             .background(Color(0xCC1A1D24))
-            .padding(horizontal = 24.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         if (durationMs > 0) {
             // The seek bar: position over duration, clamped (the watchedPercent
@@ -296,7 +300,7 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(4.dp)
+                    .height(2.dp)
                     .background(chipColor),
             ) {
                 val fraction =
@@ -304,7 +308,7 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(fraction)
-                        .height(4.dp)
+                        .height(2.dp)
                         .background(tvAccent),
                 )
             }
@@ -320,9 +324,9 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
                 } else {
                     formatClock(readout.positionMs)
                 },
-                fontSize = 20.sp,
+                fontSize = TYPE_READOUT,
             )
-            Text("← → перемотка · OK пауза · Back скрыть", fontSize = 14.sp, color = Color.LightGray)
+            Text("← → перемотка · OK пауза · Back скрыть", fontSize = TYPE_SMALL, color = Color.LightGray)
         }
         info?.let { InfoBlocks(it) }
     }
@@ -336,26 +340,26 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
  */
 @Composable
 private fun InfoBlocks(info: PlayerInfoBlocks) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (info.eyebrow != null || info.heading != null) {
             Column {
-                info.eyebrow?.let { Text(it, fontSize = 12.sp, color = Color.LightGray) }
-                info.heading?.let { Text(it, fontSize = 18.sp) }
+                info.eyebrow?.let { Text(it, fontSize = TYPE_META, color = Color.LightGray) }
+                info.heading?.let { Text(it, fontSize = TYPE_HEADING) }
             }
         }
         info.episodeDescription?.let {
             Column {
-                Text("Серия", fontSize = 12.sp)
-                Text(it, fontSize = 12.sp, color = Color.LightGray)
+                Text("Серия", fontSize = TYPE_META)
+                Text(it, fontSize = TYPE_META, color = Color.LightGray)
             }
         }
         if (info.cast.isNotEmpty()) {
             Column {
-                Text("В ролях", fontSize = 12.sp)
-                Text(info.cast.castLine(), fontSize = 12.sp, color = Color.LightGray)
+                Text("В ролях", fontSize = TYPE_META)
+                Text(info.cast.castLine(), fontSize = TYPE_META, color = Color.LightGray)
             }
         }
-        info.about?.let { Text(it, fontSize = 12.sp, color = Color.LightGray) }
+        info.about?.let { Text(it, fontSize = TYPE_META, color = Color.LightGray) }
     }
 }
 

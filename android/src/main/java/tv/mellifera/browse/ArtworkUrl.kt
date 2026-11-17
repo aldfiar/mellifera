@@ -12,7 +12,7 @@ import java.net.URL
  */
 data class ArtworkRequest(
     val url: String,
-    val authorized: Boolean,
+    val isAuthorized: Boolean,
 )
 
 /**
@@ -25,9 +25,9 @@ data class ArtworkRequest(
  */
 fun resolveArtworkUrl(serverBase: String?, wireField: String?): ArtworkRequest? {
     if (wireField.isNullOrBlank()) return null
-    if (isAbsoluteUrl(wireField)) return ArtworkRequest(url = wireField, authorized = false)
+    if (isAbsoluteUrl(wireField)) return ArtworkRequest(url = wireField, isAuthorized = false)
     val base = serverBase?.takeIf { it.isNotBlank() } ?: return null
-    return ArtworkRequest(url = URL(URL(base), wireField).toString(), authorized = true)
+    return ArtworkRequest(url = URL(URL(base), wireField).toString(), isAuthorized = true)
 }
 
 private fun isAbsoluteUrl(url: String): Boolean =

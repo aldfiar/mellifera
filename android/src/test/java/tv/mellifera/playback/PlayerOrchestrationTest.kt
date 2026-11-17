@@ -72,7 +72,7 @@ private class FakeTransport(
     val puts = mutableListOf<ProgressRequest>()
 
     override suspend fun playback(itemId: String) = descriptor
-    override suspend fun play(itemId: String, retry: Boolean) = PlayResponse(queued)
+    override suspend fun play(itemId: String, isRetry: Boolean) = PlayResponse(queued)
     override suspend fun progress(itemId: String) = progress
 
     override suspend fun putProgress(itemId: String, request: ProgressRequest): ProgressDto {

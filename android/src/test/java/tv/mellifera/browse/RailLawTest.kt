@@ -1,7 +1,10 @@
 package tv.mellifera.browse
 
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -75,7 +78,7 @@ class RailLawTest {
         flow.openRail()
 
         val state = flow.state.value
-        assertTrue(state.railOpen)
+        assertTrue(state.isRailOpen)
         // The initial-focus law carried into the rail: the cursor sits on
         // the CURRENT collection's row (library 2 = index 1), never row 0.
         assertEquals(1, state.railFocus)
@@ -91,7 +94,7 @@ class RailLawTest {
         // Idempotent: re-opening an open rail neither moves the cursor nor
         // re-fires a single summary request.
         flow.openRail()
-        assertTrue(flow.state.value.railOpen)
+        assertTrue(flow.state.value.isRailOpen)
         assertEquals(1, flow.state.value.railFocus)
         assertEquals(4, server.requestCount)
     }
@@ -109,7 +112,7 @@ class RailLawTest {
         server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
         flow.openRail()
         flow.onRailFocusMoved(1)
-        assertTrue(flow.state.value.railOpen)
+        assertTrue(flow.state.value.isRailOpen)
         assertEquals(1, flow.state.value.railFocus)
 
         // LEFT or Back route to the SAME flow entry (closeRail): only the
@@ -118,7 +121,7 @@ class RailLawTest {
         flow.closeRail()
 
         val state = flow.state.value
-        assertFalse(state.railOpen)
+        assertFalse(state.isRailOpen)
         assertEquals(1, state.gridFocus)
         assertEquals(1L, state.libraryId)
         assertEquals(listOf("s-1", "s-2"), state.series.map { it.id })
@@ -174,11 +177,15 @@ class RailLawTest {
         assertTrue(flow.activateRailRow())
 
         val state = flow.state.value
-        assertFalse(state.railOpen)
+        assertFalse(state.isRailOpen)
         assertEquals(2L, state.libraryId)
         assertEquals(listOf("f-1", "f-2"), state.items.map { it.id })
         assertEquals(0, state.gridFocus)
         assertNull(state.error)
+        // The state contract's body half (task 8.11): a SUCCESSFUL
+        // activation RAISES isBodyOpen — the opened body owns the next
+        // Back (8.7), the entry-default carve-out never did.
+        assertTrue(state.isBodyOpen)
         // drain openRail's two summary legs, then the activation's fetch
         server.takeRequestOrFail("RailLawTest.rail_select_swaps_grid_resets_cursor")
         server.takeRequestOrFail("RailLawTest.rail_select_swaps_grid_resets_cursor")
@@ -196,13 +203,17 @@ class RailLawTest {
         assertFalse(flow.activateRailRow())
 
         val failed = flow.state.value
-        assertTrue(failed.railOpen)
+        assertTrue(failed.isRailOpen)
         assertEquals(0, failed.railFocus)
         assertEquals("Не удалось открыть коллекцию", failed.error)
         assertEquals(2L, failed.libraryId)
         assertEquals(listOf("f-1", "f-2"), failed.items.map { it.id })
         assertEquals(0, failed.gridFocus)
         assertEquals(1, failed.gridFocusNonce)
+        // A reverted switch raises nothing — the PRIOR body keeps its own
+        // isBodyOpen (the 8.8 carve-out; here the prior body IS the open
+        // lib-2 body from the first successful activation).
+        assertTrue(failed.isBodyOpen)
         // The queue drained: enter's two + the first openRail's summaries +
         // the swap's fetch + the failed openRail's summaries + the failed
         // switch's fetch — all eight answered.
@@ -234,7 +245,7 @@ class RailLawTest {
         assertTrue(flow.activateRailRow())
 
         val state = flow.state.value
-        assertFalse(state.railOpen)
+        assertFalse(state.isRailOpen)
         assertEquals(2L, state.libraryId)
         assertEquals(listOf("p-1", "p-2"), state.items.map { it.id })
         assertEquals(3, state.folders.size) // the chips row: [Все] + the served folders
@@ -268,27 +279,27 @@ class RailLawTest {
         server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
         server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
         flow.openRail(fromHome = true)
-        assertTrue(flow.state.value.railRestoreHome)
+        assertTrue(flow.state.value.shouldRestoreHome)
 
         // A plain close (LEFT/Back): the rail closes, the restore STANDS —
         // HomeRows will re-request the opener card's focus.
         flow.closeRail()
-        assertFalse(flow.state.value.railOpen)
-        assertTrue(flow.state.value.railRestoreHome)
+        assertFalse(flow.state.value.isRailOpen)
+        assertTrue(flow.state.value.shouldRestoreHome)
 
         // Re-open from home, walk to the tv row, OK: the activation close
         // enters the body AND clears the restore — nothing comes back.
         server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
         server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
         flow.openRail(fromHome = true)
-        assertTrue(flow.state.value.railRestoreHome)
+        assertTrue(flow.state.value.shouldRestoreHome)
         flow.onRailFocusMoved(1)
         server.enqueue(json(tvItemsBody()))
         assertTrue(flow.activateRailRow())
 
         val state = flow.state.value
-        assertFalse(state.railOpen)
-        assertFalse(state.railRestoreHome)
+        assertFalse(state.isRailOpen)
+        assertFalse(state.shouldRestoreHome)
         assertEquals(2L, state.libraryId)
         assertEquals(1, state.gridFocusNonce) // the body re-land staged
         // enter's two + the two openRails' summaries (4) + the activation's
@@ -297,19 +308,24 @@ class RailLawTest {
     }
 
     @Test
-    fun rail_ok_emits_the_body_swap_only_on_a_successful_activation() = runBlocking {
-        // The visible-swap law (task 8.3): a SUCCESSFUL rail-OK activation
-        // emits ONE body-swap signal — the UI actuator brings the opened
-        // body's top INTO VIEW (the SPA's page shape); a plain rail close
-        // and a FAILED activation emit nothing.
+    fun rail_ok_swap_emits_at_the_commit_and_again_after_the_load() = runBlocking {
+        // The visible-swap law (tasks 8.3 + 8.5): a SUCCESSFUL rail-OK
+        // activation emits TWO body-swap signals in a pinned ORDER. The
+        // COMMIT-TIME emit fires BEFORE the body fetch resolves — the swap
+        // starts the moment the switch commits, so the no-focus entry home
+        // (walkG-debug: H3==H0 byte-identical for 9-12s, 0/3 legs landing,
+        // fetch latency ruled out) never shows. The POST-LOAD RE-emit lands
+        // the body top once the rows are in. A plain rail close emits
+        // nothing; a FAILED activation emits only the commit-time signal —
+        // no re-emit rides a reverted switch.
         server.enqueue(json(tvLibrariesBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("RailLawTest.rail_ok_emits_the_body_swap_only_on_a_successful_activation") // /libraries
-        server.takeRequestOrFail("RailLawTest.rail_ok_emits_the_body_swap_only_on_a_successful_activation") // /series?library=1
+        server.takeRequestOrFail("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load") // /libraries
+        server.takeRequestOrFail("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load") // /series?library=1
 
-        val swaps = mutableListOf<Unit>()
-        val collector = launch { flow.bodySwaps.collect { swaps.add(Unit) } }
+        val swaps = Channel<Unit>(Channel.UNLIMITED)
+        val collector = launch { flow.bodySwaps.collect { swaps.send(Unit) } }
 
         // A plain rail close (LEFT/Back) emits NO swap: only the rail
         // closes, the content keeps its parked cursor (the restore law —
@@ -319,29 +335,97 @@ class RailLawTest {
         flow.openRail()
         flow.closeRail()
         yield()
-        assertEquals(0, swaps.size)
+        assertFalse(swaps.tryReceive().isSuccess)
 
-        // A FAILED OK — the body cannot open — emits none either: the rail
-        // stays open over the reverted body (the keep-focus law, task 4.3).
+        // OK the tv row WITHOUT enqueueing the body fetch's response: the
+        // fetch is in flight and unresolved — yet the commit-time swap
+        // signal has ALREADY fired (the ordering law's first half).
+        server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
+        server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
+        flow.openRail()
+        flow.onRailFocusMoved(1)
+        val activation = launch { assertTrue(flow.activateRailRow()) }
+        withTimeout(5_000) { swaps.receive() } // the commit-time emit
+        assertFalse(activation.isCompleted) // the fetch is still in flight
+        assertTrue(flow.state.value.isRailOpen) // the rail closes only after the load
+        assertFalse(swaps.tryReceive().isSuccess) // exactly one emit so far
+
+        // Resolve the fetch: the activation completes, the body rows land,
+        // and the POST-LOAD RE-emit fires — the ordering law's second half.
+        server.enqueue(json(tvItemsBody()))
+        activation.join()
+        withTimeout(5_000) { swaps.receive() }
+        assertFalse(swaps.tryReceive().isSuccess) // exactly two for a success
+        assertEquals(2L, flow.state.value.libraryId)
+        assertFalse(flow.state.value.isRailOpen)
+
+        // A FAILED OK — the body cannot open — emits ONLY the commit-time
+        // signal: the fetch resolves 500, the switch reverts, the rail
+        // stays open (the keep-focus law, task 4.3) and NO re-emit fires.
+        flow.onRailFocusMoved(0)
         server.enqueue(MockResponse().setResponseCode(500)) // lib 1 summary
         server.enqueue(MockResponse().setResponseCode(500)) // lib 2 summary
         flow.openRail()
         server.enqueue(MockResponse().setResponseCode(500)) // the switch's /series fetch
         assertFalse(flow.activateRailRow())
+        withTimeout(5_000) { swaps.receive() } // the commit-time emit
         yield()
-        assertEquals(0, swaps.size)
-
-        // A SUCCESSFUL activation IS the visible swap: exactly ONE emission
-        // per activation.
-        flow.onRailFocusMoved(0)
-        server.enqueue(json(seriesBody()))
-        assertTrue(flow.activateRailRow())
-        yield()
-        assertEquals(1, swaps.size)
+        assertFalse(swaps.tryReceive().isSuccess) // NO re-emit for a failure
+        val failed = flow.state.value
+        assertTrue(failed.isRailOpen)
+        assertEquals("Не удалось открыть коллекцию", failed.error)
 
         collector.cancel()
-        // enter's two + the two openRails' summaries (4) + the failed and
-        // successful switches' series fetches (2).
-        server.assertDrained("RailLawTest.rail_ok_emits_the_body_swap_only_on_a_successful_activation", 8)
+        // enter's two + the plain-close openRail's summaries (2) + the
+        // successful activation's summaries + fetch (3) + the failed
+        // openRail's summaries + switch (3).
+        server.assertDrained("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load", 10)
+    }
+
+    @Test
+    fun body_swap_emits_survive_a_busy_collector() = runBlocking {
+        // The buffered-delivery contract (task 8.11, ledger #13's state
+        // half): the screen consumes bodySwaps through ONE serialized lane
+        // (the collector launches its scroll actuator per signal), so a
+        // slow consumer must never drop a signal — the commit→post-load
+        // pair is buffered (extraBufferCapacity = 4) and delivered even
+        // when the collector is still busy with the first. If the flow
+        // dropped the post-load emit on a busy lane, the 8.5 body-top land
+        // would silently depend on collector timing — exactly the
+        // inert-actuator class the #13 race exposed.
+        server.enqueue(json(tvLibrariesBody()))
+        server.enqueue(json(seriesBody()))
+        flow.enter()
+        server.takeRequestOrFail("RailLawTest.body_swap_emits_survive_a_busy_collector")
+        server.takeRequestOrFail("RailLawTest.body_swap_emits_survive_a_busy_collector")
+
+        val received = Channel<Unit>(Channel.UNLIMITED)
+        val collector = launch {
+            flow.bodySwaps.collect {
+                received.send(Unit)
+                delay(150) // the lane is busy long after each signal fires
+            }
+        }
+
+        // The swap: both emits fire while the collector is asleep in its
+        // delay — the commit-time at the switch, the post-load once the
+        // rows land.
+        server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
+        server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
+        flow.openRail()
+        flow.onRailFocusMoved(1)
+        server.enqueue(json(tvItemsBody()))
+        assertTrue(flow.activateRailRow())
+
+        // Both signals arrive — the second buffered behind the busy lane,
+        // late but NEVER dropped.
+        withTimeout(5_000) { received.receive() } // the commit-time emit
+        withTimeout(5_000) { received.receive() } // the post-load emit
+        assertEquals(2L, flow.state.value.libraryId)
+        assertFalse(flow.state.value.isRailOpen)
+
+        collector.cancel()
+        // enter's two + the openRail's summaries (2) + the fetch.
+        server.assertDrained("RailLawTest.body_swap_emits_survive_a_busy_collector", 5)
     }
 }

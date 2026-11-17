@@ -24,27 +24,27 @@ private val chipColor = Color(0xFF2A2F3A)
  * The minimal settings surface (5.11): the app has no settings screen, so
  * the «Поделиться диагностикой» affordance lives where the contract places
  * it — a section above the browse shell, VISIBLE ONLY WHEN THE GATE IS ON
- * (the telemetry.open state). The button composes the session's collected
+ * (the telemetry.isOpen state). The button composes the session's collected
  * diagnostics (sent trace events + snapshot, full detail) and hands the
  * text to the Android share sheet; the formatting lives in
  * diag/formatDiagnostics (pure), this is only the intent plumbing.
  */
 @Composable
 fun SettingsSection(viewModel: AppViewModel) {
-    val open by viewModel.telemetry.open.collectAsState()
-    if (!open) return
+    val isOpen by viewModel.telemetry.isOpen.collectAsState()
+    if (!isOpen) return
     val context = LocalContext.current
-    Column(modifier = Modifier.padding(start = 32.dp, top = 24.dp)) {
-        Text("Настройки", fontSize = 18.sp)
+    Column(modifier = Modifier.padding(start = 32.dp, top = 12.dp)) {
+        Text("Настройки", fontSize = TYPE_HEADING)
         Text(
             "Поделиться диагностикой",
-            fontSize = 14.sp,
+            fontSize = TYPE_SMALL,
             modifier = Modifier
-                .padding(top = 12.dp)
-                .background(chipColor, RoundedCornerShape(4.dp))
+                .padding(top = 6.dp)
+                .background(chipColor, RoundedCornerShape(2.dp))
                 .tvFocusStyle()
                 .clickable { shareDiagnostics(context, viewModel) }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 6.dp, vertical = 4.dp),
         )
     }
 }

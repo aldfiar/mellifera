@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -34,8 +35,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,13 +63,20 @@ import coil.request.ImageRequest
 import kotlinx.coroutines.launch
 import tv.mellifera.AppViewModel
 import tv.mellifera.dpad.DpadKey
+import tv.mellifera.dpad.chipsRowConsumesUp
 import tv.mellifera.dpad.isDirectional
 import tv.mellifera.dpad.moveInGrid
 import tv.mellifera.dpad.moveInList
 import tv.mellifera.dpad.moveInRow
 import tv.mellifera.dpad.toDpadKey
+import tv.mellifera.home.entryLandsOnHome
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.SeriesDto
+import tv.mellifera.ui.TYPE_BODY
+import tv.mellifera.ui.TYPE_DISPLAY
+import tv.mellifera.ui.TYPE_HEADING
+import tv.mellifera.ui.TYPE_META
+import tv.mellifera.ui.TYPE_SMALL
 import tv.mellifera.ui.SettingsSection
 import tv.mellifera.ui.requestFocusSafely
 import tv.mellifera.ui.tvFocusStyle
@@ -103,6 +113,9 @@ fun BrowseScreen(viewModel: AppViewModel) {
     val browse = viewModel.browse
     val state by browse.state.collectAsState()
     val appState by viewModel.state.collectAsState()
+    // The settings affordance above the body is focusable only while the
+    // telemetry gate is on — the chips row's UP clamp reads it (task 8.6).
+    val settingsFocusable by viewModel.telemetry.isOpen.collectAsState()
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         browse.enter()
@@ -113,12 +126,30 @@ fun BrowseScreen(viewModel: AppViewModel) {
     // The chain's first link (5.15): an open rail takes Back BEFORE the
     // series page — this handler is composed after the series one, so it
     // wins when both are enabled. Closing keeps the grid's parked cursor.
-    BackHandler(enabled = state.railOpen) { browse.closeRail() }
+    BackHandler(enabled = state.isRailOpen) { browse.closeRail() }
     // The chips row's Back (D12's dpad map): focus returns to the grid —
     // never a silent state wipe, the photo body's filter stays applied.
-    BackHandler(enabled = selected == null && !state.railOpen && state.chipFocus >= 0) {
+    BackHandler(enabled = selected == null && !state.isRailOpen && state.chipFocus >= 0) {
         browse.refocusGridFromChips()
     }
+    // The opened collection body's Back (task 8.7 — the back-stack hole the
+    // on-device walk found: with every prior handler disabled, ONE Back
+    // here fell through to the Activity default and EXITED to the launcher).
+    // The SPA route parity: the web Collection is a route, back returns
+    // home — the body closes onto the home rows (the cursor and rail state
+    // stay, closeBody's law), and the home rows' restore actuator re-lands
+    // the parked cursor. Composed LAST in the chain: series, rail and
+    // chips-focused Back keep their own laws.
+    BackHandler(
+        enabled = selected == null && !state.isRailOpen && state.chipFocus < 0 && state.isBodyOpen,
+    ) {
+        browse.closeBody()
+    }
+    // The photo viewer's Back (task 8.13): the modal viewer is Back's whole
+    // act while open — composed after the body handler so it wins the chain;
+    // the close clears the viewer and re-lands the parked tile (closePhoto's
+    // law), never the body.
+    BackHandler(enabled = state.photoIndex != null) { browse.closePhoto() }
     // The render-time session facts (5.13): the stored server base resolves
     // relative artwork paths, the device token authorizes OUR server's
     // artwork fetches (Api.kt's interceptor covers Retrofit only, not Coil).
@@ -133,7 +164,7 @@ fun BrowseScreen(viewModel: AppViewModel) {
                     series = selected,
                     episodes = state.episodes,
                     positions = state.positions,
-                    loading = state.loading,
+                    isLoading = state.isLoading,
                     focusIndex = state.episodeFocus,
                     accent = typeAccent(
                         state.libraries.firstOrNull { it.id == selected.libraryId }?.moduleId ?: "",
@@ -173,10 +204,15 @@ fun BrowseScreen(viewModel: AppViewModel) {
                         // empty served array renders no row (L1). Its fetch rides
                         // the same on-navigate round-trip window as browse.enter().
                         val homeState by viewModel.home.state.collectAsState()
+                        // The entry-destination verdict (task 8.15): while the
+                        // home surface holds (or is still fetching toward) a
+                        // focusable card, the grid's entry actuator stands
+                        // down — the home rows' first card takes the entry.
+                        val homeHoldsEntry = entryLandsOnHome(homeState)
                         HomeRows(
                             home = homeState,
-                            railOpen = state.railOpen,
-                            railRestoreHome = state.railRestoreHome,
+                            isRailOpen = state.isRailOpen,
+                            shouldRestoreHome = state.shouldRestoreHome,
                             libraries = state.libraries,
                             serverBase = serverBase,
                             token = token,
@@ -190,6 +226,7 @@ fun BrowseScreen(viewModel: AppViewModel) {
                             state = state,
                             bodyHeight = bodyHeight,
                             intoView = bodyIntoView,
+                            homeHoldsEntry = homeHoldsEntry,
                             onOpen = { series -> scope.launch { browse.openSeries(series) } },
                             onPlay = { itemId -> viewModel.playback.play(itemId) },
                             onFocusMoved = { browse.onGridFocusMoved(it) },
@@ -198,6 +235,8 @@ fun BrowseScreen(viewModel: AppViewModel) {
                             onChipFocused = { browse.onChipFocusMoved(it) },
                             onChipsLeft = { browse.clearChipFocus() },
                             onPickFolder = { path -> scope.launch { browse.pickFolder(path) } },
+                            onPhotoOpened = { browse.openPhoto(it) },
+                            aboveFocusable = settingsFocusable,
                             serverBase = serverBase,
                             token = token,
                         )
@@ -214,7 +253,7 @@ fun BrowseScreen(viewModel: AppViewModel) {
         // focus-less surface); LEFT, RIGHT or Back close it with the
         // content's prior focus position intact.
         AnimatedVisibility(
-            visible = state.railOpen && selected == null,
+            visible = state.isRailOpen && selected == null,
             enter = slideInHorizontally(initialOffsetX = { -it }),
             exit = slideOutHorizontally(targetOffsetX = { -it }),
         ) {
@@ -227,6 +266,21 @@ fun BrowseScreen(viewModel: AppViewModel) {
                 onSelect = { scope.launch { browse.activateRailRow() } },
                 onClose = { browse.closeRail() },
                 onFocusMoved = { browse.onRailFocusMoved(it) },
+            )
+        }
+        // The photo viewer (task 8.13): a MODAL full-screen surface over the
+        // whole browse tree — index-checked against the loaded rows so a
+        // stale index (a body swapped mid-view is a state-law impossibility,
+        // belt-and-suspenders anyway) renders nothing rather than a broken
+        // viewer.
+        val photoIndex = state.photoIndex
+        if (photoIndex != null && photoIndex < state.items.size) {
+            val viewerUrl = state.items[photoIndex].toPhotoViewerUrl()
+            PhotoViewer(
+                artwork = resolveArtworkUrl(serverBase, viewerUrl),
+                token = token,
+                onDismiss = { browse.closePhoto() },
+                onMove = { step -> browse.movePhoto(step) },
             )
         }
     }
@@ -275,6 +329,11 @@ private fun SeriesGrid(
     state: BrowseState,
     bodyHeight: Dp,
     intoView: BringIntoViewRequester,
+    // The entry-destination verdict (task 8.15): true while the home rows
+    // hold — or are still fetching toward — a focusable card; the grid's
+    // entry actuator stands down for the whole window, taking the entry
+    // only when the home surface resolved to nothing focusable.
+    homeHoldsEntry: Boolean,
     onOpen: (SeriesDto) -> Unit,
     onPlay: (String) -> Unit,
     onFocusMoved: (Int) -> Unit,
@@ -283,6 +342,13 @@ private fun SeriesGrid(
     onChipFocused: (Int) -> Unit,
     onChipsLeft: () -> Unit,
     onPickFolder: (String?) -> Unit,
+    // The photo tile's OK act (task 8.13): open the modal viewer on this
+    // loaded row.
+    onPhotoOpened: (Int) -> Unit,
+    // Whether a focusable target (the gated settings affordance) exists
+    // above the body — the chips row's UP clamp consumes UP without one
+    // (task 8.6), so focus never escapes the body by native search.
+    aboveFocusable: Boolean,
     serverBase: String?,
     token: String?,
 ) {
@@ -294,17 +360,20 @@ private fun SeriesGrid(
     ) {
         val library = state.libraries.firstOrNull { it.id == state.libraryId }
         if (library != null) {
-            Text(library.displayName, fontSize = 28.sp)
+            Text(library.displayName, fontSize = TYPE_DISPLAY)
         }
         val accent = typeAccent(library?.moduleId ?: "")
         when (library?.moduleId) {
             "serial" -> when {
-                state.error != null -> Text(state.error, modifier = Modifier.padding(top = 16.dp))
-                state.loading -> Text("Загрузка…", modifier = Modifier.padding(top = 16.dp))
+                state.error != null -> Text(state.error, fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
+                state.isLoading -> Text("Загрузка…", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
                 else -> CardGrid(
                     state = state,
-                    // D13: 4 posters across the column (the fixed 2:3 tile).
+                    // 3 posters across (the count ruling, 8.10): each poster
+                    // consumes a third of the column — the fixed 2:3 tile.
                     columns = SERIES_GRID_COLUMNS,
+                    homeHoldsEntry = homeHoldsEntry,
+                    tileAspect = POSTER_ASPECT,
                     count = state.series.size,
                     keyOf = { index -> state.series[index].id },
                     cardOf = { index -> state.series[index].toCard() },
@@ -318,13 +387,15 @@ private fun SeriesGrid(
                 )
             }
             "tv" -> when {
-                state.error != null -> Text(state.error, modifier = Modifier.padding(top = 16.dp))
-                state.loading -> Text("Загрузка…", modifier = Modifier.padding(top = 16.dp))
+                state.error != null -> Text(state.error, fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
+                state.isLoading -> Text("Загрузка…", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
                 state.items.isEmpty() -> EmptyCollection()
                 else -> CardGrid(
                     state = state,
                     // D13: 3 stills across the column (the fixed 16:9 tile).
                     columns = TV_FILE_GRID_COLUMNS,
+                    homeHoldsEntry = homeHoldsEntry,
+                    tileAspect = STILL_ASPECT,
                     count = state.items.size,
                     keyOf = { index -> state.items[index].id },
                     cardOf = { index -> state.items[index].toFileCard() },
@@ -349,22 +420,28 @@ private fun SeriesGrid(
                     onFocused = onChipFocused,
                     onLeft = onChipsLeft,
                     onPick = onPickFolder,
+                    aboveFocusable = aboveFocusable,
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 when {
-                    state.error != null -> Text(state.error, modifier = Modifier.padding(top = 16.dp))
-                    state.loading -> Text("Загрузка…", modifier = Modifier.padding(top = 16.dp))
+                    state.error != null -> Text(state.error, fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
+                    state.isLoading -> Text("Загрузка…", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
                     state.items.isEmpty() -> EmptyCollection()
                     else -> CardGrid(
                         state = state,
-                        // The photo masonry keeps its track count (D13 leaves
-                        // the image body's geometry untouched).
+                        // 3 uniform squares across (the count + uniform-row
+                        // laws, 8.10): every photo tile the same fixed square.
                         columns = PHOTO_GRID_COLUMNS,
+                        homeHoldsEntry = homeHoldsEntry,
+                        tileAspect = PHOTO_TILE_ASPECT,
                         count = state.items.size,
                         keyOf = { index -> state.items[index].id },
                         cardOf = { index -> state.items[index].toPhotoCard() },
                         accent = accent,
-                        onClick = {},
+                        // The tile's OK act (task 8.13 — was an empty lambda,
+                        // the operator-reported gap): open the photo viewer
+                        // on this row.
+                        onClick = { index -> onPhotoOpened(index) },
                         onFocusMoved = onFocusMoved,
                         onExtend = onExtendItems,
                         onOpenRail = onOpenRail,
@@ -376,9 +453,9 @@ private fun SeriesGrid(
             // The unknown module's honest empty state (D6's stated TV
             // divergence): the module's own id as label — never an error,
             // never a hardcoded type list.
-            else -> Column(modifier = Modifier.padding(top = 16.dp)) {
+            else -> Column(modifier = Modifier.padding(top = 8.dp)) {
                 if (library != null) {
-                    Text(moduleLabel(library.moduleId), fontSize = 18.sp)
+                    Text(moduleLabel(library.moduleId), fontSize = TYPE_HEADING)
                 }
                 EmptyCollection()
             }
@@ -391,14 +468,16 @@ private fun SeriesGrid(
 private fun EmptyCollection() {
     Text(
         "В коллекции пока нет элементов",
-        modifier = Modifier.padding(top = 16.dp),
+        fontSize = TYPE_BODY,
+        modifier = Modifier.padding(top = 8.dp),
         color = Color.White.copy(alpha = 0.6f),
     )
 }
 
 /**
  * The card grid walker (the law's one landing for every body): the module's
- * width-driven tracks (D13 — serial 4 / tv 3 / photo 4 across the centered
+ * width-driven tracks (D13 as amended by the count ruling, 8.10 — serial /
+ * tv / photo all 3 across the centered
  * column), the cursor-in-state law, the left-edge rail-open trigger, and the
  * paged stream's append trigger — the cursor landing on the LAST loaded card
  * asks the flow for the next page (D6's paged stream; a chip pick restarts
@@ -408,7 +487,19 @@ private fun EmptyCollection() {
 @Composable
 private fun CardGrid(
     state: BrowseState,
+    // The entry-destination verdict (task 8.15): when true the entry
+    // actuator below stands down — the home rows' first card takes the
+    // entry (the #18 fix: OK at entry used to actuate this INVISIBLE
+    // below-fold tile, opening a series page instead of playing the resume
+    // the user was looking at). A flip re-runs the effect, so a
+    // late-resolving home still pulls the entry off the grid, and a
+    // resolved-empty home (empty served array, fetch failure, only bare
+    // rows) hands the entry back here.
+    homeHoldsEntry: Boolean,
     columns: Int,
+    // The grid's uniform tile aspect (the uniform-row law, task 8.10): every
+    // card in THIS grid renders the same fixed-aspect art block.
+    tileAspect: Float,
     count: Int,
     keyOf: (Int) -> Any,
     cardOf: (Int) -> DisplayCard,
@@ -427,7 +518,7 @@ private fun CardGrid(
     val scope = rememberCoroutineScope()
     LazyVerticalGrid(
         columns = GridCells.Fixed(columns),
-        modifier = Modifier.fillMaxSize().padding(top = 16.dp),
+        modifier = Modifier.fillMaxSize().padding(top = 8.dp),
         verticalArrangement = Arrangement.spacedBy(PARITY_GUTTER),
         horizontalArrangement = Arrangement.spacedBy(PARITY_GUTTER),
     ) {
@@ -435,31 +526,54 @@ private fun CardGrid(
             val requester = remember { FocusRequester() }
             val intoView = remember { BringIntoViewRequester() }
             // The cursor state is the focus source of truth: on entry
-            // (cursor 0), on every law move, and again after the chips row's
-            // Back (the gridFocusNonce bump — D12's chips Back → grid).
-            // While the rail is open the grid holds no focus. The rail-close
-            // restore is a separate effect: it stands down when the rail was
-            // opened from a home row (railRestoreHome — the opener's own
-            // cursor restores, task 3.2), so the two surfaces never race
-            // for the focus on a close.
-            LaunchedEffect(state.gridFocus) {
-                if (state.gridFocus == index && !state.railOpen) {
-                    requester.requestFocusSafely()
+            // (cursor 0) — when the home surface cannot claim it (task
+            // 8.15's gate; the home rows' first card takes the entry
+            // otherwise) —, on every law move, and again after the chips
+            // row's Back (the gridFocusNonce bump — D12's chips Back →
+            // grid). While the rail is open the grid holds no focus.
+            //
+            // EVERY actuation below is RE-ARMING (task 8.11, ledger #13 —
+            // the walk61d proven race): a body swap unmounts/remounts the
+            // grid across the loading branch, and the one-shot
+            // requestFocusSafely dropped with no retry when its fire lost
+            // the frame-phase coin flip against the remount — 2 LAND /
+            // 2 NO-OP on identical presses. The re-arming actuator keeps
+            // asking once per frame until the request lands, the key
+            // changes, or the frame cap elapses — the same idiom the rail's
+            // own actuator has used since the walk-found 4.2 fix. The
+            // two-emit law (commit → post-load) is the flow's and is
+            // untouched.
+            LaunchedEffect(state.gridFocus, homeHoldsEntry) {
+                if (state.gridFocus == index && !state.isRailOpen && !homeHoldsEntry) {
+                    requester.focusUntilAttached()
                 }
             }
             LaunchedEffect(state.gridFocusNonce) {
-                if (state.gridFocusNonce > 0 && state.gridFocus == index && !state.railOpen) {
-                    requester.requestFocusSafely()
+                if (state.gridFocusNonce > 0 && state.gridFocus == index && !state.isRailOpen) {
+                    requester.focusUntilAttached()
                 }
             }
-            LaunchedEffect(state.railOpen) {
-                if (!state.railOpen && !state.railRestoreHome && state.gridFocus == index) {
-                    requester.requestFocusSafely()
+            // The rail-close restore is gated on the CLOSE TRANSITION, not
+            // the key value: it stands down when the rail was opened from a
+            // home row (shouldRestoreHome — the opener's own cursor
+            // restores, task 3.2), and its first run at a fresh composition
+            // is NOT a close — an ungated mount-run would fire at the body
+            // swap's remount (where the landing belongs to the nonce
+            // actuator) and at entry (where the home owns the focus, task
+            // 8.15) — a one-frame steal of the #18 class. Only a watched
+            // open→close flip re-lands the parked cursor.
+            val railWasOpen = remember { mutableStateOf(state.isRailOpen) }
+            LaunchedEffect(state.isRailOpen) {
+                val closedNow = railWasOpen.value && !state.isRailOpen
+                railWasOpen.value = state.isRailOpen
+                if (closedNow && !state.shouldRestoreHome && state.gridFocus == index) {
+                    requester.focusUntilAttached()
                 }
             }
             CardView(
                 card = cardOf(index),
                 accent = accent,
+                tileAspect = tileAspect,
                 onClick = { onClick(index) },
                 onFocused = {
                     onFocusMoved(index)
@@ -497,8 +611,11 @@ private fun CardGrid(
  * rows with their counts. A chip pick SERVER-FILTERS the paged stream
  * (path_prefix / top_level=true) and restarts it at offset 0 — the grid
  * pages exactly the stream a chip counts. The row walks Left/Right under the
- * moveInRow law; Up/Down stay UNCONSUMED so the cursor crosses to settings
- * above and into the grid below natively (D12's chips row, the L2 law).
+ * moveInRow law. DOWN stays UNCONSUMED so the cursor crosses into the grid
+ * below natively (D12's chips row, the L2 law); UP is clamped when nothing
+ * focusable sits above the body ([aboveFocusable] — task 8.6): the key is
+ * consumed, the chip keeps focus, and focus never escapes the body by a
+ * runaway native search into the home rows.
  */
 @Composable
 private fun FolderChipsRow(
@@ -506,6 +623,7 @@ private fun FolderChipsRow(
     onFocused: (Int) -> Unit,
     onLeft: () -> Unit,
     onPick: (String?) -> Unit,
+    aboveFocusable: Boolean,
     modifier: Modifier = Modifier,
 ) {
     // Chip 0 = [Все] (no filter); chip i > 0 = the served folders[i - 1] —
@@ -539,11 +657,17 @@ private fun FolderChipsRow(
                 onFocused = { onFocused(index) },
                 onDirection = { key ->
                     val next = moveInRow(index, chipCount, key)
-                    if (next != index) {
-                        onFocused(next)
-                        true // consumed inside the chips row
-                    } else {
-                        false // Up/Down and the edge clamps cross natively
+                    when {
+                        next != index -> {
+                            onFocused(next)
+                            true // consumed inside the chips row
+                        }
+                        // The body-boundary clamp (task 8.6): no focusable
+                        // target above the body — the key is consumed and
+                        // the chip keeps focus (never a runaway native
+                        // search into the home rows).
+                        chipsRowConsumesUp(key, aboveFocusable) -> true
+                        else -> false // DOWN (→ grid) and the edge clamps cross natively
                     }
                 },
                 modifier = Modifier.focusRequester(requester).tvFocusStyle(),
@@ -570,23 +694,23 @@ private fun FolderChip(
 ) {
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(5.dp))
             .background(chipColor)
             .onFocusChanged { if (it.isFocused) onFocused() }
             .onKeyEvent { event -> routeDirectionEvent(event, onDirection) }
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 6.dp, vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(
             label,
-            fontSize = 14.sp,
+            fontSize = TYPE_SMALL,
             color = if (active) accentColor else Color.White,
         )
         if (count != null) {
             Text(
                 count.toString(),
-                fontSize = 12.sp,
+                fontSize = TYPE_META,
                 color = accentColor,
             )
         }
@@ -636,8 +760,8 @@ private fun CollectionsRail(
                 // attached to the window yet — the walk-found 4.2 dead rail:
                 // rows render, no row ever focused). The re-arming actuator
                 // keeps asking until the request lands or the rail closes.
-                LaunchedEffect(state.railOpen, state.railFocus) {
-                    if (state.railOpen && state.railFocus == index) {
+                LaunchedEffect(state.isRailOpen, state.railFocus) {
+                    if (state.isRailOpen && state.railFocus == index) {
                         requester.focusUntilAttached()
                     }
                 }
@@ -672,14 +796,15 @@ private fun CollectionsRail(
 }
 
 /**
- * The transition-composed focus actuator (the walk-found 4.2 fix): a focus
- * request aimed at a node still entering the slide-in transition throws
- * until the node's focus target attaches to the window — the one-shot
- * actuator's swallowed request left the rail rendered but never focused,
- * with the content card holding focus underneath (the dead rail-walk the
- * on-device walk falsified). The request re-arms once per frame until it
- * lands, the caller's effect is cancelled (another row walked or the rail
- * closed again), or [FOCUS_RETRY_FRAMES] elapse.
+ * The transition-composed focus actuator (the walk-found 4.2 fix, now the
+ * SHARED actuation idiom — task 8.11 extended it to the grid's
+ * cursor/nonce/rail-close actuators): a focus request aimed at a node still
+ * entering a slide-in transition — or detached across a body swap's
+ * unmount/remount (ledger #13's proven race) — throws until the node's
+ * focus target attaches to the window; a one-shot drop leaves the surface
+ * rendered but never focused. The request re-arms once per frame until it
+ * lands, the caller's effect is cancelled (another row walked, the cursor
+ * moved, or the rail closed again), or [FOCUS_RETRY_FRAMES] elapse.
  */
 private suspend fun FocusRequester.focusUntilAttached() {
     repeat(FOCUS_RETRY_FRAMES) {
@@ -719,18 +844,18 @@ private fun RailRow(
         if (name.isNotBlank()) {
             Text(
                 name,
-                fontSize = 18.sp,
+                fontSize = TYPE_HEADING,
                 color = if (selected) accentColor else Color.White,
             )
         }
-        Row(modifier = Modifier.padding(top = 4.dp)) {
-            Text(module, fontSize = 12.sp, color = Color.White)
+        Row(modifier = Modifier.padding(top = 2.dp)) {
+            Text(module, fontSize = TYPE_META, color = Color.White)
             if (count != null) {
                 Text(
                     count.toString(),
-                    fontSize = 12.sp,
+                    fontSize = TYPE_META,
                     color = accentColor,
-                    modifier = Modifier.padding(start = 12.dp),
+                    modifier = Modifier.padding(start = 6.dp),
                 )
             }
         }
@@ -742,7 +867,7 @@ private fun SeriesPage(
     series: SeriesDto,
     episodes: List<ItemDto>,
     positions: Map<String, Long>,
-    loading: Boolean,
+    isLoading: Boolean,
     focusIndex: Int,
     accent: Color,
     serverBase: String?,
@@ -751,17 +876,18 @@ private fun SeriesPage(
     onPlay: (ItemDto) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(32.dp)) {
-        // The hero zone (design D5, wireframe 3.3): poster, title (28sp) and
+        // The hero zone (design D5, wireframe 3.3): poster, title
+        // (TYPE_DISPLAY — the 8.16 scale) and
         // the served about panel — facts line + Synopsis + genre chips. The
         // hero carries NO focus modifiers: the episode list below is the
         // walker's home and keeps the initial focus.
         SeriesHeroView(series, serverBase, token)
         when {
-            loading && episodes.isEmpty() -> Text("Загрузка…", modifier = Modifier.padding(top = 16.dp))
-            episodes.isEmpty() -> Text("Эпизоды не найдены", modifier = Modifier.padding(top = 16.dp))
+            isLoading && episodes.isEmpty() -> Text("Загрузка…", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
+            episodes.isEmpty() -> Text("Эпизоды не найдены", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
             else -> LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(top = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxSize().padding(top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 items(
                     count = episodes.size,
@@ -813,8 +939,8 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
     val hero = series.toHero()
     if (hero.title == null && hero.posterUrl == null && hero.about == null) return
     Row(
-        modifier = Modifier.padding(bottom = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = Modifier.padding(bottom = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         // FIELD-DRIVEN: absent artwork → no poster block, nothing fabricated
         // (the same artwork law as the cards — 5.13).
@@ -823,45 +949,45 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
             ArtworkImage(
                 artwork = artwork,
                 token = token,
-                modifier = Modifier.width(120.dp).height(180.dp),
+                modifier = Modifier.width(60.dp).height(90.dp),
             )
         }
         Column(modifier = Modifier.weight(1f)) {
             if (hero.title != null) {
-                Text(hero.title, fontSize = 28.sp)
+                Text(hero.title, fontSize = TYPE_DISPLAY)
             }
             val about = hero.about
             if (about != null) {
                 if (about.facts != null) {
                     Text(
                         about.facts,
-                        fontSize = 12.sp,
+                        fontSize = TYPE_META,
                         color = Color.White.copy(alpha = 0.6f),
-                        modifier = Modifier.padding(top = 6.dp),
+                        modifier = Modifier.padding(top = 3.dp),
                     )
                 }
                 Text(
                     about.description,
-                    fontSize = 14.sp,
+                    fontSize = TYPE_SMALL,
                     color = Color.White.copy(alpha = 0.6f),
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 8.dp),
+                    modifier = Modifier.padding(top = 4.dp),
                 )
                 if (about.genres.isNotEmpty()) {
                     FlowRow(
-                        modifier = Modifier.padding(top = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         about.genres.forEach { genre ->
                             Text(
                                 genre,
-                                fontSize = 12.sp,
+                                fontSize = TYPE_META,
                                 color = Color.White.copy(alpha = 0.6f),
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
+                                    .clip(RoundedCornerShape(5.dp))
                                     .background(chipColor)
-                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                                    .padding(horizontal = 4.dp, vertical = 1.dp),
                             )
                         }
                     }
@@ -884,6 +1010,11 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
 private fun CardView(
     card: DisplayCard,
     accent: Color,
+    // This grid's uniform tile aspect (the uniform-row law, task 8.10): the
+    // art block ALWAYS renders at this aspect — artwork Crop-fills it, its
+    // absence leaves a placeholder surface — so a row's heights and the
+    // title/meta baselines can never go ragged.
+    tileAspect: Float,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     serverBase: String? = null,
@@ -898,44 +1029,42 @@ private fun CardView(
             .onKeyEvent { event -> routeDirectionEvent(event, onDirection) }
             .clickable(onClick = onClick),
     ) {
-        // FIELD-DRIVEN: absent artwork → no artwork block, nothing fabricated
-        // (a relative path with no stored base resolves to absent too). The
-        // aspect rides the card's mapping (D13): serial fixed 2:3, tv fixed
-        // 16:9, photo the served ratio; null keeps the fixed-height block.
-        val artwork = resolveArtworkUrl(serverBase, card.artworkUrl)
-        if (artwork != null) {
-            val artModifier = card.aspect?.takeIf { it > 0 }
-                ?.let { ratio -> Modifier.fillMaxWidth().aspectRatio(ratio) }
-                ?: Modifier.fillMaxWidth().height(160.dp)
-            ArtworkImage(
-                artwork = artwork,
-                token = token,
-                modifier = artModifier,
-            )
+        // The fixed-aspect art block — unconditional (the uniform-row law):
+        // field-driven ABSENCE still occupies the tile's geometry (a bare
+        // surface), never a shorter card that shifts the row's text rows.
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(tileAspect)) {
+            val artwork = resolveArtworkUrl(serverBase, card.artworkUrl)
+            if (artwork != null) {
+                ArtworkImage(
+                    artwork = artwork,
+                    token = token,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
         // In-progress ONLY — a watched card never renders a bar (D2).
         if (card.watched != true && card.progress != null) {
             InProgressBar(
                 percent = card.progress,
                 accent = accent,
-                modifier = Modifier.padding(top = 6.dp),
+                modifier = Modifier.padding(top = 3.dp),
             )
         }
         if (card.title != null) {
             Text(
                 card.title,
-                fontSize = 16.sp,
+                fontSize = TYPE_BODY,
                 modifier = Modifier
-                    .padding(top = 8.dp)
+                    .padding(top = 4.dp)
                     .alpha(if (card.watched == true) WATCHED_DIM else 1f),
             )
         }
         if (card.meta != null) {
             Text(
                 card.meta,
-                fontSize = 12.sp,
+                fontSize = TYPE_META,
                 color = Color.White.copy(alpha = 0.6f),
-                modifier = Modifier.padding(top = 4.dp),
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
         // The photo tile's capture-date footer (D6): the served date ONLY —
@@ -943,27 +1072,28 @@ private fun CardView(
         if (card.footer != null) {
             Text(
                 card.footer,
-                fontSize = 12.sp,
+                fontSize = TYPE_META,
                 color = Color.White.copy(alpha = 0.6f),
-                modifier = Modifier.padding(top = 4.dp),
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
         if (card.watched == true) {
             Text(
                 "✓",
-                fontSize = 12.sp,
+                fontSize = TYPE_META,
                 color = DEFAULT_TYPE_ACCENT, // the SPA .watched-mark law: the mark is type-agnostic
-                modifier = Modifier.padding(top = 4.dp),
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
     }
 }
 
 /**
- * The episode row (design D2, anatomy 3.4): the composed served name at the
- * 18sp title floor, the ONE field-driven meta line, and the same tri-state
- * as the grid card — the in-progress bar rides the still's bottom edge (the
- * 72dp row has no room under the art), the watched title dims, the ✓ glyph
+ * The episode row (design D2, anatomy 3.4): the composed served name at
+ * TYPE_HEADING (the 8.16 scale — SPA 18px), the ONE field-driven meta line,
+ * and the same tri-state as the grid card — the in-progress bar rides the
+ * still's bottom edge (the 36dp row has no room under the art), the watched
+ * title dims, the ✓ glyph
  * renders type-agnostic (the SPA .watched-mark pastel, D3) at meta scale, NO
  * bar. Word chips are RETIRED.
  * OK plays through clickable — the shipped play verb's launch leg resumes
@@ -983,14 +1113,14 @@ private fun EpisodeRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(72.dp)
+            .height(36.dp)
             .onFocusChanged { if (it.isFocused) onFocused() }
             .onKeyEvent { event -> routeDirectionEvent(event, onDirection) }
             .clickable(onClick = onClick),
     ) {
         val artwork = resolveArtworkUrl(serverBase, card.artworkUrl)
         if (artwork != null) {
-            Box(modifier = Modifier.width(120.dp).height(72.dp)) {
+            Box(modifier = Modifier.width(60.dp).height(36.dp)) {
                 ArtworkImage(
                     artwork = artwork,
                     token = token,
@@ -1006,18 +1136,18 @@ private fun EpisodeRow(
                 }
             }
         }
-        Column(modifier = Modifier.padding(start = 12.dp)) {
+        Column(modifier = Modifier.padding(start = 6.dp)) {
             if (card.title != null) {
                 Text(
                     card.title,
-                    fontSize = 18.sp,
+                    fontSize = TYPE_HEADING,
                     modifier = Modifier.alpha(if (card.watched == true) WATCHED_DIM else 1f),
                 )
             }
             if (card.meta != null) {
                 Text(
                     card.meta,
-                    fontSize = 12.sp,
+                    fontSize = TYPE_META,
                     color = Color.White.copy(alpha = 0.6f),
                     modifier = Modifier.padding(top = 4.dp),
                 )
@@ -1025,7 +1155,7 @@ private fun EpisodeRow(
             if (card.watched == true) {
                 Text(
                     "✓",
-                    fontSize = 12.sp,
+                    fontSize = TYPE_META,
                     color = DEFAULT_TYPE_ACCENT, // the SPA .watched-mark law: the mark is type-agnostic
                     modifier = Modifier.padding(top = 4.dp),
                 )
@@ -1037,24 +1167,31 @@ private fun EpisodeRow(
 /**
  * The one Coil image request (5.13): the resolved URL, and the bearer token
  * ONLY on our server's artwork (relative wire path) — a CDN fetch never
- * carries the device credential.
+ * carries the device credential. The image Crop-fills whatever bounds its
+ * modifier gives it (the uniform-row law, 8.10): a fixed-aspect tile shows
+ * its art edge-to-edge, never letterboxed inside the track.
  */
 @Composable
 internal fun ArtworkImage(
     artwork: ArtworkRequest,
     token: String?,
     modifier: Modifier = Modifier,
+    // The uniform-row law's default (8.10): tiles Crop-fill. The one
+    // Fit exception is the photo viewer (8.13) — a photograph is SHOWN,
+    // never cropped away.
+    contentScale: ContentScale = ContentScale.Crop,
 ) {
     AsyncImage(
         model = ImageRequest.Builder(LocalContext.current)
             .data(artwork.url)
             .apply {
-                if (artwork.authorized && !token.isNullOrBlank()) {
+                if (artwork.isAuthorized && !token.isNullOrBlank()) {
                     setHeader("Authorization", "Bearer $token")
                 }
             }
             .build(),
         contentDescription = null,
+        contentScale = contentScale,
         modifier = modifier,
     )
 }
@@ -1083,8 +1220,8 @@ internal fun routeDirectionEvent(
 internal fun InProgressBar(percent: Int, accent: Color, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
-            .height(6.dp)
-            .clip(RoundedCornerShape(3.dp))
+            .height(3.dp)
+            .clip(RoundedCornerShape(2.dp))
             .background(chipColor),
     ) {
         Box(

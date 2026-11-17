@@ -1,7 +1,9 @@
 package tv.mellifera.dpad
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import tv.mellifera.browse.BrowseState
 import tv.mellifera.nav.FocusTarget
@@ -55,7 +57,7 @@ class FocusLawTest {
             episodeFocus = 0,
         )
         assertEquals(FocusTarget.EpisodeRow(0), browseFocusTarget(seriesPage))
-        assertEquals(FocusTarget.Surface, browseFocusTarget(BrowseState(loading = true)))
+        assertEquals(FocusTarget.Surface, browseFocusTarget(BrowseState(isLoading = true)))
         assertEquals(FocusTarget.Surface, browseFocusTarget(BrowseState(error = "сбой")))
 
         // Player: wherever the overlay renders it owns focus; Idle renders
@@ -102,5 +104,24 @@ class FocusLawTest {
         assertEquals(5, moveInList(5, count = 6, key = DpadKey.Down))
         // Left/Right are not list keys.
         assertEquals(3, moveInList(3, count = 6, key = DpadKey.Left))
+    }
+
+    @Test
+    fun chips_row_up_clamps_when_nothing_focusable_above_the_body() {
+        // Task 8.6 (the walk-found stranding): no focusable target above the
+        // body (the settings gate off) — UP is CONSUMED, the chip keeps
+        // focus, and no runaway native search carries it across the body
+        // boundary into the home rows.
+        assertTrue(chipsRowConsumesUp(DpadKey.Up, aboveFocusable = false))
+        // The settings affordance IS focusable — the arrow stays unconsumed
+        // and crosses natively (D12's chips row); a settings target is
+        // reached explicitly, never by native search over the home surface.
+        assertFalse(chipsRowConsumesUp(DpadKey.Up, aboveFocusable = true))
+        // DOWN (→ grid) and the walk keys never clamp — they stay in the
+        // moveInRow law's hands.
+        assertFalse(chipsRowConsumesUp(DpadKey.Down, aboveFocusable = false))
+        assertFalse(chipsRowConsumesUp(DpadKey.Left, aboveFocusable = false))
+        assertFalse(chipsRowConsumesUp(DpadKey.Right, aboveFocusable = false))
+        assertFalse(chipsRowConsumesUp(DpadKey.Ok, aboveFocusable = false))
     }
 }

@@ -21,6 +21,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Button
 import androidx.tv.material3.Text
+import tv.mellifera.ui.TYPE_BODY
+import tv.mellifera.ui.TYPE_CODE
+import tv.mellifera.ui.TYPE_READOUT
+import tv.mellifera.ui.TYPE_SMALL
 import tv.mellifera.ui.tvFocusStyle
 import tv.mellifera.ui.tvInitialFocus
 
@@ -56,21 +60,21 @@ fun PairingScreen(flow: PairingFlow) {
             is PairingState.EnterAddress -> AddressEntry(flow, hint = null)
             is PairingState.AddressRejected -> AddressEntry(flow, hint = current.message)
             is PairingState.Ready -> PrimaryAction(flow, "Начать сопряжение")
-            is PairingState.Connecting -> Text("Соединение с сервером…")
+            is PairingState.Connecting -> Text("Соединение с сервером…", fontSize = TYPE_BODY)
             is PairingState.AwaitingApproval -> {
-                Text("Введите код на веб-интерфейсе сервера:")
+                Text("Введите код на веб-интерфейсе сервера:", fontSize = TYPE_BODY)
                 Text(
                     current.code,
-                    fontSize = 48.sp,
-                    modifier = Modifier.padding(vertical = 24.dp),
+                    fontSize = TYPE_CODE,
+                    modifier = Modifier.padding(vertical = 12.dp),
                 )
-                Text("Ожидание подтверждения…")
+                Text("Ожидание подтверждения…", fontSize = TYPE_BODY)
             }
             is PairingState.Rejected -> {
-                Text(current.message)
+                Text(current.message, fontSize = TYPE_BODY)
                 PrimaryAction(flow, "Запустить сопряжение заново")
             }
-            is PairingState.Paired -> Text("Подключено")
+            is PairingState.Paired -> Text("Подключено", fontSize = TYPE_BODY)
         }
     }
 }
@@ -82,23 +86,23 @@ private fun AddressEntry(flow: PairingFlow, hint: String?) {
     // prefills), while a fresh flow still starts empty.
     var address by remember { mutableStateOf(flow.addressDraft) }
     if (hint != null) {
-        Text(hint, modifier = Modifier.padding(bottom = 16.dp))
+        Text(hint, fontSize = TYPE_BODY, modifier = Modifier.padding(bottom = 8.dp))
     }
-    Text(ADDRESS_FIELD_LEGEND, modifier = Modifier.padding(bottom = 4.dp))
+    Text(ADDRESS_FIELD_LEGEND, fontSize = TYPE_BODY, modifier = Modifier.padding(bottom = 2.dp))
     // Initial-focus law (nav/pairingFocusTarget): the entry state's target
     // is the ADDRESS FIELD, not the submit button.
     BasicTextField(
         value = address,
         onValueChange = { address = it },
         modifier = Modifier
-            .widthIn(max = 480.dp)
+            .widthIn(max = 240.dp)
             .fillMaxWidth()
-            .padding(bottom = 4.dp)
+            .padding(bottom = 2.dp)
             .tvInitialFocus()
             .tvFocusStyle(),
-        textStyle = TextStyle(color = Color.White, fontSize = 20.sp),
+        textStyle = TextStyle(color = Color.White, fontSize = TYPE_READOUT),
     )
-    Text(ADDRESS_FIELD_HELPER, modifier = Modifier.padding(bottom = 16.dp))
+    Text(ADDRESS_FIELD_HELPER, fontSize = TYPE_BODY, modifier = Modifier.padding(bottom = 8.dp))
     PrimaryAction(flow, "Подключить", initial = false) { flow.submitAddress(address) }
 }
 
@@ -115,6 +119,6 @@ private fun PrimaryAction(
         onClick = onClick,
         modifier = if (initial) Modifier.tvInitialFocus().tvFocusStyle() else Modifier.tvFocusStyle(),
     ) {
-        Text(label)
+        Text(label, fontSize = TYPE_SMALL)
     }
 }

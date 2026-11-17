@@ -29,14 +29,14 @@ import kotlinx.coroutines.launch
 data class LaunchPlan(
     val resolvedUrl: String,
     val mode: String,
-    val hls: Boolean,
+    val isHls: Boolean,
 )
 
 fun launchPlan(playUrl: String, mode: String, resolve: (String) -> String): LaunchPlan =
     LaunchPlan(
         resolvedUrl = resolve(playUrl),
         mode = mode,
-        hls = mode == "hls",
+        isHls = mode == "hls",
     )
 
 /**
@@ -91,7 +91,7 @@ class Media3Controller(
             releasePlayer()
             val item = MediaItem.Builder()
                 .setUri(plan.resolvedUrl)
-                .apply { if (plan.hls) setMimeType(MimeTypes.APPLICATION_M3U8) }
+                .apply { if (plan.isHls) setMimeType(MimeTypes.APPLICATION_M3U8) }
                 .build()
             val p = ExoPlayer.Builder(appContext).build()
             // The punch-through law (D7/5.4): a surface the holder handed us
@@ -170,7 +170,7 @@ class Media3Controller(
                 _readout.value = PlayerReadout(
                     positionMs = p.currentPosition,
                     bufferedMs = p.bufferedPosition,
-                    buffering = p.playbackState == Player.STATE_BUFFERING,
+                    isBuffering = p.playbackState == Player.STATE_BUFFERING,
                     durationMs = p.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0,
                 )
                 delay(READOUT_PERIOD_MS)

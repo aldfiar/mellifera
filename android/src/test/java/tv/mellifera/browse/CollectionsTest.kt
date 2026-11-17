@@ -11,7 +11,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import tv.mellifera.assertDrained
+import tv.mellifera.browse.fixtures.episodesBody
 import tv.mellifera.browse.fixtures.librariesBody
+import tv.mellifera.browse.fixtures.progressBody
 import tv.mellifera.browse.fixtures.seriesBody
 import tv.mellifera.browse.fixtures.tvItemsBody
 import tv.mellifera.browse.fixtures.tvLibrariesBody
@@ -136,7 +138,7 @@ class CollectionsTest {
         assertEquals(emptyList<ItemDto>(), state.items)
         assertEquals(0, state.gridFocus)
         assertNull(state.error)
-        assertFalse(state.loading)
+        assertFalse(state.isLoading)
         // enter()'s two requests were ALL the traffic: the unknown module
         // fetched nothing.
         assertEquals(2, server.requestCount)
@@ -175,8 +177,57 @@ class CollectionsTest {
         assertEquals(2L, failed.libraryId)
         assertEquals(listOf("f-1", "f-2"), failed.items.map { it.id })
         assertEquals(1, failed.gridFocus)
-        assertFalse(failed.loading)
+        assertFalse(failed.isLoading)
         assertTrue(server.takeRequestOrFail("CollectionsTest.tv_module_select_walks_the_paged_items_stream").path!!.endsWith("library=1"))
         server.assertDrained("CollectionsTest.tv_module_select_walks_the_paged_items_stream", 4)
+    }
+
+    @Test
+    fun select_library_closes_an_open_series_page() = runBlocking {
+        server.enqueue(json(librariesBody()))
+        server.enqueue(json(seriesBody()))
+        flow.enter()
+        server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page")
+        server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page")
+
+        // A series page is open: its episodes land, then the per-episode
+        // progress walk (2.2 — one GET per served row).
+        server.enqueue(json(episodesBody()))
+        server.enqueue(json(progressBody("e-1", 60)))
+        server.enqueue(json(progressBody("e-2", 120)))
+        flow.openSeries(SeriesDto(id = "s-1", displayName = "Сага"))
+        repeat(3) { server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page") }
+        assertEquals("s-1", flow.state.value.selectedSeries?.id)
+
+        // The switch's fresh-body law (8.9 — the operator's live-box report:
+        // the old collection's episode page must not ride over the new
+        // body): the series page, its rows and its positions close WITH
+        // the old collection. The movie module fetches no body at all.
+        flow.selectLibrary(2L)
+
+        val state = flow.state.value
+        assertEquals(2L, state.libraryId)
+        assertNull(state.selectedSeries)
+        assertEquals(emptyList<ItemDto>(), state.episodes)
+        assertEquals(emptyMap<String, Long>(), state.positions)
+        assertTrue(state.isBodyOpen)
+        assertEquals(5, server.requestCount)
+
+        // A FAILED switch keeps the open series page (the failure law —
+        // whatever was on screen is kept): the trio reverts with the body.
+        server.enqueue(json(episodesBody()))
+        server.enqueue(json(progressBody("e-1", 60)))
+        server.enqueue(json(progressBody("e-2", 120)))
+        flow.openSeries(SeriesDto(id = "s-1", displayName = "Сага"))
+        repeat(3) { server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page") }
+        server.enqueue(MockResponse().setResponseCode(500))
+        flow.selectLibrary(1L)
+
+        val failed = flow.state.value
+        assertEquals("Не удалось открыть коллекцию", failed.error)
+        assertEquals(2L, failed.libraryId)
+        assertEquals("s-1", failed.selectedSeries?.id)
+        assertEquals(listOf("e-1", "e-2"), failed.episodes.map { it.id })
+        server.assertDrained("CollectionsTest.select_library_closes_an_open_series_page", 9)
     }
 }

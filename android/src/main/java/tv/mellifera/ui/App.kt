@@ -1,10 +1,12 @@
 package tv.mellifera.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.tv.material3.ColorScheme
+import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.darkColorScheme
 import tv.mellifera.AppViewModel
@@ -52,10 +54,26 @@ val MelliferaDarkScheme: ColorScheme = darkColorScheme(
 fun App(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsState()
     MaterialTheme(colorScheme = MelliferaDarkScheme) {
-        when (state.screen) {
-            Screen.Pairing -> PairingScreen(viewModel.pairing)
-            Screen.Browse -> BrowseScreen(viewModel)
+        // The invisible-titles fix (task 8.12, ledger #15 — walk61d's pixel
+        // proof + the operator's live report «episode number and title is
+        // not shown»): tv-material 1.0.1's Text resolves LocalContentColor
+        // whose DEFAULT is Color.Black and whose MaterialTheme NEVER
+        // provides it (only tv.material3.Surface does — decompiled AAR
+        // bytecode). This tree has no Surface above the texts, so every
+        // default-colored Text drew black on the near-black canvas —
+        // titles, labels, headers, invisible. The scheme's own onBackground
+        // (measured on-device at (230,225,229) = #E6E1E5 — the library's
+        // Neutral-class near-white; the bytecode-derived (244,239,244)
+        // citation was wrong) is the readable default the D9/D13 law always
+        // intended — provided here at the root, once, so every screen
+        // inherits it. Walk62's pixel grade confirmed the paint source:
+        // glyphs render at exactly this value.
+        CompositionLocalProvider(LocalContentColor provides MelliferaDarkScheme.onBackground) {
+            when (state.screen) {
+                Screen.Pairing -> PairingScreen(viewModel.pairing)
+                Screen.Browse -> BrowseScreen(viewModel)
+            }
+            PlayerOverlay(viewModel.playback)
         }
-        PlayerOverlay(viewModel.playback)
     }
 }

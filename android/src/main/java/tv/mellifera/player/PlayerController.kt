@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 data class PlayerReadout(
     val positionMs: Long = 0,
     val bufferedMs: Long = 0,
-    val buffering: Boolean = false,
+    val isBuffering: Boolean = false,
     val durationMs: Long = 0,
 )
 

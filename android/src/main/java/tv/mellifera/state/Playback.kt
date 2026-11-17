@@ -24,7 +24,7 @@ sealed class PlaybackState {
     /**
      * The describe→play→poll in-between. [phase] says which leg is in
      * flight; [attempt] counts plays dispatched (0 until the first) — the
-     * retry chip's play leg carries retry = attempt > 0; under [Phase.Polling]
+     * retry chip's play leg carries isRetry = attempt > 0; under [Phase.Polling]
      * it counts polls scheduled and drives the 2s→30s backoff.
      * [usedMaybePlay] pins the ONCE of the optimistic retry:false play.
      * [descriptor] carries the last wire answer the law reads.
@@ -136,7 +136,7 @@ sealed class PlaybackEvent {
 
 sealed class PlaybackEffect {
     data class Describe(val item: String) : PlaybackEffect()
-    data class Play(val item: String, val retry: Boolean) : PlaybackEffect()
+    data class Play(val item: String, val isRetry: Boolean) : PlaybackEffect()
 
     /** Sleep this long, then re-describe; the answer arrives as
      * Described/PollFailed. */
@@ -302,7 +302,7 @@ private fun onDescribed(state: PlaybackState.Starting, d: PlaybackDescriptor): T
         )
         else -> Transition(
             state.copy(phase = Phase.Playing, attempt = state.attempt + 1, usedMaybePlay = true, descriptor = d),
-            listOf(PlaybackEffect.Play(state.item, retry = state.attempt > 0)),
+            listOf(PlaybackEffect.Play(state.item, isRetry = state.attempt > 0)),
         )
     }
 

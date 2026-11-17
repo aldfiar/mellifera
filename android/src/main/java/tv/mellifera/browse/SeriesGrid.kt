@@ -42,15 +42,17 @@ data class DisplayCard(
      * means "no footer block" (an absent fact renders no date, never a
      * faked one). */
     val footer: String? = null,
-
-    /** The art block's aspect (D13, task 8.2): FIXED by the module's parity
-     * law — serial cards POSTER_ASPECT (2:3), tv file cards STILL_ASPECT
-     * (16:9); photo tiles carry the served width/height ratio
-     * (aspectRatioOf). Null keeps the default fixed-height block (episode
-     * rows size their art themselves). The field-driven served ratio is
-     * RETIRED from serial/tv tiles. */
-    val aspect: Float? = null,
 )
+
+/**
+ * Tile GEOMETRY lives with the GRID, not the card (the operator's
+ * 2026-11-16 uniform-row ruling, task 8.10): every card in a grid renders
+ * the SAME fixed-aspect art block — the grid passes its tile aspect
+ * (POSTER_ASPECT / STILL_ASPECT / PHOTO_TILE_ASPECT) down to [CardView], so
+ * a row's heights and text baselines can never go ragged, and a card with
+ * no artwork still occupies its art block (a placeholder surface, never a
+ * shorter card). The per-card aspect carrier is retired. */
+
 
 /**
  * watchedPercent — the SPA's bar law verbatim (WatchedStates.tsx): position
@@ -62,9 +64,8 @@ fun watchedPercent(positionSeconds: Long, durationSeconds: Long?): Int? {
     return Math.round(positionSeconds.toDouble() / durationSeconds * 100).toInt().coerceAtMost(100)
 }
 
-/** A series grid card over the served seriesDTO row — the FIXED poster
- * aspect rides in the mapping (D13: the SPA's aspect-[2/3] poster; the
- * field-driven TILE aspect is retired from this body). */
+/** A series grid card over the served seriesDTO row — geometry rides the
+ * grid (the uniform-row law: the serial grid passes POSTER_ASPECT down). */
 fun SeriesDto.toCard(): DisplayCard = DisplayCard(
     id = id,
     title = titleBlock(displayName),
@@ -74,7 +75,6 @@ fun SeriesDto.toCard(): DisplayCard = DisplayCard(
     // items, not series; absent → null, never a guessed percent (L1).
     progress = null,
     meta = null,
-    aspect = POSTER_ASPECT,
 )
 
 /**

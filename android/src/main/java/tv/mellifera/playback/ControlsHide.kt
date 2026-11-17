@@ -20,11 +20,11 @@ const val CONTROLS_HIDE_MS = 6_000L
  * the entry state — the overlay never opens with controls up.
  */
 data class ControlsVisibility(
-    val shown: Boolean,
+    val isVisible: Boolean,
     val armedAtMs: Long,
 ) {
     companion object {
-        val HIDDEN = ControlsVisibility(shown = false, armedAtMs = 0L)
+        val HIDDEN = ControlsVisibility(isVisible = false, armedAtMs = 0L)
     }
 }
 
@@ -35,7 +35,7 @@ data class ControlsVisibility(
  * past the latest input, never past the reveal.
  */
 fun ControlsVisibility.onPlayerInput(nowMs: Long): ControlsVisibility =
-    ControlsVisibility(shown = true, armedAtMs = nowMs)
+    ControlsVisibility(isVisible = true, armedAtMs = nowMs)
 
 /**
  * Back's first stage (5.9): the controls hide and the timer disarms —
@@ -56,4 +56,4 @@ fun ControlsVisibility.onProgressTick(): ControlsVisibility = this
  * boundary is inclusive (at exactly 6s the controls hide).
  */
 fun ControlsVisibility.hideDue(nowMs: Long): Boolean =
-    shown && nowMs - armedAtMs >= CONTROLS_HIDE_MS
+    isVisible && nowMs - armedAtMs >= CONTROLS_HIDE_MS

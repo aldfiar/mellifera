@@ -107,6 +107,19 @@ fun moveInRow(index: Int, count: Int, key: DpadKey): Int {
 }
 
 /**
+ * The chips row's UP clamp (task 8.6): an UP from the chips row with NO
+ * focusable target above the body is CONSUMED — the chip keeps focus, so
+ * the arrow can never ride a runaway native focus search across the body
+ * boundary into the home rows (the walk-found stranding: one UP stranded
+ * the user on home, outside the body they were inside). When the settings
+ * affordance above the body IS focusable, the arrow stays unconsumed and
+ * crosses natively (D12's chips row); a settings target is reached
+ * explicitly, never by native search over the home surface.
+ */
+fun chipsRowConsumesUp(key: DpadKey, aboveFocusable: Boolean): Boolean =
+    key == DpadKey.Up && !aboveFocusable
+
+/**
  * The list cursor law (episode rows): Up/Down step and clamp; Left/Right
  * are not list keys — the row keeps its position.
  */

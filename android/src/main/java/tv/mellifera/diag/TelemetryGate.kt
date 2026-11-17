@@ -23,7 +23,7 @@ class TelemetryGate(private val debugBuild: Boolean) {
     /** Null while no profile answer has landed — the tier is closed. */
     private var profileDebug: Boolean? = null
 
-    val open: Boolean
+    val isOpen: Boolean
         get() = debugBuild || profileDebug == true
 
     /** Lands a fresh /profile answer (the device kind's debug flag, 3.1). */
