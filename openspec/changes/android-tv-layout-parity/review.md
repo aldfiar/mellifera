@@ -164,8 +164,48 @@ Notes (none blocking the verdict):
 
 ## Human archive approval
 
-- [ ] Operator approves archiving the change (recorded here after 6.1's walk closes —
+- [x] Operator approves archiving the change (recorded here after 6.1's walk closes —
       the change cannot archive while 6.1 is open).
+
+  **APPROVED 2026-11-17 (in session, after walk15/walk15b closed 6.1)**: the operator
+  ruled «Archive now» — tick the boxes, seed the residual queue below as follow-ups,
+  merge the spec deltas, close-out notes, compaction — and «Open PR now» for
+  `feature/android-tv-app` → `main`.
+
+## Residual queue (follow-up seeds, P3-grade — none gate the archive)
+
+Operator rulings wanted (UX semantics, design-owned — fixes belong in the key-handling
+laws (consume-or-clamp), never in CardGrid geometry):
+
+- **#28a** — top-row UP from grid cols 1–2 is CONSUMED and jumps sideways to col 0
+  (moveInGrid Up coerce) instead of natively crossing into the chips lane; the doc's
+  «crosses into whatever sits above» is honored only at col 0.
+- **#28b** — home single-row DOWN is unconsumed → native focus search hops SIDEWAYS to
+  a taller right-neighbor (34px poke) and scrolls the row.
+- **#17** disambiguator law; **#23** three-path return shape; **#14** BACK-exit shape;
+  **#19** re-offer; **#20** commit-window check (commit lands between 14 s and 33 s of
+  playback); **#24** BACK-discriminator/scroll design follow-on.
+
+Walk legs that never got a device window:
+
+- **8.8** anchor-path entry (never pressed on-device); sub-4s transient caveat; tv-stills
+  arm (no «ТВ» collection on this box).
+- **12.1** ✓-glyph pixels (no watched card ever entered frame; thumb-less-row
+  strict-letter note above stands).
+- **12.4** cast anatomy on a cast-bearing item (lawful absence was all this box served).
+- **9.2** physical-remote keycode-222 emission (logcat-proven via adb only).
+- **#26** server probe — series-page episode rows render no titles (display_name blank
+  on /series/{id}/episodes; server-data state, TMDB-enrichment dormant-suspect; needs
+  operator-named prod access).
+
+Code follow-ups:
+
+- Stale 224px doc comment, BrowseScreen.kt ~:883 (gate-15 note 3).
+- JVM pin for `toggleFacet`'s clear/refetch flow (gate note 3, first round).
+- Optional consolidation: D3 pastel map (BrowseFlow.kt:39–43), player scrim,
+  AppCanvas → ui/Colors.kt (13.1 note).
+- PR follow-ups from the streams/eviction-class audits ride their own changes (see
+  #33's review.md) — not duplicated here.
 
 ## Amendment round — group 15 (2026-11-17 evening): GATE 2 record
 
