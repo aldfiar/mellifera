@@ -78,7 +78,9 @@ import tv.mellifera.ui.TYPE_HEADING
 import tv.mellifera.ui.TYPE_META
 import tv.mellifera.ui.TYPE_SMALL
 import tv.mellifera.ui.SettingsSection
+import tv.mellifera.ui.chipColor
 import tv.mellifera.ui.requestFocusSafely
+import tv.mellifera.ui.tvAccent
 import tv.mellifera.ui.tvFocusStyle
 
 /**
@@ -97,9 +99,6 @@ import tv.mellifera.ui.tvFocusStyle
  * the grid's left-edge LEFT arrow opens the collections rail instead of
  * crossing natively.
  */
-private val accentColor = Color(0xFF4C8DFF)
-private val chipColor = Color(0xFF2A2F3A)
-
 /** The watched title's dim (design D2 — the SPA's .watched-dim, 0.55). */
 private const val WATCHED_DIM = 0.55f
 
@@ -708,13 +707,13 @@ private fun FolderChip(
         Text(
             label,
             fontSize = TYPE_SMALL,
-            color = if (active) accentColor else Color.White,
+            color = if (active) tvAccent else Color.White,
         )
         if (count != null) {
             Text(
                 count.toString(),
                 fontSize = TYPE_META,
-                color = accentColor,
+                color = tvAccent,
             )
         }
     }
@@ -848,7 +847,7 @@ private fun RailRow(
             Text(
                 name,
                 fontSize = TYPE_HEADING,
-                color = if (selected) accentColor else Color.White,
+                color = if (selected) tvAccent else Color.White,
             )
         }
         Row(modifier = Modifier.padding(top = 2.dp)) {
@@ -857,7 +856,7 @@ private fun RailRow(
                 Text(
                     count.toString(),
                     fontSize = TYPE_META,
-                    color = accentColor,
+                    color = tvAccent,
                     modifier = Modifier.padding(start = 6.dp),
                 )
             }

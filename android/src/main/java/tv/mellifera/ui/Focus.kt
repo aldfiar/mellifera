@@ -12,15 +12,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
-
-/**
- * The focus law's accent — the one color a focused element carries (the
- * focused state is a 2dp accent border + scale 1.1, NEVER a pill; 5.9).
- */
-val tvAccent = Color(0xFF4C8DFF)
 
 private val FOCUSED_SCALE = 1.1f
 

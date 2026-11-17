@@ -51,12 +51,9 @@ import tv.mellifera.ui.TYPE_HEADING
 import tv.mellifera.ui.TYPE_META
 import tv.mellifera.ui.TYPE_READOUT
 import tv.mellifera.ui.TYPE_SMALL
+import tv.mellifera.ui.chipColor
 import tv.mellifera.ui.tvAccent
 import tv.mellifera.ui.tvInitialFocus
-
-/** The seek bar's track — the D11 chip-bg token (file-local, the idiom the
- * BrowseScreen/SettingsSection tokens use). */
-private val chipColor = Color(0xFF2A2F3A)
 
 /**
  * The player as OVERLAY (D1/D8): never a Screen route — it renders above
