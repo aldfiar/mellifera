@@ -211,6 +211,9 @@ fun reduce(state: PlaybackState, event: PlaybackEvent): Transition {
                             emptyList(),
                         )
                     }
+                // Back out of the preparing banner (audit P0-1) — never a
+                // no-op trap on the focusless shell.
+                is PlaybackEvent.ExitRequested -> Transition(PlaybackState.Idle, emptyList())
                 else -> Transition(state, emptyList())
             }
 
@@ -230,6 +233,7 @@ fun reduce(state: PlaybackState, event: PlaybackEvent): Transition {
                         emptyList(),
                     )
                 }
+                is PlaybackEvent.ExitRequested -> Transition(PlaybackState.Idle, emptyList())
                 else -> Transition(state, emptyList())
             }
 
@@ -248,6 +252,7 @@ fun reduce(state: PlaybackState, event: PlaybackEvent): Transition {
                             listOf(PlaybackEffect.Poll(pollDelayMs(next))),
                         )
                     }
+                is PlaybackEvent.ExitRequested -> Transition(PlaybackState.Idle, emptyList())
                 else -> Transition(state, emptyList())
             }
         }
@@ -266,7 +271,12 @@ fun reduce(state: PlaybackState, event: PlaybackEvent): Transition {
             else -> Transition(state, emptyList())
         }
 
-        is PlaybackState.Dead -> Transition(state, emptyList())
+        is PlaybackState.Dead -> when (event) {
+            // Back closes the overlay (audit P0-1); the no-retry banner law
+            // holds — the Idle landing carries no retry affordance.
+            is PlaybackEvent.ExitRequested -> Transition(PlaybackState.Idle, emptyList())
+            else -> Transition(state, emptyList())
+        }
 
         is PlaybackState.Failed -> when (event) {
             is PlaybackEvent.RetryRequested -> Transition(

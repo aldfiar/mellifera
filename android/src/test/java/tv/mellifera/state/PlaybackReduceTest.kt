@@ -227,4 +227,36 @@ class PlaybackReduceTest {
         t = reduce(active(), PlaybackEvent.Unauthorized)
         assertEquals(expected, t)
     }
+
+    @Test
+    fun back_exits_starting_phases_and_dead() {
+        // Audit P0-1: Back on the «Подготовка воспроизведения…»/«Сервер
+        // готовит файл…» banners is NOT a no-op trap — every Starting phase
+        // and Dead exit to Idle with NO effects (the Failed row's shape).
+        val expected = Transition(PlaybackState.Idle, emptyList())
+
+        // Describing.
+        assertEquals(expected, reduce(describing(), PlaybackEvent.ExitRequested))
+
+        // Playing — the optimistic play is in flight.
+        assertEquals(
+            expected,
+            reduce(
+                reduce(describing(), PlaybackEvent.Described(desc())).state,
+                PlaybackEvent.ExitRequested,
+            ),
+        )
+
+        // Polling — the preparing curve is running.
+        assertEquals(expected, reduce(polling(), PlaybackEvent.ExitRequested))
+
+        // Dead: Back only closes the overlay — Idle, emptyList, and the
+        // no-retry banner law holds (no retry affordance appears). Every
+        // other event stays the Dead identity.
+        assertEquals(expected, reduce(PlaybackState.Dead(BANNER_MISSING), PlaybackEvent.ExitRequested))
+        assertEquals(
+            Transition(PlaybackState.Dead(BANNER_MISSING), emptyList()),
+            reduce(PlaybackState.Dead(BANNER_MISSING), PlaybackEvent.PlayRequested("i1")),
+        )
+    }
 }
