@@ -4,6 +4,7 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import tv.mellifera.net.MetadataAbout
 import tv.mellifera.net.SeriesDto
 
 /**
@@ -64,6 +65,26 @@ class SeriesHeroTest {
         assertEquals("★ 7 · 2003", hero.about!!.facts)
         // No genres served → no chips, never a placeholder.
         assertEquals(emptyList<String>(), hero.about!!.genres)
+    }
+
+    @Test
+    fun facts_of_is_the_one_formatter_output_unchanged() {
+        // 11.2 — factsOf is promoted to internal so the series card's meta
+        // line rides the SAME projection (no duplicate formatter); its
+        // output is pinned unchanged: the fixed fact order verbatim
+        // (★ score · kind · status · N эп · year), absent slots skipped,
+        // a fact-less block → null.
+        val facts = MetadataAbout(
+            description = "Описание",
+            score = 8.1,
+            kind = "Аниме",
+            status = "Выходит",
+            episodes = 12,
+            airedOn = "1998-02-20",
+        )
+        assertEquals("★ 8.1 · Аниме · Выходит · 12 эп · 1998", factsOf(facts))
+        assertEquals("★ 7 · 1998", factsOf(facts.copy(score = 7.0, kind = null, status = null, episodes = null)))
+        assertNull(factsOf(MetadataAbout(description = "Описание")))
     }
 
     @Test

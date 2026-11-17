@@ -74,7 +74,10 @@ fun SeriesDto.toCard(): DisplayCard = DisplayCard(
     // No position/duration on the served seriesDTO — the progress wire reads
     // items, not series; absent → null, never a guessed percent (L1).
     progress = null,
-    meta = null,
+    // The hero's factsOf projection over the served about block — ONE
+    // formatter, never a duplicate. Absent metadata/about (or a block with
+    // no facts at all) → null: no meta block, never a padded line (L1).
+    meta = metadata?.about?.let(::factsOf),
 )
 
 /**

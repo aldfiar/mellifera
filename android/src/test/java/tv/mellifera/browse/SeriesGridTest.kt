@@ -6,7 +6,9 @@ import kotlinx.serialization.json.JsonNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import tv.mellifera.net.ElementMetadata
 import tv.mellifera.net.ItemDto
+import tv.mellifera.net.MetadataAbout
 import tv.mellifera.net.SeriesDto
 
 /**
@@ -188,6 +190,42 @@ class SeriesGridTest {
         assertNull(watchedPercent(30, null))
         assertNull(watchedPercent(30, 0))
         assertNull(watchedPercent(30, -5))
+    }
+
+    @Test
+    fun series_card_meta_is_the_facts_projection() {
+        // 11.2 — the card's meta line is the hero's factsOf projection over
+        // the served about block (ONE formatter, never a duplicate): the
+        // fixed fact order verbatim, ★ score · kind · status · N эп · year.
+        val served = SeriesDto(
+            id = "s-6",
+            displayName = "Черный клевер",
+            metadata = ElementMetadata(
+                about = MetadataAbout(
+                    description = "Описание",
+                    score = 8.1,
+                    kind = "Аниме",
+                    status = "Выходит",
+                    episodes = 12,
+                    airedOn = "1998-02-20",
+                ),
+            ),
+        ).toCard()
+        assertEquals("★ 8.1 · Аниме · Выходит · 12 эп · 1998", served.meta)
+
+        // Absent metadata → no meta block (L1) — the wire's omitempty law:
+        // absence means no block, never an empty one.
+        assertNull(SeriesDto(id = "s-7", displayName = "Сага").toCard().meta)
+
+        // A metadata block present but fact-less → factsOf's own null: no
+        // padded line, never a fabricated fact.
+        assertNull(
+            SeriesDto(
+                id = "s-8",
+                displayName = "Без фактов",
+                metadata = ElementMetadata(about = MetadataAbout(description = "Только описание")),
+            ).toCard().meta,
+        )
     }
 
     @Test

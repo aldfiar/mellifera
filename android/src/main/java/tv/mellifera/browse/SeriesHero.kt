@@ -65,7 +65,7 @@ private fun panelOf(about: MetadataAbout): AboutPanel? {
  * render verbatim (the source's own vocabulary); the year is aired_on's
  * "YYYY" prefix. RU copy law (L7) for the episode-count word.
  */
-private fun factsOf(about: MetadataAbout): String? {
+internal fun factsOf(about: MetadataAbout): String? {
     val facts = mutableListOf<String>()
     if (about.score != null) facts.add("★ ${scoreText(about.score)}")
     if (!about.kind.isNullOrBlank()) facts.add(about.kind)
