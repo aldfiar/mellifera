@@ -1042,6 +1042,11 @@ private fun RailRow(
             .clickable(onClick = onClick)
             // The focus tint (the mockup's color-mix accent-14%) under the
             // bordered card surface — the panel bg always stands beneath.
+            // Full-width BEFORE background/border (design §D): every row's
+            // card is the same width at any data state — the count-less row
+            // (no summary yet) never wraps narrower than a count-ful one,
+            // and Row2's weight(1f) spacer stays deterministic.
+            .fillMaxWidth()
             .background(if (focused) tvAccent.copy(alpha = 0.14f) else Color.Transparent, cardShape)
             .border(1.dp, railBorder, cardShape)
             .padding(horizontal = 10.dp, vertical = 8.dp),
@@ -1051,6 +1056,10 @@ private fun RailRow(
             if (name.isNotBlank()) {
                 Text(
                     name,
+                    maxLines = 1,
+                    // The SPA's .clink truncates (design §B): one line, no
+                    // wrap — a long Cyrillic name must not grow the card.
+                    overflow = TextOverflow.Ellipsis,
                     fontSize = TYPE_META,
                     color = if (selected) tvAccent else railMuted,
                     modifier = Modifier.padding(start = 6.dp),
@@ -1058,7 +1067,12 @@ private fun RailRow(
             }
         }
         Row(modifier = Modifier.padding(top = 2.dp)) {
-            Text(module, fontSize = TYPE_META, color = railMuted)
+            Text(module,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = TYPE_META,
+                color = railMuted,
+            )
             if (count != null) {
                 Spacer(Modifier.weight(1f))
                 Text(count.toString(), fontSize = TYPE_META, color = railMuted)

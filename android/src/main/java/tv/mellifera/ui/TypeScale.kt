@@ -28,7 +28,7 @@ val TYPE_DISPLAY = 14.sp
 /** 10sp — the player's position/duration readout (SPA 20px, text-xl). */
 val TYPE_READOUT = 10.sp
 
-/** 9sp — section labels, rail rows, episode titles, info headings
+/** 9sp — section labels, episode titles, info headings
  * (SPA 18px, text-lg). */
 val TYPE_HEADING = 9.sp
 
