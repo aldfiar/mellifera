@@ -1003,13 +1003,14 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
 }
 
 /**
- * The grid card (design D2 — the SPA card law, TV-rendered): artwork, the
- * in-progress bar UNDER the art, the title (dimmed when watched), the ONE
- * meta line, and the ✓ glyph — ONE glyph, type-agnostic (the SPA
- * .watched-mark pastel, D3) at meta scale, never a word chip. The tri-state
- * is a rendering null-check on the
- * DisplayCard carriers: watched → glyph + dim + NO bar; in-progress → the
- * bar only; new → clean.
+ * The grid card (design D2 — the SPA card law, TV-rendered): artwork with
+ * the ✓ corner mark OVER the art (WatchedCornerMark, task 12.1 — it LEFT the
+ * text stack so card heights are watched-independent), the in-progress bar
+ * UNDER the art, the title (dimmed when watched), and the ONE meta line —
+ * ONE glyph, type-agnostic (the SPA .watched-mark pastel, D3) at meta scale,
+ * never a word chip. The tri-state is a rendering null-check on the
+ * DisplayCard carriers: watched → corner mark + dim + NO bar; in-progress →
+ * the bar only; new → clean.
  */
 @Composable
 private fun CardView(
@@ -1046,6 +1047,13 @@ private fun CardView(
                     modifier = Modifier.fillMaxSize(),
                 )
             }
+            // The watched ✓ rides the art's top-end corner (task 12.1) —
+            // OUT of the text stack, so the card's height never depends on
+            // watched; unwatched renders absence (no mark, no space — L1).
+            WatchedCornerMark(
+                watched = card.watched == true,
+                modifier = Modifier.align(Alignment.TopEnd),
+            )
         }
         // In-progress ONLY — a watched card never renders a bar (D2).
         if (card.watched != true && card.progress != null) {
@@ -1084,15 +1092,26 @@ private fun CardView(
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
-        if (card.watched == true) {
-            Text(
-                "✓",
-                fontSize = TYPE_META,
-                color = DEFAULT_TYPE_ACCENT, // the SPA .watched-mark law: the mark is type-agnostic
-                modifier = Modifier.padding(top = 2.dp),
-            )
-        }
     }
+}
+
+/**
+ * The watched corner mark (the watched-signal law's corner placement, task
+ * 12.1): ONE type-agnostic ✓ (the SPA .watched-mark pastel, D3) pinned to
+ * the art block's top-end corner — never a word chip, never a text-stack
+ * row. Callers overlay it on the art Box; unwatched renders ABSENCE (no
+ * mark, no space — L1), so watched never changes card or row heights (the
+ * uniform-row law restored).
+ */
+@Composable
+private fun WatchedCornerMark(watched: Boolean, modifier: Modifier = Modifier) {
+    if (!watched) return
+    Text(
+        "✓",
+        fontSize = TYPE_META,
+        color = DEFAULT_TYPE_ACCENT, // the SPA .watched-mark law: the mark is type-agnostic
+        modifier = modifier.padding(3.dp),
+    )
 }
 
 /**
@@ -1100,9 +1119,10 @@ private fun CardView(
  * TYPE_HEADING (the 8.16 scale — SPA 18px), the ONE field-driven meta line,
  * and the same tri-state as the grid card — the in-progress bar rides the
  * still's bottom edge (the 36dp row has no room under the art), the watched
- * title dims, the ✓ glyph
- * renders type-agnostic (the SPA .watched-mark pastel, D3) at meta scale, NO
- * bar. Word chips are RETIRED.
+ * title dims, and the ✓ corner mark rides the thumb's top-end corner
+ * (WatchedCornerMark, task 12.1 — OUT of the text stack, so row heights are
+ * watched-independent), type-agnostic (the SPA .watched-mark pastel, D3) at
+ * meta scale, NO bar. Word chips are RETIRED.
  * OK plays through clickable — the shipped play verb's launch leg resumes
  * from the stored position (no client seek math).
  */
@@ -1141,6 +1161,13 @@ private fun EpisodeRow(
                         modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
                     )
                 }
+                // The watched ✓ rides the thumb's top-end corner (task 12.1)
+                // — OUT of the text stack, so the row's height never depends
+                // on watched; unwatched renders absence (no mark, no space).
+                WatchedCornerMark(
+                    watched = card.watched == true,
+                    modifier = Modifier.align(Alignment.TopEnd),
+                )
             }
         }
         Column(modifier = Modifier.padding(start = 6.dp)) {
@@ -1160,14 +1187,6 @@ private fun EpisodeRow(
                     color = Color.White.copy(alpha = 0.6f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            if (card.watched == true) {
-                Text(
-                    "✓",
-                    fontSize = TYPE_META,
-                    color = DEFAULT_TYPE_ACCENT, // the SPA .watched-mark law: the mark is type-agnostic
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
