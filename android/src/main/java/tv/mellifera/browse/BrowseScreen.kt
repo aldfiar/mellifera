@@ -337,10 +337,11 @@ private fun SeriesGrid(
     state: BrowseState,
     bodyHeight: Dp,
     intoView: BringIntoViewRequester,
-    // The entry-destination verdict (task 8.15): true while the home rows
-    // hold — or are still fetching toward — a focusable card; the grid's
-    // entry actuator stands down for the whole window, taking the entry
-    // only when the home surface resolved to nothing focusable.
+    // The entry-destination verdict (task 8.15, the 15.1 split): true while
+    // the home rows hold — or are still fetching toward — a focusable card;
+    // the grid's ENTRY claim (fresh mount, cursor 0) stands down for the
+    // whole window, taking the entry only when the home surface resolved to
+    // nothing focusable. Law moves never read it (D1).
     homeHoldsEntry: Boolean,
     onOpen: (SeriesDto) -> Unit,
     onPlay: (String) -> Unit,
@@ -516,14 +517,14 @@ private fun EmptyCollection() {
 @Composable
 private fun CardGrid(
     state: BrowseState,
-    // The entry-destination verdict (task 8.15): when true the entry
-    // actuator below stands down — the home rows' first card takes the
-    // entry (the #18 fix: OK at entry used to actuate this INVISIBLE
-    // below-fold tile, opening a series page instead of playing the resume
-    // the user was looking at). A flip re-runs the effect, so a
-    // late-resolving home still pulls the entry off the grid, and a
-    // resolved-empty home (empty served array, fetch failure, only bare
-    // rows) hands the entry back here.
+    // The entry-destination verdict (task 8.15, the 15.1 split): when true
+    // the ENTRY claim below (fresh mount, cursor 0) stands down — the home
+    // rows' first card takes the entry (the #18 fix: OK at entry used to
+    // actuate this INVISIBLE below-fold tile, opening a series page instead
+    // of playing the resume the user was looking at). The claim's key rides
+    // the verdict, so a flip re-runs it — a resolved-empty home (empty
+    // served array, fetch failure, only bare rows) hands the entry back to
+    // the grid's cursor 0. The law-move cursor actuator reads it NOT (D1).
     homeHoldsEntry: Boolean,
     columns: Int,
     // The grid's uniform tile aspect (the uniform-row law, task 8.10): every
@@ -554,12 +555,12 @@ private fun CardGrid(
         items(count = count, key = keyOf) { index ->
             val requester = remember { FocusRequester() }
             val intoView = remember { BringIntoViewRequester() }
-            // The cursor state is the focus source of truth: on entry
-            // (cursor 0) — when the home surface cannot claim it (task
-            // 8.15's gate; the home rows' first card takes the entry
-            // otherwise) —, on every law move, and again after the chips
-            // row's Back (the gridFocusNonce bump — D12's chips Back →
-            // grid). While the rail is open the grid holds no focus.
+            // The cursor state is the focus source of truth: on every law
+            // move (task 15.1's D1 split — ledger #27's consumed-but-inert
+            // arrows were the entry gate outliving its window), and again
+            // after the chips row's Back (the gridFocusNonce bump — D12's
+            // chips Back → grid). While the rail is open the grid holds no
+            // focus.
             //
             // EVERY actuation below is RE-ARMING (task 8.11, ledger #13 —
             // the walk61d proven race): a body swap unmounts/remounts the
@@ -572,8 +573,39 @@ private fun CardGrid(
             // own actuator has used since the walk-found 4.2 fix. The
             // two-emit law (commit → post-load) is the flow's and is
             // untouched.
-            LaunchedEffect(state.gridFocus, homeHoldsEntry) {
-                if (state.gridFocus == index && !state.isRailOpen && !homeHoldsEntry) {
+            // The CURSOR actuator (task 15.1's split): keyed on
+            // (state.gridFocus, state.isRailOpen) with isRailOpen REQUIRED in
+            // the key (surveyor Q10) — the only production mount path
+            // (activateRailRow) composes the body while the rail is still
+            // open (selectLibrary commits and awaits loadBody BEFORE the rail
+            // close), so a gridFocus-only key would let the mount-run's
+            // re-arming request steal focus from the open rail's focused row
+            // for the whole fetch window; with isRailOpen in the key the
+            // mount-run stands down and the landing fires on the rail-close
+            // flip (doubling the nonce actuator there, by design). The gate
+            // reads NO homeHoldsEntry — the entry gate is the separate ENTRY
+            // claim below — so every gridFocus change re-lands the ring for
+            // the actuator's whole body lifetime.
+            LaunchedEffect(state.gridFocus, state.isRailOpen) {
+                if (state.gridFocus == index && !state.isRailOpen) {
+                    requester.focusUntilAttached()
+                }
+            }
+            // The ENTRY claim (the 8.15 law, task 15.1's split): the
+            // entryLandsOnHome verdict gates ONLY the fresh-mount cursor-0
+            // claim — a SEPARATE effect keyed on (mountMarker,
+            // homeHoldsEntry), never the cursor key (surveyor Q11: keying the
+            // verdict re-runs the claim when the verdict flips — the
+            // resolved-empty home hands the entry back to the grid's cursor
+            // 0). While the verdict holds, the home rows' first card takes
+            // the entry (the #18 fix); the claim's live role is the
+            // home-failed/empty box, where it lands the grid. Post-15.2 every
+            // mount is a switch mount with home already resolved — the claim
+            // stands down there and the activation landing owns the cursor
+            // (8.4).
+            val mountMarker = remember { Any() } // per-mounted-instance identity
+            LaunchedEffect(mountMarker, homeHoldsEntry) {
+                if (index == 0 && state.gridFocus == 0 && !state.isRailOpen && !homeHoldsEntry) {
                     requester.focusUntilAttached()
                 }
             }
