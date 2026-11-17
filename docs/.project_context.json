@@ -15,7 +15,8 @@
     "test": "go test (table-driven test per exported symbol); web/ Vitest — 11 files / 155 cases; internal/itest black-box suite (30 files + testdata/)",
     "linter": "golangci-lint v1.64.8 (.golangci.yml: funlen 60/40, gocognit 15, gocyclo 15, lll 120, dupl 100, depguard denies reflect + DI frameworks, govet, ineffassign, misspell; +issues.exclude-dirs node_modules [Phase 2a — stray .go files in npm dep trees on dev hosts only])",
     "build": "go build ./... (make build / make build-plugin); make web-build = swag init + cd web && npm ci && npm run build (dev/CI-only)",
-    "cgo": "disabled (pure-Go SQLite for single-binary + cross-compile)"
+    "cgo": "disabled (pure-Go SQLite for single-binary + cross-compile)",
+    "tv_client": "Android TV app in android/ (android-tv-client; openspec/specs/android-tv-client/) — Kotlin 2.0.21 + Jetpack Compose (tv-material 1.0.1) + Media3 1.4.1 + Retrofit 2.11.0/kotlinx-serialization over OkHttp; single Gradle module (AGP 8.7.3, compileSdk/targetSdk 35, minSdk 23, JDK 17); OWN dev-only toolchain (Android SDK + JDK 17), never a Go or node dep; JVM-only tests (android/gradlew -p android testDebugUnitTest), APK via assembleRelease -PversionName/-PversionCode -> mellifera-tv-<version>.apk (release needs gitignored android/keystore.properties)"
   },
   "conventions": [
     "max 8 exported symbols per package (12 hard fail) — scripts/check.sh counts",
@@ -44,7 +45,8 @@
     "scanner_plugin": "plugins/base-scanner/main.go",
     "metadata_source_plugin": "plugins/tv-parser/main.go",
     "image_enricher_plugin": "plugins/image-enricher/main.go",
-    "web_spa": "web/src/main.tsx (web-ui Phase 2a — React SPA root; QueryClientProvider + BrowserRouter; Vite builds it into internal/web/dist which internal/web embeds; NOT a separate process)"
+    "web_spa": "web/src/main.tsx (web-ui Phase 2a — React SPA root; QueryClientProvider + BrowserRouter; Vite builds it into internal/web/dist which internal/web embeds; NOT a separate process)",
+    "tv_client_app": "android/src/main/java/tv/mellifera/MainActivity.kt (android-tv-client — the single-activity Compose app, singleTask + LEANBACK_LAUNCHER; wires AppViewModel over state/Playback's pure reduce + SessionStore + Media3Controller; packages ui/ browse/ home/ playback/ player/ dpad/ nav/ net/ pairing/ diag/)"
   },
   "docs_index": {
     "mellifera/docs/architecture.md": "AUTHORITATIVE design: §0 design principles, §1.2 hard constraints, §1.4 capability type system, §2 protos (common/scanner/metadata/plugin), §2.4 TV module config, §7.3 plugin health/restart, §9.1 store schema (libraries/modules/items/playback_progress), §11.5 Principal auth",
