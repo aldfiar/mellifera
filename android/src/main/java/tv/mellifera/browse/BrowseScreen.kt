@@ -275,10 +275,13 @@ fun BrowseScreen(viewModel: AppViewModel) {
         // viewer.
         val photoIndex = state.photoIndex
         if (photoIndex != null && photoIndex < state.items.size) {
-            val viewerUrl = state.items[photoIndex].toPhotoViewerUrl()
+            val item = state.items[photoIndex]
             PhotoViewer(
-                artwork = resolveArtworkUrl(serverBase, viewerUrl),
+                artwork = resolveArtworkUrl(serverBase, item.toPhotoViewerUrl()),
                 token = token,
+                index = photoIndex,
+                count = state.items.size,
+                document = item.document,
                 onDismiss = { browse.closePhoto() },
                 onMove = { step -> browse.movePhoto(step) },
             )

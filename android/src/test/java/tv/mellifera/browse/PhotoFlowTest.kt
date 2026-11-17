@@ -1,6 +1,8 @@
 package tv.mellifera.browse
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -8,10 +10,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
+import tv.mellifera.browse.fixtures.facetsBody
 import tv.mellifera.browse.fixtures.foldersBody
 import tv.mellifera.browse.fixtures.photoItemsBody
 import tv.mellifera.browse.fixtures.photoLibrariesBody
 import tv.mellifera.browse.fixtures.seriesBody
+import tv.mellifera.dpad.DpadKey
 import tv.mellifera.net.Api
 import tv.mellifera.takeRequestOrFail
 
@@ -46,10 +50,12 @@ class PhotoFlowTest {
     /** enter() on the photo fixture, then the image body's two fetches. */
     private fun enterImageBody() = runBlocking {
         server.enqueue(json(photoLibrariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("PhotoFlowTest.enterImageBody")
-        server.takeRequestOrFail("PhotoFlowTest.enterImageBody")
+        server.takeRequestOrFail("PhotoFlowTest.enterImageBody") // /libraries
+        server.takeRequestOrFail("PhotoFlowTest.enterImageBody") // /libraries/1/facets (10.1)
+        server.takeRequestOrFail("PhotoFlowTest.enterImageBody") // /series?library=1
         server.enqueue(json(foldersBody()))
         server.enqueue(json(photoItemsBody()))
         flow.selectLibrary(2L)
@@ -118,7 +124,9 @@ class PhotoFlowTest {
         assertEquals(0, flow.state.value.photoIndex)
 
         // A library switch replaces the stream — the viewer must not ride
-        // into the new body (the serial body fetches no items at all).
+        // into the new body (the serial body fetches no items at all; its
+        // facets leg rides best-effort first, 10.1).
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.selectLibrary(1L)
         assertNull(flow.state.value.photoIndex)
@@ -133,4 +141,55 @@ class PhotoFlowTest {
         flow.pickFolder("2026")
         assertNull(flow.state.value.photoIndex)
     }
+
+    /** The 12.2 rulings, JVM-pinned on the lifted pure law. */
+    @Test
+    fun viewer_key_law_pins_the_three_rulings() {
+        // OK closes the viewer — the one dead key became the affordance;
+        // Back stays the second exit (the BackHandler, not this law).
+        assertEquals(ViewerKeyAct.Close, viewerKeyLaw(DpadKey.Ok))
+        // LEFT/RIGHT move within the loaded rows.
+        assertEquals(ViewerKeyAct.Move(-1), viewerKeyLaw(DpadKey.Left))
+        assertEquals(ViewerKeyAct.Move(1), viewerKeyLaw(DpadKey.Right))
+        // UP/DOWN stay consumed with no act — the modal law: nothing to
+        // cross to under a full-screen overlay.
+        assertEquals(ViewerKeyAct.Swallow, viewerKeyLaw(DpadKey.Up))
+        assertEquals(ViewerKeyAct.Swallow, viewerKeyLaw(DpadKey.Down))
+        // Keys the viewer does not recognize stay UNCONSUMED — the system
+        // keeps them (Back itself never reaches onKeyEvent on device).
+        assertNull(viewerKeyLaw(DpadKey.Back))
+        assertNull(viewerKeyLaw(DpadKey.PlayPause))
+        assertNull(viewerKeyLaw(DpadKey.AudioTrack))
+    }
+
+    /** The status line's pure formatter: «i/n» + the carried facts only. */
+    @Test
+    fun photo_status_line_is_field_driven() {
+        assertEquals("1/20", photoStatusLine(0, 20, null, null))
+        assertEquals("3/20 · 2026-05-01", photoStatusLine(2, 20, "2026-05-01", null))
+        assertEquals("1/20 · 2560×1533", photoStatusLine(0, 20, null, "2560×1533"))
+        assertEquals(
+            "1/20 · 2026-05-01 · 2560×1533",
+            photoStatusLine(0, 20, "2026-05-01", "2560×1533"),
+        )
+    }
+
+    /** The facts read from the SERVED document — absent → absent (L1). */
+    @Test
+    fun photo_facts_read_from_the_served_document() {
+        val served = doc(
+            """{"sources":{"image-enricher":
+               {"date_taken":"2026-05-01T10:20:30Z","width":4000,"height":3000}}}""",
+        )
+        assertEquals("2026-05-01", captureDate(served)?.let(::formatDatePart))
+        assertEquals("4000×3000", photoDimensions(served))
+        // A verbatim machine stamp passes through; no dimensions → none.
+        val bare = doc("""{"sources":{"image-enricher":{"date_taken":"май 2026"}}}""")
+        assertEquals("май 2026", captureDate(bare)?.let(::formatDatePart))
+        assertNull(photoDimensions(bare))
+        // No document facts at all → nothing.
+        assertNull(photoDimensions(doc("{}")))
+    }
+
+    private fun doc(json: String): JsonElement = Json.parseToJsonElement(json)
 }
