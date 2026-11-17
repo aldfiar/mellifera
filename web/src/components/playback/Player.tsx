@@ -8,6 +8,7 @@ import type { PlaybackEventMode, PlaybackEventPhase } from "@/lib/api";
 import { skipSections, type SkipKind } from "@/lib/skipSections";
 import SkipChip from "@/components/playback/SkipChip";
 import AutoNext from "@/components/playback/AutoNext";
+import ApkDownload from "@/components/ApkDownload";
 
 // Player — the packaged-playback surface for ONE item (spec "Playback
 // descriptor and verb split" consumer side). Two lanes, zero client logic:
@@ -415,13 +416,20 @@ export default function Player(props: PlayerProps): ReactElement {
   return (
     <section aria-label="Player" className="flex flex-col gap-3">
       {error ? (
-        <p
-          role="alert"
-          data-media-error-class={error.code}
-          className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-        >
-          {errorText(error)}
-        </p>
+        <div className="flex flex-col gap-2">
+          <p
+            role="alert"
+            data-media-error-class={error.code}
+            className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+          >
+            {errorText(error)}
+          </p>
+          {/* android-tv-app 6.2: the APK banner rides the error moment —
+              codec failures are exactly where the native app wins. The TV
+              gate (the `tv` class law inside ApkDownload) keeps it off
+              desktop browsers; an APK-less build renders nothing there. */}
+          <ApkDownload tvGate />
+        </div>
       ) : null}
       <div className="relative">
         <video

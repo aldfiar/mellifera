@@ -70,7 +70,11 @@ slice — **never a shell**.
 ### Dev-only deps (NEVER required by the Go gate)
 
 `node`/`npm` (SPA build), `swag` CLI (OpenAPI regen), `golangci-lint` (v1.64.8),
-`buf`/`protoc` (proto regen). Install on dev/CI hosts only.
+`buf`/`protoc` (proto regen). Install on dev/CI hosts only. The Android TV
+client (`android/`) needs JDK 17 + the Android SDK on top — unit tests via
+`android/gradlew -p android testDebugUnitTest` (JVM-only, no emulator),
+release APKs via `assembleRelease` with `android/keystore.properties` present
+(D6 signing law; no keystore ⇒ loud failure, never a debug-signed release).
 
 ## 2. Configuration (environment)
 
