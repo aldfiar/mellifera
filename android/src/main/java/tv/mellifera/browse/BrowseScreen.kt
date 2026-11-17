@@ -954,7 +954,12 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
         }
         Column(modifier = Modifier.weight(1f)) {
             if (hero.title != null) {
-                Text(hero.title, fontSize = TYPE_DISPLAY)
+                Text(
+                    hero.title,
+                    fontSize = TYPE_DISPLAY,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
             val about = hero.about
             if (about != null) {
@@ -1054,6 +1059,8 @@ private fun CardView(
             Text(
                 card.title,
                 fontSize = TYPE_BODY,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .padding(top = 4.dp)
                     .alpha(if (card.watched == true) WATCHED_DIM else 1f),
@@ -1141,6 +1148,8 @@ private fun EpisodeRow(
                 Text(
                     card.title,
                     fontSize = TYPE_HEADING,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.alpha(if (card.watched == true) WATCHED_DIM else 1f),
                 )
             }
@@ -1149,6 +1158,8 @@ private fun EpisodeRow(
                     card.meta,
                     fontSize = TYPE_META,
                     color = Color.White.copy(alpha = 0.6f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
