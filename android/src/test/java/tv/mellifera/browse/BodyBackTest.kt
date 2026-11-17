@@ -11,11 +11,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import tv.mellifera.assertDrained
-import tv.mellifera.browse.fixtures.facetsBody
 import tv.mellifera.browse.fixtures.foldersBody
 import tv.mellifera.browse.fixtures.photoItemsBody
 import tv.mellifera.browse.fixtures.photoLibrariesBody
-import tv.mellifera.browse.fixtures.seriesBody
 import tv.mellifera.net.Api
 import tv.mellifera.takeRequestOrFail
 
@@ -25,18 +23,17 @@ import tv.mellifera.takeRequestOrFail
  * ONE Back on the opened body fell through to the Activity default and
  * EXITED to the launcher). The SPA route parity: the web Collection is a
  * route, back returns home — an EXPLICITLY opened body (a successful
- * rail-row OK) closes onto the home rows under the no-restart law, the
- * home restore stages through the SAME flag the rail close rides
- * (shouldRestoreHome), and a body never opened stages no restore (D12's
- * grid Back law — exit — stands for the entry body). The chips-focused
- * Back keeps ITS law: unfocus to the grid inside the body — the filter
- * stays, never a wipe, never an exit.
+ * rail-row OK) closes onto the home rows and the home restore stages
+ * through the SAME flag the rail close rides (shouldRestoreHome). The
+ * chips-focused Back keeps ITS law: unfocus to the grid inside the body —
+ * the filter stays, never a wipe, never an exit.
  *
- * Task 8.8 widens the raise: isBodyOpen is set at the SHARED
- * explicit-activation commit (selectLibrary's success) — every path that
- * renders the body as the active surface raises it there, the walk36
- * leg-D anchor path included, and the entry default body stays unopened
- * (D12's exit law) with closeBody's clear as the only false transition.
+ * Task 15.2's clean law (the operator directive «each collection enter
+ * should clean previous collection data»): the close is CLOSE + CLEAR —
+ * the TWELVE body fields reset to fresh-body defaults while libraryId,
+ * summaries and railFocus are kept, the entry serves /libraries alone (no
+ * default body), and isBodyOpen=true ⇒ an explicit activation (the 8.8
+ * raise made structural).
  */
 class BodyBackTest {
     private lateinit var server: MockWebServer
@@ -61,18 +58,15 @@ class BodyBackTest {
         """{"library_id":$libraryId,"items":$items}"""
 
     /**
-     * Enter over serial + image and reach the OPENED image body through the
-     * rail: the walk-found path (rail OK → folders + first items page).
-     * Returns with the body open, cursor 0, the chips row served.
+     * Reach the OPENED image body through the rail: enter (libraries
+     * alone — 15.2's clean-entry law), the rail with its summaries, then
+     * the row OK (folders + first items page). Returns with the body
+     * open, cursor 0, the chips row served.
      */
     private fun openImageBodyThroughTheRail() = runBlocking {
         server.enqueue(json(photoLibrariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("BodyBackTest") // /libraries
-        server.takeRequestOrFail("BodyBackTest") // /libraries/1/facets (10.1)
-        server.takeRequestOrFail("BodyBackTest") // /series?library=1
+        server.takeRequestOrFail("BodyBackTest") // /libraries — the entry's ONLY request (15.2)
         server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
         server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
         flow.openRail()
@@ -94,7 +88,7 @@ class BodyBackTest {
     }
 
     @Test
-    fun body_back_closes_the_body_and_stages_the_home_restore() = runBlocking {
+    fun body_back_closes_and_clears_staging_the_home_restore() = runBlocking {
         openImageBodyThroughTheRail()
 
         // Park the grid cursor mid-body and pick a folder — the exact
@@ -110,7 +104,8 @@ class BodyBackTest {
         flow.onGridFocusMoved(1) // the cursor parks mid-body again
 
         // The body-open BACK: consumed by the fourth handler's flow entry —
-        // the body CLOSES onto the home rows and the restore stages.
+        // the body CLOSES + CLEARS onto the home rows (15.2), the restore
+        // stages.
         flow.closeBody()
 
         val state = flow.state.value
@@ -119,22 +114,31 @@ class BodyBackTest {
         // actuator re-lands the parked home cursor and its focus→scroll
         // carries the viewport back to the rows.
         assertTrue(state.shouldRestoreHome)
-        // The no-restart law (L3): the loaded body, its filter, cursors and
-        // the rail's state are ALL untouched — DOWN re-enters the same
-        // filtered body; reopening the rail lands on the current collection.
+        // The KEPT trio (15.2): the rail's selected marker, its counts and
+        // its cursor survive the close.
         assertEquals(2L, state.libraryId)
-        assertEquals("nature", state.folder)
-        assertEquals(listOf("p-1", "p-2"), state.items.map { it.id })
-        assertEquals(3, state.folders.size)
-        assertEquals(1, state.gridFocus)
         assertEquals(1, state.railFocus)
+        assertEquals(42L, state.summaries[2L]?.items)
+        // The TWELVE cleared — the minimal state law (audit §B): a closed
+        // body leaves nothing behind, the next activation is a fresh body.
+        assertEquals(emptyList<Any>(), state.series)
+        assertEquals(emptyList<Any>(), state.items)
+        assertEquals(emptyList<Any>(), state.folders)
+        assertEquals(emptyList<Any>(), state.facets)
+        assertEquals(emptyMap<String, String>(), state.facetSelection)
+        assertNull(state.folder) // the picked «nature» filter is gone
+        assertEquals(0, state.itemsOffset)
+        assertFalse(state.isStreamExhausted)
         assertEquals(-1, state.chipFocus)
+        assertNull(state.photoIndex)
+        assertEquals(0, state.gridFocus)
+        assertEquals(emptyMap<String, Long>(), state.positions)
         assertNull(state.error)
         assertFalse(state.isLoading)
-        // The close is a state flip, never a fetch — the walked eight
-        // requests (enter × 3, summaries × 2, folders + the two items
-        // pages) were ALL the traffic.
-        server.assertDrained("BodyBackTest.body_back_closes_the_body_and_stages_the_home_restore", 8)
+        // The close is a state flip, never a fetch — the walked six
+        // requests (enter, summaries × 2, folders + the two items pages)
+        // were ALL the traffic.
+        server.assertDrained("BodyBackTest.body_back_closes_and_clears_staging_the_home_restore", 6)
     }
 
     @Test
@@ -143,9 +147,9 @@ class BodyBackTest {
         flow.closeBody()
         assertTrue(flow.state.value.shouldRestoreHome)
 
-        // Leave the home rows for the entry-grid posture: a rail open from
-        // the GRID hands the restore back (fromHome=false), a plain close
-        // keeps it standing down.
+        // Leave the home rows for the rail posture: a rail open from the
+        // GRID hands the restore back (fromHome=false), a plain close keeps
+        // it standing down.
         server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
         server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
         flow.openRail()
@@ -160,9 +164,9 @@ class BodyBackTest {
         val state = flow.state.value
         assertFalse(state.isBodyOpen)
         assertFalse(state.shouldRestoreHome)
-        assertEquals(2L, state.libraryId)
-        assertEquals(listOf("p-1", "p-2"), state.items.map { it.id })
-        server.assertDrained("BodyBackTest.body_back_never_stages_a_restore_for_an_unopened_body", 9)
+        assertEquals(2L, state.libraryId) // the close law's kept marker
+        assertEquals(emptyList<Any>(), state.items) // cleared by the first close
+        server.assertDrained("BodyBackTest.body_back_never_stages_a_restore_for_an_unopened_body", 7)
     }
 
     @Test
@@ -171,7 +175,7 @@ class BodyBackTest {
         flow.onChipFocusMoved(1)
         assertEquals(1, flow.state.value.chipFocus)
 
-        // The chips-focused BACK (D12's law, unchanged by 8.7): focus
+        // The chips-focused BACK (D12's law, unchanged by 8.7/15.2): focus
         // returns to the parked grid cursor — the nonce bump is the
         // re-land — and the body STAYS OPEN. Never a state wipe, never an
         // exit: the filter and the served stream keep riding.
@@ -187,7 +191,7 @@ class BodyBackTest {
         assertNull(state.folder) // the [Все] filter, untouched
         assertEquals(listOf("p-1", "p-2"), state.items.map { it.id })
         assertEquals(3, state.folders.size)
-        server.assertDrained("BodyBackTest.chips_back_unfocuses_to_the_grid_inside_the_body", 7)
+        server.assertDrained("BodyBackTest.chips_back_unfocuses_to_the_grid_inside_the_body", 5)
     }
 
     @Test
@@ -201,12 +205,8 @@ class BodyBackTest {
         // the same selectLibrary call with NO rail open must hold the
         // opened body's Back law.
         server.enqueue(json(photoLibrariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(seriesBody()))
         flow.enter()
         server.takeRequestOrFail("BodyBackTest.every_explicit_activation_raises_bodyOpen_the_anchor_path_included") // /libraries
-        server.takeRequestOrFail("BodyBackTest.every_explicit_activation_raises_bodyOpen_the_anchor_path_included") // /libraries/1/facets (10.1)
-        server.takeRequestOrFail("BodyBackTest.every_explicit_activation_raises_bodyOpen_the_anchor_path_included") // /series?library=1
 
         server.enqueue(json(foldersBody()))
         server.enqueue(json(photoItemsBody()))
@@ -218,37 +218,78 @@ class BodyBackTest {
         assertTrue(activated.isBodyOpen) // the SHARED commit raised it (8.8)
         assertEquals(2L, activated.libraryId)
 
-        // BACK consumed → home: closeBody clears and stages the restore.
+        // BACK consumed → home: closeBody closes + clears and stages the
+        // restore.
         flow.closeBody()
         val closed = flow.state.value
         assertFalse(closed.isBodyOpen)
         assertTrue(closed.shouldRestoreHome)
         server.assertDrained(
-            "BodyBackTest.every_explicit_activation_raises_bodyOpen_the_anchor_path_included", 5)
+            "BodyBackTest.every_explicit_activation_raises_bodyOpen_the_anchor_path_included", 3)
     }
 
     @Test
-    fun entry_default_body_stays_unopened_back_exits_per_d12() = runBlocking {
-        // The entry default body is NOT an opened one: no explicit
-        // activation ran (enter loads it directly), so isBodyOpen stays
-        // down and the grid keeps D12's Back law — exit, never a phantom
-        // home restore.
+    fun entry_serves_libraries_alone_the_first_body_fetches_at_activation() = runBlocking {
+        // The clean-entry law (15.2): enter() serves /libraries ALONE — no
+        // default body loads; the first served collection is adopted as
+        // libraryId (the rail's selected marker and refresh()'s target)
+        // while the body fields stay at their fresh defaults.
         server.enqueue(json(photoLibrariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("BodyBackTest.entry_default_body_stays_unopened_back_exits_per_d12") // /libraries
-        server.takeRequestOrFail("BodyBackTest.entry_default_body_stays_unopened_back_exits_per_d12") // /libraries/1/facets (10.1)
-        server.takeRequestOrFail("BodyBackTest.entry_default_body_stays_unopened_back_exits_per_d12") // /series?library=1
+        server.takeRequestOrFail("BodyBackTest.entry_serves_libraries_alone_the_first_body_fetches_at_activation") // /libraries
 
-        assertFalse(flow.state.value.isBodyOpen)
+        val entered = flow.state.value
+        assertFalse(entered.isBodyOpen)
+        assertEquals(1L, entered.libraryId)
+        assertEquals(emptyList<Any>(), entered.series)
+        assertEquals(emptyList<Any>(), entered.items)
+        assertFalse(entered.isLoading)
 
         // The guard: closeBody stages no restore for an unopened body —
         // the fourth BackHandler would not even be enabled.
         flow.closeBody()
+        assertFalse(flow.state.value.isBodyOpen)
+        assertFalse(flow.state.value.shouldRestoreHome)
+
+        // The FIRST body fetches at the first explicit activation.
+        server.enqueue(json(foldersBody()))
+        server.enqueue(json(photoItemsBody()))
+        assertTrue(flow.selectLibrary(2L))
+        val activated = flow.state.value
+        assertTrue(activated.isBodyOpen)
+        assertEquals(listOf("p-1", "p-2"), activated.items.map { it.id })
+        server.assertDrained(
+            "BodyBackTest.entry_serves_libraries_alone_the_first_body_fetches_at_activation", 3)
+    }
+
+    @Test
+    fun refresh_after_close_refetches_the_kept_libraryId_into_the_unmounted_body() = runBlocking {
+        // The 15.2 pin: refresh() stays ungated — after a close it
+        // refetches the KEPT libraryId into the UNMOUNTED state, invisible
+        // and harmless (pinned, not changed).
+        openImageBodyThroughTheRail()
+        flow.closeBody()
+        assertTrue(flow.state.value.shouldRestoreHome)
+
+        // The player-exit refresh rides the kept libraryId (2, image): the
+        // unfiltered first page refetches at offset 0 (the close cleared
+        // the folder filter).
+        server.enqueue(json(photoItemsBody()))
+        flow.refresh()
+        assertEquals(
+            "/api/v1/items?library=2&limit=50&offset=0",
+            server.takeRequestOrFail("BodyBackTest.refresh_after_close_refetches_the_kept_libraryId_into_the_unmounted_body").path,
+        )
+
         val state = flow.state.value
+        // Harmless: the body STAYS unmounted — the refetched rows land into
+        // state no surface renders.
         assertFalse(state.isBodyOpen)
-        assertFalse(state.shouldRestoreHome)
-        server.assertDrained("BodyBackTest.entry_default_body_stays_unopened_back_exits_per_d12", 3)
+        assertTrue(state.shouldRestoreHome)
+        assertEquals(2L, state.libraryId)
+        assertEquals(listOf("p-1", "p-2"), state.items.map { it.id })
+        assertNull(state.error)
+        server.assertDrained(
+            "BodyBackTest.refresh_after_close_refetches_the_kept_libraryId_into_the_unmounted_body", 6)
     }
 }

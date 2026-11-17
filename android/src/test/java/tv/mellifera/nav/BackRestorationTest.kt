@@ -81,6 +81,10 @@ class BackRestorationTest {
         server.enqueue(json(eightSeriesBody()))
         val browse = viewModel.browse
         browse.enter()
+        // The clean-entry law (15.2): enter serves /libraries alone — the
+        // grid the walk moves through loads at the first explicit
+        // activation.
+        browse.selectLibrary(1L)
         val before = browse.state.value
         assertEquals(8, before.series.size)
         assertEquals(0, before.gridFocus)

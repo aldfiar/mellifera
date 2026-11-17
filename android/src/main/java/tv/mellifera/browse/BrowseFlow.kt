@@ -88,11 +88,11 @@ data class BrowseState(
      * that renders the body as the active surface raises it there, the
      * anchor path alongside the rail-row OK): the body is a route over the
      * home rows (the SPA parity — the web Collection is a route), and the
-     * body-open Back closes it onto the rows. The default first
-     * collection's body at entry is NOT an opened body — no explicit
-     * activation ran ([enter] loads it directly), so its grid keeps D12's
-     * Back law (exit). Cleared by [closeBody] — the only false transition;
-     * the walkers never read it.
+     * body-open Back closes it onto the rows. Task 15.2 made the law
+     * STRUCTURAL: [enter] loads no body at all, so isBodyOpen=true ⇒ an
+     * explicit activation ran — there is no unopened default body left to
+     * carve out. Cleared by [closeBody] — the only false transition; the
+     * walkers never read it.
      */
     val isBodyOpen: Boolean = false,
     val summaries: Map<Long, LibrarySummaryResponse> = emptyMap(),
@@ -161,7 +161,8 @@ data class BrowseState(
  *
  * - Entering browse fetches /libraries and keeps ALL served collections in
  *   served order (5.14 — the SPA-parity law; the serial+tv client filter is
- *   retired), then loads the first collection's module-keyed body (D6).
+ *   retired). NO body loads at entry (task 15.2's clean-entry law) — the
+ *   first body fetches at the first explicit activation.
  * - Opening a series fetches its episodes via /series/{id}/episodes.
  * - [selectLibrary] swaps the module-keyed body to another collection (5.14).
  * - [loadSummaries] fetches the rail's per-collection counts, best-effort
@@ -200,8 +201,15 @@ class BrowseFlow(
     private val _bodySwaps = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     val bodySwaps: SharedFlow<Unit> = _bodySwaps
 
-    /** Navigate into browse: libraries → the first served collection's
-     * module-keyed body (D6). */
+    /**
+     * Navigate into browse: /libraries alone (task 15.2's clean-entry law —
+     * the operator directive «each collection enter should clean previous
+     * collection data»). The entry surface is the home rows; [libraryId]
+     * adopts the first served collection (the rail's selected marker and
+     * [refresh]'s target) but NO body loads — the first body fetches at the
+     * first explicit activation ([selectLibrary]). A closed rail fires no
+     * summary requests, so this single request is the whole entry walk.
+     */
     suspend fun enter() {
         _state.value = BrowseState(isLoading = true)
         try {
@@ -215,9 +223,7 @@ class BrowseFlow(
             _state.value = BrowseState(
                 libraries = libraries,
                 libraryId = first.id,
-                isLoading = true,
             )
-            loadBody(first.id)
         } catch (e: Exception) {
             fail(MESSAGE_LIBRARIES, e)
         }
@@ -278,9 +284,10 @@ class BrowseFlow(
             // path without the rail left the body the active surface with
             // the BackHandler chain fully disabled — ONE BACK exited to
             // the launcher. The raise lives at the ONE commit every
-            // explicit activation shares; the entry default body never
-            // runs it ([enter] loads directly — D12's exit law stands),
-            // and [closeBody]'s clear stays the only false transition.
+            // explicit activation shares; post-15.2 the law is structural
+            // ([enter] loads no body, so isBodyOpen=true ⇒ an explicit
+            // activation) and [closeBody]'s clear stays the only false
+            // transition.
             _state.value = _state.value.copy(isBodyOpen = true)
             return true
         } catch (e: Exception) {
@@ -625,23 +632,47 @@ class BrowseFlow(
     }
 
     /**
-     * The opened collection body's Back (task 8.7 — the SPA route parity:
-     * the web Collection is a route, back returns home). Mirrors
-     * [closeSeries]' no-fetch flip: the loaded body's rows, grid cursor,
-     * chips and rail cursor are deliberately untouched (L3, the no-restart
-     * law — DOWN re-enters the same body, reopening the rail lands on the
-     * current collection), [BrowseState.isBodyOpen] falls so the NEXT Back
-     * from the restored home rows is the app's own exit, and
-     * [BrowseState.shouldRestoreHome] rises — the SAME flag the rail close
-     * rides — so HomeRows' restore actuator re-lands the parked home
-     * cursor, whose focus→scroll actuator carries the viewport back to the
-     * rows. Guarded: a body that was never opened stages no restore (Back
-     * there is the app's own exit, D12's grid law).
+     * The opened collection body's Back (task 8.7's route parity + task
+     * 15.2's clean law — the operator directive «each collection enter
+     * should clean previous collection data»): close + CLEAR. [BrowseState.isBodyOpen]
+     * falls (the NEXT Back from the restored home rows is the app's own
+     * exit) and [BrowseState.shouldRestoreHome] rises — the SAME flag the
+     * rail close rides — so HomeRows' restore actuator re-lands the parked
+     * home cursor, whose focus→scroll actuator carries the viewport back to
+     * the rows. The TWELVE body fields reset to fresh-body defaults (series/
+     * items/folders/facets empty, facetSelection empty, folder null,
+     * itemsOffset 0, stream not exhausted, chip cursor -1, photo viewer
+     * closed, grid cursor 0, positions empty): the minimal state law (audit
+     * §B) — a closed body leaves nothing behind, so the next activation is
+     * a genuinely fresh body («DOWN re-enters the same body» is retired;
+     * the body is unreachable while closed — BrowseScreen mounts it only
+     * while [BrowseState.isBodyOpen]). KEPT: [BrowseState.libraryId] (the
+     * rail's selected marker, openRail's focus law and [refresh]'s target),
+     * [BrowseState.summaries] and [BrowseState.railFocus]. selectedSeries/
+     * episodes are unreachable here — the series BackHandler closes them
+     * first. Guarded: a body that was never opened stages no restore (Back
+     * there is the app's own exit, D12's grid law). No fetch — a pure
+     * state flip.
      */
     fun closeBody() {
         val current = _state.value
         if (!current.isBodyOpen) return
-        _state.value = current.copy(isBodyOpen = false, shouldRestoreHome = true)
+        _state.value = current.copy(
+            isBodyOpen = false,
+            shouldRestoreHome = true,
+            series = emptyList(),
+            items = emptyList(),
+            folders = emptyList(),
+            facets = emptyList(),
+            facetSelection = emptyMap(),
+            folder = null,
+            itemsOffset = 0,
+            isStreamExhausted = false,
+            chipFocus = -1,
+            photoIndex = null,
+            gridFocus = 0,
+            positions = emptyMap(),
+        )
     }
 
     /**

@@ -61,18 +61,23 @@ class CollectionsTest {
 
         flow.enter()
 
-        val state = flow.state.value
+        val entered = flow.state.value
         // ALL served collections are kept, in the served order — no module
         // filter stands between the server's list and the rail.
-        assertEquals(listOf(1L, 2L), state.libraries.map { it.id })
-        assertEquals(listOf("serial", "movie"), state.libraries.map { it.moduleId })
-        // Default collection = the FIRST served.
-        assertEquals(1L, state.libraryId)
-        assertEquals(listOf("s-1", "s-2"), state.series.map { it.id })
+        assertEquals(listOf(1L, 2L), entered.libraries.map { it.id })
+        assertEquals(listOf("serial", "movie"), entered.libraries.map { it.moduleId })
+        // The clean-entry law (15.2): the first served collection is
+        // ADOPTED (the rail's selected marker) but NO body loads.
+        assertEquals(1L, entered.libraryId)
+        assertEquals(emptyList<Any>(), entered.series)
 
-        // enter()'s request sequence: libraries → the serial body's facets
-        // (10.1, best-effort) → the first collection's series. A closed rail
-        // fired no summary requests.
+        // The serial body loads at the first explicit activation.
+        flow.selectLibrary(1L)
+        assertEquals(listOf("s-1", "s-2"), flow.state.value.series.map { it.id })
+
+        // The walked requests: libraries (the entry's ONLY request) → the
+        // activation's facets (10.1, best-effort) → the collection's
+        // series. A closed rail fired no summary requests.
         assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsTest.all_collections_kept_in_served_order").path)
         assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("CollectionsTest.all_collections_kept_in_served_order").path)
         assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsTest.all_collections_kept_in_served_order").path)
@@ -94,8 +99,6 @@ class CollectionsTest {
     @Test
     fun summaries_best_effort_countless_on_failure() = runBlocking {
         server.enqueue(json(librariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(seriesBody()))
         flow.enter()
         // The rail opens: every served collection fires its summary — the
         // first answers, the second fails hard (5xx).
@@ -105,8 +108,8 @@ class CollectionsTest {
         flow.loadSummaries()
 
         val state = flow.state.value
-        // drain enter()'s walked requests before asserting the summary legs
-        repeat(3) { server.takeRequestOrFail("CollectionsTest.summaries_best_effort_countless_on_failure") }
+        // drain enter()'s walked request before asserting the summary legs
+        server.takeRequestOrFail("CollectionsTest.summaries_best_effort_countless_on_failure") // /libraries (15.2: the entry's only request)
         // The answered summary maps through verbatim (updated_at served but
         // not carried — the decoder's unknown-keys law absorbed it).
         assertEquals(42L, state.summaries[1L]?.items)
@@ -118,16 +121,14 @@ class CollectionsTest {
         // The walked summary routes, one per served collection, in order.
         assertEquals("/api/v1/libraries/1/summary", server.takeRequestOrFail("CollectionsTest.summaries_best_effort_countless_on_failure").path)
         assertEquals("/api/v1/libraries/2/summary", server.takeRequestOrFail("CollectionsTest.summaries_best_effort_countless_on_failure").path)
-        server.assertDrained("CollectionsTest.summaries_best_effort_countless_on_failure", 5)
+        server.assertDrained("CollectionsTest.summaries_best_effort_countless_on_failure", 3)
     }
 
     @Test
     fun unknown_module_select_is_honest_empty() = runBlocking {
         server.enqueue(json(librariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(seriesBody()))
         flow.enter()
-        repeat(3) { server.takeRequestOrFail("CollectionsTest.unknown_module_select_is_honest_empty") }
+        server.takeRequestOrFail("CollectionsTest.unknown_module_select_is_honest_empty") // /libraries (15.2: the entry's only request)
 
         // The unknown module's honest path (D6's stated TV divergence): the
         // switch fires NO body fetch at all — the body renders the module's
@@ -143,9 +144,9 @@ class CollectionsTest {
         assertEquals(0, state.gridFocus)
         assertNull(state.error)
         assertFalse(state.isLoading)
-        // enter()'s three requests were ALL the traffic: the unknown module
+        // enter()'s single request was ALL the traffic: the unknown module
         // fetched nothing.
-        assertEquals(3, server.requestCount)
+        assertEquals(1, server.requestCount)
     }
 
     @Test
@@ -154,7 +155,12 @@ class CollectionsTest {
         server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
-        repeat(3) { server.takeRequestOrFail("CollectionsTest.tv_module_select_walks_the_paged_items_stream") }
+        server.takeRequestOrFail("CollectionsTest.tv_module_select_walks_the_paged_items_stream") // /libraries (15.2: the entry's only request)
+
+        // The entry's serial body rides the first explicit activation, so
+        // the parked cursor has rows to park on.
+        flow.selectLibrary(1L)
+        repeat(2) { server.takeRequestOrFail("CollectionsTest.tv_module_select_walks_the_paged_items_stream") }
 
         // The tv body (D6): fetch-on-navigate over GET /items — the FIRST
         // page of the paged stream (limit 50 at offset 0); a new collection
@@ -196,7 +202,12 @@ class CollectionsTest {
         server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
-        repeat(3) { server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page") }
+        server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page") // /libraries (15.2: the entry's only request)
+
+        // The serial body rides the first explicit activation (15.2) before
+        // the series page opens over it.
+        flow.selectLibrary(1L)
+        repeat(2) { server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page") }
 
         // A series page is open: its episodes land, then the per-episode
         // progress walk (2.2 — one GET per served row).

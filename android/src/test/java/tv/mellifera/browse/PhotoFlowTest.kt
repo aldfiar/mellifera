@@ -47,15 +47,12 @@ class PhotoFlowTest {
     private fun json(body: String): MockResponse =
         MockResponse().setBody(body).addHeader("Content-Type", "application/json")
 
-    /** enter() on the photo fixture, then the image body's two fetches. */
+    /** enter() on the photo fixture (libraries alone — 15.2's clean-entry
+     * law), then the image body's two fetches at the explicit activation. */
     private fun enterImageBody() = runBlocking {
         server.enqueue(json(photoLibrariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("PhotoFlowTest.enterImageBody") // /libraries
-        server.takeRequestOrFail("PhotoFlowTest.enterImageBody") // /libraries/1/facets (10.1)
-        server.takeRequestOrFail("PhotoFlowTest.enterImageBody") // /series?library=1
+        server.takeRequestOrFail("PhotoFlowTest.enterImageBody") // /libraries — the entry's ONLY request
         server.enqueue(json(foldersBody()))
         server.enqueue(json(photoItemsBody()))
         flow.selectLibrary(2L)

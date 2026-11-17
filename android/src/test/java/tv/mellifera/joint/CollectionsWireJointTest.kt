@@ -153,7 +153,10 @@ class CollectionsWireJointTest {
         // BOTH module kinds kept in served order — the retired serial+tv
         // filter's regression proof: a "movie" library is not the client's
         // business to drop. The consumed fields decode through the full
-        // shape (every ignored key rode along on the same bytes).
+        // shape (every ignored key rode along on the same bytes). The
+        // clean-entry law (15.2): enter serves /libraries alone — the first
+        // collection's grid rides the first explicit activation.
+        flow.selectLibrary(1L)
         val state = flow.state.value
         assertEquals(listOf(1L, 2L), state.libraries.map { it.id })
         assertEquals(listOf("serial", "movie"), state.libraries.map { it.moduleId })
@@ -188,11 +191,11 @@ class CollectionsWireJointTest {
         assertEquals(0L, railed.summaries[2L]?.items)
         assertNull(railed.error)
 
-        // The cycle's request sequence: libraries → the serial body's
-        // facets → the first collection's series → one summary per served
-        // collection, in served order; the bearer rides the browse routes.
-        // takeRequest() CONSUMES — the bearer check inspects the last popped
-        // request, never pops a sixth.
+        // The cycle's request sequence: libraries (the entry's ONLY
+        // request) → the activation's facets → the collection's series →
+        // one summary per served collection, in served order; the bearer
+        // rides the browse routes. takeRequest() CONSUMES — the bearer
+        // check inspects the last popped request, never pops a sixth.
         assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode").path)
         assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode").path)
         assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode").path)
@@ -206,8 +209,6 @@ class CollectionsWireJointTest {
     @Test
     fun switch_to_unknown_module_is_honest_empty() = runBlocking {
         server.enqueue(json(fullLibraries))
-        server.enqueue(json(facetsFull))
-        server.enqueue(json(serialGrid))
 
         flow.enter()
 
@@ -226,11 +227,9 @@ class CollectionsWireJointTest {
         assertFalse(state.isLoading)
         assertNull(state.error)
 
-        // enter()'s three requests were ALL the traffic.
+        // enter()'s single request was ALL the traffic.
         assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsWireJointTest.switch_to_unknown_module_is_honest_empty").path)
-        assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("CollectionsWireJointTest.switch_to_unknown_module_is_honest_empty").path)
-        assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsWireJointTest.switch_to_unknown_module_is_honest_empty").path)
-        assertEquals(3, server.requestCount)
+        assertEquals(1, server.requestCount)
     }
 
     /**
@@ -302,8 +301,6 @@ class CollectionsWireJointTest {
     @Test
     fun tv_and_image_bodies_walk_the_paged_stream() = runBlocking {
         server.enqueue(json(fullLibrariesTvImage))
-        server.enqueue(json(facetsFull))
-        server.enqueue(json(serialGrid))
         server.enqueue(json(tvItemsFull))
         server.enqueue(json(tvItemsFull))
         server.enqueue(json(foldersFull))
@@ -348,10 +345,9 @@ class CollectionsWireJointTest {
         assertEquals(listOf("p-1", "p-2"), flow.state.value.items.map { it.id })
 
         // The cycle's request line: every leg's query carries the params
-        // the body walks, in the seam's declaration order.
+        // the body walks, in the seam's declaration order — the entry's
+        // libraries alone (15.2), then the explicit activations' fetches.
         assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
-        assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
-        assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
         assertEquals("/api/v1/items?library=2&limit=50&offset=0", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
         assertEquals(
             "/api/v1/items?library=2&path_prefix=2026&limit=50&offset=0",
@@ -363,6 +359,6 @@ class CollectionsWireJointTest {
             "/api/v1/items?library=3&top_level=true&limit=50&offset=0",
             server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path,
         )
-        assertEquals(8, server.requestCount)
+        assertEquals(6, server.requestCount)
     }
 }

@@ -66,10 +66,15 @@ class RefreshTest {
         server.enqueue(json(progressBody("e-1", 300)))
         server.enqueue(MockResponse().setResponseCode(404))
         viewModel.browse.enter()
+        // The clean-entry law (15.2): enter serves /libraries alone — the
+        // serial body rides the first explicit activation before the series
+        // page opens over it.
+        viewModel.browse.selectLibrary(1L)
         viewModel.browse.openSeries(SeriesDto(id = "s-1", displayName = "Сага"))
         // Pre-exit: e-1 carries no watched stamp but its stored position
-        // landed; six requests have walked (libraries, facets, series,
-        // episodes, then one progress GET per episode row).
+        // landed; six requests have walked (libraries, then the
+        // activation's facets + series, episodes, then one progress GET
+        // per episode row).
         assertTrue(
             viewModel.browse.state.value.episodes.first { it.id == "e-1" }.watched == null,
         )

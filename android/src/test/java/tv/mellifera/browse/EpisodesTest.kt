@@ -57,11 +57,14 @@ class EpisodesTest {
         // The all-collections law (5.14): BOTH served collections are kept,
         // in the served order — the serial+tv client filter is retired.
         assertEquals(listOf("serial", "movie"), flow.state.value.libraries.map { it.moduleId })
+        // The clean-entry law (15.2): enter serves /libraries alone — the
+        // serial body loads at the first explicit activation.
+        flow.selectLibrary(1L)
         assertEquals(listOf("s-1", "s-2"), flow.state.value.series.map { it.id })
 
         flow.openSeries(SeriesDto(id = "s-1", displayName = "Сага"))
 
-        // The walked requests: libraries → the serial body's facets (10.1,
+        // The walked requests: libraries → the activation's facets (10.1,
         // best-effort) → series?library=1 → the open series' exact episodes
         // route, over GET.
         assertEquals("/api/v1/libraries", server.takeRequestOrFail("EpisodesTest.series_episodes_route").path)

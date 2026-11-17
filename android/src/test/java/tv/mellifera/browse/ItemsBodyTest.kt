@@ -64,14 +64,10 @@ class ItemsBodyTest {
     @Test
     fun extend_appends_pages_until_the_stream_ends() = runBlocking {
         server.enqueue(json(tvLibrariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(EMPTY_SERIES))
         flow.enter()
         server.enqueue(json(fullPage("f", 0)))
         flow.selectLibrary(2L)
-        server.takeRequestOrFail("ItemsBodyTest.extend_appends_pages_until_the_stream_ends") // /libraries
-        server.takeRequestOrFail("ItemsBodyTest.extend_appends_pages_until_the_stream_ends") // /libraries/1/facets (10.1)
-        server.takeRequestOrFail("ItemsBodyTest.extend_appends_pages_until_the_stream_ends") // /series?library=1
+        server.takeRequestOrFail("ItemsBodyTest.extend_appends_pages_until_the_stream_ends") // /libraries (15.2: the entry's only request)
         server.takeRequestOrFail("ItemsBodyTest.extend_appends_pages_until_the_stream_ends") // /items page 0
         assertEquals(50, flow.state.value.items.size)
         assertFalse(flow.state.value.isStreamExhausted)
@@ -93,7 +89,7 @@ class ItemsBodyTest {
         assertEquals(100, flow.state.value.items.size)
         assertTrue(flow.state.value.isStreamExhausted)
         flow.extendItems()
-        assertEquals(6, server.requestCount)
+        assertEquals(4, server.requestCount)
     }
 
     @Test
@@ -102,6 +98,9 @@ class ItemsBodyTest {
         server.enqueue(json(facetsBody()))
         server.enqueue(json(EMPTY_SERIES))
         flow.enter()
+        // 15.2: the entry loads no body — the serial body rides the first
+        // explicit activation before the walk proves its no-page law on it.
+        flow.selectLibrary(1L)
         repeat(3) { server.takeRequestOrFail("ItemsBodyTest.extend_is_idempotent_outside_the_paged_bodies") }
 
         // The serial body pages nothing (5.14's whole-grid law): the append
@@ -119,15 +118,11 @@ class ItemsBodyTest {
     @Test
     fun image_body_loads_folders_and_top_level_chip_uses_top_level_param() = runBlocking {
         server.enqueue(json(photoLibrariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(EMPTY_SERIES))
         flow.enter()
         server.enqueue(json(foldersBody()))
         server.enqueue(json(photoItemsBody()))
         flow.selectLibrary(2L)
-        server.takeRequestOrFail("ItemsBodyTest.image_body_loads_folders_and_top_level_chip_uses_top_level_param") // /libraries
-        server.takeRequestOrFail("ItemsBodyTest.image_body_loads_folders_and_top_level_chip_uses_top_level_param") // /libraries/1/facets (10.1)
-        server.takeRequestOrFail("ItemsBodyTest.image_body_loads_folders_and_top_level_chip_uses_top_level_param") // /series?library=1
+        server.takeRequestOrFail("ItemsBodyTest.image_body_loads_folders_and_top_level_chip_uses_top_level_param") // /libraries (15.2: the entry's only request)
         server.takeRequestOrFail("ItemsBodyTest.image_body_loads_folders_and_top_level_chip_uses_top_level_param") // /libraries/2/folders
         server.takeRequestOrFail("ItemsBodyTest.image_body_loads_folders_and_top_level_chip_uses_top_level_param") // /items page 0
 
@@ -157,41 +152,36 @@ class ItemsBodyTest {
             "/api/v1/items?library=2&path_prefix=nature&limit=50&offset=0",
             server.takeRequestOrFail("ItemsBodyTest.image_body_loads_folders_and_top_level_chip_uses_top_level_param").path,
         )
-        // The queue drained: enter's three + folders + the items page + the
-        // two picks' refetches — all seven answered.
-        server.assertDrained("ItemsBodyTest.image_body_loads_folders_and_top_level_chip_uses_top_level_param", 7)
+        // The queue drained: enter's one + folders + the items page + the
+        // two picks' refetches — all five answered.
+        server.assertDrained("ItemsBodyTest.image_body_loads_folders_and_top_level_chip_uses_top_level_param", 5)
     }
 
     @Test
     fun folders_failure_degrades_to_the_bare_all_chip() = runBlocking {
         server.enqueue(json(photoLibrariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(EMPTY_SERIES))
         flow.enter()
         server.enqueue(MockResponse().setResponseCode(500))
         server.enqueue(json(photoItemsBody()))
         flow.selectLibrary(2L)
-        repeat(3) { server.takeRequestOrFail("ItemsBodyTest.folders_failure_degrades_to_the_bare_all_chip") }
+        server.takeRequestOrFail("ItemsBodyTest.folders_failure_degrades_to_the_bare_all_chip") // /libraries (15.2: the entry's only request)
 
         // The failed folders read degrades to the bare [Все] chip — never
         // an error, never a placeholder row; the items stream still landed.
         assertTrue(flow.state.value.folders.isEmpty())
         assertNull(flow.state.value.error)
         assertEquals(listOf("p-1", "p-2"), flow.state.value.items.map { it.id })
-        server.assertDrained("ItemsBodyTest.folders_failure_degrades_to_the_bare_all_chip", 5)
+        server.assertDrained("ItemsBodyTest.folders_failure_degrades_to_the_bare_all_chip", 3)
     }
 
     @Test
     fun failed_pick_keeps_the_prior_stream() = runBlocking {
         server.enqueue(json(photoLibrariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(EMPTY_SERIES))
         flow.enter()
         server.enqueue(json(foldersBody()))
         server.enqueue(json(photoItemsBody()))
         flow.selectLibrary(2L)
         repeat(3) { server.takeRequestOrFail("ItemsBodyTest.failed_pick_keeps_the_prior_stream") }
-        repeat(2) { server.takeRequestOrFail("ItemsBodyTest.failed_pick_keeps_the_prior_stream") }
         val priorItems = flow.state.value.items
 
         // The filtered refetch fails: the PRIOR stream stays on screen, the
@@ -205,7 +195,7 @@ class ItemsBodyTest {
         assertNull(failed.folder)
         assertEquals(priorItems.map { it.id }, failed.items.map { it.id })
         assertFalse(failed.isLoading)
-        server.assertDrained("ItemsBodyTest.failed_pick_keeps_the_prior_stream", 6)
+        server.assertDrained("ItemsBodyTest.failed_pick_keeps_the_prior_stream", 4)
     }
 
     private companion object {

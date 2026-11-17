@@ -66,12 +66,12 @@ class RailLawTest {
 
     @Test
     fun rail_opens_at_current_collection() = runBlocking {
-        enqueueEnter()
+        server.enqueue(json(librariesBody()))
         flow.enter()
-        // A closed rail fired NO summary requests (the closed-panel D1 law):
-        // enter()'s sequence is libraries → the serial body's facets → the
-        // first collection's series.
-        assertEquals(3, server.requestCount)
+        // A closed rail fired NO summary requests (the closed-panel D1 law),
+        // and 15.2's clean entry loaded NO body: /libraries is the entry's
+        // ONLY request.
+        assertEquals(1, server.requestCount)
 
         // Make the CURRENT collection the second served row (an unknown
         // module — its body fires no fetch, D6), then open.
@@ -88,11 +88,9 @@ class RailLawTest {
         // The counts fired exactly once, in served order — and the unknown
         // module's switch added no request of its own.
         server.takeRequestOrFail("RailLawTest.rail_opens_at_current_collection") // /libraries
-        server.takeRequestOrFail("RailLawTest.rail_opens_at_current_collection") // /libraries/1/facets (10.1)
-        server.takeRequestOrFail("RailLawTest.rail_opens_at_current_collection") // /series?library=1
         assertEquals("/api/v1/libraries/1/summary", server.takeRequestOrFail("RailLawTest.rail_opens_at_current_collection").path)
         assertEquals("/api/v1/libraries/2/summary", server.takeRequestOrFail("RailLawTest.rail_opens_at_current_collection").path)
-        assertEquals(5, server.requestCount)
+        assertEquals(3, server.requestCount)
         assertEquals(42L, state.summaries[2L]?.items)
 
         // Idempotent: re-opening an open rail neither moves the cursor nor
@@ -100,13 +98,16 @@ class RailLawTest {
         flow.openRail()
         assertTrue(flow.state.value.isRailOpen)
         assertEquals(1, flow.state.value.railFocus)
-        assertEquals(5, server.requestCount)
+        assertEquals(3, server.requestCount)
     }
 
     @Test
     fun rail_left_or_back_closes_keeps_grid_focus() = runBlocking {
         enqueueEnter()
         flow.enter()
+        // 15.2: the entry loads no body — the parked cursor parks on the
+        // serial grid loaded by the first explicit activation.
+        flow.selectLibrary(1L)
         repeat(3) { server.takeRequestOrFail("RailLawTest.rail_left_or_back_closes_keeps_grid_focus") }
 
         // Park the grid cursor mid-grid, open the rail, walk it down.
@@ -134,9 +135,9 @@ class RailLawTest {
 
     @Test
     fun rail_walk_lands_clamped_inside_the_served_rows() = runBlocking {
-        enqueueEnter()
+        server.enqueue(json(librariesBody()))
         flow.enter()
-        repeat(3) { server.takeRequestOrFail("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows") }
+        server.takeRequestOrFail("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows") // /libraries (15.2: the entry's only request)
 
         server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
         server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
@@ -153,7 +154,7 @@ class RailLawTest {
         assertEquals(1, flow.state.value.railFocus)
         flow.onRailFocusMoved(-3)
         assertEquals(0, flow.state.value.railFocus)
-        server.assertDrained("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows", 5)
+        server.assertDrained("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows", 3)
     }
 
     @Test
@@ -164,6 +165,9 @@ class RailLawTest {
         server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
+        // 15.2: the entry loads no body — the parked cursor parks on the
+        // serial grid loaded by the first explicit activation.
+        flow.selectLibrary(1L)
         repeat(3) { server.takeRequestOrFail("RailLawTest.rail_select_swaps_grid_resets_cursor") }
 
         // Park the cursor to prove the swap resets it: OK on the rail's
@@ -232,6 +236,9 @@ class RailLawTest {
         server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
+        // 15.2: the entry loads no body — the serial body rides the first
+        // explicit activation.
+        flow.selectLibrary(1L)
         server.takeRequestOrFail("RailLawTest.rail_ok_enters_the_focused_image_body_and_relands_focus") // /libraries
         server.takeRequestOrFail("RailLawTest.rail_ok_enters_the_focused_image_body_and_relands_focus") // /libraries/1/facets (10.1)
         server.takeRequestOrFail("RailLawTest.rail_ok_enters_the_focused_image_body_and_relands_focus") // /series?library=1
@@ -278,6 +285,9 @@ class RailLawTest {
         server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
+        // 15.2: the entry loads no body — the serial body rides the first
+        // explicit activation.
+        flow.selectLibrary(1L)
         server.takeRequestOrFail("RailLawTest.rail_restore_flag_survives_a_plain_close_and_dies_on_activation") // /libraries
         server.takeRequestOrFail("RailLawTest.rail_restore_flag_survives_a_plain_close_and_dies_on_activation") // /libraries/1/facets (10.1)
         server.takeRequestOrFail("RailLawTest.rail_restore_flag_survives_a_plain_close_and_dies_on_activation") // /series?library=1
@@ -326,12 +336,8 @@ class RailLawTest {
         // nothing; a FAILED activation emits only the commit-time signal —
         // no re-emit rides a reverted switch.
         server.enqueue(json(tvLibrariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load") // /libraries
-        server.takeRequestOrFail("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load") // /libraries/1/facets (10.1)
-        server.takeRequestOrFail("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load") // /series?library=1
+        server.takeRequestOrFail("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load") // /libraries (15.2: the entry's only request)
 
         val swaps = Channel<Unit>(Channel.UNLIMITED)
         val collector = launch { flow.bodySwaps.collect { swaps.send(Unit) } }
@@ -385,12 +391,12 @@ class RailLawTest {
         assertEquals("Не удалось открыть коллекцию", failed.error)
 
         collector.cancel()
-        // enter's three + the plain-close openRail's summaries (2) + the
+        // enter's one + the plain-close openRail's summaries (2) + the
         // successful activation's summaries + fetch (3) + the failed
         // openRail's summaries (2) + the failed switch's /items fetch — the
         // failed OK re-lands the CURRENT (tv) row, whose body walks no
         // facets leg.
-        server.assertDrained("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load", 11)
+        server.assertDrained("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load", 9)
     }
 
     @Test
@@ -405,10 +411,8 @@ class RailLawTest {
         // would silently depend on collector timing — exactly the
         // inert-actuator class the #13 race exposed.
         server.enqueue(json(tvLibrariesBody()))
-        server.enqueue(json(facetsBody()))
-        server.enqueue(json(seriesBody()))
         flow.enter()
-        repeat(3) { server.takeRequestOrFail("RailLawTest.body_swap_emits_survive_a_busy_collector") }
+        server.takeRequestOrFail("RailLawTest.body_swap_emits_survive_a_busy_collector") // /libraries (15.2: the entry's only request)
 
         val received = Channel<Unit>(Channel.UNLIMITED)
         val collector = launch {
@@ -436,7 +440,7 @@ class RailLawTest {
         assertFalse(flow.state.value.isRailOpen)
 
         collector.cancel()
-        // enter's three + the openRail's summaries (2) + the fetch.
-        server.assertDrained("RailLawTest.body_swap_emits_survive_a_busy_collector", 6)
+        // enter's one + the openRail's summaries (2) + the fetch.
+        server.assertDrained("RailLawTest.body_swap_emits_survive_a_busy_collector", 4)
     }
 }

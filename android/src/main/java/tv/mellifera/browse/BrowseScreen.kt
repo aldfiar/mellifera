@@ -140,10 +140,11 @@ fun BrowseScreen(viewModel: AppViewModel) {
     // on-device walk found: with every prior handler disabled, ONE Back
     // here fell through to the Activity default and EXITED to the launcher).
     // The SPA route parity: the web Collection is a route, back returns
-    // home — the body closes onto the home rows (the cursor and rail state
-    // stay, closeBody's law), and the home rows' restore actuator re-lands
-    // the parked cursor. Composed LAST in the chain: series, rail and
-    // chips-focused Back keep their own laws.
+    // home — the body CLOSES + CLEARS onto the home rows (task 15.2's clean
+    // law: closeBody resets the twelve body fields, the body unmounts
+    // below), and the home rows' restore actuator re-lands the parked
+    // cursor. Composed LAST in the chain: series, rail and chips-focused
+    // Back keep their own laws; the enabler stays isBodyOpen.
     BackHandler(
         enabled = selected == null && !state.isRailOpen && state.chipFocus < 0 && state.isBodyOpen,
     ) {
@@ -226,25 +227,35 @@ fun BrowseScreen(viewModel: AppViewModel) {
                             onNext = { itemId -> viewModel.playback.play(itemId) },
                             onOpenRail = { scope.launch { browse.openRail(fromHome = true) } },
                         )
-                        SeriesGrid(
-                            state = state,
-                            bodyHeight = bodyHeight,
-                            intoView = bodyIntoView,
-                            homeHoldsEntry = homeHoldsEntry,
-                            onOpen = { series -> scope.launch { browse.openSeries(series) } },
-                            onPlay = { itemId -> viewModel.playback.play(itemId) },
-                            onFocusMoved = { browse.onGridFocusMoved(it) },
-                            onOpenRail = { scope.launch { browse.openRail() } },
-                            onExtendItems = { scope.launch { browse.extendItems() } },
-                            onChipFocused = { browse.onChipFocusMoved(it) },
-                            onChipsLeft = { browse.clearChipFocus() },
-                            onPickFolder = { path -> scope.launch { browse.pickFolder(path) } },
-                            onToggleFacet = { key, value -> scope.launch { browse.toggleFacet(key, value) } },
-                            onPhotoOpened = { browse.openPhoto(it) },
-                            aboveFocusable = settingsFocusable,
-                            serverBase = serverBase,
-                            token = token,
-                        )
+                        // The body mounts ONLY while it is open (task 15.2's
+                        // clean law, one visual state — one state meaning):
+                        // closeBody cleared the body cluster, so a
+                        // still-mounted body would render the operator-
+                        // rejected hybrid shape (home rows over a stale
+                        // body — the on-device md5 28c2f029, fingerprint
+                        // class home-with-mounted-body). Closed, the entry
+                        // surface is the bare home rows alone.
+                        if (state.isBodyOpen) {
+                            SeriesGrid(
+                                state = state,
+                                bodyHeight = bodyHeight,
+                                intoView = bodyIntoView,
+                                homeHoldsEntry = homeHoldsEntry,
+                                onOpen = { series -> scope.launch { browse.openSeries(series) } },
+                                onPlay = { itemId -> viewModel.playback.play(itemId) },
+                                onFocusMoved = { browse.onGridFocusMoved(it) },
+                                onOpenRail = { scope.launch { browse.openRail() } },
+                                onExtendItems = { scope.launch { browse.extendItems() } },
+                                onChipFocused = { browse.onChipFocusMoved(it) },
+                                onChipsLeft = { browse.clearChipFocus() },
+                                onPickFolder = { path -> scope.launch { browse.pickFolder(path) } },
+                                onToggleFacet = { key, value -> scope.launch { browse.toggleFacet(key, value) } },
+                                onPhotoOpened = { browse.openPhoto(it) },
+                                aboveFocusable = settingsFocusable,
+                                serverBase = serverBase,
+                                token = token,
+                            )
+                        }
                     }
                 }
             }
