@@ -212,6 +212,9 @@ class BrowseFlow(
      */
     suspend fun enter() {
         _state.value = BrowseState(isLoading = true)
+        // The body-lifecycle bump (task 15.4): the reset commits a fresh
+        // browse session — every in-flight write of the previous one drops.
+        bodyEpoch += 1
         try {
             val service = apiFor()
             val libraries = service.libraries().items
@@ -268,6 +271,12 @@ class BrowseFlow(
             chipFocus = -1,
             photoIndex = null,
         )
+        // The body-lifecycle bump (task 15.4): THIS commit starts the new
+        // body — every in-flight write of the previous collection is now
+        // stale and will drop at its own capture/check. The capture rides
+        // the bump: the failure revert below compares against it (Q12).
+        bodyEpoch += 1
+        val epoch = bodyEpoch
         // The commit-time swap signal (task 8.5): the visible swap must not
         // wait out the body fetch — walkG-debug proved fetch latency is NOT
         // the killer (a 1972ms fetch still never landed), but a swap that
@@ -291,6 +300,10 @@ class BrowseFlow(
             _state.value = _state.value.copy(isBodyOpen = true)
             return true
         } catch (e: Exception) {
+            // The stale-revert law (task 15.4, surveyor Q12): a later commit
+            // owns the body now — the revert AND its error surface drop; the
+            // fast B→C double-switch lands C, never A's rows or libraryId.
+            if (bodyEpoch != epoch) return false
             _state.value = _state.value.copy(
                 libraryId = prior.libraryId,
                 gridFocus = prior.gridFocus,
@@ -321,8 +334,13 @@ class BrowseFlow(
     private suspend fun loadBody(libraryId: Long) {
         when (moduleOf(libraryId)) {
             "serial" -> {
+                val epoch = bodyEpoch
                 loadFacets(libraryId)
                 val series = loadSerialGrid(libraryId)
+                // The stale-lane law (task 15.4): a later commit owns the
+                // body — the old activation's grid commit drops (a fast
+                // B→C double-switch lands C's rows only).
+                if (bodyEpoch != epoch) return
                 _state.value = _state.value.copy(series = series, isLoading = false)
             }
             "tv" -> loadItems(libraryId, folder = null, offset = 0)
@@ -353,6 +371,7 @@ class BrowseFlow(
      */
     private suspend fun loadItems(libraryId: Long, folder: String?, offset: Int) {
         val (pathPrefix, topLevel) = folderFilter(folder)
+        val epoch = bodyEpoch
         val page = apiFor().items(
             libraryId,
             pathPrefix = pathPrefix,
@@ -360,6 +379,11 @@ class BrowseFlow(
             limit = PAGE_SIZE,
             offset = offset,
         ).items
+        // The body-epoch guard (task 15.4): this write covers loadBody's
+        // tv/image legs, pickFolder's restart and extendItems' append — a
+        // commit during the await drops it, so A's page never appends under
+        // B's header (the append-bleed interleaving).
+        if (bodyEpoch != epoch) return
         _state.value = _state.value.copy(
             items = if (offset == 0) page else _state.value.items + page,
             itemsOffset = offset,
@@ -375,7 +399,11 @@ class BrowseFlow(
      */
     private suspend fun loadFolders(libraryId: Long) {
         try {
+            val epoch = bodyEpoch
             val folders = apiFor().libraryFolders(libraryId).folders
+            // The stale-lane law (task 15.4): a later commit owns the body —
+            // a previous slow activation's folder rows drop.
+            if (bodyEpoch != epoch) return
             _state.value = _state.value.copy(folders = folders)
         } catch (e: HttpException) {
             if (e.code() == 401) {
@@ -407,7 +435,11 @@ class BrowseFlow(
      */
     private suspend fun loadFacets(libraryId: Long) {
         try {
+            val epoch = bodyEpoch
             val facets = apiFor().facets(libraryId).facets
+            // The stale-lane law (task 15.4): a later commit owns the body —
+            // a previous slow activation's facet lane drops.
+            if (bodyEpoch != epoch) return
             _state.value = _state.value.copy(facets = facets)
         } catch (e: HttpException) {
             if (e.code() == 401) {
@@ -442,7 +474,11 @@ class BrowseFlow(
             series = emptyList(),
         )
         try {
+            val epoch = bodyEpoch
             val series = loadSerialGrid(libraryId)
+            // The stale-lane law (task 15.4): a commit during the refetch
+            // owns the body — the old pick's landing drops.
+            if (bodyEpoch != epoch) return
             _state.value = _state.value.copy(series = series, isLoading = false)
         } catch (e: Exception) {
             fail(MESSAGE_FACETS, e)
@@ -470,9 +506,13 @@ class BrowseFlow(
             isStreamExhausted = false,
             photoIndex = null,
         )
+        val epoch = bodyEpoch
         try {
             loadItems(libraryId, path, offset = 0)
         } catch (e: Exception) {
+            // The stale-revert law (task 15.4, Q12): a commit during the
+            // restart owns the body — the revert AND its error surface drop.
+            if (bodyEpoch != epoch) return
             _state.value = _state.value.copy(
                 folder = prior.folder,
                 items = prior.items,
@@ -740,13 +780,23 @@ class BrowseFlow(
             episodeFocus = 0,
         )
         try {
+            val epoch = bodyEpoch
             val episodes = apiFor().episodes(series.id).items
+            // The stale-page law (task 15.4): a switch committed during the
+            // fetch — the OLD collection's series page never opens over the
+            // new body (the resurrection interleaving).
+            if (bodyEpoch != epoch) return
             _state.value = _state.value.copy(
                 selectedSeries = series,
                 episodes = episodes,
                 isLoading = false,
             )
-            _state.value = _state.value.copy(positions = loadPositions(episodes))
+            // The positions write follows the loadPositions loop await —
+            // capture again before the walk, check at the write (Q12).
+            val posEpoch = bodyEpoch
+            val positions = loadPositions(episodes)
+            if (bodyEpoch != posEpoch) return
+            _state.value = _state.value.copy(positions = positions)
         } catch (e: Exception) {
             fail(MESSAGE_EPISODES, e)
         }
@@ -795,20 +845,30 @@ class BrowseFlow(
             return
         }
         try {
+            // The body-epoch guard (task 15.4): the player-exit refresh is
+            // the same stale-write class after its awaits — every body write
+            // below drops when a commit superseded the body it targeted.
+            val epoch = bodyEpoch
             val service = apiFor()
             val selected = current.selectedSeries
             if (selected != null) {
                 loadFacets(current.libraryId)
                 val series = loadSerialGrid(current.libraryId)
+                if (bodyEpoch != epoch) return
                 _state.value = _state.value.copy(series = series, error = null)
                 val episodes = service.episodes(selected.id).items
+                if (bodyEpoch != epoch) return
                 _state.value = _state.value.copy(episodes = episodes)
-                _state.value = _state.value.copy(positions = loadPositions(episodes))
+                val posEpoch = bodyEpoch
+                val positions = loadPositions(episodes)
+                if (bodyEpoch != posEpoch) return
+                _state.value = _state.value.copy(positions = positions)
             } else {
                 when (moduleOf(current.libraryId)) {
                     "serial" -> {
                         loadFacets(current.libraryId)
                         val series = loadSerialGrid(current.libraryId)
+                        if (bodyEpoch != epoch) return
                         _state.value = _state.value.copy(series = series, error = null)
                     }
                     "tv", "image" -> {
@@ -820,6 +880,10 @@ class BrowseFlow(
                             limit = PAGE_SIZE,
                             offset = 0,
                         ).items
+                        // Checked against the CAPTURED state's copy too: the
+                        // write builds from `current`, so a stale landing
+                        // would also revert intermediate field changes.
+                        if (bodyEpoch != epoch) return
                         _state.value = current.copy(
                             items = items,
                             itemsOffset = 0,
@@ -894,4 +958,17 @@ class BrowseFlow(
 
     /** The append trigger's in-flight guard (idempotency, [extendItems]). */
     private var extending = false
+
+    /**
+     * The body-epoch race guard (audit S-3, task 15.4 — design §D): [enter]'s
+     * reset commit and [selectLibrary]'s commit each bump this counter —
+     * the commit IS the body-lifecycle boundary. EVERY body-write site
+     * captures the epoch BEFORE its await and drops the write (plain return)
+     * when it no longer matches, so an in-flight write from a previous body
+     * (the append bleed, the series-page resurrection, the stale lanes, a
+     * superseded failure revert — surveyor Q12) never lands under or over
+     * the new body. No cancellation, no single-flight — this check IS the
+     * guard; no state/UI surface carries it (the UI never reads it).
+     */
+    private var bodyEpoch = 0L
 }

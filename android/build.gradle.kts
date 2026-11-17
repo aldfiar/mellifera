@@ -140,4 +140,7 @@ dependencies {
 
     testImplementation("com.squareup.okhttp3:mockwebserver:$okhttp")
     testImplementation("junit:junit:4.13.2")
+    // 15.4's BodyEpochTest drives gated continuations over runTest — a
+    // suspending fake orders the race interleavings MockWebServer cannot.
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
