@@ -6,6 +6,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,12 +14,15 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -29,6 +33,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -72,13 +77,17 @@ import tv.mellifera.dpad.toDpadKey
 import tv.mellifera.home.entryLandsOnHome
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.SeriesDto
+import tv.mellifera.ui.RAIL_PANEL_WIDTH
 import tv.mellifera.ui.TYPE_BODY
 import tv.mellifera.ui.TYPE_DISPLAY
 import tv.mellifera.ui.TYPE_HEADING
 import tv.mellifera.ui.TYPE_META
 import tv.mellifera.ui.TYPE_SMALL
+import tv.mellifera.ui.AppCanvas
 import tv.mellifera.ui.SettingsSection
 import tv.mellifera.ui.chipColor
+import tv.mellifera.ui.railBorder
+import tv.mellifera.ui.railMuted
 import tv.mellifera.ui.requestFocusSafely
 import tv.mellifera.ui.tvAccent
 import tv.mellifera.ui.tvFocusStyle
@@ -101,10 +110,6 @@ import tv.mellifera.ui.tvFocusStyle
  */
 /** The watched title's dim (design D2 — the SPA's .watched-dim, 0.55). */
 private const val WATCHED_DIM = 0.55f
-
-/** The collections rail (5.15): the slide-over panel and its scrim. */
-private val railColor = Color(0xFF171A21)
-private val railWidth = 360.dp
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -822,6 +827,11 @@ private fun FolderChip(
  * accent. OK acts on the FOCUSED row through clickable — the activation
  * routes to BrowseFlow.activateRailRow (the row's body opens, the rail
  * closes into it, and a body that cannot open keeps the rail + focus).
+ *
+ * Presentation (14.1, amendment §B): the panel is [AppCanvas] at
+ * [RAIL_PANEL_WIDTH] (the SPA `.side`'s 224px ÷ 2) with a 1dp end-edge
+ * [railBorder] border — D11's rail scrim is retired; the flow laws
+ * (slide-in 5.15, hidden-by-default, focus restore) stand untouched.
  */
 @Composable
 private fun CollectionsRail(
@@ -833,12 +843,13 @@ private fun CollectionsRail(
     Row(
         modifier = Modifier
             .fillMaxHeight()
-            .width(railWidth)
-            .background(railColor),
+            .width(RAIL_PANEL_WIDTH)
+            .background(AppCanvas),
     ) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.weight(1f).fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
         ) {
             items(
                 count = state.libraries.size,
@@ -862,6 +873,7 @@ private fun CollectionsRail(
                 RailRow(
                     name = library.displayName,
                     module = moduleLabel(library.moduleId),
+                    dot = typeAccent(library.moduleId),
                     count = state.summaries[library.id]?.items,
                     selected = library.id == state.libraryId,
                     onClick = onSelect,
@@ -886,6 +898,8 @@ private fun CollectionsRail(
                 )
             }
         }
+        // The panel's end-edge border (14.1 — the SPA .side border-right).
+        Box(Modifier.fillMaxHeight().width(1.dp).background(railBorder))
     }
 }
 
@@ -914,10 +928,23 @@ private suspend fun FocusRequester.focusUntilAttached() {
 /** The actuator's frame cap (~1s at 60fps) — past it the request gives up. */
 private const val FOCUS_RETRY_FRAMES = 60
 
+/**
+ * One bordered rounded card (14.1 — the mockup's card anatomy, the SPA
+ * SideColl's colors): a 1dp [railBorder] border at 4dp radius (SPA
+ * --radius ÷ 2), a 4dp module dot in the type pastel (the D3 map = SPA
+ * dotClass), the name at TYPE_META (.clink ÷ 2) — [tvAccent] when selected
+ * (the existing law), [railMuted] otherwise — and the count TYPE_META
+ * [railMuted] (.cnt). The FOCUS law rides the caller's [tvFocusStyle] (2dp
+ * accent border + 1.1 scale) plus the mockup's accent-14% background tint
+ * over the panel bg. Field-driven: a blank name renders nothing; the
+ * module label is always readable (moduleLabel's law); the count renders
+ * ONLY when a summary answered — no count yet, no count block.
+ */
 @Composable
 private fun RailRow(
     name: String,
     module: String,
+    dot: Color,
     count: Long?,
     selected: Boolean,
     onClick: () -> Unit,
@@ -925,32 +952,38 @@ private fun RailRow(
     onDirection: (DpadKey) -> Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val cardShape = RoundedCornerShape(4.dp)
+    var focused by remember { mutableStateOf(false) }
     Column(
         modifier = modifier
-            .fillMaxWidth()
-            .onFocusChanged { if (it.isFocused) onFocused() }
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onFocused()
+            }
             .onKeyEvent { event -> routeDirectionEvent(event, onDirection) }
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            // The focus tint (the mockup's color-mix accent-14%) under the
+            // bordered card surface — the panel bg always stands beneath.
+            .background(if (focused) tvAccent.copy(alpha = 0.14f) else Color.Transparent, cardShape)
+            .border(1.dp, railBorder, cardShape)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
-        // FIELD-DRIVEN: a blank name renders nothing; the module label is
-        // always readable (moduleLabel's law); the count renders ONLY when
-        // a summary answered — no count yet, no count block.
-        if (name.isNotBlank()) {
-            Text(
-                name,
-                fontSize = TYPE_HEADING,
-                color = if (selected) tvAccent else Color.White,
-            )
-        }
-        Row(modifier = Modifier.padding(top = 2.dp)) {
-            Text(module, fontSize = TYPE_META, color = Color.White)
-            if (count != null) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(4.dp).clip(CircleShape).background(dot))
+            if (name.isNotBlank()) {
                 Text(
-                    count.toString(),
+                    name,
                     fontSize = TYPE_META,
-                    color = tvAccent,
+                    color = if (selected) tvAccent else railMuted,
                     modifier = Modifier.padding(start = 6.dp),
                 )
+            }
+        }
+        Row(modifier = Modifier.padding(top = 2.dp)) {
+            Text(module, fontSize = TYPE_META, color = railMuted)
+            if (count != null) {
+                Spacer(Modifier.weight(1f))
+                Text(count.toString(), fontSize = TYPE_META, color = railMuted)
             }
         }
     }

@@ -14,3 +14,11 @@ val tvAccent = Color(0xFF4C8DFF)
 /** The chip/track background token (settings chip, player seek track,
  * browse chips — the D11 chip-bg). */
 val chipColor = Color(0xFF2A2F3A)
+
+/** The collections rail's end-edge border (14.1 — the SPA .side's
+ * border-right, --border slate-800). D11's #171A21 rail scrim is retired. */
+val railBorder = Color(0xFF1E293B)
+
+/** The collections rail's muted row text — labels and counts (14.1 — the
+ * SPA's --muted-foreground). */
+val railMuted = Color(0xFF94A3B8)
