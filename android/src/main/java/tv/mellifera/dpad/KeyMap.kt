@@ -15,5 +15,6 @@ fun KeyEvent.toDpadKey(): DpadKey? = when (keyCode) {
     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> DpadKey.Ok
     KeyEvent.KEYCODE_BACK -> DpadKey.Back
     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> DpadKey.PlayPause
+    KeyEvent.KEYCODE_MEDIA_AUDIO_TRACK -> DpadKey.AudioTrack
     else -> null
 }

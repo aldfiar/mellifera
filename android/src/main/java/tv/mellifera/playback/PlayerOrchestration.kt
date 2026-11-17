@@ -14,6 +14,7 @@ import tv.mellifera.net.PlaybackDescriptor
 import tv.mellifera.net.PlayResponse
 import tv.mellifera.net.ProgressDto
 import tv.mellifera.net.ProgressRequest
+import tv.mellifera.net.VoiceoverDto
 import tv.mellifera.player.PlayerController
 import tv.mellifera.player.PlayerEvent
 import tv.mellifera.player.PlayerReadout
@@ -122,6 +123,17 @@ class PlayerOrchestration(
      */
     val skipRanges: StateFlow<List<SkipSection>> = _skipRanges.asStateFlow()
 
+    private val _voiceovers = MutableStateFlow<List<VoiceoverDto>>(emptyList())
+
+    /**
+     * The Active session's served voiceovers (9.2) — the descriptor's
+     * document-order {index, label} list. Readout-law sibling of
+     * [_skipRanges]: HERE, never in AppState, refreshed by every describe
+     * leg and gone with the session. This is the Rendition plan's pick
+     * space (the plan itself stays bare — RenditionPlanTest pins it).
+     */
+    val voiceovers: StateFlow<List<VoiceoverDto>> = _voiceovers.asStateFlow()
+
     private val _nextUp = MutableStateFlow<NextUpOffer?>(null)
 
     /**
@@ -151,6 +163,14 @@ class PlayerOrchestration(
     private var countdownJob: Job? = null
     private var tickerJob: Job? = null
     private var currentItem: String? = null
+
+    /**
+     * The current voiceover pick on the Active session (9.2): starts at the
+     * launch-leg default 0, advances through [cycleVoiceover], resets when
+     * the session leaves Active. The plan maps the pick onto the player
+     * track; the pick itself never enters AppState.
+     */
+    private var voiceoverPick = 0
 
     init {
         controller.setEventConsumer { onPlayerEvent(it) }
@@ -210,6 +230,26 @@ class PlayerOrchestration(
         val plan = (_state.value as? PlaybackState.Active)?.session?.plan ?: RenditionPlan.NoPicker
         val track = voiceoverTrackIndex(plan, index) ?: return
         controller.selectVoiceover(track)
+    }
+
+    /**
+     * The audio-track key's cycle (9.2): advance the pick within the plan's
+     * pick space — SingleVariant(voiceovers = n) → n picks; Rendition → the
+     * served voiceover count available at pick time ([_voiceovers]) — then
+     * call [selectVoiceover]. Wraps with (current + 1) mod n; NoPicker or an
+     * empty pick space fail-opens as a no-op — no toast, no state change,
+     * the current audio keeps playing.
+     */
+    fun cycleVoiceover() {
+        val plan = (_state.value as? PlaybackState.Active)?.session?.plan ?: RenditionPlan.NoPicker
+        val count = when (plan) {
+            is RenditionPlan.SingleVariant -> plan.voiceovers
+            RenditionPlan.Rendition -> _voiceovers.value.size
+            RenditionPlan.NoPicker -> 0
+        }
+        if (count <= 0) return
+        voiceoverPick = (voiceoverPick + 1) % count
+        selectVoiceover(voiceoverPick)
     }
 
     /**
@@ -326,6 +366,8 @@ class PlayerOrchestration(
         if (wasActive && transition.state !is PlaybackState.Active) {
             _info.value = null
             _skipRanges.value = emptyList()
+            _voiceovers.value = emptyList()
+            voiceoverPick = 0
             closeEndedEdge()
         }
         syncTicker()
@@ -395,6 +437,8 @@ class PlayerOrchestration(
         // The session's served skip ranges ride every describe answer (D7):
         // classified at the seam, honest absence when nothing classifies.
         _skipRanges.value = skipSectionsOf(descriptor.sections)
+        // The served voiceovers too (9.2) — the Rendition pick space.
+        _voiceovers.value = descriptor.voiceovers
         dispatch(PlaybackEvent.Described(descriptor))
     }
 

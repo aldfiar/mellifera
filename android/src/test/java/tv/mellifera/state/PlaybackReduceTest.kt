@@ -1,10 +1,10 @@
 package tv.mellifera.state
 
-import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import tv.mellifera.net.PlaybackDescriptor
+import tv.mellifera.net.VoiceoverDto
 
 /**
  * The playback flow law's truth table (5.5): each named test pins contract
@@ -26,7 +26,7 @@ class PlaybackReduceTest {
         playUrl = playUrl,
         stateReason = stateReason,
         layout = layout,
-        voiceovers = List(voiceovers) { JsonPrimitive("v$it") },
+        voiceovers = List(voiceovers) { VoiceoverDto(it, "v$it") },
     )
 
     /** Idle → PlayRequested → the describe leg is in flight. */

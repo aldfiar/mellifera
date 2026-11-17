@@ -1,9 +1,9 @@
 package tv.mellifera.state
 
-import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import tv.mellifera.net.PlaybackDescriptor
+import tv.mellifera.net.VoiceoverDto
 
 /**
  * The voiceover/track plan pins (5.5): single-variant k → audioTrack k+1,
@@ -16,7 +16,7 @@ class RenditionPlanTest {
         state = "complete",
         playUrl = "/media/items/i1/hls/index.m3u8?token=tok",
         layout = layout,
-        voiceovers = List(voiceovers) { JsonPrimitive("v$it") },
+        voiceovers = List(voiceovers) { VoiceoverDto(it, "v$it") },
     )
 
     @Test

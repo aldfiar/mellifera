@@ -61,7 +61,7 @@ private fun descriptor(layout: String?, voiceovers: Int) = PlaybackDescriptor(
     state = "complete",
     playUrl = "/media/i1/master.m3u8",
     layout = layout,
-    voiceovers = List(voiceovers) { kotlinx.serialization.json.JsonNull },
+    voiceovers = List(voiceovers) { tv.mellifera.net.VoiceoverDto(it, "v$it") },
 )
 
 /**

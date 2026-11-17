@@ -6,7 +6,7 @@ package tv.mellifera.dpad
  * delivers Back through BackHandler (it never reaches onKeyEvent) — the
  * wiring calls [routePlayerKey] with [DpadKey.Back] from there.
  */
-enum class DpadKey { Left, Right, Up, Down, Ok, Back, PlayPause }
+enum class DpadKey { Left, Right, Up, Down, Ok, Back, PlayPause, AudioTrack }
 
 /** The arrows that move a cursor (grid/list rails); the rest route only
  * inside the player. */
@@ -27,6 +27,8 @@ val DpadKey.isDirectional: Boolean
  * - Back dismisses the controls; with them hidden it pauses (which flushes
  *   the stored position) then exits the player.
  * - PlayPause media keys toggle directly, controls visibility aside.
+ * - AudioTrack cycles the voiceover (9.2) — transport-class like PlayPause:
+ *   routed regardless of the control layer's visibility.
  * - Up/Down are not player keys (the control layer's rails are entered
  *   visually, not via the law) — null, never consumed.
  */
@@ -42,6 +44,7 @@ fun routePlayerKey(
     DpadKey.Back ->
         if (controlsShown) PlayerKeyAction.DismissControls else PlayerKeyAction.PauseExit
     DpadKey.PlayPause -> PlayerKeyAction.TogglePlay
+    DpadKey.AudioTrack -> PlayerKeyAction.CycleVoiceover
     DpadKey.Up, DpadKey.Down -> null
 }
 
@@ -63,6 +66,10 @@ sealed interface PlayerKeyAction {
     data object ShowControls : PlayerKeyAction
     data object TogglePlay : PlayerKeyAction
     data object DismissControls : PlayerKeyAction
+
+    /** The audio-track media key: cycle to the next served voiceover
+     * (the orchestration owns the pick space and the wrap). */
+    data object CycleVoiceover : PlayerKeyAction
 
     /** Back with controls hidden: pause (flushing progress) then exit. */
     data object PauseExit : PlayerKeyAction

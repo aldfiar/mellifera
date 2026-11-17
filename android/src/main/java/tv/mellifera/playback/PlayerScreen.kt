@@ -111,6 +111,7 @@ private fun ActiveOverlay(playback: PlayerOrchestration) {
         when (action) {
             is PlayerKeyAction.Seek -> playback.seekBy(action.deltaMs)
             PlayerKeyAction.ShowControls -> Unit
+            PlayerKeyAction.CycleVoiceover -> playback.cycleVoiceover()
             PlayerKeyAction.TogglePlay -> {
                 // OK's law (D7): inside a served classified range the chip's
                 // activation wins — seek a beat past the range's end (which
@@ -285,6 +286,7 @@ private fun BoxScope.AutoNextCard(playback: PlayerOrchestration) {
 private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
     val readout by playback.readout.collectAsState()
     val info by playback.info.collectAsState()
+    val voiceovers by playback.voiceovers.collectAsState()
     val durationMs = readout.durationMs
     Column(
         modifier = Modifier
@@ -329,6 +331,15 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
             Text("← → перемотка · OK пауза · Back скрыть", fontSize = TYPE_SMALL, color = Color.LightGray)
         }
         info?.let { InfoBlocks(it) }
+        if (voiceovers.isNotEmpty()) {
+            // «Озвучка: <label> · <label>…» (9.2) — the served labels in
+            // document order; empty = the block is absent (L1).
+            Text(
+                "Озвучка: " + voiceovers.joinToString(" · ") { it.label },
+                fontSize = TYPE_META,
+                color = Color.LightGray,
+            )
+        }
     }
 }
 

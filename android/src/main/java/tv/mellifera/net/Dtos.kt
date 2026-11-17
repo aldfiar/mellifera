@@ -184,8 +184,18 @@ data class ItemResponse(val item: ItemDto)
  * (resolved against the configured base — never logged, INV4); state_reason
  * is the honesty vocabulary on non-native floors; codecs/layout answered on
  * hls only (omitempty); sections/voiceovers are server-composed projections
- * the client reads opaquely.
+ * the client reads opaquely; voiceovers are the typed exception (api.ts
+ * VoiceoverDTO, L6) — the document-order {index, label} list the voiceover
+ * picker reads.
  */
+/**
+ * One voiceover entry (playback.go Voiceover — the sidecar's document index
+ * plus its presentation label, stamped language first). Document order is
+ * preserved; field names match the JSON shape exactly (api.ts VoiceoverDTO).
+ */
+@Serializable
+data class VoiceoverDto(val index: Int, val label: String)
+
 @Serializable
 data class PlaybackDescriptor(
     val mode: String,
@@ -195,7 +205,7 @@ data class PlaybackDescriptor(
     val codecs: List<String> = emptyList(),
     val layout: String? = null,
     val sections: List<JsonElement> = emptyList(),
-    val voiceovers: List<JsonElement> = emptyList(),
+    val voiceovers: List<VoiceoverDto> = emptyList(),
 )
 
 /**

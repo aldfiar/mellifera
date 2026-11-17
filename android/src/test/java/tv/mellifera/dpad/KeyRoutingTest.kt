@@ -74,6 +74,20 @@ class KeyRoutingTest {
     }
 
     @Test
+    fun audio_track_routes_cycle_voiceover_regardless_of_controls_visibility() {
+        // The audio-track media key is transport-class (9.2): it cycles the
+        // voiceover whether or not the control layer is revealed.
+        assertEquals(
+            PlayerKeyAction.CycleVoiceover,
+            routePlayerKey(DpadKey.AudioTrack, controlsShown = false),
+        )
+        assertEquals(
+            PlayerKeyAction.CycleVoiceover,
+            routePlayerKey(DpadKey.AudioTrack, controlsShown = true),
+        )
+    }
+
+    @Test
     fun up_down_are_not_player_keys() {
         assertNull(routePlayerKey(DpadKey.Up, controlsShown = true))
         assertNull(routePlayerKey(DpadKey.Down, controlsShown = false))

@@ -16,6 +16,7 @@ import tv.mellifera.net.PlaybackDescriptor
 import tv.mellifera.net.PlayResponse
 import tv.mellifera.net.ProgressDto
 import tv.mellifera.net.ProgressRequest
+import tv.mellifera.net.VoiceoverDto
 import tv.mellifera.player.PlayerController
 import tv.mellifera.player.PlayerEvent
 import tv.mellifera.player.PlayerReadout
@@ -32,6 +33,7 @@ private class FakeController : PlayerController {
 
     val launched = mutableListOf<Triple<String, String, String>>()
     val seeks = mutableListOf<Long>()
+    val voiceoverTracks = mutableListOf<Int>()
     var playPauseCalls = 0
     var endCalls = 0
 
@@ -49,7 +51,9 @@ private class FakeController : PlayerController {
         seeks += positionMs
     }
 
-    override fun selectVoiceover(index: Int) {}
+    override fun selectVoiceover(index: Int) {
+        voiceoverTracks += index
+    }
 
     override fun attachSurface(surface: Surface?) {}
 
@@ -102,6 +106,15 @@ private fun directDescriptor(
 )
 
 private fun unconfinedScope() = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
+/** A complete HLS descriptor whose layout/served voiceovers pick the plan. */
+private fun hlsDescriptor(layout: String?, voiceovers: Int) = PlaybackDescriptor(
+    mode = "hls",
+    state = "complete",
+    playUrl = "/media/i1/master.m3u8",
+    layout = layout,
+    voiceovers = List(voiceovers) { VoiceoverDto(it, "v$it") },
+)
 
 /**
  * The effect ferry + ticker law (5.7) over the REAL reduce machine: the
@@ -538,5 +551,111 @@ class PlayerOrchestrationTest {
         // card over live playback.
         assertNull(orch.nextUp.value)
         assertTrue(orch.state.value is PlaybackState.Active)
+    }
+
+    @Test
+    fun cycle_voiceover_wraps_at_plan_pick_space() = runBlocking {
+        // Single-variant master with n=2 voiceovers: the pick space is n.
+        // Cycle from the launch-leg default 0: picks 1, 0, 1 … — the mapped
+        // player tracks ride the k+1 law (0→1, 1→2).
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = hlsDescriptor("single-variant", 2), progress = epoch)
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch.play("i1")
+        assertTrue(orch.state.value is PlaybackState.Active)
+        assertEquals(listOf(VoiceoverDto(0, "v0"), VoiceoverDto(1, "v1")), orch.voiceovers.value)
+
+        orch.cycleVoiceover()
+        orch.cycleVoiceover()
+        orch.cycleVoiceover()
+        // Picks wrapped 0→1→0→1; tracks are the k+1 mapping of each pick.
+        assertEquals(listOf(2, 1, 2), controller.voiceoverTracks)
+    }
+
+    @Test
+    fun cycle_voiceover_wraps_on_served_count_for_rendition() = runBlocking {
+        // Rendition: the pick space is the SERVED voiceover count at pick
+        // time (the session carrier, refreshed by the describe leg) — the
+        // pick passes through unchanged (native track index).
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = hlsDescriptor("rendition", 3), progress = epoch)
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch.play("i1")
+        assertTrue(orch.state.value is PlaybackState.Active)
+
+        orch.cycleVoiceover()
+        orch.cycleVoiceover()
+        orch.cycleVoiceover()
+        // Picks 1, 2, then wrap to 0 — native indices, no shift.
+        assertEquals(listOf(1, 2, 0), controller.voiceoverTracks)
+    }
+
+    @Test
+    fun cycle_voiceover_fails_open_on_no_picker_or_empty_space() = runBlocking {
+        // NoPicker (layout absent): a cycle is a no-op — no selection, no
+        // state change. Same for a Rendition session with NO served
+        // voiceovers (empty pick space).
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = hlsDescriptor(layout = null, voiceovers = 2), progress = epoch)
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch.play("i1")
+        assertTrue(orch.state.value is PlaybackState.Active)
+
+        orch.cycleVoiceover()
+        assertEquals(0, controller.voiceoverTracks.size)
+        assertTrue(orch.state.value is PlaybackState.Active)
+
+        // A Rendition session with an empty served list fail-opens too.
+        val emptyTransport = FakeTransport(descriptor = hlsDescriptor("rendition", 0), progress = epoch)
+        val orch2 = PlayerOrchestration(
+            controller = controller,
+            transport = { emptyTransport },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch2.play("i2")
+        assertTrue(orch2.state.value is PlaybackState.Active)
+        orch2.cycleVoiceover()
+        assertEquals(0, controller.voiceoverTracks.size)
+    }
+
+    @Test
+    fun voiceover_carrier_resets_on_departure() = runBlocking {
+        // The served voiceovers leave with the session (readout-law sibling)
+        // and the pick resets to the launch-leg default 0.
+        val controller = FakeController()
+        val transport = FakeTransport(descriptor = hlsDescriptor("rendition", 3), progress = epoch)
+        val orch = PlayerOrchestration(
+            controller = controller,
+            transport = { transport },
+            scope = unconfinedScope(),
+            delayer = { awaitCancellation() },
+        )
+        orch.play("i1")
+        orch.cycleVoiceover()
+        assertEquals(1, controller.voiceoverTracks.last())
+
+        orch.exit()
+        assertEquals(PlaybackState.Idle, orch.state.value)
+        assertTrue(orch.voiceovers.value.isEmpty())
+
+        // A cycle on Idle is a no-op (no Active session → NoPicker branch).
+        orch.cycleVoiceover()
+        assertEquals(1, controller.voiceoverTracks.size)
     }
 }
