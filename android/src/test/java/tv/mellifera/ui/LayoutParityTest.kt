@@ -12,13 +12,13 @@ import org.junit.Test
  */
 class LayoutParityTest {
     @Test
-    fun the_rail_panel_is_the_spa_sidebar_divided_by_the_box_density() {
-        assertEquals(112f, RAIL_PANEL_WIDTH.value) // SPA .side 224px ÷ 2
+    fun the_rail_panel_is_the_chosen_192px_proportion_divided_by_the_box_density() {
+        assertEquals(96f, RAIL_PANEL_WIDTH.value) // the chosen 192px ÷ 2 (NOT the SPA .side's 224px — design §D operator ruling)
     }
 
     @Test
     fun the_rail_panel_renders_the_spa_px_at_density_2() {
         // density = 320dpi / 160 = 2.0 — dp × 2 = the on-panel px.
-        assertEquals(224, (RAIL_PANEL_WIDTH.value * 2).toInt())
+        assertEquals(192, (RAIL_PANEL_WIDTH.value * 2).toInt())
     }
 }
