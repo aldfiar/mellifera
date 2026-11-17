@@ -38,10 +38,12 @@ import tv.mellifera.dpad.DpadKey
 import tv.mellifera.dpad.moveInRow
 import tv.mellifera.home.AnchorCardModel
 import tv.mellifera.home.HomeState
+import tv.mellifera.home.homeErrorLine
 import tv.mellifera.home.ResumeCardModel
 import tv.mellifera.home.toAnchorCard
 import tv.mellifera.home.toResumeCard
 import tv.mellifera.net.LibraryDto
+import tv.mellifera.ui.TYPE_BODY
 import tv.mellifera.ui.TYPE_HEADING
 import tv.mellifera.ui.TYPE_META
 import tv.mellifera.ui.requestFocusSafely
@@ -108,6 +110,13 @@ internal fun HomeRows(
     // no client re-sort, no second derivation (L6).
     val resumes = home.rows.mapNotNull { it.toResumeCard() }
     val anchors = home.rows.mapNotNull { it.toAnchorCard() }
+    // The error line (parity 11.1): a failed /home fetch with no rows on
+    // screen shows the served error one-liner — the browse bodies'
+    // error-branch idiom — before the empty-rows early return; rows
+    // present → the pure gate keeps it null.
+    homeErrorLine(home)?.let { line ->
+        Text(line, fontSize = TYPE_BODY, modifier = Modifier.padding(start = 32.dp, top = 8.dp))
+    }
     if (resumes.isEmpty() && anchors.isEmpty()) return
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         // The parity card width (D13): 3 fixed 16:9 cards across the content

@@ -289,4 +289,47 @@ class HomeFlowTest {
         assertEquals("Не удалось загрузить продолжения — проверьте сервер", state.error)
         assertEquals(false, entryLandsOnHome(state))
     }
+
+    // ---- homeErrorLine: the home error line (parity 11.1, audit P2-1) ----
+
+    @Test
+    fun home_error_line_shows_on_a_failed_empty_fetch() = runBlocking {
+        // The audit P2-1 surface: the first /home fetch failed, no rows on
+        // screen — the line IS the served error message, the SPA's
+        // ErrorState equivalent.
+        server.enqueue(MockResponse().setResponseCode(500))
+        flow.load()
+
+        val state = flow.state.value
+        assertTrue(state.rows.isEmpty())
+        assertEquals("Не удалось загрузить продолжения — проверьте сервер", homeErrorLine(state))
+    }
+
+    @Test
+    fun home_error_line_hides_while_rows_are_on_screen() = runBlocking {
+        // The failure law's other half: rows stay on screen through a failed
+        // refresh — the line never shows beside live rows.
+        server.enqueue(json(homeBody()))
+        flow.load()
+        server.enqueue(MockResponse().setResponseCode(500))
+        flow.load()
+
+        val state = flow.state.value
+        assertEquals(3, state.rows.size)
+        assertEquals("Не удалось загрузить продолжения — проверьте сервер", state.error)
+        assertNull(homeErrorLine(state))
+    }
+
+    @Test
+    fun home_error_line_is_null_without_an_error() = runBlocking {
+        // The served-empty surface (L1): no rows, but also no failure —
+        // an honest no-row surface, never an error line.
+        server.enqueue(json("""{"continue":[]}"""))
+        flow.load()
+
+        val state = flow.state.value
+        assertTrue(state.rows.isEmpty())
+        assertNull(state.error)
+        assertNull(homeErrorLine(state))
+    }
 }

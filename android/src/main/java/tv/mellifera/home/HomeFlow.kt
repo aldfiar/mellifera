@@ -51,6 +51,15 @@ fun entryLandsOnHome(home: HomeState): Boolean =
         home.rows.any { it.toAnchorCard()?.nextItemId != null }
 
 /**
+ * The home error line (parity 11.1, audit P2-1): the served error message
+ * when a failed /home fetch left NO rows on screen — the blank silent
+ * surface's one honest line — else null. Rows present → the failure law
+ * keeps them on screen and the line never shows.
+ */
+fun homeErrorLine(home: HomeState): String? =
+    if (home.rows.isEmpty() && home.error != null) home.error else null
+
+/**
  * The home flow (design D4): the SPA Home's data layer — ONE
  * GET /api/v1/home round-trip, the same server-composed wire the SPA's
  * ContinueRail reads (entity-grain rows, ≤50, score-then-recency served
