@@ -8,6 +8,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -195,13 +196,20 @@ fun BrowseScreen(viewModel: AppViewModel) {
                     // lands at the viewport top the whole body IS the visible
                     // page (the SPA's page shape).
                     val scrollState = rememberScrollState()
-                    // The visible-swap actuator (task 8.3): a rail-OK body
-                    // swap brings the body's top INTO VIEW — the activation
-                    // is a VISIBLE swap (the user SEES the body they opened),
-                    // never an invisible focus land below the fold.
+                    // The visible-swap actuator (task 8.3, hardened by 15.3's
+                    // body-top landing law): a rail-OK body swap brings the
+                    // body's top INTO VIEW — the activation is a VISIBLE swap
+                    // (the user SEES the body they opened), never an invisible
+                    // focus land below the fold. The actuation RE-ARMS until
+                    // the landing holds (swapUntilLanded) — a bringIntoView
+                    // fired mid-remount no-ops against the detached grid, and
+                    // the one-shot drop left ledger #24's inert swap-scroll
+                    // leg.
                     val bodyIntoView = remember { BringIntoViewRequester() }
                     LaunchedEffect(Unit) {
-                        browse.bodySwaps.collect { bodyIntoView.bringIntoView() }
+                        browse.bodySwaps.collect {
+                            swapUntilLanded(bodyIntoView, scrollState)
+                        }
                     }
                     Column(modifier = Modifier.fillMaxSize().verticalScroll(scrollState)) {
                         // The home surface (design D4, task 3.2): the served
@@ -970,6 +978,33 @@ private suspend fun FocusRequester.focusUntilAttached() {
 
 /** The actuator's frame cap (~1s at 60fps) — past it the request gives up. */
 private const val FOCUS_RETRY_FRAMES = 60
+
+/**
+ * The SCROLL actuator of the two-emit law (task 15.3 — the same drop class
+ * 8.11 fixed for the FOCUS actuators, ledger #24): on an unattached
+ * [BringIntoViewRequester] — the grid swapped out mid-remount —
+ * bringIntoView no-ops against the empty modifier vector, and a one-shot
+ * call leaves the swap-scroll leg inert forever. Mirroring the
+ * [focusUntilAttached] idiom, the request re-arms once per frame until the
+ * body section's top holds the viewport top — the column scroll rests at
+ * its end (the body takes the column's viewport height, so end-of-scroll
+ * IS the landing; settled when already there) — until the collector is
+ * cancelled (the next swap emit replaces it), or [SWAP_RETRY_FRAMES]
+ * elapse (~1s at 60fps). The two-emit law stands: the re-arm keys on the
+ * SAME commit/post-load emits; only the consumer now persists past a lost
+ * frame.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+private suspend fun swapUntilLanded(requester: BringIntoViewRequester, scroll: ScrollState) {
+    repeat(SWAP_RETRY_FRAMES) {
+        requester.bringIntoView()
+        if (scroll.value == scroll.maxValue && !scroll.isScrollInProgress) return
+        withFrameNanos { } // one frame, then re-ask against the mounted grid
+    }
+}
+
+/** The landing actuator's frame cap (~1s at 60fps) — past it the re-arm gives up. */
+private const val SWAP_RETRY_FRAMES = 60
 
 /**
  * One bordered rounded card (14.1 — the mockup's card anatomy, the SPA
