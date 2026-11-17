@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -26,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.KeyEvent
@@ -37,6 +40,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Button
 import androidx.tv.material3.Text
 import kotlinx.coroutines.delay
+import tv.mellifera.browse.ArtworkImage
 import tv.mellifera.dpad.DpadKey
 import tv.mellifera.dpad.PlayerKeyAction
 import tv.mellifera.dpad.routePlayerKey
@@ -365,12 +369,46 @@ private fun InfoBlocks(info: PlayerInfoBlocks) {
             }
         }
         if (info.cast.isNotEmpty()) {
-            Column {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("В ролях", fontSize = TYPE_META)
-                Text(info.cast.castLine(), fontSize = TYPE_META, color = Color.LightGray)
+                info.cast.forEach { entry -> CastRow(entry.toCastRow()) }
             }
         }
         info.about?.let { Text(it, fontSize = TYPE_META, color = Color.LightGray) }
+    }
+}
+
+/**
+ * One «В ролях» entry (12.4, the SPA CastRow's TV rendering): the 24dp
+ * portrait tile only when the served photo_url resolves (the ÷2 of the
+ * SPA's 48px avatar; a resolved entry is an absolute CDN/stub URL, fetched
+ * anonymously — no device token rides a third host), the name + its
+ * optional role stacked. No served photo → a plain row, never a fabricated
+ * tile (L1). The rows take no dpad focus — the overlay owns every key (5.9).
+ */
+@Composable
+private fun CastRow(row: CastRow) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        row.portrait?.let { artwork ->
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape),
+            ) {
+                ArtworkImage(
+                    artwork = artwork,
+                    token = null,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        Column {
+            Text(row.name, fontSize = TYPE_META)
+            row.role?.let { Text(it, fontSize = TYPE_META, color = Color.LightGray) }
+        }
     }
 }
 

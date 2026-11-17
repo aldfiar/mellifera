@@ -162,12 +162,26 @@ class PlayerInfoTest {
     }
 
     @Test
-    fun cast_line_joins_entries_verbatim() {
-        val line = listOf(
-            MetadataCastEntry(name = "Имя", role = "Роль"),
+    fun cast_rows_map_field_driven_per_entry() {
+        // 12.4 (the audit P3-2 per-entry law): one CastRow model per served
+        // entry — the portrait tile only when the served photo_url resolves
+        // (an absolute URL passes resolveArtworkUrl anonymously), an absent
+        // photo or a relative path with no server base is a plain row (never
+        // a fabricated tile, L1); the role renders only when the served
+        // entry carries a non-empty one.
+        val rows = listOf(
+            MetadataCastEntry(name = "Имя", role = "Роль", photoUrl = "https://image.tmdb.org/t/p/original/face.jpg"),
             MetadataCastEntry(name = "Имя2", role = null),
-        ).castLine()
-        assertEquals("Имя (Роль), Имя2", line)
+            MetadataCastEntry(name = "Имя3", role = "", photoUrl = "relative/face.jpg"),
+        ).map { it.toCastRow() }
+        assertEquals("Имя", rows[0].name)
+        assertEquals("Роль", rows[0].role)
+        assertEquals("https://image.tmdb.org/t/p/original/face.jpg", rows[0].portrait?.url)
+        assertEquals(false, rows[0].portrait?.isAuthorized)
+        assertNull(rows[1].portrait)
+        assertNull(rows[1].role)
+        assertNull(rows[2].portrait)
+        assertNull(rows[2].role)
     }
 
     @Test

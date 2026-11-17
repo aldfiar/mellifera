@@ -2,7 +2,9 @@ package tv.mellifera.playback
 
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import tv.mellifera.browse.ArtworkRequest
 import tv.mellifera.browse.plainText
+import tv.mellifera.browse.resolveArtworkUrl
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.MetadataAbout
 import tv.mellifera.net.MetadataCastEntry
@@ -90,14 +92,29 @@ fun seriesAnchorOf(item: ItemDto): String? {
 }
 
 /**
- * The «В ролях» joined line (the wireframe's "Имя, Имя…"): served entries
- * verbatim — the name, its optional role in parens only when present (the
- * SPA's CastRow role law, one-line rendered).
+ * One «В ролях» row (12.4, the SPA CastRow — the audit P3-2 per-entry law):
+ * the served entry verbatim — the name, its optional role, and the portrait
+ * fetch when the served photo_url resolves. Field-driven: a null portrait
+ * is a plain row — never a fabricated tile (L1; the SPA's initial-grapheme
+ * avatar fallback stays web-only).
  */
-fun List<MetadataCastEntry>.castLine(): String = joinToString(", ") { entry ->
-    val role = presentText(entry.role)
-    if (role != null) "${entry.name} ($role)" else entry.name
-}
+data class CastRow(
+    val portrait: ArtworkRequest?,
+    val name: String,
+    val role: String?,
+)
+
+/**
+ * The per-entry mapping: the portrait rides the resolveArtworkUrl law — a
+ * served absolute URL passes through anonymously (both plugins compose
+ * photo_url absolute), a relative path with no server base cannot load and
+ * resolves to null (a plain row, nothing fabricated).
+ */
+fun MetadataCastEntry.toCastRow(): CastRow = CastRow(
+    portrait = resolveArtworkUrl(serverBase = null, wireField = photoUrl),
+    name = name,
+    role = presentText(role),
+)
 
 /**
  * m:ss / h:mm:ss clock (the SPA's formatTime law — the readout and the
