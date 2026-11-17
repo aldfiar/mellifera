@@ -166,3 +166,37 @@ Notes (none blocking the verdict):
 
 - [ ] Operator approves archiving the change (recorded here after 6.1's walk closes —
       the change cannot archive while 6.1 is open).
+
+## Amendment round — group 15 (2026-11-17 evening): GATE 2 record
+
+Reviewer re-ran every green verify in its own shell (`--by wf-reviewer`): **54/54 rc=0**
+(all 7 group-15 tasks + git-check + all 46 groups 1–14 tasks re-derived after the
+mid-round home abandon/re-derive). Status 54/55 — the one non-green row is 6.1 (the
+operator-assisted device walk, pending by design). Spec-vs-diff: all five group-15
+requirements + 12 scenarios realized (cursor actuator keyed (gridFocus, isRailOpen) +
+separate (mountMarker, homeHoldsEntry) entry claim; twelve-field clear keeping the
+libraryId/summaries/railFocus trio + `if (state.isBodyOpen)` mount + no default body;
+SWAP_RETRY_FRAMES bounded re-arm; bodyEpoch capture-before-await at every write site
+incl. both failure reverts + refresh; XML-only canvas with exactly one
+background(AppCanvas); fillMaxWidth + one-line clamps; 96dp/192px with derivation).
+Audit six-slots 15.1/15.2/15.4 read by inspection — no prose-vs-code divergence.
+Integration: Q10–Q14 verified folded; orphan check clean (loadBody one production
+caller). Standards axis: no hard violations.
+
+**APPROVED** (6.1 pending by design; not a gate failure this round).
+
+Notes:
+
+1. Deviation accepted: `kotlinx-coroutines-test:1.9.0` testImplementation added
+   (build.gradle.kts) — minimal test-only enabler for 15.4's mandated gated-continuation idiom.
+2. Deviation accepted: LayoutParityTest method renamed — the old name asserted the
+   falsified SPA 224px derivation.
+3. Residual (non-blocking): BrowseScreen.kt (~:883) doc comment still cites the SPA
+   224px rail — the only stale 224 reference; follow-up touch next time the file opens.
+4. The pipeline home was abandoned + re-derived mid-round: 15.5's original authored
+   duty was ungreenable (double-escaped rg parens in single quotes); fix = chore 7e898da
+   (tasks.md verify line only, law prose byte-identical); all receipts re-derived. A
+   future `git clean -x` must expect the same re-derivation.
+5. 6.1's single device window carries the whole group-15 walk grade (15.1 ring moves,
+   15.2 bare-home fingerprint + hybrid absent, 15.3 5/5 landings + BACK discriminator,
+   15.5 pixel-reads (2,6,23), 15.6 count-less-row uniform width, 15.7 192px visuals).
