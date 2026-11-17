@@ -536,3 +536,159 @@ them.
   KEYCODE_MEDIA_AUDIO_TRACK — not one of the five, no MediaSession contact.
 - The photo-stage slideshow idiom (mockup OK = slideshow) is deferred; the
   viewer gains only the 12.2 rulings.
+
+### D. Operator re-audit amendment (2026-11-17 afternoon): rail width, clear-on-enter, epoch guard, canvas, the D1 split
+
+Authored from the re-audit (`.tmp/android-tv-rail-switch-audit-2026-11-17.md`
+— group 15's spec; every fix carries file:line evidence there) plus the
+operator's live rulings on the walk-amend-0.3.13 state («each collection
+enter should clean previous collection data»; «current side menu is too
+large and items is not positioned properly»; «app background color should
+be same as in web ui but now it is black color»). Groups 15.1–15.7 ride
+this section; §A/§B and the laws above stand unless a paragraph here
+amends them.
+
+- **Width — 112dp → 96dp (task 15.7; amends §B's width decision).** §B's
+  112dp was walk-PROVEN pixel-exact (224px border-box, 2px #1E293B edge,
+  focus 209px = 190×1.1 — walk-amend-0.3.13): the operator's rejection is
+  of the DESIGN PARAMETER, not the rendering — 224px is 11.7% of 1920, the
+  web sidebar's own proportion, oversized at 3 m (the 8.16 precedent: the
+  ruling changes the authoring law). RAIL_PANEL_WIDTH = 96.dp — 192px at
+  the walk-proven density 2.0. The pixel math (the audit's arithmetic):
+  LazyColumn 95dp = 190px + the 1dp edge → item slot 79dp = 158px; card
+  chrome 22dp → text box 57dp = 114px ≈ 16–19 one-line chars at TYPE_META
+  (6sp = 12px); focused card 158 × 1.1 = 173.8px, right edge 182.9 < 190px
+  — fits the content column; the count slot («Каталоги» + «10472» ≈ 82px)
+  fits with room. Rejected for cause: 80dp (the count slot sits AT the
+  limit — 5-digit counts overflow Row2 — an anatomy change, not a width
+  knob), the mockup's 38px (a collapsed ICON rail needing a name-on-focus
+  flyout — a new interaction surface). **Precedence:** §B's 112dp law and
+  its LayoutParityTest pins are superseded by THIS 96dp law (execution
+  order keeps them consistent: 14.1 is closed green; 15.6's clamp lands
+  before 15.7's width).
+- **Clear-on-enter is THE LAW (task 15.2; the operator directive).** The
+  §B-era body-retention law (closeBody keeps the cluster; the body stays
+  mounted; DOWN re-enters) is OPERATOR-REJECTED — the hybrid home shape
+  (home rows + the still-mounted last body, md5-proven 28c2f029) dies.
+  Three legs, all in the BrowseFlow/BrowseScreen cluster: (1) STATE —
+  closeBody keeps its flip (isBodyOpen=false, shouldRestoreHome=true) and
+  resets the TWELVE body fields to fresh-body defaults (series, items,
+  folders, facets, facetSelection, folder, itemsOffset, isStreamExhausted,
+  chipFocus, photoIndex, gridFocus, positions); KEEP libraryId (the rail's
+  selected marker, openRail's focus law, refresh()'s target), summaries,
+  railFocus — selectedSeries/episodes are unreachable there (the series
+  BackHandler closes them first). (2) RENDER — the body mounts only while
+  `state.isBodyOpen` (the SeriesGrid call wraps); one visual state = one
+  state meaning. (3) ENTRY — enter() drops loadBody(first.id): the entry
+  surface is home rows only; the first body fetches at the first explicit
+  activation. Ripples: 8.7's law text flips («no-fetch flip, data kept» →
+  «close + clear»; the BackHandler chain shape unchanged); the
+  «DOWN re-enters the same body» law RETIRED (D1 made it moot — the body
+  was rail-reachable only while the arrows were dead); 8.5's two-emit law,
+  8.4's activation-clear, the shouldRestoreHome/HomeRows restore and 8.9's
+  commit-time clear stand; refresh() stays ungated (after a close it
+  refetches the kept libraryId into the unmounted state — invisible and
+  harmless; pinned, not changed). Ledger #14 (the scroll-revealed
+  entry-default body's opposite Back semantics) and #24's
+  isBodyOpen-undecidability resolve STRUCTURALLY: isBodyOpen=true ⇒ an
+  explicit activation — no patch, the ambiguous states no longer exist.
+  8.15's homeHoldsEntry law STAYS in-body: every switch is now a fresh
+  mount, so it is exercised on every switch (15.1's split is in first).
+- **The body-epoch race guard (task 15.4; audit S-3).** One shared
+  MutableStateFlow written from uncoordinated scope.launch coroutines with
+  launch-time-only guards: three proven interleavings each end with
+  old-collection rows in the new body (append bleed — extendItems'
+  suspended loadItems appends pageA under B's header; series-page
+  resurrection — a suspended openSeries writes seriesA over the new body;
+  stale lanes — loadFacets/loadFolders/loadSerialGrid of a previous slow
+  activation replace the new body's rows). The law: a private bodyEpoch
+  counter bumped at every enter()/selectLibrary commit; EVERY body-write
+  site captures the epoch BEFORE its await and drops the write when it no
+  longer matches — loadItems (covering the tv/image legs, pickFolder's
+  success path, extendItems), loadBody's serial commit, toggleFacet's
+  landing, loadFacets, loadFolders, openSeries' two commits AND its
+  positions write (:718 — after the loadPositions loop await; capture
+  before the positions walk, check at the write), selectLibrary's
+  failure-path revert (:287-301) and pickFolder's failure-path revert
+  (:469-474) — surveyor Q12: the reverts are the same stale-write class
+  and §B's fast B→C double-switch reproduces through them — refresh()'s
+  body writes (:772-797 incl. its positions write :775; the same class
+  through the player-exit path). No cancellation, no single-flight — the
+  epoch check IS the guard (the audit's smaller-diff direction).
+  JVM-pinned over a suspending fake api (the three interleavings + a Q12
+  revert leg + a same-epoch control). S-4 rides as an accepted
+  residual: the commit-time bodySwaps emit stays before the fetch (the
+  failed-switch viewport jump behind the still-open rail; if ever moved,
+  it rides this plumbing).
+- **Canvas: the window paints the scheme — XML-ONLY (task 15.5; amends
+  D13's first bullet).** D13 pinned the canvas VALUE (#020617) but nothing
+  painted it: themes.xml kept windowBackground @android:color/black and
+  MaterialTheme only SUPPLIES colors (zero Surface usage repo-wide; the
+  only AppCanvas paint is the rail panel). THE fix: themes.xml
+  windowBackground → @color/app_canvas (#020617, a new values/colors.xml)
+  — the window layer is ALREADY an opaque full-screen paint and
+  punch-through playback is proven on every fixed build with the black
+  window behind it, so the color change touches no z/punch mechanics.
+  FORBIDDEN: any root Compose `.background(AppCanvas)` — ledger #1 (5.3)
+  proved opaque Compose-layer pixels over the video region hide the video
+  (the punch-through cover class); the window paint covers 100% of what a
+  root paint would. PlayerOverlay's transparent shell (D7) and
+  PhotoViewer's black stage are untouched exceptions. C-2 rides: the two
+  definitions (the XML resource ↔ AppCanvas) cross-reference in comments —
+  surveyor Q14 constraint: the comment must NOT contain the literal
+  `background(AppCanvas)` (15.5's duty counts that literal repo-wide at
+  exactly one hit — BrowseScreen.kt:847, the rail panel paint; a comment
+  carrying it reds the duty — word it e.g. «the XML app_canvas mirrors
+  ui/App.kt's AppCanvas — the only paint is the rail panel»); accepted
+  duplication, no JVM pin (tests cannot read res without Robolectric).
+  Ripple: the cold-start flash becomes #020617 throughout.
+- **The D1 split gate (task 15.1, FIRST per the sequencing; ledger #27;
+  surveyor Q10/Q11 folded).** The grid arrows were dead in EVERY CardGrid
+  body: the 8.15/8.11 cursor actuator was gated `!homeHoldsEntry` and the
+  entry verdict is permanently true when home serves rows — the entry
+  window never ended, arrows moved state invisibly, the ring never followed
+  (and the unguarded nonce re-land teleported focus across the invisible
+  moves). The law: the cursor actuator lives for the WHOLE body lifetime —
+  keyed (state.gridFocus, state.isRailOpen) with isRailOpen REQUIRED (Q10:
+  the only production mount path is activateRailRow and the body composes
+  while the rail is still open — selectLibrary commits and awaits loadBody
+  BEFORE the rail close, BrowseFlow.kt:664-678 — so a gridFocus-only key
+  lets the mount-run steal focus from the open rail's focused row for the
+  whole fetch window; with isRailOpen in the key the mount-run is gated off
+  and the landing fires on the rail-close flip, doubling the nonce actuator
+  by design), unconditional on homeHoldsEntry, every gridFocus change
+  re-lands the ring through the re-arming idiom; entryLandsOnHome gates
+  ONLY the fresh-mount cursor-0 claim — a separate effect keyed
+  (mountMarker, homeHoldsEntry) so the claim re-runs when the verdict flips
+  (Q11: a mount-only key leaves «a resolved-empty home hands it back»
+  unserviced) — 8.15 stands; post-15.2 every mount is a switch mount with
+  home already resolved, so the claim stands down and the activation
+  landing owns the cursor per 8.4, the claim's live role is the
+  home-failed/empty box, and the «late-resolving home pulls the entry»
+  clause is vestigial; a consumed move is always backed by a live
+  actuation. Walk re-proof r3/r4/r5 rides 6.1.
+- **The landing law re-arm (task 15.3; ledger #24).** The rail-OK landing
+  kept the HOME-TOP scroll (the swap-scroll leg inert while the focus leg
+  won 5/5): a single bringIntoView per emit no-ops when aimed mid-remount,
+  and nothing re-asks — the 8.11 re-arming fix never reached the SCROLL
+  actuator. The law: the bodySwaps collector re-arms its actuation
+  (bounded ~60 frames, the focusUntilAttached idiom shape) until the body
+  top holds the viewport top; the two-emit law stays. Proof: 5/5
+  body-top landings at walk62c's grade; the BACK discriminator on a
+  landing settles #24 en passant.
+- **Sequencing (§C's order = the DAG; one concern per task).** 15.1 first
+  (the only in-body navigation — every later leg probes through it);
+  15.2 next (§B's state law; every switch becomes a fresh mount, which is
+  15.1's split exercised); 15.3 and 15.4 follow (§C pairs them with 15.2's
+  dispatch window — the landing law is the visible half of «each enter
+  shows THE new collection», the epoch guard is what makes clean-enter
+  true under concurrency, not just under sequential presses; authored as
+  separate tasks — state law, landing law and concurrency guard are three
+  concerns — sequenced adjacently); 15.5 anytime (zero interaction with
+  the state cluster); 15.6 before 15.7 (the one-line clamp is load-bearing
+  before any width change; both authored, sequenced). Residuals carried,
+  not tasked: S-4 (accepted, rides 15.4's plumbing if ever touched); A-4
+  (SettingsSection at x=64px sits under the rail overlay's x-range —
+  gate-on only, P3, out of this round); the C-1 punch-through re-proof leg
+  stays owed if anyone ever proposes the root Compose paint. Group-15
+  device legs ride 6.1's single window (its task line carries the list).

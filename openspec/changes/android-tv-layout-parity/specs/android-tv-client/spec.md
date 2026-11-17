@@ -14,18 +14,25 @@ watch-flow affordances.
 ### Requirement: Text visibility default
 
 The app SHALL wrap its whole tree in a dark MaterialTheme so every
-default-styled text is readable against the black window background; loading
-and error one-liners SHALL be visible without any per-call color.
+default-styled text is readable against the dark window background; loading
+and error one-liners SHALL be visible without any per-call color. The
+window background SHALL paint the scheme canvas (#020617) via the XML theme
+— never a Compose-layer paint over the video region (punch-through law).
 
 #### Scenario: Default text is readable
 
 - **WHEN** any screen renders a default-styled Text (title, loading row, error row)
-- **THEN** it is legible on the black background — never black-on-black
+- **THEN** it is legible on the dark canvas background — never dark-on-dark
 
 #### Scenario: Invisible text regression
 
 - **WHEN** a surface renders titles/meta that the a11y tree carries but the screenshot does not show
 - **THEN** that is a defect of this requirement, not a rendering nuance
+
+#### Scenario: Window paints the scheme canvas
+
+- **WHEN** the app window renders — cold start, the home surface, or any screen
+- **THEN** the window background is the scheme canvas color from the XML theme (values/colors.xml `app_canvas` referenced by themes.xml), matching the web UI's #020617, and no root Compose surface paints an opaque background over the video region
 
 ### Requirement: Card state-signal scale on TV
 
@@ -196,3 +203,107 @@ space.
 
 - **WHEN** the controls layer renders the cast block
 - **THEN** each served cast entry renders as its own row (name + role; a 24dp portrait tile only when the entry serves a portrait URL) — the joined single line never renders
+
+### Requirement: Collection body lifecycle
+
+The collection body SHALL be one explicit surface driven solely by
+activation: the body mounts only while the body-open state flag is true;
+closing the body SHALL clear every body field (the body cluster resets to
+fresh-body defaults) while keeping the collection identity (libraryId),
+the rail summaries, and the rail focus; entering the collections surface
+SHALL NOT pre-load a default body — the entry surface is the home rows
+alone, and the first body fetches at the first explicit activation;
+switching collections SHALL show only the new collection's data from the
+moment the switch commits. BACK from an open body SHALL close it onto the
+bare home surface — home rows only, no body nodes.
+
+#### Scenario: Switching collections shows only the new collection
+
+- **WHEN** a collection body is open and the rail activates a different collection
+- **THEN** after the switch commit the body shows only the new collection's data — rows, facets, folders, series, offsets and cursor positions all belong to the new collection; any in-flight write from the previous collection never lands in it (the epoch guard requirement)
+
+#### Scenario: Entry renders home rows only
+
+- **WHEN** the collections surface is entered from home
+- **THEN** no default body mounts and no default body fetch runs — the surface shows the home rows; the first body fetch happens at the first explicit rail activation
+
+#### Scenario: Back closes the body onto the bare home
+
+- **WHEN** BACK is pressed from an open collection body
+- **THEN** the body closes and unmounts onto the bare home surface (home rows only, no body nodes), every body field is cleared to fresh-body defaults, and the collection identity, summaries and rail focus are kept so the rail still marks the current collection
+
+#### Scenario: Activation lands the body top
+
+- **WHEN** the rail activates a collection and the body swap settles
+- **THEN** the body's top holds the viewport top (the landing actuation re-arms until it lands), and BACK after the landing closes the body — the ambiguous «is the body open?» state no longer exists
+
+### Requirement: Body-epoch race guard
+
+Every collection-body write SHALL be epoch-guarded: a body epoch SHALL
+advance at every collection enter/switch commit, each body-write site
+SHALL capture the epoch before its await and drop the write when the
+epoch no longer matches — with no cancellation and no request
+dedication (the check is the guard). This covers row paging and
+appends, the serial commit, facet loading and toggling, folder loading,
+the series-page commits, and the refresh path's body writes.
+
+#### Scenario: Append never bleeds across a switch
+
+- **WHEN** a paged append of collection A is still in flight while the rail commits a switch to collection B, and A's page then resolves
+- **THEN** A's page is dropped — B's body ends with only B's rows, and A's items never append under B's header
+
+#### Scenario: Late series page never resurrects the old series
+
+- **WHEN** a series detail fetch of collection A resolves after a switch to collection B committed
+- **THEN** the stale series write is dropped — B's body never carries A's series page
+
+#### Scenario: Same-epoch write still lands
+
+- **WHEN** a body write completes without any intervening enter/switch commit
+- **THEN** it lands normally — the guard never drops a current-epoch write (no over-guard)
+
+### Requirement: Grid cursor actuation
+
+In every mounted card-grid body the dpad arrow keys SHALL move the focus
+ring: the grid cursor actuator SHALL live for the whole body lifetime —
+keyed on the grid cursor AND the rail-open state (the mount-run must not
+fire while the rail is open and steal focus from the rail's focused row) —
+and re-land the ring on every grid-cursor change regardless of the entry
+state, while the home-surface entry claim SHALL be a separate effect keyed
+on (mount, homeHoldsEntry) — never the cursor key — so the claim re-runs
+when the home verdict flips. A consumed arrow move SHALL always be
+backed by a live actuation — consumption is never a blind state write.
+
+#### Scenario: Arrows move the ring in every body class
+
+- **WHEN** RIGHT or DOWN is pressed on a focused tile in any mounted card-grid body (serial, tv, image) while the home surface serves rows
+- **THEN** the cursor state advances AND the focus ring follows to the new tile — no consumed-but-inert move (the byte-identical re-proof class from the walk ledger)
+
+#### Scenario: Entry claim stays gated
+
+- **WHEN** a collection body mounts from a rail activation while the home surface holds a focusable card
+- **THEN** the grid's cursor-0 entry claim stands down — the activation landing owns the cursor (the body's first tile per the landing law); when the home surface cannot hold a card (a failed or resolved-empty home), the grid's cursor-0 claim lands instead
+
+#### Scenario: Consumption never blind
+
+- **WHEN** a card consumes a law-satisfiable arrow move
+- **THEN** a live actuation backs the move in the same frame budget — the ring lands on the advanced tile; a move whose actuation cannot land is not consumed
+
+### Requirement: Collections rail geometry
+
+The collections rail SHALL render at 96dp authored width (192 device px
+at the 2.0 box density) as a border box; every rail row SHALL keep a
+uniform full-slot width regardless of a count label's presence or
+absence, and every rail row's name and module texts SHALL clamp to one
+line with an ellipsis — never a ragged card width and never a mid-glyph
+clip.
+
+#### Scenario: Count-less rows keep uniform width
+
+- **WHEN** the rail renders rows where some carry a count label and some do not
+- **THEN** every row card fills the full rail slot width (uniform edges), and the 96dp/192px rail panel leaves the focused card inside the content column
+
+#### Scenario: Long names clamp to one line
+
+- **WHEN** a rail row's collection name or module line exceeds the row's one-line text box
+- **THEN** the text clamps to one line with an ellipsis — never a wrapped or clipped row, and the card height stays uniform across rows

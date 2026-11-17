@@ -257,3 +257,311 @@ amendment round, 2026-11-17 — re-validated strict + re-registered (14 groups /
   (Watch-flow affordances). The rail width/anatomy scenario was NOT folded — no existing
   delta requirement covers rail presentation (the delta names the rail only as
   navigation/entry), and the surveyor's rule forbids creating a presentation requirement.
+
+---
+
+# Integration audit — AMENDMENT ROUND: group 15 (surveyor, 2026-11-17 afternoon)
+
+Scope: tasks 15.1–15.7 (operator re-audit fixes; the group's register lines 147–165, the
+three six-slot contracts 15.1/15.2/15.4, design §D, the spec delta's five group-15
+requirement blocks), audited PRE-REGISTER (no receipts, no drift gate) against the live
+tree @ a89cc56 (`feature/android-tv-app`, 3 modified + 3 new planner files uncommitted —
+matches the invocation). The audit group 15 implements:
+`/Users/aldfiar/projects/go/mellifera/.tmp/android-tv-rail-switch-audit-2026-11-17.md`
+(S-1/S-2/S-3/C-1/A-1/A-2 + §B/§C). Read-only: this section and the wf handoff record are
+the only writes. Grounding note: the live map is built and CURRENT (auto-built this
+session; 699 files, kt 96) but the extractor yields ZERO Kotlin symbols (`symbols=0` —
+go/js/ts only), so every android node below is grounded by live-tree file:line reads (the
+map's own "not in map; grep source to confirm" directive). All line citations verified
+byte-true on the a89cc56 tree.
+
+## The planned integration graph (group 15)
+
+### Nodes (22 — all grounded this session)
+
+New (7):
+
+| Node | Task | Grounding |
+|---|---|---|
+| mount-keyed ENTRY-claim effect (grid cursor-0 claim, gated on homeHoldsEntry) | 15.1 | absent today: the only grid actuator is the entry-gated cursor one (BrowseScreen.kt:575-579); the home-side claim is HomeRows.kt:262-267 (`LaunchedEffect(Unit)`, takesEntryFocus) and is untouched |
+| `SWAP_RETRY_FRAMES` + `swapUntilLanded` (re-armed scroll actuator) | 15.3 | absent today (grep 0); the collector is the one-shot `browse.bodySwaps.collect { bodyIntoView.bringIntoView() }` at BrowseScreen.kt:203 (unique anchor) |
+| `browse/BodyEpochTest` (new test class) | 15.4 | absent from android/src/test (inventory checked); duty `--tests tv.mellifera.browse.BodyEpochTest` fails on absence — honest existence enforcement |
+| suspending FAKE `MelliferaApi` (test fixture, gated continuations) | 15.4 | feasible: `MelliferaApi` is a pure suspend interface (Api.kt:26, 18 suspend members), and `BrowseFlow(apiFor = { … })` accepts it — the CollectionsTest.kt:37 construction shows the seam; zero production edits needed |
+| `res/values/colors.xml` `<color name="app_canvas">#020617</color>` | 15.5 | res/values carries ONLY themes.xml today (ls verified); themes.xml:4 is `@android:color/black` |
+| `RAIL_PANEL_WIDTH = 96.dp` (rewrite of :17) + LayoutParityTest pins 112f→96f, 224→192 | 15.7 | ui/LayoutParity.kt:17 `val RAIL_PANEL_WIDTH = 112.dp`; the pins live in tv.mellifera.ui.LayoutParityTest (:15-22 — the CORRECT class; a second browse/LayoutParityTest holds only the 8.2/8.10 geometry pins, no rail pin) |
+| the A-3 comment edit (TYPE_HEADING drops «rail rows») | 15.6 | ui/TypeScale.kt:31-32 — the stale claim confirmed verbatim |
+
+Touched (15):
+
+| Node | Task | Grounding |
+|---|---|---|
+| cursor actuator loses the entry gate | 15.1 | BrowseScreen.kt:575-579 — `LaunchedEffect(state.gridFocus, homeHoldsEntry)` gated `!homeHoldsEntry`; the negative-grep duty REDS on this tree today (key line itself matches) |
+| nonce actuator — UNTOUCHED | 15.1 | :580-584 confirmed ungated on homeHoldsEntry |
+| rail-close transition actuator — UNTOUCHED | 15.1 | :594-601 confirmed (railWasOpen remember + watched flip) |
+| `focusUntilAttached` idiom — the re-arm the split rides | 15.1 | :917-926 + FOCUS_RETRY_FRAMES=60 :929 |
+| `CardView.onDirection` consumption | 15.1 | :614-627 (consumes `next != index`, else→false) |
+| `closeBody` clears the TWELVE body fields | 15.2 | BrowseFlow.kt:641-645 (today: flip only) |
+| `SeriesGrid` mount gated `if (state.isBodyOpen)` | 15.2 | BrowseScreen.kt:229 (unconditional today; the string `if (state.isBodyOpen)` has ZERO hits today — the positive grep is a real detector) |
+| `enter()` drops `loadBody(first.id)` | 15.2 | BrowseFlow.kt:220 (block :205-224; the negative grep `loadBody\(first` matches today — real detector) |
+| bodySwaps collector re-arms | 15.3 | BrowseScreen.kt:196-204 (collector :202-204, anchor unique) |
+| `bodyEpoch` bump+capture+check across BrowseFlow | 15.4 | duty floor `-ge 10` (0 hits today); capture anchor `val page = apiFor().items(` at :349 is UNIQUE — the -B2 grep is sound |
+| themes.xml windowBackground → @color/app_canvas | 15.5 | themes.xml:4; AndroidManifest.xml:18 carries `Theme.Mellifera` (the manifest grep target exists) |
+| App.kt C-2 cross-ref comment | 15.5 | MelliferaDarkScheme :34-37, AppCanvas :24 (both as cited); the ONLY `background(AppCanvas` paint repo-wide is BrowseScreen.kt:847 — the count-grep's expected string `…BrowseScreen.kt:1` is byte-exact today |
+| RailRow `.fillMaxWidth()` + maxLines/Ellipsis ×2 | 15.6 | :957-969 (no fillMaxWidth in the chain), name Text :974-979, module Text :983, conditional Spacer :984-986; all three duty anchors (`border(1.dp, railBorder, cardShape)`, `if (name.isNotBlank())`, `Text(module,`) UNIQUE |
+| `railMuted`/`railBorder`/`tvAccent` — UNTOUCHED by 15.6/15.7 | — | Colors.kt tokens (13.1/14.1, landed) |
+| Test rewrites: BodyBackTest + EpisodesTest, PhotoFlowTest, CollectionsTest, RefreshTest, RailLawTest, BackRestorationTest, ItemsBodyTest, CollectionsWireJointTest | 15.2 | ALL eight walk `enter()` today (verified: 1-8 call sites each); BodyBackTest's keep-data pins at :127-131 confirmed (five of the seven assertions there flip — items/folder/folders/gridFocus die; libraryId :127 and railFocus :132 STAND under the new law; the :133 chipFocus pin survives either way since -1 is both values) |
+
+### Edges (12 functional + 9 duty→test seams)
+
+1. arrow key → onDirection consumes (moveInGrid satisfiable) → `onGridFocusMoved` → gridFocus change → UNCONDITIONAL cursor actuator → `focusUntilAttached` re-arm → ring lands (15.1 — the #27 fix; closes end-to-end)
+2. body mount → ENTRY claim (mount+homeHoldsEntry keyed) → grid cursor-0 claim fires ONLY when the home surface cannot hold a card (15.1; the 8.15 law's grid side)
+3. closeBody → isBodyOpen=false + shouldRestoreHome=true + TWELVE fields cleared (libraryId/summaries/railFocus kept) → SeriesGrid unmounts (`if (state.isBodyOpen)`) → the bare home shape (15.2)
+4. enter() → /libraries ONLY → home rows the entry surface → no default body fetch (15.2; the request-drain counts move in the rewritten classes)
+5. bodySwaps commit-emit + post-load re-emit (two-emit law, BrowseFlow.kt:272/:684) → swapUntilLanded re-arm → bringIntoView until the body top holds (15.3)
+6. enter()/selectLibrary commits → bodyEpoch bump → EVERY body-write site captures-before-await and checks-at-write → stale writes drop (15.4 — the S-3 interleavings; see Q12 for the site enumeration diff)
+7. MockWebServer-incompatible ordering → suspending fake MelliferaApi via the `apiFor` seam → gated continuations → BodyEpochTest's deterministic interleavings (15.4)
+8. themes.xml:4 → @color/app_canvas → values/colors.xml → the window paints #020617; PlayerOverlay shell (D7) and PhotoViewer.kt:79 `.background(Color.Black)` stay untouched exceptions (15.5 — verified both)
+9. RailRow card Column `.fillMaxWidth()` before background/border → Row2's weight deterministic at any data state (15.6)
+10. name/module Texts maxLines=1+Ellipsis → one-line rows; at 96dp the clamp is load-bearing (15.6 → 15.7 order law)
+11. RAIL_PANEL_WIDTH 96dp → panel 192px → slot 79dp=158px, text box 114px, focused 173.8px < 190px — the §D pixel math, pinned in ui/LayoutParityTest (15.7)
+12. A-3: TypeScale TYPE_HEADING comment drops «rail rows» — the single-source file tells the truth again (15.6 rider)
+
+Duty→test seams: 15.2→the eight rewritten classes + the two NEW pins (host class unnamed — the `tv.mellifera.browse.*` wildcard covers any browse/* host); 15.4→BodyEpochTest (new); 15.6→RailLawTest (exists, 7 flow pins, zero geometry pins — "zero flow laws move" confirmed at pin level); 15.7→ui/LayoutParityTest+RailLawTest. Structural-pass duties (compile+anchored greps, reviewer-read at GATE 2): 15.1, 15.3, 15.5, 15.6. Every grep verified NON-VACUOUS (reds on the unmodified tree) and every context anchor UNIQUE — the Q3-12.3 lesson held this round.
+
+## Check verdicts
+
+**Wiring coverage: PASS — no orphan nodes.** Every anchor the planner cites exists at the
+cited lines (see the drift report below — zero material drift). Both wire additions close:
+15.5's theme chain (themes.xml:4 → colors.xml → manifest :18) and 15.1's actuation chain
+(onDirection → state → actuator → idiom). The 15.4 fake seam is compatible with the
+existing harness — the `apiFor` constructor lambda + pure-suspend interface accept a fake
+without production edits, and MockWebServer genuinely cannot gate two suspended calls.
+
+**QA seam coverage: PARTIAL.** The named JVM seams exist or are honestly enforced
+(--tests fails on absence). Two adequacy defects: Q11 (the spec delta's "Entry claim stays
+gated" scenario describes the PRE-15.2 event and contradicts the 8.4 landing law at
+GATE 2's spec-vs-code read) and Q13 (15.6's promised device ride is unmapped in 6.1's
+legs). The @qa annotation rule is NOT triggered by any group-15 task: 15.1/15.2 correctly
+carry `audit: true` (reworks, reviewer reads the six-slot prose); 15.4's new TEST classes
+follow the house precedent (10.1's FacetsTest — a new test class is covered by its own
+verify, no qa: list); no group-15 task is a production new-module.
+
+**Complexity / blast radius: PASS with one enumeration gap and one trap.** Shared-file
+heat: BrowseScreen.kt × 4 (15.1/15.2/15.3/15.6), BrowseFlow.kt × 2 (15.2/15.4) —
+DAG-ordered, and the 9-14 round applied strictly sequentially (one commit per task), which
+is what makes the overlap safe; under genuine ≤3-concurrent dispatch on one worktree these
+are merge hazards (same note as the prior round). The 15.2 ripple list is COMPLETE against
+my independent sweep — checked beyond the planner's list: the railWasOpen gate (:594-601)
+is safe (the grid disposes at closeBody, the remount re-initializes the remember, and the
+switch's closedNow re-land doubles the nonce actuator harmlessly); homeHoldsEntry's other
+consumers (:344/:403/:426/:464 — the param threading into every CardGrid branch) stay and
+feed the entry claim; CollectionsRail reads only libraries/summaries/railFocus (none
+cleared); gridFocusNonce is deliberately NOT in the clear list (correct — the
+bump-on-activation remains the landing signal); D12's exit law shape is unchanged
+(post-close Back = app exit, enabler isBodyOpen=false). Two instances caught: Q12 (15.4's
+site list omits four reachable stale-write sites) and Q14 (the C-2 comment can red the
+15.5 count-grep if it contains the literal).
+
+**Citation drift: NONE material.** Every planner citation verified byte-true on a89cc56:
+BrowseFlow.kt :220/:246-264/:272/:287-301/:319/:356-361/:372/:404/:439/:487-504/:641-645/:703-710/:713-718/:772-797;
+BrowseScreen.kt :123/:196-204/:227/:229/:234-243/:271/:575-579/:580-584/:594-601/:614-627/:847/:917-929/:957-969/:974-979/:982-988;
+home/HomeFlow.kt :48-51 (the plan's bare "HomeFlow.kt" resolves uniquely — the file lives
+in the home/ package, imported at BrowseScreen :77); themes.xml:4; App.kt :24/:34-37;
+LayoutParity.kt :17; BodyBackTest :127-131; TypeScale.kt :31-33. Two spectral corrections
+for the record: (a) the invocation's "RailLawTest-to-be" is stale — RailLawTest.kt EXISTS
+(live since 4.2, kept green through 14.1); 15.6's duty correctly runs it as an existing
+class; (b) the audit-era activateRailRow citation (BrowseFlow.kt:529-558) has drifted to
+:658-687 in the current tree — no group-15 task cites it, no action.
+
+**DAG verdict: CONSISTENT.** The encoded order 15.1→15.2→15.3→15.4→15.5→15.6→15.7 honors
+§C's intent with one deliberate deviation: the audit proposed 15.2+15.4 and 15.3+15.2 as
+PAIRED single tasks; the planner authored them separate-but-adjacent (three concerns) and
+design §D records the rationale. Checked for hidden interleavings: no task's DUTY depends
+on a later task's edit (15.2's suite greens pre-15.4; 15.3's greps are order-independent;
+15.4's interleavings exercise the POST-15.2 enter shape — 15.2 lands first, which the
+encoded order guarantees); 15.5 is genuinely independent (res/-only + one comment — zero
+file overlap with the state cluster); 15.6 before 15.7 is encoded and load-bearing (the
+§D ORDER LAW). One residual dispatch note, not a question: 15.1 and 15.2 both edit
+BrowseScreen.kt and are adjacent — sequential application (the 9-14 precedent) is the
+safe posture.
+
+**Walk-legs mapping: 5 of 6 mapped.** 6.1's group-15 leg line (tasks.md:50) names legs
+for 15.1 (r3/r4/r5 re-proof), 15.2 (BACK = bare home 13688-family; hybrid 17678/28c2f029
+ABSENT), 15.3 (5/5 body-top landings + the BACK discriminator settling #24), 15.5 (canvas
+pixel-reads 2,6,23), 15.7 (192px border-box + one-line rows) — each maps to exactly one
+task's walk section and is gradeable from the single device window. 15.4 names no leg (its
+contract: JVM-proven, exercised en passant through 15.2's switch legs — consistent). 15.6's
+prose claims "the row-width uniformity probe rides 6.1's walk" — NO 15.6 leg is named in
+6.1's line (Q13).
+
+## Q9 re-adjudication (the flagged deviation)
+
+**AMENDED, not waived, not standing unchanged.** The prior round's Q9 rule (resolutions
+line: "the surveyor's rule forbids creating a presentation requirement") ruled the 14.1
+rail restyle out of the spec delta — decoration-class presentation has no delta anchor.
+The group-15 delta ADDS "Requirement: Collections rail geometry" — formally the same act.
+The re-adjudication turns on what the requirement pins: 15.6/15.7 are DEFECT-class layout
+laws (ragged width, mid-glyph wrap, the 8.16-precedent authoring-law change) with the
+operator's live ruling freezing the numbers (96dp, fillMaxWidth, one-line ellipsis) —
+grader-able WHEN/THEN contract, not style. The GATE 2 reviewer needs this anchor to
+re-check 15.6/15.7; without it there is no spec-vs-code axis for the round's P2 findings.
+Verdict: **Q9 stands for decoration-class presentation (14.1 remains delta-free — correct
+as resolved); the group-15 rail geometry requirement is a legitimate exception grounded in
+the operator's frozen instruction, and the delta as written (96dp/192px, uniform width,
+one-line clamp scenarios) matches the tasks.** No planner action; the amendment is
+recorded here. A future retheme amends the spec number the same way 15.7 amends §B's.
+
+## Numbered questions (contradictions; recommended answers — the human decides)
+
+**Q10 (HIGH — the D1 split's mount-run collision; the optional isRailOpen key).** 15.1's
+law keys the cursor actuator "(state.gridFocus[, state.isRailOpen])" — the bracket makes
+isRailOpen OPTIONAL — and forbids homeHoldsEntry in its gate. Under 15.2 the ONLY
+production mount path is `activateRailRow` (verified: selectLibrary's sole caller,
+BrowseFlow.kt:662), and the body composes WHILE the rail is still open (selectLibrary
+commits and awaits loadBody BEFORE the rail close at :664-678). A LaunchedEffect runs its
+initial pass at composition: keyed on gridFocus ALONE, the new unconditional actuator's
+mount-run fires tile0's RE-ARMING focusUntilAttached while the rail is open — stealing
+focus from the open rail's focused row (violating the :562 law "While the rail is open the
+grid holds no focus") for the whole fetch window; rail keys then actuate the invisible grid
+behind the scrim. Keyed on (gridFocus, isRailOpen), the mount-run is gated off and the
+landing fires on the close flip (doubling the nonce actuator by design — coherent). The
+negative-grep duty cannot distinguish the two shapes (it only reds homeHoldsEntry).
+*Recommendation:* make isRailOpen MANDATORY in the cursor actuator's key/gate — amend the
+15.1 law line and contract from "[, state.isRailOpen]" to required; the r3/r4/r5 legs ride
+over this shape either way (they press arrows AFTER the landing), so the reviewer-read at
+GATE 2 is the enforcement point.
+
+**Q11 (HIGH — the entry claim's key set + a stale spec scenario).** Two coupled defects in
+15.1/spec-delta text. (a) The 15.1 contract keys the entry claim "on the body mount (NEVER
+the cursor key)" — keyed ONLY on the mount, the claim can never re-run when the
+homeHoldsEntry verdict flips after the mount; the law's own clause "a resolved-empty home
+hands it back to the grid" and the spec scenario's identical clause are then unserviced.
+The 8.15 code gets exactly this behavior from homeHoldsEntry being IN the old actuator's
+key. *Recommendation:* key the entry claim on (mountMarker, homeHoldsEntry) — the verdict
+is not the cursor key and the negative grep stays green (it only matches
+`LaunchedEffect(state.gridFocus…`). (b) The spec delta's "Entry claim stays gated" scene
+reads "WHEN a collection body freshly mounts while the home surface holds a focusable card
+THEN the home rows' first card takes the entry". Post-15.2 that is wrong at both ends: at
+a switch mount (the only mount), 8.4/walk62c give the cursor to the BODY (tile0 5/5
+proven) — a home card taking the entry would INVERT the landing law; and the entry-default
+body the scenario remembers no longer exists. With home resolved (the only state a rail
+can open from), homeHoldsEntry is permanently TRUE at every mount — the claim stands down
+everywhere and the activation actuators own the cursor; the claim's live remaining role is
+the home-failed/empty box (claim fires the grid). Likewise 15.1's "a late-resolving home
+still pulls the entry" clause is unreachable post-15.2 (nothing mounts while home loads —
+the rail has no trigger pre-resolution). *Recommendation:* rewrite the scenario's THEN to
+the post-15.2 semantics ("the grid's cursor-0 claim stands down while the home surface
+holds a focusable card — the activation landing owns the cursor per 8.4; when the home
+surface cannot hold a card — failed or empty home — the grid's cursor-0 claim lands"),
+and mark the late-resolving clause vestigial in 15.1's prose. The delta edit rides the
+already-open spec.md.
+
+**Q12 (MED — 15.4's site enumeration omits four reachable stale-write sites).** The
+contract's site list is load-bearing (the duty only counts ≥10 refs and anchors ONE site).
+Diffing the list against BrowseFlow's body-cluster writes finds four unnamed sites in the
+SAME interleaving classes: (1) selectLibrary's failure-path REVERT (:287-301) — after a
+later commit (the fast B→C double-switch, §B's own leg-3 class), the failing coroutine's
+revert lands A's rows over C's fresh body AND reverts libraryId; the epoch law (drop when
+superseded) is exactly the fix; (2) pickFolder's failure-path revert (:469-474) — same
+class on the folder/items cluster; (3) openSeries' positions write (:718) — it follows the
+`loadPositions` await (a per-episode loop, many suspension points), so the natural
+"capture before the fetch, check at :713-717" shape leaves :718 unguarded — a switch
+committing during the positions walk lands old positions in the new body; (4) refresh's
+positions write (:775) — the same shape after :773-774's awaits. *Recommendation:* name
+the two reverts and the two positions windows as guarded sites (capture-before-THAT-await,
+check-at-write); optionally a fourth BodyEpochTest leg (revert-after-superseding-commit) —
+or fold it into leg 3's walk. Without this, "the check IS the guard" holds for the named
+sites only, and §B's leg-3 scenario can still reproduce through the revert path.
+
+**Q13 (MED — 15.6's claimed device ride is unmapped in 6.1's legs).** 15.6's prose
+promises "the row-width uniformity probe rides 6.1's walk"; 6.1's group-15 leg line names
+no 15.6 leg (the nearest — 15.7's "one-line rows at the narrower panel" — grades the A-2
+clamp, not the A-1 uniform width). The A-1 probe additionally needs a COUNT-LESS row to
+occur on-device; every past walk resolved all summaries (best-effort law, BrowseFlow.kt:
+589), so the probe may be unforceable without a fault injection. *Recommendation:* either
+fold an explicit row-width clause into 6.1's 15.7 leg line (accepting it grades only
+count-ful rows), or amend 15.6's prose to rest on the deterministic fillMaxWidth
+structural law + 15.7's rail-visuals leg (row edges visible in the same captures) and drop
+the promised dedicated probe. 6.1 is RED and its prose editable pre-close; 15.x are
+unreceipted.
+
+**Q14 (LOW — the C-2 comment must avoid the duty's literal).** 15.5's count-grep pins
+`background(AppCanvas)` at EXACTLY one hit (verified byte-true today: BrowseScreen.kt:847,
+the only paint repo-wide). The C-2 rider adds cross-reference comments to App.kt — a
+comment containing the literal `background(AppCanvas)` (e.g. «nothing calls
+background(AppCanvas)») makes the count 2 and reds the duty. *Recommendation:* word the
+App.kt cross-ref without that literal («the XML app_canvas mirrors ui/App.kt's AppCanvas;
+the only paint is the rail panel») — or the runner burns a red receipt learning this.
+
+## Resolutions (group 15 round)
+
+All five folded by @wf-planner per the coordinator's fold-round directive
+(2026-11-17; the Q9 amendment above needs no action). Re-validation after the
+folds: `openspec validate android-tv-layout-parity --strict` — valid, rc 0.
+
+- **Q10 — ADOPTED.** isRailOpen is now REQUIRED in the cursor actuator's
+  key/gate (was optional `[ , state.isRailOpen]`). Folded into tasks.md
+  15.1 prose, tasks/15.1.md (law bullet + Done-when) and design §D's D1
+  paragraph, each carrying the mount-run collision rationale
+  (activateRailRow is the only production mount path; the body composes
+  while the rail is still open — selectLibrary commits and awaits loadBody
+  before the rail close, BrowseFlow.kt:664-678; with isRailOpen in the key
+  the mount-run is gated off and the landing fires on the rail-close flip).
+  The r3/r4/r5 walk legs ride over this shape either way; GATE 2's
+  reviewer-read remains the enforcement point.
+- **Q11 — ADOPTED (both legs).** (a) The entry claim is now keyed
+  (mountMarker, homeHoldsEntry) instead of mount-only — the claim re-runs
+  when the verdict flips and «a resolved-empty home hands it back» stays
+  serviced; folded into tasks.md 15.1 prose, tasks/15.1.md (law bullet +
+  Done-when + a KEY-SHAPE note keeping the negative grep accurate: the
+  claim's key must not start with state.gridFocus) and design §D. The
+  «late-resolving home pulls the entry» clause is marked VESTIGIAL
+  post-15.2 (nothing mounts while home loads). (b) The spec delta's
+  «Entry claim stays gated» scenario is rewritten to post-15.2 semantics:
+  WHEN a body mounts from a rail activation while home holds a focusable
+  card THEN the grid's cursor-0 claim STANDS DOWN and the activation
+  landing owns the cursor; the claim lands the grid only for a failed or
+  resolved-empty home. The requirement body text was updated to the
+  (mount, homeHoldsEntry) keying.
+- **Q12 — ADOPTED (all four sites named + the optional 4th test leg
+  taken).** tasks/15.4.md's site law now names: selectLibrary's
+  failure-path revert (:287-301), pickFolder's failure-path revert
+  (:469-474), openSeries' positions write (:718 — capture before the
+  loadPositions walk, check at the write) and refresh()'s positions write
+  (:775), alongside the original list (pickFolder marked success-path in
+  loadItems' coverage). BodyEpochTest gains the 4th leg
+  (revert-after-superseding-commit dropped). tasks.md 15.4 prose and
+  design §D's epoch list updated to the same enumeration for
+  register/contract consistency. The guard stays capture-before-await;
+  S-4 stays accepted-residual.
+- **Q13 — ADOPTED (the 6.1-leg branch).** An explicit 15.6 device leg is
+  added to 6.1's group-15 walk-window paragraph: a count-less rail row
+  renders a uniform-width bordered card (pixel/bounds grade from one
+  capture; if every summary resolves and no count-less row occurs
+  naturally — the best-effort loadSummaries law — record that fact and the
+  fillMaxWidth structural law + 15.7's rail-visuals captures stand as the
+  evidence class). tasks/15.6.md does not exist, so 15.6's task line walk
+  note now references the explicit 6.1 leg. 6.1's prose ride is
+  --reason-covered by this leg.
+- **Q14 — ADOPTED.** The C-2 cross-ref comment constraint is pinned in
+  tasks.md 15.5 prose and design §D's canvas paragraph: the App.kt comment
+  must NOT contain the literal `background(AppCanvas)` (15.5's count-grep
+  pins that literal repo-wide at exactly one hit — BrowseScreen.kt:847);
+  word it e.g. «the XML app_canvas mirrors ui/App.kt's AppCanvas — the
+  only paint is the rail panel». The verify line itself is unchanged.
+
+### Surveyor confirmation pass (2026-11-17, post-fold): FRONTIER EMPTY
+
+Deltas-only re-audit over the folded tree (register lines, 15.1/15.4 contracts,
+§D, spec delta, Resolutions). Q10–Q14 each verified folded at every named home,
+mutually consistent and grounded against the live tree: Q10 (isRailOpen REQUIRED —
+register 15.1 + 15.1.md + §D :646-659 + spec.md:268-269; rationale = the grounded
+BrowseFlow.kt:664-678 path), Q11 (both legs — (mountMarker, homeHoldsEntry) keying
+with the KEY-SHAPE note; spec scenario THEN post-15.2 at spec.md:285), Q12 (four
+sites + 4th leg in 15.4.md + §D :605-619 identical enumeration), Q13 (6.1 explicit
+leg + honest no-count-less-row caveat), Q14 (constraint pinned beside the 15.5 duty
+and §D). Both spectral notes stable (RailLawTest existing-class posture; :529-558
+cited only in frozen walk-ledger history). One zero-cost prose note, NOT a question:
+register 15.4's TEST sentence leg inventory omits the 4th-leg clause ("three S-3
+legs + control") — contract and §D carry it; duty-level consistent. Recommendation:
+group 15 clean for GATE 1; nothing waived.
