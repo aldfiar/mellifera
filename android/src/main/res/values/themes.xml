@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.Mellifera" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@android:color/black</item>
+        <!-- The canvas law (design §D): the window paints the web's
+             #020617 — the color lives in values/colors.xml as app_canvas,
+             which mirrors ui/App.kt's AppCanvas (the scheme supplies it;
+             the only Compose paint is the rail panel). The window surface
+             is already an opaque full-screen paint, so punch-through
+             playback is untouched. -->
+        <item name="android:windowBackground">@color/app_canvas</item>
     </style>
 </resources>

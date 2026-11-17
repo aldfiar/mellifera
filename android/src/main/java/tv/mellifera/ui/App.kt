@@ -20,6 +20,10 @@ import tv.mellifera.playback.PlayerOverlay
  * 4.9%)` (web/src/styles/index.css) ≈ #020617 — the near-black canvas the
  * web renders, visibly darker than darkColorScheme()'s default background
  * (≈ #1C1B1F gray) the app showed before (D13 visual parity scale).
+ *
+ * The XML `app_canvas` resource (values/colors.xml, painted by the window
+ * via themes.xml) mirrors this value — the only Compose paint is the rail
+ * panel; everything else shows the window's color.
  */
 val AppCanvas = Color(0xFF020617)
 
