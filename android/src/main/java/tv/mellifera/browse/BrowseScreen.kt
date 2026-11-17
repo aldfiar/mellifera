@@ -896,7 +896,7 @@ private fun SeriesPage(
                     val episode = episodes[index]
                     val requester = remember { FocusRequester() }
                     LaunchedEffect(focusIndex) {
-                        if (focusIndex == index) requester.requestFocusSafely()
+                        if (focusIndex == index) requester.focusUntilAttached()
                     }
                     EpisodeRow(
                         // The stored position rides in from the flow's
