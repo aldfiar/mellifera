@@ -10,6 +10,7 @@ import org.junit.Before
 import org.junit.Test
 import tv.mellifera.assertDrained
 import tv.mellifera.browse.fixtures.episodesBody
+import tv.mellifera.browse.fixtures.facetsBody
 import tv.mellifera.browse.fixtures.librariesBody
 import tv.mellifera.browse.fixtures.seriesBody
 import tv.mellifera.net.Api
@@ -43,6 +44,7 @@ class EpisodesTest {
     @Test
     fun series_episodes_route() = runBlocking {
         server.enqueue(json(librariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         server.enqueue(json(episodesBody()))
         // The rows' progress walk (2.2): both rows never started — the 404
@@ -59,9 +61,11 @@ class EpisodesTest {
 
         flow.openSeries(SeriesDto(id = "s-1", displayName = "Сага"))
 
-        // The walked requests: libraries → series?library=1 → the open
-        // series' exact episodes route, over GET.
+        // The walked requests: libraries → the serial body's facets (10.1,
+        // best-effort) → series?library=1 → the open series' exact episodes
+        // route, over GET.
         assertEquals("/api/v1/libraries", server.takeRequestOrFail("EpisodesTest.series_episodes_route").path)
+        assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("EpisodesTest.series_episodes_route").path)
         assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("EpisodesTest.series_episodes_route").path)
         val episodesRequest = server.takeRequestOrFail("EpisodesTest.series_episodes_route")
         assertEquals("GET", episodesRequest.method)
@@ -81,8 +85,9 @@ class EpisodesTest {
         assertEquals("/artwork/thumbs/e-2.jpg", second.artwork)
         assertEquals(true, second.watched)
 
-        // The queue drained: the walk's five requests (libraries → series →
-        // episodes → one progress GET per row) each got their answer.
-        server.assertDrained("EpisodesTest.series_episodes_route", 5)
+        // The queue drained: the walk's six requests (libraries → facets →
+        // series → episodes → one progress GET per row) each got their
+        // answer.
+        server.assertDrained("EpisodesTest.series_episodes_route", 6)
     }
 }

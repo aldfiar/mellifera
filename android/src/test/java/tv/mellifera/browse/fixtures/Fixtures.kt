@@ -97,6 +97,18 @@ fun photoItemsBody(): String = """
     ]}
 """.trimIndent()
 
+/**
+ * The serial body's served facet aggregates (internal/api/facets.go
+ * facetsResponse — layout-parity 10.1's wire): counted values verbatim, the
+ * closure's serving order untouched.
+ */
+fun facetsBody(): String = """
+    {"facets":[
+      {"key":"genre","values":[{"value":"Комедия","count":12},{"value":"Драма","count":7}]},
+      {"key":"status","values":[{"value":"ongoing","count":3}]}
+    ]}
+""".trimIndent()
+
 /** The first library's series grid: bare row + fully stamped row. */
 fun seriesBody(): String = """
     {"items":[

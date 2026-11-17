@@ -11,6 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import tv.mellifera.assertDrained
+import tv.mellifera.browse.fixtures.facetsBody
 import tv.mellifera.browse.fixtures.foldersBody
 import tv.mellifera.browse.fixtures.photoItemsBody
 import tv.mellifera.browse.fixtures.photoLibrariesBody
@@ -66,9 +67,11 @@ class BodyBackTest {
      */
     private fun openImageBodyThroughTheRail() = runBlocking {
         server.enqueue(json(photoLibrariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
         server.takeRequestOrFail("BodyBackTest") // /libraries
+        server.takeRequestOrFail("BodyBackTest") // /libraries/1/facets (10.1)
         server.takeRequestOrFail("BodyBackTest") // /series?library=1
         server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
         server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
@@ -128,10 +131,10 @@ class BodyBackTest {
         assertEquals(-1, state.chipFocus)
         assertNull(state.error)
         assertFalse(state.isLoading)
-        // The close is a state flip, never a fetch — the walked seven
-        // requests (enter × 2, summaries × 2, folders + the two items
+        // The close is a state flip, never a fetch — the walked eight
+        // requests (enter × 3, summaries × 2, folders + the two items
         // pages) were ALL the traffic.
-        server.assertDrained("BodyBackTest.body_back_closes_the_body_and_stages_the_home_restore", 7)
+        server.assertDrained("BodyBackTest.body_back_closes_the_body_and_stages_the_home_restore", 8)
     }
 
     @Test
@@ -159,7 +162,7 @@ class BodyBackTest {
         assertFalse(state.shouldRestoreHome)
         assertEquals(2L, state.libraryId)
         assertEquals(listOf("p-1", "p-2"), state.items.map { it.id })
-        server.assertDrained("BodyBackTest.body_back_never_stages_a_restore_for_an_unopened_body", 8)
+        server.assertDrained("BodyBackTest.body_back_never_stages_a_restore_for_an_unopened_body", 9)
     }
 
     @Test
@@ -184,7 +187,7 @@ class BodyBackTest {
         assertNull(state.folder) // the [Все] filter, untouched
         assertEquals(listOf("p-1", "p-2"), state.items.map { it.id })
         assertEquals(3, state.folders.size)
-        server.assertDrained("BodyBackTest.chips_back_unfocuses_to_the_grid_inside_the_body", 6)
+        server.assertDrained("BodyBackTest.chips_back_unfocuses_to_the_grid_inside_the_body", 7)
     }
 
     @Test
@@ -198,9 +201,11 @@ class BodyBackTest {
         // the same selectLibrary call with NO rail open must hold the
         // opened body's Back law.
         server.enqueue(json(photoLibrariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
         server.takeRequestOrFail("BodyBackTest.every_explicit_activation_raises_bodyOpen_the_anchor_path_included") // /libraries
+        server.takeRequestOrFail("BodyBackTest.every_explicit_activation_raises_bodyOpen_the_anchor_path_included") // /libraries/1/facets (10.1)
         server.takeRequestOrFail("BodyBackTest.every_explicit_activation_raises_bodyOpen_the_anchor_path_included") // /series?library=1
 
         server.enqueue(json(foldersBody()))
@@ -219,7 +224,7 @@ class BodyBackTest {
         assertFalse(closed.isBodyOpen)
         assertTrue(closed.shouldRestoreHome)
         server.assertDrained(
-            "BodyBackTest.every_explicit_activation_raises_bodyOpen_the_anchor_path_included", 4)
+            "BodyBackTest.every_explicit_activation_raises_bodyOpen_the_anchor_path_included", 5)
     }
 
     @Test
@@ -229,9 +234,11 @@ class BodyBackTest {
         // down and the grid keeps D12's Back law — exit, never a phantom
         // home restore.
         server.enqueue(json(photoLibrariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
         server.takeRequestOrFail("BodyBackTest.entry_default_body_stays_unopened_back_exits_per_d12") // /libraries
+        server.takeRequestOrFail("BodyBackTest.entry_default_body_stays_unopened_back_exits_per_d12") // /libraries/1/facets (10.1)
         server.takeRequestOrFail("BodyBackTest.entry_default_body_stays_unopened_back_exits_per_d12") // /series?library=1
 
         assertFalse(flow.state.value.isBodyOpen)
@@ -242,6 +249,6 @@ class BodyBackTest {
         val state = flow.state.value
         assertFalse(state.isBodyOpen)
         assertFalse(state.shouldRestoreHome)
-        server.assertDrained("BodyBackTest.entry_default_body_stays_unopened_back_exits_per_d12", 2)
+        server.assertDrained("BodyBackTest.entry_default_body_stays_unopened_back_exits_per_d12", 3)
     }
 }

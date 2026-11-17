@@ -77,6 +77,7 @@ class BackRestorationTest {
     fun grid_focus_restored_after_back() = runBlocking {
         assertEquals(Screen.Browse, viewModel.state.value.screen)
         server.enqueue(json(tv.mellifera.browse.fixtures.librariesBody()))
+        server.enqueue(json(tv.mellifera.browse.fixtures.facetsBody()))
         server.enqueue(json(eightSeriesBody()))
         val browse = viewModel.browse
         browse.enter()
@@ -113,8 +114,8 @@ class BackRestorationTest {
         assertEquals(8, restored.series.size)
         assertEquals("s-4", restored.series[3].id)
 
-        // The queue drained: the walk's four requests (libraries → series →
-        // episodes → the row's progress GET) each got their answer.
-        server.assertDrained("BackRestorationTest.grid_focus_restored_after_back", 4)
+        // The queue drained: the walk's five requests (libraries → facets →
+        // series → episodes → the row's progress GET) each got their answer.
+        server.assertDrained("BackRestorationTest.grid_focus_restored_after_back", 5)
     }
 }

@@ -118,6 +118,15 @@ class CollectionsWireJointTest {
         {"library_id":2,"items":0,"updated_at":""}
     """.trimIndent()
 
+    /** facetsResponse verbatim (facets.go — layout-parity 10.1): counted
+     * values verbatim, the closure's serving order untouched. */
+    private val facetsFull = """
+        {"facets":[
+          {"key":"genre","values":[{"value":"Комедия","count":12},{"value":"Драма","count":7}]},
+          {"key":"status","values":[{"value":"ongoing","count":3}]}
+        ]}
+    """.trimIndent()
+
     @Before
     fun setUp() {
         server = MockWebServer()
@@ -134,6 +143,7 @@ class CollectionsWireJointTest {
     @Test
     fun all_libraries_and_summaries_decode() = runBlocking {
         server.enqueue(json(fullLibraries))
+        server.enqueue(json(facetsFull))
         server.enqueue(json(serialGrid))
         server.enqueue(json(serialSummary))
         server.enqueue(json(movieSummary))
@@ -178,22 +188,25 @@ class CollectionsWireJointTest {
         assertEquals(0L, railed.summaries[2L]?.items)
         assertNull(railed.error)
 
-        // The cycle's request sequence: libraries → the first collection's
-        // series → one summary per served collection, in served order; the
-        // bearer rides the browse routes. takeRequest() CONSUMES — the
-        // bearer check inspects the last popped request, never pops a fifth.
+        // The cycle's request sequence: libraries → the serial body's
+        // facets → the first collection's series → one summary per served
+        // collection, in served order; the bearer rides the browse routes.
+        // takeRequest() CONSUMES — the bearer check inspects the last popped
+        // request, never pops a sixth.
         assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode").path)
+        assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode").path)
         assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode").path)
         assertEquals("/api/v1/libraries/1/summary", server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode").path)
         val last = server.takeRequestOrFail("CollectionsWireJointTest.all_libraries_and_summaries_decode")
         assertEquals("/api/v1/libraries/2/summary", last.path)
         assertEquals("Bearer qa-bearer", last.getHeader("Authorization"))
-        assertEquals(4, server.requestCount)
+        assertEquals(5, server.requestCount)
     }
 
     @Test
     fun switch_to_unknown_module_is_honest_empty() = runBlocking {
         server.enqueue(json(fullLibraries))
+        server.enqueue(json(facetsFull))
         server.enqueue(json(serialGrid))
 
         flow.enter()
@@ -213,10 +226,11 @@ class CollectionsWireJointTest {
         assertFalse(state.isLoading)
         assertNull(state.error)
 
-        // enter()'s two requests were ALL the traffic.
+        // enter()'s three requests were ALL the traffic.
         assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsWireJointTest.switch_to_unknown_module_is_honest_empty").path)
+        assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("CollectionsWireJointTest.switch_to_unknown_module_is_honest_empty").path)
         assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsWireJointTest.switch_to_unknown_module_is_honest_empty").path)
-        assertEquals(2, server.requestCount)
+        assertEquals(3, server.requestCount)
     }
 
     /**
@@ -288,6 +302,7 @@ class CollectionsWireJointTest {
     @Test
     fun tv_and_image_bodies_walk_the_paged_stream() = runBlocking {
         server.enqueue(json(fullLibrariesTvImage))
+        server.enqueue(json(facetsFull))
         server.enqueue(json(serialGrid))
         server.enqueue(json(tvItemsFull))
         server.enqueue(json(tvItemsFull))
@@ -335,6 +350,7 @@ class CollectionsWireJointTest {
         // The cycle's request line: every leg's query carries the params
         // the body walks, in the seam's declaration order.
         assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
+        assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
         assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
         assertEquals("/api/v1/items?library=2&limit=50&offset=0", server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path)
         assertEquals(
@@ -347,6 +363,6 @@ class CollectionsWireJointTest {
             "/api/v1/items?library=3&top_level=true&limit=50&offset=0",
             server.takeRequestOrFail("CollectionsWireJointTest.tv_and_image_bodies_walk_the_paged_stream").path,
         )
-        assertEquals(7, server.requestCount)
+        assertEquals(8, server.requestCount)
     }
 }

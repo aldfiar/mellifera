@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import retrofit2.HttpException
+import tv.mellifera.net.FacetDto
 import tv.mellifera.net.FolderDto
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.LibraryDto
@@ -116,6 +117,20 @@ data class BrowseState(
     /** The picked folder: null = Все (no filter), "" = top-level
      * (top_level=true), otherwise the path_prefix filter. */
     val folder: String? = null,
+    /**
+     * The serial body's served facet aggregates (task 10.1 — GET
+     * /libraries/{id}/facets): ONE best-effort fetch per serial-grid load
+     * site ([loadFacets]); a failed read leaves the lane empty-chipped,
+     * never an error, never a dead grid.
+     */
+    val facets: List<FacetDto> = emptyList(),
+    /**
+     * The active facet conjuncts (task 10.1), facet key → picked value —
+     * ONE conjunct value per key (genre/kind/status), AND across keys,
+     * riding /series' query ([loadSerialGrid]). A key's absence IS its
+     * cleared state ([toggleFacet] is the only writer).
+     */
+    val facetSelection: Map<String, String> = emptyMap(),
     /** The paged stream's current offset. */
     val itemsOffset: Int = 0,
     /** True once a page came back short — the append trigger stands down
@@ -240,6 +255,8 @@ class BrowseFlow(
             items = emptyList(),
             folders = emptyList(),
             folder = null,
+            facets = emptyList(),
+            facetSelection = emptyMap(),
             itemsOffset = 0,
             isStreamExhausted = false,
             chipFocus = -1,
@@ -277,6 +294,8 @@ class BrowseFlow(
                 items = prior.items,
                 folders = prior.folders,
                 folder = prior.folder,
+                facets = prior.facets,
+                facetSelection = prior.facetSelection,
                 itemsOffset = prior.itemsOffset,
                 isStreamExhausted = prior.isStreamExhausted,
             )
@@ -295,7 +314,8 @@ class BrowseFlow(
     private suspend fun loadBody(libraryId: Long) {
         when (moduleOf(libraryId)) {
             "serial" -> {
-                val series = apiFor().series(libraryId).items
+                loadFacets(libraryId)
+                val series = loadSerialGrid(libraryId)
                 _state.value = _state.value.copy(series = series, isLoading = false)
             }
             "tv" -> loadItems(libraryId, folder = null, offset = 0)
@@ -358,6 +378,67 @@ class BrowseFlow(
             // best-effort: the chips row renders [Все] alone
         } catch (_: Exception) {
             // best-effort: the chips row renders [Все] alone
+        }
+    }
+
+    /**
+     * The serial grid's rows (task 10.1): /series with the ACTIVE facet
+     * conjuncts riding the query — ONE value per key, AND across keys (the
+     * server intersects the id-sets); an absent key stays off the wire.
+     */
+    private suspend fun loadSerialGrid(libraryId: Long): List<SeriesDto> {
+        val selection = _state.value.facetSelection
+        return apiFor().series(libraryId, selection["genre"], selection["kind"], selection["status"]).items
+    }
+
+    /**
+     * The serial body's facet aggregates (task 10.1): best-effort — a
+     * failed read leaves the facet lane empty-chipped and never kills the
+     * grid; a 401 still routes through the app shell (the 401-anywhere
+     * law). Rides EVERY serial-grid load site ([loadBody]'s serial branch
+     * and [refresh]'s two serial legs).
+     */
+    private suspend fun loadFacets(libraryId: Long) {
+        try {
+            val facets = apiFor().facets(libraryId).facets
+            _state.value = _state.value.copy(facets = facets)
+        } catch (e: HttpException) {
+            if (e.code() == 401) {
+                onUnauthorized()
+                return
+            }
+            // best-effort: the lane renders no chips
+        } catch (_: Exception) {
+            // best-effort: the lane renders no chips
+        }
+    }
+
+    /**
+     * The facet lane's pick (task 10.1): the active value again CLEARS that
+     * key, a different value SETS it — ONE conjunct per key, AND across
+     * keys — and every change refetches the serial grid with the current
+     * params (the [pickFolder] commit/restart idiom MINUS the revert: a
+     * facet toggle is immediate — the selection stands and the honest error
+     * surfaces over the cleared grid when the refetch fails).
+     */
+    suspend fun toggleFacet(key: String, value: String) {
+        val current = _state.value
+        val libraryId = current.libraryId ?: return
+        val selection =
+            if (current.facetSelection[key] == value) current.facetSelection - key
+            else current.facetSelection + (key to value)
+        _state.value = current.copy(
+            facetSelection = selection,
+            isLoading = true,
+            error = null,
+            gridFocus = 0,
+            series = emptyList(),
+        )
+        try {
+            val series = loadSerialGrid(libraryId)
+            _state.value = _state.value.copy(series = series, isLoading = false)
+        } catch (e: Exception) {
+            fail(MESSAGE_FACETS, e)
         }
     }
 
@@ -686,16 +767,18 @@ class BrowseFlow(
             val service = apiFor()
             val selected = current.selectedSeries
             if (selected != null) {
-                val series = service.series(current.libraryId).items
-                _state.value = current.copy(series = series, error = null)
+                loadFacets(current.libraryId)
+                val series = loadSerialGrid(current.libraryId)
+                _state.value = _state.value.copy(series = series, error = null)
                 val episodes = service.episodes(selected.id).items
                 _state.value = _state.value.copy(episodes = episodes)
                 _state.value = _state.value.copy(positions = loadPositions(episodes))
             } else {
                 when (moduleOf(current.libraryId)) {
                     "serial" -> {
-                        val series = service.series(current.libraryId).items
-                        _state.value = current.copy(series = series, error = null)
+                        loadFacets(current.libraryId)
+                        val series = loadSerialGrid(current.libraryId)
+                        _state.value = _state.value.copy(series = series, error = null)
                     }
                     "tv", "image" -> {
                         val (pathPrefix, topLevel) = folderFilter(current.folder)
@@ -775,6 +858,7 @@ class BrowseFlow(
         const val MESSAGE_REFRESH = "Не удалось обновить данные"
         const val MESSAGE_SWITCH = "Не удалось открыть коллекцию"
         const val MESSAGE_ITEMS = "Не удалось загрузить элементы"
+        const val MESSAGE_FACETS = "Не удалось применить фильтр"
     }
 
     /** The append trigger's in-flight guard (idempotency, [extendItems]). */

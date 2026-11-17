@@ -12,6 +12,7 @@ import org.junit.Before
 import org.junit.Test
 import tv.mellifera.assertDrained
 import tv.mellifera.browse.fixtures.episodesBody
+import tv.mellifera.browse.fixtures.facetsBody
 import tv.mellifera.browse.fixtures.librariesBody
 import tv.mellifera.browse.fixtures.progressBody
 import tv.mellifera.browse.fixtures.seriesBody
@@ -55,6 +56,7 @@ class CollectionsTest {
     @Test
     fun all_collections_kept_in_served_order() = runBlocking {
         server.enqueue(json(librariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
 
         flow.enter()
@@ -68,11 +70,13 @@ class CollectionsTest {
         assertEquals(1L, state.libraryId)
         assertEquals(listOf("s-1", "s-2"), state.series.map { it.id })
 
-        // enter()'s request sequence is unchanged: libraries → the first
-        // collection's series. A closed rail fired no summary requests.
+        // enter()'s request sequence: libraries → the serial body's facets
+        // (10.1, best-effort) → the first collection's series. A closed rail
+        // fired no summary requests.
         assertEquals("/api/v1/libraries", server.takeRequestOrFail("CollectionsTest.all_collections_kept_in_served_order").path)
+        assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("CollectionsTest.all_collections_kept_in_served_order").path)
         assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("CollectionsTest.all_collections_kept_in_served_order").path)
-        assertEquals(2, server.requestCount)
+        assertEquals(3, server.requestCount)
     }
 
     @Test
@@ -90,6 +94,7 @@ class CollectionsTest {
     @Test
     fun summaries_best_effort_countless_on_failure() = runBlocking {
         server.enqueue(json(librariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
         // The rail opens: every served collection fires its summary — the
@@ -101,8 +106,7 @@ class CollectionsTest {
 
         val state = flow.state.value
         // drain enter()'s walked requests before asserting the summary legs
-        server.takeRequestOrFail("CollectionsTest.summaries_best_effort_countless_on_failure")
-        server.takeRequestOrFail("CollectionsTest.summaries_best_effort_countless_on_failure")
+        repeat(3) { server.takeRequestOrFail("CollectionsTest.summaries_best_effort_countless_on_failure") }
         // The answered summary maps through verbatim (updated_at served but
         // not carried — the decoder's unknown-keys law absorbed it).
         assertEquals(42L, state.summaries[1L]?.items)
@@ -114,16 +118,16 @@ class CollectionsTest {
         // The walked summary routes, one per served collection, in order.
         assertEquals("/api/v1/libraries/1/summary", server.takeRequestOrFail("CollectionsTest.summaries_best_effort_countless_on_failure").path)
         assertEquals("/api/v1/libraries/2/summary", server.takeRequestOrFail("CollectionsTest.summaries_best_effort_countless_on_failure").path)
-        server.assertDrained("CollectionsTest.summaries_best_effort_countless_on_failure", 4)
+        server.assertDrained("CollectionsTest.summaries_best_effort_countless_on_failure", 5)
     }
 
     @Test
     fun unknown_module_select_is_honest_empty() = runBlocking {
         server.enqueue(json(librariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("CollectionsTest.unknown_module_select_is_honest_empty")
-        server.takeRequestOrFail("CollectionsTest.unknown_module_select_is_honest_empty")
+        repeat(3) { server.takeRequestOrFail("CollectionsTest.unknown_module_select_is_honest_empty") }
 
         // The unknown module's honest path (D6's stated TV divergence): the
         // switch fires NO body fetch at all — the body renders the module's
@@ -139,18 +143,18 @@ class CollectionsTest {
         assertEquals(0, state.gridFocus)
         assertNull(state.error)
         assertFalse(state.isLoading)
-        // enter()'s two requests were ALL the traffic: the unknown module
+        // enter()'s three requests were ALL the traffic: the unknown module
         // fetched nothing.
-        assertEquals(2, server.requestCount)
+        assertEquals(3, server.requestCount)
     }
 
     @Test
     fun tv_module_select_walks_the_paged_items_stream() = runBlocking {
         server.enqueue(json(tvLibrariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("CollectionsTest.tv_module_select_walks_the_paged_items_stream")
-        server.takeRequestOrFail("CollectionsTest.tv_module_select_walks_the_paged_items_stream")
+        repeat(3) { server.takeRequestOrFail("CollectionsTest.tv_module_select_walks_the_paged_items_stream") }
 
         // The tv body (D6): fetch-on-navigate over GET /items — the FIRST
         // page of the paged stream (limit 50 at offset 0); a new collection
@@ -167,8 +171,11 @@ class CollectionsTest {
         assertEquals("/api/v1/items?library=2&limit=50&offset=0", server.takeRequestOrFail("CollectionsTest.tv_module_select_walks_the_paged_items_stream").path)
 
         // A FAILED switch keeps the prior body: rows stay, the cursor and
-        // libraryId revert, the honest RU error surfaces.
+        // libraryId revert, the honest RU error surfaces. The serial body's
+        // facets ride first (10.1, best-effort) — answered, then the series
+        // fetch fails.
         flow.onGridFocusMoved(1)
+        server.enqueue(json(facetsBody()))
         server.enqueue(MockResponse().setResponseCode(500))
         flow.selectLibrary(1L)
 
@@ -178,17 +185,18 @@ class CollectionsTest {
         assertEquals(listOf("f-1", "f-2"), failed.items.map { it.id })
         assertEquals(1, failed.gridFocus)
         assertFalse(failed.isLoading)
+        assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("CollectionsTest.tv_module_select_walks_the_paged_items_stream").path)
         assertTrue(server.takeRequestOrFail("CollectionsTest.tv_module_select_walks_the_paged_items_stream").path!!.endsWith("library=1"))
-        server.assertDrained("CollectionsTest.tv_module_select_walks_the_paged_items_stream", 4)
+        server.assertDrained("CollectionsTest.tv_module_select_walks_the_paged_items_stream", 6)
     }
 
     @Test
     fun select_library_closes_an_open_series_page() = runBlocking {
         server.enqueue(json(librariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page")
-        server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page")
+        repeat(3) { server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page") }
 
         // A series page is open: its episodes land, then the per-episode
         // progress walk (2.2 — one GET per served row).
@@ -211,7 +219,7 @@ class CollectionsTest {
         assertEquals(emptyList<ItemDto>(), state.episodes)
         assertEquals(emptyMap<String, Long>(), state.positions)
         assertTrue(state.isBodyOpen)
-        assertEquals(5, server.requestCount)
+        assertEquals(6, server.requestCount)
 
         // A FAILED switch keeps the open series page (the failure law —
         // whatever was on screen is kept): the trio reverts with the body.
@@ -220,6 +228,7 @@ class CollectionsTest {
         server.enqueue(json(progressBody("e-2", 120)))
         flow.openSeries(SeriesDto(id = "s-1", displayName = "Сага"))
         repeat(3) { server.takeRequestOrFail("CollectionsTest.select_library_closes_an_open_series_page") }
+        server.enqueue(json(facetsBody()))
         server.enqueue(MockResponse().setResponseCode(500))
         flow.selectLibrary(1L)
 
@@ -228,6 +237,6 @@ class CollectionsTest {
         assertEquals(2L, failed.libraryId)
         assertEquals("s-1", failed.selectedSeries?.id)
         assertEquals(listOf("e-1", "e-2"), failed.episodes.map { it.id })
-        server.assertDrained("CollectionsTest.select_library_closes_an_open_series_page", 9)
+        server.assertDrained("CollectionsTest.select_library_closes_an_open_series_page", 11)
     }
 }

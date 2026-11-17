@@ -16,6 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import tv.mellifera.assertDrained
+import tv.mellifera.browse.fixtures.facetsBody
 import tv.mellifera.browse.fixtures.foldersBody
 import tv.mellifera.browse.fixtures.librariesBody
 import tv.mellifera.browse.fixtures.photoItemsBody
@@ -59,6 +60,7 @@ class RailLawTest {
 
     private fun enqueueEnter() {
         server.enqueue(json(librariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
     }
 
@@ -67,8 +69,9 @@ class RailLawTest {
         enqueueEnter()
         flow.enter()
         // A closed rail fired NO summary requests (the closed-panel D1 law):
-        // enter()'s sequence is libraries → the first collection's series.
-        assertEquals(2, server.requestCount)
+        // enter()'s sequence is libraries → the serial body's facets → the
+        // first collection's series.
+        assertEquals(3, server.requestCount)
 
         // Make the CURRENT collection the second served row (an unknown
         // module — its body fires no fetch, D6), then open.
@@ -85,10 +88,11 @@ class RailLawTest {
         // The counts fired exactly once, in served order — and the unknown
         // module's switch added no request of its own.
         server.takeRequestOrFail("RailLawTest.rail_opens_at_current_collection") // /libraries
+        server.takeRequestOrFail("RailLawTest.rail_opens_at_current_collection") // /libraries/1/facets (10.1)
         server.takeRequestOrFail("RailLawTest.rail_opens_at_current_collection") // /series?library=1
         assertEquals("/api/v1/libraries/1/summary", server.takeRequestOrFail("RailLawTest.rail_opens_at_current_collection").path)
         assertEquals("/api/v1/libraries/2/summary", server.takeRequestOrFail("RailLawTest.rail_opens_at_current_collection").path)
-        assertEquals(4, server.requestCount)
+        assertEquals(5, server.requestCount)
         assertEquals(42L, state.summaries[2L]?.items)
 
         // Idempotent: re-opening an open rail neither moves the cursor nor
@@ -96,15 +100,14 @@ class RailLawTest {
         flow.openRail()
         assertTrue(flow.state.value.isRailOpen)
         assertEquals(1, flow.state.value.railFocus)
-        assertEquals(4, server.requestCount)
+        assertEquals(5, server.requestCount)
     }
 
     @Test
     fun rail_left_or_back_closes_keeps_grid_focus() = runBlocking {
         enqueueEnter()
         flow.enter()
-        server.takeRequestOrFail("RailLawTest.rail_left_or_back_closes_keeps_grid_focus")
-        server.takeRequestOrFail("RailLawTest.rail_left_or_back_closes_keeps_grid_focus")
+        repeat(3) { server.takeRequestOrFail("RailLawTest.rail_left_or_back_closes_keeps_grid_focus") }
 
         // Park the grid cursor mid-grid, open the rail, walk it down.
         flow.onGridFocusMoved(1)
@@ -126,15 +129,14 @@ class RailLawTest {
         assertEquals(1L, state.libraryId)
         assertEquals(listOf("s-1", "s-2"), state.series.map { it.id })
         assertNull(state.error)
-        server.assertDrained("RailLawTest.rail_left_or_back_closes_keeps_grid_focus", 4)
+        server.assertDrained("RailLawTest.rail_left_or_back_closes_keeps_grid_focus", 5)
     }
 
     @Test
     fun rail_walk_lands_clamped_inside_the_served_rows() = runBlocking {
         enqueueEnter()
         flow.enter()
-        server.takeRequestOrFail("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows")
-        server.takeRequestOrFail("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows")
+        repeat(3) { server.takeRequestOrFail("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows") }
 
         server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
         server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
@@ -151,7 +153,7 @@ class RailLawTest {
         assertEquals(1, flow.state.value.railFocus)
         flow.onRailFocusMoved(-3)
         assertEquals(0, flow.state.value.railFocus)
-        server.assertDrained("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows", 4)
+        server.assertDrained("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows", 5)
     }
 
     @Test
@@ -159,10 +161,10 @@ class RailLawTest {
         // The tv library walks the paged items stream (D6) — a real fetch
         // swap to prove the reset law against.
         server.enqueue(json(tvLibrariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("RailLawTest.rail_select_swaps_grid_resets_cursor")
-        server.takeRequestOrFail("RailLawTest.rail_select_swaps_grid_resets_cursor")
+        repeat(3) { server.takeRequestOrFail("RailLawTest.rail_select_swaps_grid_resets_cursor") }
 
         // Park the cursor to prove the swap resets it: OK on the rail's
         // second row (the FOCUSED row — the activation reads the rail
@@ -199,6 +201,7 @@ class RailLawTest {
         server.enqueue(MockResponse().setResponseCode(500)) // lib 2 summary
         flow.openRail()
         flow.onRailFocusMoved(0) // walk UP to the serial row
+        server.enqueue(MockResponse().setResponseCode(500)) // the switch's facets leg (best-effort)
         server.enqueue(MockResponse().setResponseCode(500)) // the switch's /series fetch
         assertFalse(flow.activateRailRow())
 
@@ -214,10 +217,10 @@ class RailLawTest {
         // isBodyOpen (the 8.8 carve-out; here the prior body IS the open
         // lib-2 body from the first successful activation).
         assertTrue(failed.isBodyOpen)
-        // The queue drained: enter's two + the first openRail's summaries +
+        // The queue drained: enter's three + the first openRail's summaries +
         // the swap's fetch + the failed openRail's summaries + the failed
-        // switch's fetch — all eight answered.
-        server.assertDrained("RailLawTest.rail_select_swaps_grid_resets_cursor", 8)
+        // switch's facets + series fetches — all ten answered.
+        server.assertDrained("RailLawTest.rail_select_swaps_grid_resets_cursor", 10)
     }
 
     @Test
@@ -226,9 +229,11 @@ class RailLawTest {
         // photo body the on-device walk (0.3.2) could not reach — OK there
         // closed the rail onto a focus-less surface.
         server.enqueue(json(photoLibrariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
         server.takeRequestOrFail("RailLawTest.rail_ok_enters_the_focused_image_body_and_relands_focus") // /libraries
+        server.takeRequestOrFail("RailLawTest.rail_ok_enters_the_focused_image_body_and_relands_focus") // /libraries/1/facets (10.1)
         server.takeRequestOrFail("RailLawTest.rail_ok_enters_the_focused_image_body_and_relands_focus") // /series?library=1
 
         // Open the rail, walk DOWN to the Images row, OK it: the image body
@@ -257,8 +262,8 @@ class RailLawTest {
 
         // A closed rail's OK is a no-op — no request, no state change.
         assertFalse(flow.activateRailRow())
-        // enter's two + the open rail's summaries + the activation's two.
-        server.assertDrained("RailLawTest.rail_ok_enters_the_focused_image_body_and_relands_focus", 6)
+        // enter's three + the open rail's summaries + the activation's two.
+        server.assertDrained("RailLawTest.rail_ok_enters_the_focused_image_body_and_relands_focus", 7)
     }
 
     @Test
@@ -270,9 +275,11 @@ class RailLawTest {
         // focus→scroll actuator must not drag the viewport back onto the
         // rows over the body-top swap (walk34's close race).
         server.enqueue(json(tvLibrariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
         server.takeRequestOrFail("RailLawTest.rail_restore_flag_survives_a_plain_close_and_dies_on_activation") // /libraries
+        server.takeRequestOrFail("RailLawTest.rail_restore_flag_survives_a_plain_close_and_dies_on_activation") // /libraries/1/facets (10.1)
         server.takeRequestOrFail("RailLawTest.rail_restore_flag_survives_a_plain_close_and_dies_on_activation") // /series?library=1
 
         // Open FROM the home rows: the opener is recorded.
@@ -302,9 +309,9 @@ class RailLawTest {
         assertFalse(state.shouldRestoreHome)
         assertEquals(2L, state.libraryId)
         assertEquals(1, state.gridFocusNonce) // the body re-land staged
-        // enter's two + the two openRails' summaries (4) + the activation's
+        // enter's three + the two openRails' summaries (4) + the activation's
         // paged-items fetch.
-        server.assertDrained("RailLawTest.rail_restore_flag_survives_a_plain_close_and_dies_on_activation", 7)
+        server.assertDrained("RailLawTest.rail_restore_flag_survives_a_plain_close_and_dies_on_activation", 8)
     }
 
     @Test
@@ -319,9 +326,11 @@ class RailLawTest {
         // nothing; a FAILED activation emits only the commit-time signal —
         // no re-emit rides a reverted switch.
         server.enqueue(json(tvLibrariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
         server.takeRequestOrFail("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load") // /libraries
+        server.takeRequestOrFail("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load") // /libraries/1/facets (10.1)
         server.takeRequestOrFail("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load") // /series?library=1
 
         val swaps = Channel<Unit>(Channel.UNLIMITED)
@@ -366,7 +375,7 @@ class RailLawTest {
         server.enqueue(MockResponse().setResponseCode(500)) // lib 1 summary
         server.enqueue(MockResponse().setResponseCode(500)) // lib 2 summary
         flow.openRail()
-        server.enqueue(MockResponse().setResponseCode(500)) // the switch's /series fetch
+        server.enqueue(MockResponse().setResponseCode(500)) // the switch's /items fetch
         assertFalse(flow.activateRailRow())
         withTimeout(5_000) { swaps.receive() } // the commit-time emit
         yield()
@@ -376,10 +385,12 @@ class RailLawTest {
         assertEquals("Не удалось открыть коллекцию", failed.error)
 
         collector.cancel()
-        // enter's two + the plain-close openRail's summaries (2) + the
+        // enter's three + the plain-close openRail's summaries (2) + the
         // successful activation's summaries + fetch (3) + the failed
-        // openRail's summaries + switch (3).
-        server.assertDrained("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load", 10)
+        // openRail's summaries (2) + the failed switch's /items fetch — the
+        // failed OK re-lands the CURRENT (tv) row, whose body walks no
+        // facets leg.
+        server.assertDrained("RailLawTest.rail_ok_swap_emits_at_the_commit_and_again_after_the_load", 11)
     }
 
     @Test
@@ -394,10 +405,10 @@ class RailLawTest {
         // would silently depend on collector timing — exactly the
         // inert-actuator class the #13 race exposed.
         server.enqueue(json(tvLibrariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         flow.enter()
-        server.takeRequestOrFail("RailLawTest.body_swap_emits_survive_a_busy_collector")
-        server.takeRequestOrFail("RailLawTest.body_swap_emits_survive_a_busy_collector")
+        repeat(3) { server.takeRequestOrFail("RailLawTest.body_swap_emits_survive_a_busy_collector") }
 
         val received = Channel<Unit>(Channel.UNLIMITED)
         val collector = launch {
@@ -425,7 +436,7 @@ class RailLawTest {
         assertFalse(flow.state.value.isRailOpen)
 
         collector.cancel()
-        // enter's two + the openRail's summaries (2) + the fetch.
-        server.assertDrained("RailLawTest.body_swap_emits_survive_a_busy_collector", 5)
+        // enter's three + the openRail's summaries (2) + the fetch.
+        server.assertDrained("RailLawTest.body_swap_emits_survive_a_busy_collector", 6)
     }
 }

@@ -14,6 +14,7 @@ import tv.mellifera.AppViewModel
 import tv.mellifera.Screen
 import tv.mellifera.assertDrained
 import tv.mellifera.browse.fixtures.episodesBody
+import tv.mellifera.browse.fixtures.facetsBody
 import tv.mellifera.browse.fixtures.librariesBody
 import tv.mellifera.browse.fixtures.progressBody
 import tv.mellifera.browse.fixtures.refreshedEpisodesBody
@@ -57,6 +58,7 @@ class RefreshTest {
     fun player_exit_refreshes() = runBlocking {
         assertEquals(Screen.Browse, viewModel.state.value.screen)
         server.enqueue(json(librariesBody()))
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         server.enqueue(json(episodesBody()))
         // The episode rows' progress walk (2.2): e-1 is in-progress, e-2 is
@@ -66,16 +68,17 @@ class RefreshTest {
         viewModel.browse.enter()
         viewModel.browse.openSeries(SeriesDto(id = "s-1", displayName = "Сага"))
         // Pre-exit: e-1 carries no watched stamp but its stored position
-        // landed; five requests have walked (libraries, series, episodes,
-        // then one progress GET per episode row).
+        // landed; six requests have walked (libraries, facets, series,
+        // episodes, then one progress GET per episode row).
         assertTrue(
             viewModel.browse.state.value.episodes.first { it.id == "e-1" }.watched == null,
         )
         assertEquals(mapOf("e-1" to 300L), viewModel.browse.state.value.positions)
-        assertEquals(5, server.requestCount)
+        assertEquals(6, server.requestCount)
 
         // The player exits after e-1 finished — the hook alone triggers the
         // re-fetch; no manual reload, no re-navigation.
+        server.enqueue(json(facetsBody()))
         server.enqueue(json(seriesBody()))
         server.enqueue(json(refreshedEpisodesBody()))
         // The refresh's own progress walk: e-1's position moved on, e-2
@@ -89,11 +92,12 @@ class RefreshTest {
         server.enqueue(json("""{"continue":[]}"""))
         viewModel.onPlayerExit()
 
-        // Refresh re-walks the open surfaces: the series rows, then the
-        // open series' episodes, then the progress walk, then the home
-        // refresh. (The first five requests were the enter+open walk; the
-        // queue holds all ten.)
-        repeat(5) { server.takeRequestOrFail("RefreshTest.player_exit_refreshes") }
+        // Refresh re-walks the open surfaces: the serial body's facets, the
+        // series rows, the open series' episodes, then the progress walk,
+        // then the home refresh. (The first six requests were the
+        // enter+open walk; the queue holds all twelve.)
+        repeat(6) { server.takeRequestOrFail("RefreshTest.player_exit_refreshes") }
+        assertEquals("/api/v1/libraries/1/facets", server.takeRequestOrFail("RefreshTest.player_exit_refreshes").path)
         assertEquals("/api/v1/series?library=1", server.takeRequestOrFail("RefreshTest.player_exit_refreshes").path)
         assertEquals("/api/v1/series/s-1/episodes", server.takeRequestOrFail("RefreshTest.player_exit_refreshes").path)
         assertEquals("/api/v1/progress/e-1", server.takeRequestOrFail("RefreshTest.player_exit_refreshes").path)
@@ -109,8 +113,8 @@ class RefreshTest {
         // stored position, and e-2 keeps its honest absence.
         assertEquals(mapOf("e-1" to 660L), viewModel.browse.state.value.positions)
 
-        // The queue drained: the five enter/open requests + the five
-        // refresh legs, each answered by an enqueued fixture.
-        server.assertDrained("RefreshTest.player_exit_refreshes", 10)
+        // The queue drained: the six enter/open requests + the six refresh
+        // legs, each answered by an enqueued fixture.
+        server.assertDrained("RefreshTest.player_exit_refreshes", 12)
     }
 }

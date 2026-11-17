@@ -44,9 +44,26 @@ interface MelliferaApi {
     @GET("api/v1/libraries/{id}/summary")
     suspend fun librarySummary(@Path("id") libraryId: Long): LibrarySummaryResponse
 
-    /** GET /series?library={id} (listSeries) — scored default order. */
+    /** GET /libraries/{id}/facets (libraryFacets) — the serial body's
+     * facet lane (layout-parity 10.1): the browse index's per-library
+     * counted facet values, served verbatim; facets is always non-nil. */
+    @GET("api/v1/libraries/{id}/facets")
+    suspend fun facets(@Path("id") libraryId: Long): FacetsResponse
+
+    /**
+     * GET /series?library={id} (listSeries) — scored default order; the
+     * additive facet filters (layout-parity 10.1) ride genre/kind/status,
+     * each present on the wire ONLY when non-null. No client-side value
+     * validation — an unknown value rides verbatim and the server's honest
+     * empty list IS the answer.
+     */
     @GET("api/v1/series")
-    suspend fun series(@Query("library") libraryId: Long): SeriesListResponse
+    suspend fun series(
+        @Query("library") libraryId: Long,
+        @Query("genre") genre: String? = null,
+        @Query("kind") kind: String? = null,
+        @Query("status") status: String? = null,
+    ): SeriesListResponse
 
     /**
      * GET /items (listItems) — the tv/image bodies' paged stream (D6): the

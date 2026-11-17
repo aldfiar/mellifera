@@ -73,6 +73,30 @@ data class LibrarySummaryResponse(
 )
 
 /**
+ * One counted facet value (internal/api/facets.go facetValueDTO): the
+ * document fact rendered verbatim — never transliterated or re-cased — with
+ * its per-library count. Count >= 1 always.
+ */
+@Serializable
+data class FacetValueDto(val value: String, val count: Int)
+
+/**
+ * One facet key's counted values (facetDTO): only keys at least one
+ * document carries are present — a key with no carrier anywhere is absent
+ * from the list (honest absence).
+ */
+@Serializable
+data class FacetDto(val key: String, val values: List<FacetValueDto> = emptyList())
+
+/**
+ * GET /libraries/{id}/facets' wire shape (facetsResponse): facets is
+ * always non-nil — a library with no aggregates serves {"facets":[]},
+ * never null.
+ */
+@Serializable
+data class FacetsResponse(val facets: List<FacetDto> = emptyList())
+
+/**
  * The served convention projection (media-data-convention; internal/naming/
  * metadata.go MetadataFor): each group (about/cast/episode) comes WHOLE from
  * the first effectively-enabled source_chain namespace that carries it —
