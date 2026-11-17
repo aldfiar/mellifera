@@ -234,6 +234,7 @@ fun BrowseScreen(viewModel: AppViewModel) {
                             onChipFocused = { browse.onChipFocusMoved(it) },
                             onChipsLeft = { browse.clearChipFocus() },
                             onPickFolder = { path -> scope.launch { browse.pickFolder(path) } },
+                            onToggleFacet = { key, value -> scope.launch { browse.toggleFacet(key, value) } },
                             onPhotoOpened = { browse.openPhoto(it) },
                             aboveFocusable = settingsFocusable,
                             serverBase = serverBase,
@@ -344,6 +345,10 @@ private fun SeriesGrid(
     onChipFocused: (Int) -> Unit,
     onChipsLeft: () -> Unit,
     onPickFolder: (String?) -> Unit,
+    // The facet chip's OK act (task 10.2): toggle the facet conjunct — the
+    // active value again CLEARS the key — and refetch the serial grid with
+    // the current params (BrowseFlow.toggleFacet's law).
+    onToggleFacet: (String, String) -> Unit,
     // The photo tile's OK act (task 8.13): open the modal viewer on this
     // loaded row.
     onPhotoOpened: (Int) -> Unit,
@@ -366,27 +371,44 @@ private fun SeriesGrid(
         }
         val accent = typeAccent(library?.moduleId ?: "")
         when (library?.moduleId) {
-            "serial" -> when {
-                state.error != null -> Text(state.error, fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
-                state.isLoading -> Text("Загрузка…", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
-                else -> CardGrid(
+            "serial" -> Column(modifier = Modifier.fillMaxSize()) {
+                // The facet lane (task 10.2 — the SPA's facetLane law) renders
+                // in EVERY serial body state — loading, error, empty, grid —
+                // ABOVE the body content: it is the control driving the
+                // /series refetch, never a data block. Undefined facets (the
+                // best-effort fetch failed or served nothing) render no chips;
+                // the lane shell still owns its row.
+                FacetChipsRow(
                     state = state,
-                    // 3 posters across (the count ruling, 8.10): each poster
-                    // consumes a third of the column — the fixed 2:3 tile.
-                    columns = SERIES_GRID_COLUMNS,
-                    homeHoldsEntry = homeHoldsEntry,
-                    tileAspect = POSTER_ASPECT,
-                    count = state.series.size,
-                    keyOf = { index -> state.series[index].id },
-                    cardOf = { index -> state.series[index].toCard() },
-                    accent = accent,
-                    onClick = { index -> onOpen(state.series[index]) },
-                    onFocusMoved = onFocusMoved,
-                    onExtend = onExtendItems,
-                    onOpenRail = onOpenRail,
-                    serverBase = serverBase,
-                    token = token,
+                    onFocused = onChipFocused,
+                    onLeft = onChipsLeft,
+                    onToggle = onToggleFacet,
+                    aboveFocusable = aboveFocusable,
+                    modifier = Modifier.padding(top = 8.dp),
                 )
+                when {
+                    state.error != null -> Text(state.error, fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
+                    state.isLoading -> Text("Загрузка…", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
+                    state.series.isEmpty() -> EmptyCollection()
+                    else -> CardGrid(
+                        state = state,
+                        // 3 posters across (the count ruling, 8.10): each poster
+                        // consumes a third of the column — the fixed 2:3 tile.
+                        columns = SERIES_GRID_COLUMNS,
+                        homeHoldsEntry = homeHoldsEntry,
+                        tileAspect = POSTER_ASPECT,
+                        count = state.series.size,
+                        keyOf = { index -> state.series[index].id },
+                        cardOf = { index -> state.series[index].toCard() },
+                        accent = accent,
+                        onClick = { index -> onOpen(state.series[index]) },
+                        onFocusMoved = onFocusMoved,
+                        onExtend = onExtendItems,
+                        onOpenRail = onOpenRail,
+                        serverBase = serverBase,
+                        token = token,
+                    )
+                }
             }
             "tv" -> when {
                 state.error != null -> Text(state.error, fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
@@ -674,6 +696,76 @@ private fun FolderChipsRow(
                 },
                 modifier = Modifier.focusRequester(requester).tvFocusStyle(),
             )
+        }
+    }
+}
+
+/**
+ * The serial body's facet lane (task 10.2 — the SPA's facetLane, audit
+ * P1-3): one chips row per served facet key (GET /libraries/{id}/facets,
+ * served order), the values verbatim with their counts, the active conjunct
+ * in the accent (the FolderChip active law). The call site is UNCONDITIONAL
+ * — the lane renders in EVERY serial body state (loading, error, empty,
+ * grid) above the body content, because it is the CONTROL driving the
+ * /series refetch, not a data block; undefined facets (the best-effort
+ * fetch failed or served nothing) render no chips while the shell still
+ * owns its row above the body.
+ *
+ * It reuses the FolderChipsRow shell: the shared [BrowseState.chipFocus]
+ * cursor carries the Back law (the top-level chips link — chips Back
+ * re-lands the parked grid cursor, and the body-closed Back stands down
+ * while a facet chip holds focus), and the lane's TOP row rides the
+ * [chipsRowConsumesUp] clamp so focus never escapes the body by a runaway
+ * native search into the home rows. The cursor WALK itself is left to
+ * Compose's native focus search (LEFT/RIGHT inside a row, DOWN across the
+ * facet rows and into the grid below): the cursor writer's clamp is
+ * folder-sized and the serial body serves no folders, so consuming and
+ * re-landing through it would dead-end the walk — the same native crossing
+ * the grid's law-unsatisfiable arrows ride (5.9).
+ */
+@Composable
+private fun FacetChipsRow(
+    state: BrowseState,
+    onFocused: (Int) -> Unit,
+    onLeft: () -> Unit,
+    onToggle: (String, String) -> Unit,
+    aboveFocusable: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    // The lane-level focus watcher, NOT a per-row one: a walk BETWEEN facet
+    // rows must never drop the cursor — the Back link stands while any chip
+    // of any row holds focus (the FolderChipsRow !hasFocus law, lifted to
+    // the whole lane).
+    Column(
+        modifier = modifier.onFocusChanged { if (!it.hasFocus) onLeft() },
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        // The flat chip index across the lane's rows (row-major, served
+        // order) — the cursor report's index space.
+        val rowOffsets = state.facets.runningFold(0) { acc, facet -> acc + facet.values.size }
+        state.facets.forEachIndexed { rowIndex, facet ->
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(
+                    count = facet.values.size,
+                    key = { index -> facet.values[index].value },
+                ) { index ->
+                    val value = facet.values[index]
+                    FolderChip(
+                        label = value.value,
+                        count = value.count.toLong(),
+                        active = state.facetSelection[facet.key] == value.value,
+                        onClick = { onToggle(facet.key, value.value) },
+                        onFocused = { onFocused(rowOffsets[rowIndex] + index) },
+                        onDirection = { key ->
+                            // The body-top clamp (task 8.6) rides the lane's
+                            // FIRST row only — from the rows below, UP crosses
+                            // natively into the facet row above.
+                            chipsRowConsumesUp(key, aboveFocusable && rowIndex == 0)
+                        },
+                        modifier = Modifier.tvFocusStyle(),
+                    )
+                }
+            }
         }
     }
 }
