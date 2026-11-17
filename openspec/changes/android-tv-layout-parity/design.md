@@ -270,7 +270,7 @@ tasks, — = out of scope.
 | components/watch/InfoColumn.tsx | OK-revealed info blocks (D7) | ⬜ (5.1) |
 | PlayerLegend.tsx (pointer:fine-only keyboard row) | the ControlsBar's existing dpad hint line — no separate TV legend | ✅ (existing) |
 | components/Sidebar.tsx | collections rail (5.15) | ✅ |
-| FacetChips.tsx (genre/kind[/status] lanes on serial/tv grids) | deferred — not in this change's What Changes; the photo folder chips are PhotosBody's own FolderChip idiom and ARE folded (D6) | — (deferred) |
+| FacetChips.tsx (genre/kind[/status] lanes on serial grids) | folded by the 2026-11-17 amendment (tasks 10.1–10.2) — the serial facet lane renders in every body state; the photo folder chips are PhotosBody's own FolderChip idiom and ARE folded (D6) | group 10 |
 | SearchPalette.tsx; manage/* overlays; admin pages | — operator/desktop surfaces stay in the SPA | — |
 
 ## Screen layouts (16:9 wireframes; ▣ = focusable, █ focused)
@@ -439,3 +439,100 @@ Resolved by the guideline fold (recorded so they stay decided):
   the guideline's home wireframe, task 3.2, and the spec scenario.
 - Settings surface scope on TV → stays the gated share affordance (5.11)
   exactly as today; the dpad map's settings row (D12) adds no new surface.
+
+---
+
+## Amendment (2026-11-17): audit fixes + rail/menu restyle
+
+Authored from the 2026-11-17 audit (.tmp/android-tv-audit-2026-11-17.md — the
+amendment's spec; every fix carries file:line evidence there) plus the
+operator's direct scope B (rail/menu restyle). Groups 9–14 ride this
+amendment; the laws above stand unless a paragraph here explicitly amends
+them.
+
+### A. Audit fixes (scope A)
+
+- **P0-1 Back-exit law (task 9.1).** reduce() drops ExitRequested in all
+  three Starting phases and in Dead (identity rows) — Back on the preparing
+  banner is a no-op trap. Amended law: ExitRequested →
+  Transition(PlaybackState.Idle, emptyList()) in Describing/Playing/Polling
+  and Dead — the Failed row's shape; Dead keeps the no-retry banner (Back
+  only closes the overlay).
+- **P1-2 voiceover picker (task 9.2).** KEYCODE_MEDIA_AUDIO_TRACK →
+  DpadKey.AudioTrack → PlayerKeyAction.CycleVoiceover (Active overlay, any
+  controls visibility — transport-class like Seek). The orchestration cycle
+  is bounded by the plan's pick space and wraps: SingleVariant(n) → n picks
+  (0..n−1), Rendition → the served voiceover count carried at plan build,
+  NoPicker/zero → fail-open no-op; the pick rides the existing
+  selectVoiceover (the k+1 mapping unchanged). descriptor.voiceovers is
+  typed VoiceoverDto(index, label) — the L6 mirror of api.ts VoiceoverDTO;
+  the info blocks list the served labels («Озвучка: …», field-driven).
+- **P1-3 serial facet lane (tasks 10.1–10.2).** State shape: BrowseState
+  gains facets: List<FacetDto> + facetSelection: Map<String,String> keyed
+  genre/kind/status (PARAM_OF) — ONE conjunct value per key, AND across
+  keys; toggling the active value clears that key; every change refetches
+  /series with the params (the pickFolder idiom minus revert — a facet
+  toggle is immediate). The lane reuses the FolderChip shell and renders in
+  EVERY serial body state (loading/error/empty/grid); undefined facets
+  render no chips; the facets fetch is best-effort (failure → empty chips,
+  grid untouched).
+- **P2/P3 fixes (tasks 11–12), one law line each:** home.error renders when
+  rows are empty (pure homeErrorLine, JVM-pinned — 11.1); series cards carry
+  the factsOf meta, absent metadata → absent (11.2); home cards carry the
+  served series/episode/library lines, absent → absent (11.3); EpisodeRow
+  title clamps to 1 line, CardView title to 2 (SPA clamp-2), both ellipsis —
+  the fixed 36dp row law itself stands (11.4); the watched ✓ leaves the text
+  stack for a corner mark over the art — card heights become
+  watched-independent (12.1); PhotoViewer rulings — OK closes the viewer,
+  Up/Down stay consumed-and-inert (the modal law: nothing to cross to), a
+  «<i>/<n>» + served capture-date status line renders field-driven, the
+  mockup's OK-slideshow is DEFERRED (12.2); the SeriesPage entry actuator
+  consolidates on the shared 60-frame focusUntilAttached idiom (12.3); cast
+  renders per-entry rows — 24dp portrait tiles only when the served cast
+  carries portrait URLs (the ÷2 of the SPA's 48px), plain rows otherwise
+  (12.4).
+
+### B. Rail/menu restyle (scope B, task 14.1)
+
+- **Colors — SPA DARK only.** Panel bg = AppCanvas #020617 (the SPA --card
+  IS the same slate-950 token) with a 1dp end-edge border #1E293B (SPA .side
+  border-right, --border slate-800); muted text #94A3B8 (SPA
+  --muted-foreground). The mockup is a light-paper schematic: its ANATOMY is
+  the spec (bordered rounded rows; focus = accent border + accent 14%
+  background), its PASTEL PALETTE is a placeholder and never lands. New ui
+  tokens: railBorder #1E293B, railMuted #94A3B8. D11's rail scrim #171A21 is
+  superseded (the railColor/railWidth locals die); 8.13's #020617 law
+  stands — no stray lighter surfaces.
+- **Width — 360dp → 112dp, authored explicitly.** RAIL_PANEL_WIDTH = 112.dp
+  in LayoutParity.kt, pinned in LayoutParityTest. Derivation: the SPA .side
+  is 224px and the ÷2 law is walk-proven at density 2.0 (8.16: sp × 2 = SPA
+  px; geometry authored ÷2 renders SPA-identical — cards 181.5dp = 363px
+  proven twice on-device), so 112dp renders exactly 224px — the
+  SPA-identical proportion. The 360dp value predates the law and renders
+  720px = 3.2× the SPA proportion; the operator questioned exactly that
+  scale. Rejected: keeping 360dp (no SPA grounding), 224dp (would render
+  448px = 2× the SPA proportion — the ÷2 law, not 1:1 px, is the house
+  rule). **Precedence:** task 8.2's «the rail keeps 360dp (unchanged)»
+  prose, design D13's «the rail keeps its 360dp (§3.2, unchanged)», and the
+  BrowseScreen.kt:181 comment are superseded by THIS 112dp law (execution
+  order keeps them consistent: 8.2 lands green before 14.1).
+- **Row anatomy (mockup card law + SPA SideColl).** Rows become bordered
+  rounded cards: 1dp railBorder border, 4dp radius (SPA --radius 8px ÷ 2);
+  4dp module dot in the type pastel (the D3 map = SPA dotClass); label
+  TYPE_META (SPA .clink 12.5px ÷ 2) — tvAccent when selected (the existing
+  law), railMuted otherwise; count TYPE_META railMuted (SPA .cnt). Focused:
+  tvFocusStyle (2dp accent border + 1.1 scale) + tvAccent.copy(alpha 0.14)
+  tint over the panel bg (the mockup's color-mix accent-14%).
+- **Settled, unchanged.** The slide-in-over-left-edge law (5.15) STANDS; the
+  menu-hidden-by-default law stands; open/close focus restore stands;
+  RailLawTest stays green — this is presentation-only, zero flow laws move.
+
+### C. Ownership boundaries
+
+- Audit P1-1 (the five transport media keys — MediaTrackNext/PrevTrack/
+  FastForward/Rewind/Stop — plus MediaSession, AC-14) is NOT in this
+  amendment: it is owned by the android-tv-app change's task 5.10
+  (single-writer across registers). The only key this change adds is
+  KEYCODE_MEDIA_AUDIO_TRACK — not one of the five, no MediaSession contact.
+- The photo-stage slideshow idiom (mockup OK = slideshow) is deferred; the
+  viewer gains only the 12.2 rulings.

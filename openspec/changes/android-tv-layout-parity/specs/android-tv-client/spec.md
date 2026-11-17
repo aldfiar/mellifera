@@ -30,13 +30,15 @@ and error one-liners SHALL be visible without any per-call color.
 ### Requirement: Card state-signal scale on TV
 
 A per-item watched hint SHALL be exactly one ✓ glyph in the type accent at
-meta-line scale on the meta row; unwatched SHALL render absence. Word chips
-(«Просмотрено»/«Не просмотрено») and badges SHALL NOT appear on cards.
+meta-line scale, placed as a corner mark over the art block (the SPA
+watched-signal corner placement); unwatched SHALL render absence — no mark,
+no space. Word chips («Просмотрено»/«Не просмотрено») and badges SHALL NOT
+appear on cards.
 
 #### Scenario: Watched glyph
 
 - **WHEN** a card with watched=true renders
-- **THEN** it carries one ✓ glyph in the accent at meta scale and no watched word or badge
+- **THEN** it carries one ✓ glyph as a corner mark over the art at meta scale and no watched word or badge
 
 #### Scenario: Unwatched is absence
 
@@ -74,6 +76,11 @@ the exact prior cursor; LEFT at row-0 x=0 opens the collections rail.
 - **WHEN** a served home row carries no `current` and a `next` offer
 - **THEN** it renders in the Next-up row and OK starts playback of the offered next episode (the served label renders verbatim)
 
+#### Scenario: Failed home fetch renders the error line
+
+- **WHEN** the /home fetch fails and no rows render
+- **THEN** the surface shows the served error message as a visible one-liner; with rows present the line never renders
+
 ### Requirement: Series detail mirrors the web UI
 
 The series page SHALL render a hero zone (poster, title, facts line and
@@ -106,6 +113,11 @@ SHALL take no dpad focus — the episode list holds the initial focus.
 - **WHEN** the series page opens
 - **THEN** the episode list holds the initial focus and the hero zone takes no dpad focus
 
+#### Scenario: Overflowing titles clamp with an ellipsis
+
+- **WHEN** an episode-row title exceeds its one-line slot or a card title exceeds two lines
+- **THEN** the text clamps with an ellipsis — never a mid-glyph clip
+
 ### Requirement: Module-keyed collection bodies
 
 The collection body SHALL be keyed by the served module_id exactly as the SPA
@@ -113,7 +125,9 @@ keys it: serial → series poster grid; tv → episode file cards in the same
 grid; image → photo grid with a dpad-walkable folder-chips row whose counts
 come from the same stream that pages the grid; an unknown module renders its
 own module label and an honest empty state — never a hardcoded type list and
-never an error.
+never an error. The serial grid additionally carries the SPA's facet lane —
+the served /libraries/{id}/facets rendered as chips in every body state,
+whose selection conjuncts across facet keys and drives the /series query.
 
 #### Scenario: Unknown module is honest
 
@@ -125,6 +139,21 @@ never an error.
 - **WHEN** an image collection with subfolders renders
 - **THEN** a chips row lists the folders; OK on a chip filters the grid; counts match the paged stream
 
+#### Scenario: Serial facet lane renders in every body state
+
+- **WHEN** a serial collection body renders in any state — loading, error, empty, or grid
+- **THEN** the facet lane renders above the body content (the control driving the /series query), never only on a populated grid
+
+#### Scenario: Facet toggle conjuncts across keys and clears
+
+- **WHEN** OK presses a facet value chip
+- **THEN** the grid refetches with that value ANDed across facet keys (one value per key); pressing the active value again clears that key's filter
+
+#### Scenario: Photo viewer rulings and status line
+
+- **WHEN** the photo viewer is open over a loaded photo row
+- **THEN** OK closes it, Up/Down stay consumed with no act, and a «<i>/<n>» status line renders plus the served capture date when the document carries one (absent → absent)
+
 ### Requirement: Watch-flow affordances on TV
 
 The player overlay's controls layer SHALL mirror the SPA's shipped
@@ -133,7 +162,10 @@ About — the served metadata projection only, absent → absent), a skip chip
 (intro or credits) while the playhead is inside a served classified range,
 and an auto-next card on an episode's ended edge whose countdown seconds come
 from the served watch-defaults — no usable served value means no countdown
-and never autoplay. No TV-specific wire shapes.
+and never autoplay. No TV-specific wire shapes. The passive overlays
+(preparing/polling/dead) exit on Back — never a trap — and a served
+voiceovers list is cyclable by the audio-track key within the plan's pick
+space.
 
 #### Scenario: Skip chip appears in range
 
@@ -149,3 +181,18 @@ and never autoplay. No TV-specific wire shapes.
 
 - **WHEN** the auto-next card opens and the watch-defaults shape has not answered or is malformed
 - **THEN** the card renders without a countdown and never autoplays — the manual play path stays available
+
+#### Scenario: Back exits the preparing or dead overlay
+
+- **WHEN** the player overlay shows the preparing/polling banner or the dead banner and Back is pressed
+- **THEN** the overlay exits to the prior surface — the passive states are never a trap
+
+#### Scenario: Voiceover cycle within the served plan
+
+- **WHEN** the playback plan serves voiceovers and the audio-track key is pressed on the Active overlay
+- **THEN** the pick advances and wraps within the plan's pick space (the k+1 track mapping rides); a plan with no voiceover picks never acts
+
+#### Scenario: Cast renders one row per served entry
+
+- **WHEN** the controls layer renders the cast block
+- **THEN** each served cast entry renders as its own row (name + role; a 24dp portrait tile only when the entry serves a portrait URL) — the joined single line never renders
