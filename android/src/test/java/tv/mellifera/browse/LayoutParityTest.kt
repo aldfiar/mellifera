@@ -5,31 +5,29 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * The TV tile-geometry laws (design D13, task 8.2, AMENDED by the operator's
- * 2026-11-16 rulings — task 8.10): the column fraction, the FIXED tile
- * aspects and the column counts are constants pinned here so a drift fails
- * the build. The uniform-row law: tile GEOMETRY is the GRID's law — every
- * card in a grid renders the same fixed-aspect art block (the per-card
- * aspect carrier is retired; rows can never go ragged), artwork Crop-fills.
- * The size lever is the COUNT, not the column (the operator's corrected
- * ruling: «the problem is not the column size, but how many posters consume
- * the column») — the column stays at the SPA's 60%, and the poster/photo
- * grids went 3 ACROSS: each tile consumes a third of the column (a 160dp
- * poster at the padded 512dp inner width vs the retired 4-across 116dp).
+ * The TV tile-geometry laws: the column fraction, the gutter, the overscan
+ * edges, the FIXED tile aspects and the column counts are constants pinned
+ * here so a drift fails the build. The uniform-row law: tile GEOMETRY is
+ * the GRID's law — every card in a grid renders the same fixed-aspect art
+ * block (the per-card aspect carrier is retired; rows can never go ragged),
+ * artwork Crop-fills. The size lever is the COUNT, not the column: the
+ * poster/photo grids ride 3 ACROSS — each tile consumes a third of the
+ * column.
  */
 class LayoutParityTest {
     // ---- the centered content column ---------------------------------------
 
     @Test
-    fun content_column_stays_the_spa_proportion() {
-        // The SPA's max-w-6xl: 1152px of 1920 = 60% (576dp at density 320).
-        // The brief 0.80 amendment was corrected — the count is the lever.
-        assertEquals(0.60f, CONTENT_COLUMN_FRACTION, 1e-6f)
+    fun content_column_is_the_tv_shell_cap() {
+        // The SPA tv shell: html.tv main { max-width: min(92vw, 1800px) } —
+        // 92vw of a 1920px viewport (the desktop pages' max-w-6xl cap is
+        // superseded there).
+        assertEquals(0.92f, CONTENT_COLUMN_FRACTION, 1e-6f)
     }
 
     @Test
     fun column_counts_pin_the_tile_scale() {
-        // The count ruling: every grid rides 3 across — each tile consumes
+        // The count law: every grid rides 3 across — each tile consumes
         // a third of the column.
         assertEquals(3, SERIES_GRID_COLUMNS) // series posters across
         assertEquals(3, TV_FILE_GRID_COLUMNS) // tv stills across
@@ -38,13 +36,28 @@ class LayoutParityTest {
     }
 
     @Test
-    fun track_math_fits_the_cards_in_the_576dp_column() {
-        // The home rows' fixed track: (576 − 2·16) / 3 ≈ 181dp per 16:9 card.
-        // Every 3-across grid shares the arithmetic (the series/photo grids
-        // live inside the body's 32dp padding: a real tile is
-        // (576 − 64 − 2·16) / 3 = 160dp, measured on-device).
-        assertEquals(544f / 3f, rowCardTrack(576.dp, SERIES_GRID_COLUMNS).value, 0.01f)
-        assertEquals(544f / 3f, rowCardTrack(576.dp, HOME_ROW_COLUMNS).value, 0.01f)
+    fun gutter_is_the_spa_gap_halved() {
+        // The SPA's gap-3: 12px ÷ 2 at the box's 2.0× density = 6dp.
+        assertEquals(6f, PARITY_GUTTER.value, 1e-6f)
+    }
+
+    @Test
+    fun overscan_edges_are_the_tv_shell_padding() {
+        // html.tv .app-content { padding: 2.5vh 2.5vw }: 2.5vw ≈ 48px and
+        // 2.5vh ≈ 27px at 1920×1080 — ÷ 2 → 24dp horizontal, 14dp vertical.
+        assertEquals(24f, PARITY_OVERSCAN_X.value, 1e-6f)
+        assertEquals(14f, PARITY_OVERSCAN_Y.value, 1e-6f)
+    }
+
+    @Test
+    fun track_math_fits_the_cards_in_the_tv_shell_column() {
+        // The tv shell column: 92vw of 1920px ÷ 2 = 883.2dp. The home rows'
+        // fixed track: (883.2 − 2·6) / 3 = 290.4dp per 16:9 card. Every
+        // 3-across grid shares the arithmetic (the series/photo grids live
+        // inside the page's PARITY_OVERSCAN_X body padding: a real tile is
+        // (883.2 − 2·24 − 2·6) / 3 ≈ 274.4dp).
+        assertEquals(871.2f / 3f, rowCardTrack(883.2.dp, SERIES_GRID_COLUMNS).value, 0.01f)
+        assertEquals(871.2f / 3f, rowCardTrack(883.2.dp, HOME_ROW_COLUMNS).value, 0.01f)
     }
 
     // ---- the fixed tile aspects ---------------------------------------------

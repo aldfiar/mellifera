@@ -1,5 +1,6 @@
 package tv.mellifera.playback
 
+import androidx.compose.ui.graphics.Color
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import org.junit.Assert.assertEquals
@@ -102,5 +103,36 @@ class SkipSectionsTest {
         assertNull(skipSectionAt(ranges, 799.999))
         // The skip target (end + SKIP_SEEK_PAST_SECONDS) never lands back in.
         assertNull(skipSectionAt(ranges, 840.0 + SKIP_SEEK_PAST_SECONDS))
+    }
+
+    @Test
+    fun intro_maps_to_the_sky_pastel() {
+        // SkipChip.tsx CHIP_TONE intro: bg-sky-100/95 (#E0F2FE at 0.95 →
+        // 0xF2 alpha) text-sky-900 (#0C4A6E).
+        assertEquals(
+            SkipTone(surface = Color(0xF2E0F2FE), text = Color(0xFF0C4A6E)),
+            skipToneOf(SkipKind.Intro),
+        )
+    }
+
+    @Test
+    fun credits_maps_to_the_violet_pastel() {
+        // SkipChip.tsx CHIP_TONE credits: bg-violet-100/95 (#EDE9FE at 0.95
+        // → 0xF2 alpha) text-violet-900 (#4C1D95).
+        assertEquals(
+            SkipTone(surface = Color(0xF2EDE9FE), text = Color(0xFF4C1D95)),
+            skipToneOf(SkipKind.Credits),
+        )
+    }
+
+    @Test
+    fun auto_next_maps_to_the_emerald_pastel() {
+        // AutoNext.tsx:340: bg-emerald-100/95 (#D1FAE5 at 0.95 → 0xF2 alpha)
+        // text-emerald-900 (#064E3B); the hairline is the text hue.
+        assertEquals(
+            SkipTone(surface = Color(0xF2D1FAE5), text = Color(0xFF064E3B)),
+            AUTO_NEXT_TONE,
+        )
+        assertEquals(AUTO_NEXT_TONE.text, AUTO_NEXT_TONE.border)
     }
 }

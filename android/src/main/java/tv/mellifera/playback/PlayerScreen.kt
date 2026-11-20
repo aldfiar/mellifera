@@ -4,7 +4,10 @@ import android.os.SystemClock
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,7 +56,10 @@ import tv.mellifera.ui.TYPE_READOUT
 import tv.mellifera.ui.TYPE_SMALL
 import tv.mellifera.ui.chipColor
 import tv.mellifera.ui.tvAccent
+import tv.mellifera.ui.tvDestructive
+import tv.mellifera.ui.tvDestructiveBorder
 import tv.mellifera.ui.tvInitialFocus
+import tv.mellifera.ui.tvMuted
 
 /**
  * The player as OVERLAY (D1/D8): never a Screen route — it renders above
@@ -81,11 +87,11 @@ fun PlayerOverlay(playback: PlayerOrchestration) {
         is PlaybackState.Active -> ActiveOverlay(playback)
         is PlaybackState.Dead -> PassiveOverlay(playback) {
             // Honest terminal banner — no retry affordance (the Dead law).
-            Text(s.banner)
+            DestructiveBanner(s.banner)
         }
         is PlaybackState.Failed -> PassiveOverlay(playback) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(s.banner)
+                DestructiveBanner(s.banner)
                 Button(onClick = { playback.retry() }, modifier = Modifier.padding(top = 16.dp)) {
                     Text("Повторить")
                 }
@@ -206,29 +212,36 @@ private fun ActiveOverlay(playback: PlayerOrchestration) {
 
 /**
  * The skip chip (D7, SkipChip.tsx): rendered ONLY while the playhead is
- * inside a served classified range, fading after [SKIP_FADE_MS] inside the
- * range (still rendered, just inert) and re-arming when a seek lands back
- * into a range — the `active` key restarts the timer on every entry. It
- * takes no dpad focus: the overlay owns every key, OK's in-range branch IS
- * the activation (D7).
+ * inside a served classified range and re-armed when a seek lands back
+ * into one — the `active` key restarts the fade on every entry. The fade
+ * law: fully opaque on entry, it holds [SKIP_FADE_MS] inside the range
+ * (still rendered, just inert), then the alpha animates progressively to
+ * transparent across a second [SKIP_FADE_MS] window — the SPA's
+ * `transition-opacity duration-700` fade, never a single-frame snap. The
+ * chip renders its kind's pastel tone ([skipToneOf]) on rounded-lg (4dp)
+ * with a 1dp border. It takes no dpad focus: the overlay owns every key,
+ * OK's in-range branch IS the activation.
  */
 @Composable
 private fun BoxScope.SkipChip(active: SkipSection) {
-    var faded by remember(active) { mutableStateOf(false) }
+    val tone = skipToneOf(active.kind)
+    val fade = remember(active) { Animatable(1f) }
     LaunchedEffect(active) {
         delay(SKIP_FADE_MS)
-        faded = true
+        fade.animateTo(0f, tween(SKIP_FADE_MS.toInt()))
     }
     Column(
         modifier = Modifier
             .align(Alignment.BottomEnd)
             .padding(8.dp)
-            .alpha(if (faded) 0f else 1f)
-            .background(chipColor, RoundedCornerShape(4.dp)),
+            .alpha(fade.value)
+            .background(tone.surface, RoundedCornerShape(4.dp))
+            .border(1.dp, tone.border, RoundedCornerShape(4.dp)),
     ) {
         Text(
             active.kind.label,
             fontSize = TYPE_SMALL,
+            color = tone.text,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
         )
     }
@@ -238,11 +251,14 @@ private fun BoxScope.SkipChip(active: SkipSection) {
  * The «Следующая серия» card (D7, AutoNext.tsx): renders ONLY on an open
  * ended edge with a resolved pick — a film never renders it (no parseable
  * facts → no pick, the loader decided on served facts, never a media-type
- * literal). The countdown line renders only while a countdown runs — an
- * unusable served shape means NO countdown and NEVER autoplay, the client
- * bakes no fallback (the orchestration owns the tick); zero fires the
- * «Смотреть» path from there. «Отмена» suppresses the card for the app
- * session. The card takes the initial focus so the dpad reaches the buttons.
+ * literal). The card renders the emerald pastel ([AUTO_NEXT_TONE],
+ * AutoNext.tsx:340) on rounded-lg (4dp) with a 1dp border; secondary lines
+ * stay the muted token. The countdown line renders only while a countdown
+ * runs — an unusable served shape means NO countdown and NEVER autoplay,
+ * the client bakes no fallback (the orchestration owns the tick); zero
+ * fires the «Смотреть» path from there. «Отмена» suppresses the card for
+ * the app session. The card takes the initial focus so the dpad reaches
+ * the buttons.
  */
 @Composable
 private fun BoxScope.AutoNextCard(playback: PlayerOrchestration) {
@@ -254,19 +270,20 @@ private fun BoxScope.AutoNextCard(playback: PlayerOrchestration) {
             .align(Alignment.BottomStart)
             .padding(8.dp)
             .tvInitialFocus()
-            .background(chipColor, RoundedCornerShape(4.dp))
+            .background(AUTO_NEXT_TONE.surface, RoundedCornerShape(4.dp))
+            .border(1.dp, AUTO_NEXT_TONE.border, RoundedCornerShape(4.dp))
             .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text("Следующая серия", fontSize = TYPE_SMALL)
+        Text("Следующая серия", fontSize = TYPE_SMALL, color = AUTO_NEXT_TONE.text)
         if (next.nameLine.isNotEmpty()) {
-            Text(next.nameLine, fontSize = TYPE_META, color = Color.LightGray)
+            Text(next.nameLine, fontSize = TYPE_META, color = tvMuted)
         }
         if (next.episodeTitle.isNotEmpty()) {
-            Text(next.episodeTitle, fontSize = TYPE_META)
+            Text(next.episodeTitle, fontSize = TYPE_META, color = AUTO_NEXT_TONE.text)
         }
         countdown?.let {
-            Text("Автопереход через $it с", fontSize = TYPE_META, color = Color.LightGray)
+            Text("Автопереход через $it с", fontSize = TYPE_META, color = tvMuted)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Button(onClick = { playback.play(next.itemId) }) { Text("Смотреть", fontSize = TYPE_SMALL) }
@@ -329,7 +346,7 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
                 },
                 fontSize = TYPE_READOUT,
             )
-            Text("← → перемотка · OK пауза · Back скрыть", fontSize = TYPE_SMALL, color = Color.LightGray)
+            Text("← → перемотка · OK пауза · Back скрыть", fontSize = TYPE_SMALL, color = tvMuted)
         }
         info?.let { InfoBlocks(it) }
         if (voiceovers.isNotEmpty()) {
@@ -338,7 +355,7 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
             Text(
                 "Озвучка: " + voiceovers.joinToString(" · ") { it.label },
                 fontSize = TYPE_META,
-                color = Color.LightGray,
+                color = tvMuted,
             )
         }
     }
@@ -355,14 +372,14 @@ private fun InfoBlocks(info: PlayerInfoBlocks) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (info.eyebrow != null || info.heading != null) {
             Column {
-                info.eyebrow?.let { Text(it, fontSize = TYPE_META, color = Color.LightGray) }
+                info.eyebrow?.let { Text(it, fontSize = TYPE_META, color = tvMuted) }
                 info.heading?.let { Text(it, fontSize = TYPE_HEADING) }
             }
         }
         info.episodeDescription?.let {
             Column {
                 Text("Серия", fontSize = TYPE_META)
-                Text(it, fontSize = TYPE_META, color = Color.LightGray)
+                Text(it, fontSize = TYPE_META, color = tvMuted)
             }
         }
         if (info.cast.isNotEmpty()) {
@@ -371,7 +388,7 @@ private fun InfoBlocks(info: PlayerInfoBlocks) {
                 info.cast.forEach { entry -> CastRow(entry.toCastRow()) }
             }
         }
-        info.about?.let { Text(it, fontSize = TYPE_META, color = Color.LightGray) }
+        info.about?.let { Text(it, fontSize = TYPE_META, color = tvMuted) }
     }
 }
 
@@ -404,7 +421,7 @@ private fun CastRow(row: CastRow) {
         }
         Column {
             Text(row.name, fontSize = TYPE_META)
-            row.role?.let { Text(it, fontSize = TYPE_META, color = Color.LightGray) }
+            row.role?.let { Text(it, fontSize = TYPE_META, color = tvMuted) }
         }
     }
 }
@@ -414,6 +431,24 @@ private fun CastRow(row: CastRow) {
 private fun PassiveOverlay(playback: PlayerOrchestration, content: @Composable () -> Unit) {
     BackHandler { playback.exit() }
     PlayerOverlayShell { content() }
+}
+
+/**
+ * The Dead/Failed banner's destructive treatment (the SPA's banner law):
+ * [tvDestructive] text on a destructive-tinted surface with the destructive
+ * border — bg-destructive/10 + border-destructive/40 over the shell's
+ * transparent surface (styles/index.css .dark).
+ */
+@Composable
+private fun DestructiveBanner(text: String) {
+    Box(
+        modifier = Modifier
+            .background(tvDestructive.copy(alpha = 0.10f), RoundedCornerShape(4.dp))
+            .border(1.dp, tvDestructiveBorder, RoundedCornerShape(4.dp))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Text(text, color = tvDestructive)
+    }
 }
 
 @Composable

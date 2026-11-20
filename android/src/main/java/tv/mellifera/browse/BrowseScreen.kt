@@ -59,6 +59,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -86,12 +87,15 @@ import tv.mellifera.ui.TYPE_META
 import tv.mellifera.ui.TYPE_SMALL
 import tv.mellifera.ui.AppCanvas
 import tv.mellifera.ui.SettingsSection
-import tv.mellifera.ui.chipColor
+import tv.mellifera.ui.chipActiveBg
+import tv.mellifera.ui.chipActiveText
+import tv.mellifera.ui.inProgressFill
+import tv.mellifera.ui.inProgressTrack
 import tv.mellifera.ui.railBorder
-import tv.mellifera.ui.railMuted
 import tv.mellifera.ui.requestFocusSafely
 import tv.mellifera.ui.tvAccent
 import tv.mellifera.ui.tvFocusStyle
+import tv.mellifera.ui.tvMuted
 
 /**
  * The browse surface (5.6): the serial+tv series grid and, one level down,
@@ -388,11 +392,11 @@ private fun SeriesGrid(
         modifier = Modifier
             .height(bodyHeight)
             .bringIntoViewRequester(intoView)
-            .padding(32.dp),
+            .padding(horizontal = PARITY_OVERSCAN_X, vertical = PARITY_OVERSCAN_Y),
     ) {
         val library = state.libraries.firstOrNull { it.id == state.libraryId }
         if (library != null) {
-            Text(library.displayName, fontSize = TYPE_DISPLAY)
+            Text(library.displayName, fontSize = TYPE_DISPLAY, fontWeight = FontWeight.SemiBold)
         }
         val accent = typeAccent(library?.moduleId ?: "")
         when (library?.moduleId) {
@@ -519,7 +523,7 @@ private fun EmptyCollection() {
         "В коллекции пока нет элементов",
         fontSize = TYPE_BODY,
         modifier = Modifier.padding(top = 8.dp),
-        color = Color.White.copy(alpha = 0.6f),
+        color = tvMuted,
     )
 }
 
@@ -750,7 +754,7 @@ private fun FolderChipsRow(
                         else -> false // DOWN (→ grid) and the edge clamps cross natively
                     }
                 },
-                modifier = Modifier.focusRequester(requester).tvFocusStyle(),
+                modifier = Modifier.focusRequester(requester).tvFocusStyle(shape = RoundedCornerShape(50)),
             )
         }
     }
@@ -818,7 +822,7 @@ private fun FacetChipsRow(
                             // natively into the facet row above.
                             chipsRowConsumesUp(key, aboveFocusable && rowIndex == 0)
                         },
-                        modifier = Modifier.tvFocusStyle(),
+                        modifier = Modifier.tvFocusStyle(shape = RoundedCornerShape(50)),
                     )
                 }
             }
@@ -829,8 +833,9 @@ private fun FacetChipsRow(
 /**
  * One folder filter chip (the SPA's FolderChip): the label, the folder's
  * count (the folders-endpoint total the filtered stream pages 1:1 — the
- * [Все] chip carries none), and the accent-colored active state. Focus rides
- * the L4 visual law; OK applies the filter.
+ * [Все] chip carries none), and the chip-active surface on the active chip
+ * (the SPA .chip idiom). Focus rides the L4 visual law; OK applies the
+ * filter.
  */
 @Composable
 private fun FolderChip(
@@ -844,8 +849,9 @@ private fun FolderChip(
 ) {
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(5.dp))
-            .background(chipColor)
+            .clip(RoundedCornerShape(50))
+            .then(if (active) Modifier.background(chipActiveBg) else Modifier)
+            .border(1.dp, railBorder, RoundedCornerShape(50))
             .onFocusChanged { if (it.isFocused) onFocused() }
             .onKeyEvent { event -> routeDirectionEvent(event, onDirection) }
             .clickable(onClick = onClick)
@@ -855,13 +861,13 @@ private fun FolderChip(
         Text(
             label,
             fontSize = TYPE_SMALL,
-            color = if (active) tvAccent else Color.White,
+            color = if (active) chipActiveText else tvMuted,
         )
         if (count != null) {
             Text(
                 count.toString(),
                 fontSize = TYPE_META,
-                color = tvAccent,
+                color = if (active) chipActiveText else tvMuted,
             )
         }
     }
@@ -945,7 +951,7 @@ private fun CollectionsRail(
                             else -> false // rail-top UP still crosses natively
                         }
                     },
-                    modifier = Modifier.focusRequester(requester).tvFocusStyle(),
+                    modifier = Modifier.focusRequester(requester).tvFocusStyle(shape = RoundedCornerShape(4.dp)),
                 )
             }
         }
@@ -1011,9 +1017,9 @@ private const val SWAP_RETRY_FRAMES = 60
  * SideColl's colors): a 1dp [railBorder] border at 4dp radius (SPA
  * --radius ÷ 2), a 4dp module dot in the type pastel (the D3 map = SPA
  * dotClass), the name at TYPE_META (.clink ÷ 2) — [tvAccent] when selected
- * (the existing law), [railMuted] otherwise — and the count TYPE_META
- * [railMuted] (.cnt). The FOCUS law rides the caller's [tvFocusStyle] (2dp
- * accent border + 1.1 scale) plus the mockup's accent-14% background tint
+ * (the existing law), [tvMuted] otherwise — and the count TYPE_META
+ * [tvMuted] (.cnt). The FOCUS law rides the caller's [tvFocusStyle] (the
+ * slate ring at this row's own 4dp corner) plus the .clink-active slate fill
  * over the panel bg. Field-driven: a blank name renders nothing; the
  * module label is always readable (moduleLabel's law); the count renders
  * ONLY when a summary answered — no count yet, no count block.
@@ -1040,16 +1046,18 @@ private fun RailRow(
             }
             .onKeyEvent { event -> routeDirectionEvent(event, onDirection) }
             .clickable(onClick = onClick)
-            // The focus tint (the mockup's color-mix accent-14%) under the
-            // bordered card surface — the panel bg always stands beneath.
+            // The selection fill (SPA .clink-active / --accent, #1E293B)
+            // under the bordered card surface — the panel bg always stands
+            // beneath; the accent blue is never a selection wash.
             // Full-width BEFORE background/border (design §D): every row's
             // card is the same width at any data state — the count-less row
             // (no summary yet) never wraps narrower than a count-ful one,
             // and Row2's weight(1f) spacer stays deterministic.
             .fillMaxWidth()
-            .background(if (focused) tvAccent.copy(alpha = 0.14f) else Color.Transparent, cardShape)
+            .background(if (focused) Color(0xFF1E293B) else Color.Transparent, cardShape)
             .border(1.dp, railBorder, cardShape)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            // The TV collection card's padding (SPA Home.tsx:266 p-4 16px ÷ 2)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(4.dp).clip(CircleShape).background(dot))
@@ -1061,7 +1069,7 @@ private fun RailRow(
                     // wrap — a long Cyrillic name must not grow the card.
                     overflow = TextOverflow.Ellipsis,
                     fontSize = TYPE_META,
-                    color = if (selected) tvAccent else railMuted,
+                    color = if (selected) tvAccent else tvMuted,
                     modifier = Modifier.padding(start = 6.dp),
                 )
             }
@@ -1071,11 +1079,11 @@ private fun RailRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 fontSize = TYPE_META,
-                color = railMuted,
+                color = tvMuted,
             )
             if (count != null) {
                 Spacer(Modifier.weight(1f))
-                Text(count.toString(), fontSize = TYPE_META, color = railMuted)
+                Text(count.toString(), fontSize = TYPE_META, color = tvMuted)
             }
         }
     }
@@ -1094,7 +1102,7 @@ private fun SeriesPage(
     onFocusMoved: (Int) -> Unit,
     onPlay: (ItemDto) -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize().padding(32.dp)) {
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = PARITY_OVERSCAN_X, vertical = PARITY_OVERSCAN_Y)) {
         // The hero zone (design D5, wireframe 3.3): poster, title
         // (TYPE_DISPLAY — the 8.16 scale) and
         // the served about panel — facts line + Synopsis + genre chips. The
@@ -1149,8 +1157,8 @@ private fun SeriesPage(
  * poster, title, facts line, Synopsis and the genre chips, every block a
  * null-check on the [SeriesHero] carriers — absent metadata or an empty
  * description renders NO panel, no facts line, no chips (L1). The muted
- * Synopsis clamps at 3 lines so the hero never towers (the SPA's clamp law;
- * the task's 2–4 line band). Nothing here is focusable.
+ * Synopsis clamps at 2 lines so the hero never towers (the Synopsis.tsx:48
+ * law). Nothing here is focusable.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -1168,7 +1176,7 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
             ArtworkImage(
                 artwork = artwork,
                 token = token,
-                modifier = Modifier.width(60.dp).height(90.dp),
+                modifier = Modifier.width(48.dp).height(72.dp),
             )
         }
         Column(modifier = Modifier.weight(1f)) {
@@ -1176,6 +1184,7 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
                 Text(
                     hero.title,
                     fontSize = TYPE_DISPLAY,
+                    fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1186,15 +1195,15 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
                     Text(
                         about.facts,
                         fontSize = TYPE_META,
-                        color = Color.White.copy(alpha = 0.6f),
+                        color = tvMuted,
                         modifier = Modifier.padding(top = 3.dp),
                     )
                 }
                 Text(
                     about.description,
                     fontSize = TYPE_SMALL,
-                    color = Color.White.copy(alpha = 0.6f),
-                    maxLines = 3,
+                    color = tvMuted,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 4.dp),
                 )
@@ -1207,10 +1216,10 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
                             Text(
                                 genre,
                                 fontSize = TYPE_META,
-                                color = Color.White.copy(alpha = 0.6f),
+                                color = tvMuted,
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(5.dp))
-                                    .background(chipColor)
+                                    .clip(RoundedCornerShape(50))
+                                    .border(1.dp, railBorder, RoundedCornerShape(50))
                                     .padding(horizontal = 4.dp, vertical = 1.dp),
                             )
                         }
@@ -1247,6 +1256,10 @@ private fun CardView(
     onFocused: () -> Unit = {},
     onDirection: (DpadKey) -> Boolean = { false },
 ) {
+    // The grid card's tile radius (SPA .scard, index.css:434 border-radius
+    // var(--radius) 8px ÷ 2 — the file's card radius): the artwork box
+    // clips to it so the tile renders the SPA's radius-clipped look.
+    val cardShape = RoundedCornerShape(4.dp)
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -1257,7 +1270,7 @@ private fun CardView(
         // The fixed-aspect art block — unconditional (the uniform-row law):
         // field-driven ABSENCE still occupies the tile's geometry (a bare
         // surface), never a shorter card that shifts the row's text rows.
-        Box(modifier = Modifier.fillMaxWidth().aspectRatio(tileAspect)) {
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(tileAspect).clip(cardShape)) {
             val artwork = resolveArtworkUrl(serverBase, card.artworkUrl)
             if (artwork != null) {
                 ArtworkImage(
@@ -1265,6 +1278,10 @@ private fun CardView(
                     token = token,
                     modifier = Modifier.fillMaxSize(),
                 )
+            } else {
+                // Absent artwork renders the deterministic hashed fallback,
+                // never a bare rectangle (the SPA Artwork.tsx law).
+                FallbackArtwork(name = card.title, modifier = Modifier.fillMaxSize())
             }
             // The watched ✓ rides the art's top-end corner (task 12.1) —
             // OUT of the text stack, so the card's height never depends on
@@ -1285,7 +1302,8 @@ private fun CardView(
         if (card.title != null) {
             Text(
                 card.title,
-                fontSize = TYPE_BODY,
+                fontSize = TYPE_SMALL,
+                fontWeight = FontWeight.SemiBold, // the SPA .scard-title font-semibold
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
@@ -1297,7 +1315,7 @@ private fun CardView(
             Text(
                 card.meta,
                 fontSize = TYPE_META,
-                color = Color.White.copy(alpha = 0.6f),
+                color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
@@ -1307,7 +1325,7 @@ private fun CardView(
             Text(
                 card.footer,
                 fontSize = TYPE_META,
-                color = Color.White.copy(alpha = 0.6f),
+                color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
@@ -1335,7 +1353,8 @@ private fun WatchedCornerMark(watched: Boolean, modifier: Modifier = Modifier) {
 
 /**
  * The episode row (design D2, anatomy 3.4): the composed served name at
- * TYPE_HEADING (the 8.16 scale — SPA 18px), the ONE field-driven meta line,
+ * TYPE_SMALL + Medium with a 2-line clamp (the SPA tv card title text-sm
+ * font-medium line-clamp-2), the ONE field-driven meta line,
  * and the same tri-state as the grid card — the in-progress bar rides the
  * still's bottom edge (the 36dp row has no room under the art), the watched
  * title dims, and the ✓ corner mark rides the thumb's top-end corner
@@ -1393,8 +1412,9 @@ private fun EpisodeRow(
             if (card.title != null) {
                 Text(
                     card.title,
-                    fontSize = TYPE_HEADING,
-                    maxLines = 1,
+                    fontSize = TYPE_SMALL,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.alpha(if (card.watched == true) WATCHED_DIM else 1f),
                 )
@@ -1403,7 +1423,7 @@ private fun EpisodeRow(
                 Text(
                     card.meta,
                     fontSize = TYPE_META,
-                    color = Color.White.copy(alpha = 0.6f),
+                    color = tvMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 4.dp),
@@ -1462,8 +1482,9 @@ internal fun routeDirectionEvent(
 
 /**
  * The in-progress bar (the SPA's InProgressBar idiom, WatchedStates.tsx): a
- * rounded muted track with the type-accent fill at the served percent. The
- * caller owns the tri-state — a watched card never reaches here.
+ * rounded --border track ([inProgressTrack]) with the bg-primary fill
+ * ([inProgressFill]) at the served percent. The caller owns the tri-state —
+ * a watched card never reaches here.
  */
 @Composable
 internal fun InProgressBar(percent: Int, accent: Color, modifier: Modifier = Modifier) {
@@ -1471,13 +1492,13 @@ internal fun InProgressBar(percent: Int, accent: Color, modifier: Modifier = Mod
         modifier = modifier
             .height(3.dp)
             .clip(RoundedCornerShape(2.dp))
-            .background(chipColor),
+            .background(inProgressTrack),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxHeight()
                 .fillMaxWidth(percent / 100f)
-                .background(accent),
+                .background(inProgressFill),
         )
     }
 }

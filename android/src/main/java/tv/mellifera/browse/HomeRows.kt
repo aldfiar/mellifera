@@ -1,5 +1,6 @@
 package tv.mellifera.browse
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +17,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -24,11 +26,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -46,8 +50,11 @@ import tv.mellifera.net.LibraryDto
 import tv.mellifera.ui.TYPE_BODY
 import tv.mellifera.ui.TYPE_HEADING
 import tv.mellifera.ui.TYPE_META
+import tv.mellifera.ui.TYPE_SMALL
+import tv.mellifera.ui.railBorder
 import tv.mellifera.ui.requestFocusSafely
 import tv.mellifera.ui.tvFocusStyle
+import tv.mellifera.ui.tvMuted
 
 /**
  * The home surface's rows (design D4, wireframe 3.1): the Continue row
@@ -77,6 +84,13 @@ import tv.mellifera.ui.tvFocusStyle
  */
 private const val CONTINUE_LABEL = "Продолжить"
 private const val NEXT_UP_LABEL = "Следующая серия"
+
+/**
+ * The home card's chrome radius (the SPA continue-row card, Home.tsx:407
+ * `rounded-md` 6px ÷ 2): the shell's border shape and the clip its artwork
+ * boxes share.
+ */
+private val cardShape = RoundedCornerShape(3.dp)
 
 /**
  * One home row's walker config, shared by its cards: the cursor-in-state
@@ -115,14 +129,14 @@ internal fun HomeRows(
     // error-branch idiom — before the empty-rows early return; rows
     // present → the pure gate keeps it null.
     homeErrorLine(home)?.let { line ->
-        Text(line, fontSize = TYPE_BODY, modifier = Modifier.padding(start = 32.dp, top = 8.dp))
+        Text(line, fontSize = TYPE_BODY, modifier = Modifier.padding(start = PARITY_OVERSCAN_X, top = 8.dp))
     }
     if (resumes.isEmpty() && anchors.isEmpty()) return
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         // The parity card width (D13): 3 fixed 16:9 cards across the content
         // column — the fixed-track math, the (columns − 1) gutters removed.
         val cardWidth = rowCardTrack(maxWidth, HOME_ROW_COLUMNS)
-        Column(modifier = Modifier.padding(start = 32.dp, top = 8.dp)) {
+        Column(modifier = Modifier.padding(start = PARITY_OVERSCAN_X, top = 8.dp)) {
             // Row 0 is the topmost RENDERED row — row-0's LEFT@x=0 is the rail
             // trigger, so the anchor row counts as row 0 only with no resumes
             // above it.
@@ -194,7 +208,7 @@ private fun HomeRow(
     card: @Composable (Int) -> Unit,
 ) {
     Column(modifier = Modifier.padding(top = 6.dp)) {
-        Text(label, fontSize = TYPE_HEADING)
+        Text(label, fontSize = TYPE_HEADING, fontWeight = FontWeight.SemiBold) // the SPA Continue h2 text-lg font-semibold
         LazyRow(
             modifier = Modifier.padding(top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -269,6 +283,11 @@ private fun HomeCardShell(
     Column(
         modifier = Modifier
             .width(cardWidth)
+            // The SPA continue-row card chrome (Home.tsx:407 rounded-md
+            // border p-3): the bordered rounded shell the card content
+            // sits inside.
+            .border(1.dp, railBorder, cardShape)
+            .padding(6.dp)
             .bringIntoViewRequester(intoView)
             .focusRequester(requester)
             .tvFocusStyle()
@@ -328,7 +347,7 @@ private fun ResumeCard(
     ) {
         // The uniform-row law (task 8.10): the 16:9 art block ALWAYS renders —
         // absent artwork leaves a placeholder surface, never a shorter card.
-        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(cardShape)) {
             val artwork = resolveArtworkUrl(serverBase, model.artworkUrl)
             if (artwork != null) {
                 ArtworkImage(
@@ -336,6 +355,10 @@ private fun ResumeCard(
                     token = token,
                     modifier = Modifier.fillMaxSize(),
                 )
+            } else {
+                // Absent artwork renders the deterministic hashed fallback,
+                // never a bare rectangle (the SPA Artwork.tsx law).
+                FallbackArtwork(name = model.title, modifier = Modifier.fillMaxSize())
             }
         }
         if (model.percent != null) {
@@ -349,25 +372,25 @@ private fun ResumeCard(
             Text(
                 model.seriesName,
                 fontSize = TYPE_META,
-                color = Color.White.copy(alpha = 0.6f),
+                color = tvMuted,
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
         if (model.title != null) {
-            Text(model.title, fontSize = TYPE_HEADING, modifier = Modifier.padding(top = 4.dp))
+            Text(model.title, fontSize = TYPE_SMALL, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp)) // the SPA text-sm font-medium
         }
         if (model.episodeTitle != null) {
             Text(
                 model.episodeTitle,
                 fontSize = TYPE_META,
-                color = Color.White.copy(alpha = 0.6f),
+                color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
         Text(
             model.positionLine,
             fontSize = TYPE_META,
-            color = Color.White.copy(alpha = 0.6f),
+            color = tvMuted,
             modifier = Modifier.padding(top = 2.dp),
         )
     }
@@ -402,7 +425,7 @@ private fun AnchorCard(
         takesEntryFocus = takesEntryFocus,
     ) {
         // The uniform-row law (task 8.10): the 16:9 art block ALWAYS renders.
-        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(cardShape)) {
             val artwork = resolveArtworkUrl(serverBase, model.artworkUrl)
             if (artwork != null) {
                 ArtworkImage(
@@ -410,16 +433,20 @@ private fun AnchorCard(
                     token = token,
                     modifier = Modifier.fillMaxSize(),
                 )
+            } else {
+                // Absent artwork renders the deterministic hashed fallback,
+                // never a bare rectangle (the SPA Artwork.tsx law).
+                FallbackArtwork(name = model.title, modifier = Modifier.fillMaxSize())
             }
         }
         if (model.title != null) {
-            Text(model.title, fontSize = TYPE_HEADING, modifier = Modifier.padding(top = 4.dp))
+            Text(model.title, fontSize = TYPE_SMALL, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp)) // the SPA text-sm font-medium
         }
         if (model.libraryName != null) {
             Text(
                 model.libraryName,
                 fontSize = TYPE_META,
-                color = Color.White.copy(alpha = 0.6f),
+                color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
@@ -427,7 +454,7 @@ private fun AnchorCard(
             Text(
                 model.nextLabel,
                 fontSize = TYPE_META,
-                color = accent.copy(alpha = 0.9f),
+                color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }

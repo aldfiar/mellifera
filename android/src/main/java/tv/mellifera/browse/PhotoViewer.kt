@@ -28,6 +28,7 @@ import kotlinx.serialization.json.longOrNull
 import tv.mellifera.dpad.DpadKey
 import tv.mellifera.dpad.toDpadKey
 import tv.mellifera.ui.TYPE_SMALL
+import tv.mellifera.ui.tvMuted
 
 /**
  * The photo viewer (task 8.13 — the operator-reported gap: OK on a photo
@@ -97,7 +98,7 @@ fun PhotoViewer(
                 photoDimensions(document),
             ),
             fontSize = TYPE_SMALL,
-            color = Color.White.copy(alpha = 0.7f),
+            color = tvMuted,
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(16.dp),
