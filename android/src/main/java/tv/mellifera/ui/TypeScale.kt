@@ -14,7 +14,7 @@ import androidx.compose.ui.unit.sp
  *
  *   sp × 2 = SPA px — TYPE_META 6→12 (text-xs), SMALL 7→14 (text-sm),
  *   BODY 8→16 (text-base), HEADING 9→18 (text-lg), READOUT 10→20 (text-xl),
- *   DISPLAY 14→28, CODE 24→48.
+ *   DISPLAY 10→20 (text-xl), CODE 18→36.
  *
  * The D11 type floors (large text on small tiles) are RETIRED by the same
  * ruling — the SPA's own sizes ARE the floors; a single-target app rescales
@@ -22,8 +22,8 @@ import androidx.compose.ui.unit.sp
  * density 320» precedent). sp keeps honoring the system font scale.
  */
 
-/** 14sp — the hero's and the library body's title (SPA 28px). */
-val TYPE_DISPLAY = 14.sp
+/** 10sp — the hero's and the library body's title (SPA 20px, text-xl). */
+val TYPE_DISPLAY = 10.sp
 
 /** 10sp — the player's position/duration readout (SPA 20px, text-xl). */
 val TYPE_READOUT = 10.sp
@@ -32,7 +32,7 @@ val TYPE_READOUT = 10.sp
  * (SPA 18px, text-lg). */
 val TYPE_HEADING = 9.sp
 
-/** 8sp — card titles and default body text (SPA 16px, text-base). */
+/** 8sp — default body text (SPA 16px, text-base). */
 val TYPE_BODY = 8.sp
 
 /** 7sp — chip labels, hints, descriptions, the skip label
@@ -43,5 +43,9 @@ val TYPE_SMALL = 7.sp
  * (SPA 12px, text-xs). */
 val TYPE_META = 6.sp
 
-/** 24sp — the pairing code (SPA 48px). */
-val TYPE_CODE = 24.sp
+/** 18sp — the pairing code (SPA 36px). */
+val TYPE_CODE = 18.sp
+
+/** 18sp — the missing-artwork fallback's initial glyph (SPA text-4xl,
+ * 36px ÷ 2 — Artwork.tsx PosterFrame). */
+val TYPE_FALLBACK_INITIAL = 18.sp

@@ -5,6 +5,8 @@ import androidx.compose.ui.graphics.luminance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import tv.mellifera.browse.DEFAULT_TYPE_ACCENT
+import tv.mellifera.browse.typeAccent
 
 /**
  * Pins the applied scheme (D13 visual parity scale): background AND surface
@@ -40,5 +42,37 @@ class AppThemeTest {
             "onBackground must stay readable on the near-black canvas",
             onBackground.luminance() > 0.5f,
         )
+    }
+
+    @Test
+    fun root_text_token_is_the_spa_foreground() {
+        // SPA --foreground (210 40% 98%) — web/src/styles/index.css .dark;
+        // App's root LocalContentColor provider hands this to every
+        // default-colored Text.
+        assertEquals(Color(0xFFF8FAFC), tvForeground)
+    }
+
+    @Test
+    fun muted_and_destructive_tokens_pin_their_spa_values() {
+        // SPA --muted-foreground (215 20.2% 65.1%) and --destructive
+        // (0 62.8% 30.6%) — web/src/styles/index.css .dark.
+        assertEquals(Color(0xFF94A3B8), tvMuted)
+        assertEquals(Color(0xFF7F1D1D), tvDestructive)
+    }
+
+    @Test
+    fun pastel_map_pins_the_spa_dot_tokens() {
+        // SPA .dot-* literals — web/src/styles/index.css; BrowseFlow's type
+        // map reads the token home (no Color literal left in the map).
+        assertEquals(Color(0xFFB7A6F4), dotSerial)
+        assertEquals(Color(0xFFF6C3A4), dotTv)
+        assertEquals(Color(0xFFA4E3C3), dotImage)
+        assertEquals(Color(0xFFA4C8F4), dotAudio)
+        assertEquals(Color(0xFFB7A6F4), typeAccent("serial"))
+        assertEquals(Color(0xFFF6C3A4), typeAccent("tv"))
+        assertEquals(Color(0xFFA4E3C3), typeAccent("image"))
+        assertEquals(Color(0xFFA4C8F4), typeAccent("audio"))
+        assertEquals(dotAudio, DEFAULT_TYPE_ACCENT)
+        assertEquals(dotAudio, typeAccent("unknown-module"))
     }
 }

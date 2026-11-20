@@ -2,7 +2,7 @@ package tv.mellifera.ui
 
 import android.content.Context
 import android.content.Intent
-import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
@@ -11,11 +11,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import tv.mellifera.AppViewModel
+import tv.mellifera.browse.PARITY_OVERSCAN_X
 
 /**
  * The minimal settings surface (5.11): the app has no settings screen, so
@@ -31,14 +33,16 @@ fun SettingsSection(viewModel: AppViewModel) {
     val isOpen by viewModel.telemetry.isOpen.collectAsState()
     if (!isOpen) return
     val context = LocalContext.current
-    Column(modifier = Modifier.padding(start = 32.dp, top = 12.dp)) {
+    Column(modifier = Modifier.padding(start = PARITY_OVERSCAN_X, top = 12.dp)) {
         Text("Настройки", fontSize = TYPE_HEADING)
         Text(
             "Поделиться диагностикой",
             fontSize = TYPE_SMALL,
+            color = tvMuted,
             modifier = Modifier
                 .padding(top = 6.dp)
-                .background(chipColor, RoundedCornerShape(2.dp))
+                .clip(RoundedCornerShape(50))
+                .border(1.dp, railBorder, RoundedCornerShape(50))
                 .tvFocusStyle()
                 .clickable { shareDiagnostics(context, viewModel) }
                 .padding(horizontal = 6.dp, vertical = 4.dp),

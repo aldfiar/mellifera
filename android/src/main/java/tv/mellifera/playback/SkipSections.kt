@@ -1,5 +1,6 @@
 package tv.mellifera.playback
 
+import androidx.compose.ui.graphics.Color
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -16,8 +17,9 @@ import kotlinx.serialization.json.doubleOrNull
  * never fabricates a skip range (honest absence, L1). The lexicon is UI
  * vocabulary — presentation copy classifying what the chip says — never a
  * new wire field; the served shape is consumed exactly as internal/stream's
- * projectChapters projects it. Pure module — no Android, no flow; pinned in
- * SkipSectionsTest.
+ * projectChapters projects it. Pure module — no Android, no flow; Compose
+ * Color appears only as the packed tone constants (the FallbackGradient
+ * pattern). Pinned in SkipSectionsTest.
  */
 
 /** The two presentation classes a chapter can carry. */
@@ -33,6 +35,54 @@ data class SkipSection(
     val startSeconds: Double,
     val endSeconds: Double,
 )
+
+/**
+ * One playback chip's pastel tone: the surface fill plus the dark text hue.
+ * [border] is the 1dp hairline drawn around the surface on TV — the same
+ * dark text hue as the edge color (the SPA chip's soft `shadow-lg` rendered
+ * as a defined edge instead).
+ */
+data class SkipTone(
+    val surface: Color,
+    val text: Color,
+) {
+    val border: Color get() = text
+}
+
+/** Intro chip — SPA SkipChip.tsx CHIP_TONE intro `bg-sky-100/95
+ * text-sky-900`: Tailwind sky-100 #E0F2FE and sky-900 #0C4A6E, the /95
+ * opacity folded into the surface alpha (0.95 → 0xF2). */
+private val SKIP_TONE_INTRO = SkipTone(
+    surface = Color(0xF2E0F2FE),
+    text = Color(0xFF0C4A6E),
+)
+
+/** Credits chip — SPA SkipChip.tsx CHIP_TONE credits `bg-violet-100/95
+ * text-violet-900`: Tailwind violet-100 #EDE9FE and violet-900 #4C1D95,
+ * the /95 opacity folded into the surface alpha (0.95 → 0xF2). */
+private val SKIP_TONE_CREDITS = SkipTone(
+    surface = Color(0xF2EDE9FE),
+    text = Color(0xFF4C1D95),
+)
+
+/** «Следующая серия» card — SPA AutoNext.tsx:340 `bg-emerald-100/95
+ * text-emerald-900` (the watch affordance's tone, rendered as the TV
+ * card's surface): Tailwind emerald-100 #D1FAE5 and emerald-900 #064E3B,
+ * the /95 opacity folded into the surface alpha (0.95 → 0xF2). */
+val AUTO_NEXT_TONE = SkipTone(
+    surface = Color(0xF2D1FAE5),
+    text = Color(0xFF064E3B),
+)
+
+/**
+ * The pure kind→pastel tone mapping: intro = sky pastel, credits = violet
+ * pastel — SPA SkipChip.tsx CHIP_TONE verbatim. Pure; pinned in
+ * SkipSectionsTest.
+ */
+fun skipToneOf(kind: SkipKind): SkipTone = when (kind) {
+    SkipKind.Intro -> SKIP_TONE_INTRO
+    SkipKind.Credits -> SKIP_TONE_CREDITS
+}
 
 /** How long the chip stays fully visible inside the range before it fades
  * (still rendered, just inert) — the SPA's SKIP_FADE_MS. */
