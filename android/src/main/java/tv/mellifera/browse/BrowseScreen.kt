@@ -221,7 +221,18 @@ fun BrowseScreen(viewModel: AppViewModel) {
                             swapUntilLanded(bodyIntoView, scrollState)
                         }
                     }
-                    Column(modifier = Modifier.fillMaxSize().verticalScroll(scrollState)) {
+                    Column(
+                        // The bottom headroom retires the walk-measured 27px
+                        // home sliver above the body (D-3): end-of-scroll may
+                        // now rest one [PARITY_OVERSCAN_Y] past the body's top
+                        // edge, and the body's own top overscan absorbs it —
+                        // the body lands at y=0 with no scroll range left for
+                        // the home rows to peek into.
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(bottom = PARITY_OVERSCAN_Y),
+                    ) {
                         // The home surface (design D4, task 3.2): the served
                         // Continue/Next-up rows above the collection body — an
                         // empty served array renders no row (L1). Its fetch rides
@@ -408,10 +419,29 @@ private fun SeriesGrid(
             .padding(horizontal = PARITY_OVERSCAN_X, vertical = PARITY_OVERSCAN_Y),
     ) {
         val library = state.libraries.firstOrNull { it.id == state.libraryId }
-        if (library != null) {
-            Text(library.displayName, fontSize = typeDisplay(), fontWeight = FontWeight.SemiBold)
-        }
         val accent = typeAccent(library?.moduleId ?: "")
+        if (library != null) {
+            // The ONE-line header (D-3): the title at DISPLAY plus the
+            // module's type badge chip in its pastel (the rail dot map) — the
+            // chip's label is the rail rows' own moduleLabel (the same served
+            // module_id, field-driven), and no count or description line
+            // follows (the rail carries the count).
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(library.displayName, fontSize = typeDisplay(), fontWeight = FontWeight.SemiBold)
+                Text(
+                    moduleLabel(library.moduleId),
+                    fontSize = typeMeta(),
+                    color = chipActiveText,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(accent)
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
         when (library?.moduleId) {
             "serial" -> Column(modifier = Modifier.fillMaxSize()) {
                 // The facet lane (task 10.2 — the SPA's facetLane law) renders
