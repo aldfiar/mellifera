@@ -191,6 +191,44 @@ class SeriesGridTest {
     }
 
     @Test
+    fun episode_title_rides_the_served_precedence() {
+        // The served-title precedence (design D3's episode row): the
+        // document's _view.title.value wins when present — the read-time
+        // accessor family documentDuration uses for ffprobe — and the
+        // composed name is NEVER re-derived client-side.
+        val doc = Json.parseToJsonElement(
+            """{"_view":{"title":{"value":"Рикошет"}},"sources":{"serial-parser":{"season":1,"episode":2}}}""",
+        )
+        assertEquals("Рикошет", episodeTitle(doc, "Сага · S01E02"))
+        // A number renders its literal bytes (the JS String(value) law,
+        // INV-no-rounding)...
+        assertEquals("12", episodeTitle(Json.parseToJsonElement("""{"_view":{"title":{"value":12}}}"""), "Сага · S01E02"))
+        assertEquals("12.5", episodeTitle(Json.parseToJsonElement("""{"_view":{"title":{"value":12.5}}}"""), "Сага · S01E02"))
+        // ...anything else — absent, null, mistyped — floors to the composed
+        // name verbatim.
+        assertEquals("Сага · S01E02", episodeTitle(Json.parseToJsonElement("""{"sources":{}}"""), "Сага · S01E02"))
+        assertEquals("Сага · S01E02", episodeTitle(Json.parseToJsonElement("""{"_view":{"title":{"value":null}}}"""), "Сага · S01E02"))
+        assertEquals("Сага · S01E02", episodeTitle(Json.parseToJsonElement("""{"_view":{"title":{"value":{"nested":true}}}}"""), "Сага · S01E02"))
+        // A blank composed name carries no title block — nothing fabricated.
+        assertNull(episodeTitle(JsonNull, ""))
+        // The mapper wires the precedence: a document-titled row titles its
+        // card with the served value.
+        assertEquals("Рикошет", ItemDto(id = "e-11", displayName = "Сага · S01E02", document = doc).toCard().title)
+    }
+
+    @Test
+    fun episode_card_carries_the_display_formatted_duration_line() {
+        // The F-3 anatomy's duration line: the document's ffprobe duration,
+        // display-formatted (ONE formatter — formatPosition)...
+        val card = ItemDto(id = "e-12", displayName = "S01E01", document = Json.parseToJsonElement(probedDoc())).toCard()
+        assertEquals("23:50", card.duration)
+        // ...absent → NO duration line (field-driven absence, L1).
+        assertNull(ItemDto(id = "e-13", displayName = "S01E02").toCard().duration)
+        // The duration is episode-scoped: the series card never carries one.
+        assertNull(SeriesDto(id = "s-11", displayName = "Сага").toCard().duration)
+    }
+
+    @Test
     fun format_position_law() {
         // The SPA's formatPosition law verbatim (Home.tsx): MM:SS, then
         // H:MM:SS past the hour; negative input floors at zero.

@@ -14,6 +14,7 @@ import tv.mellifera.net.LibraryDto
 import tv.mellifera.net.LibrarySummaryResponse
 import tv.mellifera.net.MelliferaApi
 import tv.mellifera.net.SeriesDto
+import tv.mellifera.nav.firstUnwatchedEpisode
 import tv.mellifera.ui.dotAudio
 import tv.mellifera.ui.dotImage
 import tv.mellifera.ui.dotSerial
@@ -783,7 +784,10 @@ class BrowseFlow(
      * best-effort positions walk for the episode rows' in-progress bars.
      * The rows render as soon as the episodes land; the bars arrive with
      * the progress walk. The grid cursor PARKS — untouched — so Back
-     * restores the exact card; the episode cursor starts at the first row. */
+     * restores the exact card; the episode cursor seeds the G19
+     * first-unwatched law (nav/InitialFocus.kt — the served rows' watched
+     * states pick the landing; no states or an all-watched page → 0) and
+     * the walk keeps it from there. */
     suspend fun openSeries(series: SeriesDto) {
         _state.value = _state.value.copy(
             selectedSeries = series,
@@ -804,6 +808,7 @@ class BrowseFlow(
                 selectedSeries = series,
                 episodes = episodes,
                 isLoading = false,
+                episodeFocus = firstUnwatchedEpisode(episodes),
             )
             // The positions write follows the loadPositions loop await —
             // capture again before the walk, check at the write (Q12).

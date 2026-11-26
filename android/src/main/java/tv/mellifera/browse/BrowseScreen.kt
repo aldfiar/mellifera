@@ -119,7 +119,7 @@ import tv.mellifera.ui.tvMuted
  * crossing natively.
  */
 /** The watched title's dim (design D2 — the SPA's .watched-dim, 0.55). */
-private const val WATCHED_DIM = 0.55f
+internal const val WATCHED_DIM = 0.55f
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1336,6 +1336,7 @@ private fun RailRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SeriesPage(
     series: SeriesDto,
@@ -1349,50 +1350,105 @@ private fun SeriesPage(
     onFocusMoved: (Int) -> Unit,
     onPlay: (ItemDto) -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize().padding(horizontal = PARITY_OVERSCAN_X, vertical = PARITY_OVERSCAN_Y)) {
-        // The hero zone (design D5, wireframe 3.3): poster, title
-        // (TYPE_DISPLAY — the 8.16 scale) and
-        // the served about panel — facts line + Synopsis + genre chips. The
-        // hero carries NO focus modifiers: the episode list below is the
-        // walker's home and keeps the initial focus.
-        SeriesHeroView(series, serverBase, token)
-        when {
-            isLoading && episodes.isEmpty() -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
-            episodes.isEmpty() -> Text("Эпизоды не найдены", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
-            else -> LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(top = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+    // The plan reads the RAW viewport (the pinned episode cell's W×H = the
+    // 0.92 column over the full panel), the overscan edges padding INSIDE —
+    // the same measure law every body grid follows.
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val columnWidth = maxWidth * CONTENT_COLUMN_FRACTION
+        val viewportHeight = maxHeight
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            Column(
+                modifier = Modifier
+                    .width(columnWidth)
+                    .padding(horizontal = PARITY_OVERSCAN_X, vertical = PARITY_OVERSCAN_Y),
             ) {
-                items(
-                    count = episodes.size,
-                    key = { index -> episodes[index].id },
-                ) { index ->
-                    val episode = episodes[index]
-                    val requester = remember { FocusRequester() }
-                    LaunchedEffect(focusIndex) {
-                        if (focusIndex == index) requester.focusUntilAttached()
-                    }
-                    EpisodeRow(
-                        // The stored position rides in from the flow's
-                        // progress walk; the mapping owns the tri-state (a
-                        // watched row or a duration-less row renders no bar).
-                        card = episode.toCard(positions[episode.id]),
-                        accent = accent,
-                        onFocused = { onFocusMoved(index) },
-                        serverBase = serverBase,
-                        token = token,
-                        onClick = { onPlay(episode) },
-                        onDirection = { key ->
-                            val next = moveInList(index, episodes.size, key)
-                            if (next != index) {
-                                onFocusMoved(next)
-                                true
-                            } else {
-                                false
+                // The hero zone (design D5, wireframe 3.3): poster, title,
+                // and the served about panel — facts line + Synopsis + genre
+                // chips. The hero carries NO focus modifiers: the episode
+                // grid below is the walker's home and keeps the initial
+                // focus (nav/InitialFocus.kt's first-unwatched law seeds it).
+                SeriesHeroView(series, serverBase, token)
+                when {
+                    isLoading && episodes.isEmpty() -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
+                    episodes.isEmpty() -> Text("Эпизоды не найдены", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
+                    else -> {
+                        // The density law (D-1): «Эпизодов в ряду» — null
+                        // = Авто → the plan over the ~100dp hero reserve
+                        // (3 across at Обычный @960×540); 2/3/4 override,
+                        // clamped inside the planner so a caption never
+                        // clips.
+                        val mode = LocalUiScale.current
+                        val plan = gridPlan(
+                            width = columnWidth,
+                            height = viewportHeight,
+                            chrome = chromeReserve(mode, GridSurface.EPISODE),
+                            caption = captionReserve(mode, GridSurface.EPISODE),
+                            aspect = STILL_ASPECT,
+                            columnOverride = LocalGridPrefs.current.episodeColumns,
+                        )
+                        // The scroll-rides-focus actuator (task 8.3): a
+                        // walked cursor brings its card into view.
+                        val scope = rememberCoroutineScope()
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(plan.columns),
+                            modifier = Modifier.fillMaxSize().padding(top = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(PARITY_GUTTER),
+                            horizontalArrangement = Arrangement.spacedBy(PARITY_GUTTER),
+                            contentPadding = PaddingValues(bottom = PARITY_OVERSCAN_Y),
+                        ) {
+                            items(
+                                count = episodes.size,
+                                key = { index -> episodes[index].id },
+                            ) { index ->
+                                val episode = episodes[index]
+                                val requester = remember { FocusRequester() }
+                                val intoView = remember { BringIntoViewRequester() }
+                                // The cursor state is the focus source of
+                                // truth (the re-arming actuator — task 8.11):
+                                // the first-unwatched seed lands on mount,
+                                // every law move re-lands the walked cursor.
+                                LaunchedEffect(focusIndex) {
+                                    if (focusIndex == index) requester.focusUntilAttached()
+                                }
+                                EpisodeCard(
+                                    // The stored position rides in from the
+                                    // flow's progress walk; the mapping owns
+                                    // the tri-state (a watched row or a
+                                    // duration-less row renders no bar) and
+                                    // the served-title precedence.
+                                    card = episode.toCard(positions[episode.id]),
+                                    accent = accent,
+                                    onFocused = {
+                                        onFocusMoved(index)
+                                        scope.launch { intoView.bringIntoView() }
+                                    },
+                                    serverBase = serverBase,
+                                    token = token,
+                                    onClick = { onPlay(episode) },
+                                    onDirection = { key ->
+                                        // The poster grid's walker law
+                                        // (moveInGrid); a clamp — an edge
+                                        // arrow the law cannot satisfy —
+                                        // stays unconsumed and crosses
+                                        // natively (the hero above is not
+                                        // focusable, so the crossing is
+                                        // harmless).
+                                        val next = moveInGrid(index, plan.columns, episodes.size, key)
+                                        if (next != index) {
+                                            onFocusMoved(next)
+                                            true // consumed inside the grid
+                                        } else {
+                                            false
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .bringIntoViewRequester(intoView)
+                                        .focusRequester(requester)
+                                        .tvFocusStyle(),
+                                )
                             }
-                        },
-                        modifier = Modifier.focusRequester(requester).tvFocusStyle(),
-                    )
+                        }
+                    }
                 }
             }
         }
@@ -1610,7 +1666,7 @@ private fun CardView(
  * uniform-row law restored).
  */
 @Composable
-private fun WatchedCornerMark(watched: Boolean, modifier: Modifier = Modifier) {
+internal fun WatchedCornerMark(watched: Boolean, modifier: Modifier = Modifier) {
     if (!watched) return
     Text(
         "✓",
@@ -1618,88 +1674,6 @@ private fun WatchedCornerMark(watched: Boolean, modifier: Modifier = Modifier) {
         color = DEFAULT_TYPE_ACCENT, // the SPA .watched-mark law: the mark is type-agnostic
         modifier = modifier.padding(3.dp),
     )
-}
-
-/**
- * The episode row (design D2, anatomy 3.4): the composed served name at
- * TYPE_SMALL + Medium with a 2-line clamp (the SPA tv card title text-sm
- * font-medium line-clamp-2), the ONE field-driven meta line,
- * and the same tri-state as the grid card — the in-progress bar rides the
- * still's bottom edge (the 36dp row has no room under the art), the watched
- * title dims, and the ✓ corner mark rides the thumb's top-end corner
- * (WatchedCornerMark, task 12.1 — OUT of the text stack, so row heights are
- * watched-independent), type-agnostic (the SPA .watched-mark pastel, D3) at
- * meta scale, NO bar. Word chips are RETIRED.
- * OK plays through clickable — the shipped play verb's launch leg resumes
- * from the stored position (no client seek math).
- */
-@Composable
-private fun EpisodeRow(
-    card: DisplayCard,
-    accent: Color,
-    modifier: Modifier = Modifier,
-    serverBase: String? = null,
-    token: String? = null,
-    onClick: () -> Unit = {},
-    onFocused: () -> Unit = {},
-    onDirection: (DpadKey) -> Boolean = { false },
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(36.dp)
-            .onFocusChanged { if (it.isFocused) onFocused() }
-            .onKeyEvent { event -> routeDirectionEvent(event, onDirection) }
-            .clickable(onClick = onClick),
-    ) {
-        val artwork = resolveArtworkUrl(serverBase, card.artworkUrl)
-        if (artwork != null) {
-            Box(modifier = Modifier.width(60.dp).height(36.dp)) {
-                ArtworkImage(
-                    artwork = artwork,
-                    token = token,
-                    modifier = Modifier.fillMaxSize(),
-                )
-                // In-progress ONLY — a watched row never renders a bar (D2).
-                if (card.watched != true && card.progress != null) {
-                    InProgressBar(
-                        percent = card.progress,
-                        accent = accent,
-                        modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
-                    )
-                }
-                // The watched ✓ rides the thumb's top-end corner (task 12.1)
-                // — OUT of the text stack, so the row's height never depends
-                // on watched; unwatched renders absence (no mark, no space).
-                WatchedCornerMark(
-                    watched = card.watched == true,
-                    modifier = Modifier.align(Alignment.TopEnd),
-                )
-            }
-        }
-        Column(modifier = Modifier.padding(start = 6.dp)) {
-            if (card.title != null) {
-                Text(
-                    card.title,
-                    fontSize = typeSmall(),
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.alpha(if (card.watched == true) WATCHED_DIM else 1f),
-                )
-            }
-            if (card.meta != null) {
-                Text(
-                    card.meta,
-                    fontSize = typeMeta(),
-                    color = tvMuted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-        }
-    }
 }
 
 /**

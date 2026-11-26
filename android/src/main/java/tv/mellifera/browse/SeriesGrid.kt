@@ -48,6 +48,12 @@ data class DisplayCard(
      * means "no footer block" (an absent fact renders no date, never a
      * faked one). */
     val footer: String? = null,
+
+    /** The episode card's duration line (the document's ffprobe duration,
+     * display-formatted) — null means "no duration line" (an absent or
+     * unparseable duration renders absence, never a guessed value). The
+     * episode grid is its only reader (F-3's episode anatomy). */
+    val duration: String? = null,
 )
 
 /**
@@ -95,12 +101,15 @@ fun SeriesDto.toCard(): DisplayCard = DisplayCard(
  * UNwatched row that carries BOTH that position and a real document
  * duration — watched → NO bar (D2), missing either side → no bar, never a
  * guessed percent. The meta line is the document's field-driven fact line.
+ * The title rides the served-title precedence ([episodeTitle]); the
+ * duration line is the document duration, display-formatted, absent → no
+ * line (the episode card's F-3 anatomy).
  */
 fun ItemDto.toCard(positionSeconds: Long? = null): DisplayCard {
     val duration = documentDuration(document)
     return DisplayCard(
         id = id,
-        title = titleBlock(displayName),
+        title = episodeTitle(document, displayName),
         artworkUrl = artwork?.takeIf { it.isNotBlank() },
         watched = watched,
         progress =
@@ -110,6 +119,7 @@ fun ItemDto.toCard(positionSeconds: Long? = null): DisplayCard {
                 positionSeconds?.let { watchedPercent(it, duration) }
             },
         meta = documentMeta(document),
+        duration = duration?.let(::formatPosition),
     )
 }
 
@@ -132,6 +142,25 @@ internal fun documentDuration(doc: JsonElement): Long? {
     val raw = format["duration"] as? JsonPrimitive ?: return null
     val seconds = raw.doubleOrNull ?: return null
     return if (seconds.isFinite() && seconds > 0) Math.round(seconds).toLong() else null
+}
+
+/**
+ * episodeTitle — the served-title precedence (design D3's episode row): the
+ * SERVED document's own title (the read-time `_view.title` accessor, the
+ * same family [documentDuration] reads ffprobe through) when present, else
+ * the composed name ([ItemDto.displayName] — the server's ItemName chain
+ * verbatim, never re-derived client-side). A string value passes verbatim;
+ * a number renders its literal bytes (the JS String(value) law, INV-
+ * no-rounding); anything else — absent, null, object — floors to the
+ * composed name, whose blank carries no title block (nothing fabricated).
+ */
+internal fun episodeTitle(doc: JsonElement, displayName: String): String? {
+    val view = (doc as? JsonObject)?.get("_view") as? JsonObject
+    val title = view?.get("title") as? JsonObject
+    val served = (title?.get("value") as? JsonPrimitive)?.takeIf {
+        it.isString || it.longOrNull != null || it.doubleOrNull != null
+    }
+    return served?.content ?: titleBlock(displayName)
 }
 
 /**
