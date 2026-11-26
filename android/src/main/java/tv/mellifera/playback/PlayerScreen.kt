@@ -12,11 +12,14 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -32,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.KeyEvent
@@ -202,6 +206,7 @@ private fun ActiveOverlay(playback: PlayerOrchestration) {
             },
         )
         if (controls.isVisible) {
+            ControlsTitleBar(playback)
             ControlsBar(playback)
         }
         activeSkip?.let { SkipChip(it) }
@@ -292,11 +297,39 @@ private fun BoxScope.AutoNextCard(playback: PlayerOrchestration) {
 }
 
 /**
+ * The controls' top title bar: the served identity line — SxxEyy · episode
+ * title (a film floors to its served display name) — at [typeHeading] over a
+ * top gradient fading from the controls' scrim tone to transparent (the
+ * same [Color] scrim idiom the bottom layer carries). It reads the SAME
+ * served [PlayerInfoBlocks] the info column reads via [controlsTitle] —
+ * field-driven: nothing to show → NO bar, never a placeholder (L1). It
+ * hides with the controls layer and takes no dpad focus — the overlay owns
+ * every key (5.9).
+ */
+@Composable
+private fun BoxScope.ControlsTitleBar(playback: PlayerOrchestration) {
+    val info by playback.info.collectAsState()
+    val label = controlsTitle(info) ?: return
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .fillMaxWidth()
+            .background(
+                Brush.verticalGradient(listOf(Color(0xCC1A1D24), Color.Transparent)),
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(label, fontSize = typeHeading())
+    }
+}
+
+/**
  * The control layer (D7, the §3.5 wireframe): the seek bar + the position /
  * duration readout on top, the dpad hint line under them (the SPA's legend
  * is pointer:fine-only — the TV counterpart is exactly this line, no second
- * legend row), then the OK-revealed info blocks. The bar renders only while
- * the readout knows the duration — never a guessed percent (L1/D2). The
+ * legend row), then the OK-revealed info blocks. The served identity line
+ * lives above on [ControlsTitleBar]. The bar renders only while the
+ * readout knows the duration — never a guessed percent (L1/D2). The
  * next Ok toggles play/pause; Back hides the layer.
  */
 @Composable
@@ -315,11 +348,13 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
     ) {
         if (durationMs > 0) {
             // The seek bar: position over duration, clamped (the watchedPercent
-            // law) — tvAccent fill on the chip-bg track (the D11 tokens).
-            Box(
+            // law) — tvAccent fill on the chip-bg track, a 14dp tvAccent knob
+            // centered on the playhead (clamped inside the track) (the D11
+            // tokens).
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(2.dp)
+                    .height(6.dp)
                     .background(chipColor),
             ) {
                 val fraction =
@@ -327,8 +362,15 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(fraction)
-                        .height(2.dp)
+                        .fillMaxHeight()
                         .background(tvAccent),
+                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .offset(x = (maxWidth * fraction - 7.dp).coerceIn(0.dp, maxWidth - 14.dp))
+                        .size(14.dp)
+                        .background(tvAccent, CircleShape),
                 )
             }
         }
@@ -363,6 +405,8 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
 /**
  * The info blocks (D7, InfoColumn.tsx's IA): heading (SxxEyy eyebrow +
  * episode title, a film's served display name), «Серия», «В ролях», About.
+ * The heading rides [typeSmall] here — the HEADING display belongs to the
+ * top title bar ([ControlsTitleBar]), which reads the same served blocks.
  * Field-driven: the mapper's nulls render nothing — never a placeholder
  * (L1). The blocks take no dpad focus — the overlay owns every key (5.9).
  */
@@ -372,7 +416,7 @@ private fun InfoBlocks(info: PlayerInfoBlocks) {
         if (info.eyebrow != null || info.heading != null) {
             Column {
                 info.eyebrow?.let { Text(it, fontSize = typeMeta(), color = tvMuted) }
-                info.heading?.let { Text(it, fontSize = typeHeading()) }
+                info.heading?.let { Text(it, fontSize = typeSmall()) }
             }
         }
         info.episodeDescription?.let {
