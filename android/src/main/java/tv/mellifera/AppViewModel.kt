@@ -236,11 +236,20 @@ class AppViewModel(
      * The foreground resume hook (5.11): the gate's profile tier closes
      * immediately and /profile is REFETCHED, so an admin debug flip lands
      * within one app-switch; events emitted before the fresh answer lands
-     * are dropped (a debug build stays open across the window).
+     * are dropped (a debug build stays open across the window). The home
+     * rows re-fetch beside it (§3.1 step 7): [HomeFlow.resumeRefetch], not
+     * [HomeFlow.load] — the opening clear would blank the surface and drop
+     * a stale error line before the verdict, so the stale «Не удалось
+     * загрузить продолжения» line heals only when the fresh answer lands.
      */
     fun onForegroundResume() {
         telemetry.onForegroundResume()
         refreshProfile()
+        // The same unpaired guard as the profile fetch: onResume fires on
+        // the first launch too, and sharedApi() requires a stored address.
+        if (store.readServerAddress() != null) {
+            appScope.launch { home.resumeRefetch() }
+        }
     }
 
     /** Fetches /profile and lands it on the gate; best-effort — a failure

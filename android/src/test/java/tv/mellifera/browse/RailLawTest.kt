@@ -1,5 +1,6 @@
 package tv.mellifera.browse
 
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -28,6 +29,8 @@ import tv.mellifera.dpad.DpadKey
 import tv.mellifera.dpad.moveInList
 import tv.mellifera.net.Api
 import tv.mellifera.takeRequestOrFail
+import tv.mellifera.ui.UiScaleMode
+import tv.mellifera.ui.railPanelWidth
 
 /**
  * The collections rail law (5.15 — the SPA sidebar as remote-native
@@ -36,7 +39,9 @@ import tv.mellifera.takeRequestOrFail
  * Back — one flow entry) keeps the grid's parked cursor, and selecting a
  * row (OK — the activation law, task 4.3) swaps the grid to a fresh
  * cursor-0 surface with the rail closed; a body that cannot open keeps the
- * rail open with its focus (the keep-focus law).
+ * rail open with its focus (the keep-focus law). The rail-open offset law
+ * rides here too: while the panel is open the content column offsets by the
+ * panel's width so the first card's left edge clears it.
  */
 class RailLawTest {
     private lateinit var server: MockWebServer
@@ -506,5 +511,33 @@ class RailLawTest {
         collector.cancel()
         // enter's one + the openRail's summaries (2) + the fetch.
         server.assertDrained("RailLawTest.body_swap_emits_survive_a_busy_collector", 4)
+    }
+
+    @Test
+    fun rail_open_offsets_the_content_column_clear_of_the_panel() {
+        // The rail-open offset law at the box's 2.0 density (960dp panel =
+        // 1920px): the column narrows to the reduced fraction
+        // ([railOpenColumnWidth]) and re-centers in the reduced area
+        // ([railOpenColumnLeft]), so the FIRST CARD's left edge clears the
+        // open panel — the acceptance is ≥ the panel's own 192px at
+        // Обычный. A closed rail (offset 0) leaves the parity column
+        // untouched: the SPA 92vw proportion, left margin 38.4dp = 76.8px.
+        val screen = 960.dp
+        assertEquals(883.2f, railOpenColumnWidth(screen, 0.dp).value, 1e-4f)
+        assertEquals(38.4f, railOpenColumnLeft(screen, 0.dp).value, 1e-4f)
+
+        // Компактный and Обычный share the 96dp panel: the column plans
+        // (gridPlan's W) against exactly the width that renders — 794.88dp
+        // — and lands at 130.56dp = 261.12px, clear of the panel.
+        assertEquals(96f, railPanelWidth(UiScaleMode.REGULAR).value, 1e-6f)
+        assertEquals(794.88f, railOpenColumnWidth(screen, railPanelWidth(UiScaleMode.REGULAR)).value, 1e-4f)
+        assertEquals(130.56f, railOpenColumnLeft(screen, railPanelWidth(UiScaleMode.REGULAR)).value, 1e-4f)
+        assertTrue(railOpenColumnLeft(screen, railPanelWidth(UiScaleMode.REGULAR)).value * 2 >= 192f)
+        assertEquals(794.88f, railOpenColumnWidth(screen, railPanelWidth(UiScaleMode.COMPACT)).value, 1e-4f)
+
+        // Крупный widens the panel to 112dp — the column clears it by a
+        // wider margin (145.92dp = 291.84px).
+        assertEquals(780.16f, railOpenColumnWidth(screen, railPanelWidth(UiScaleMode.LARGE)).value, 1e-4f)
+        assertTrue(railOpenColumnLeft(screen, railPanelWidth(UiScaleMode.LARGE)).value * 2 >= 192f)
     }
 }

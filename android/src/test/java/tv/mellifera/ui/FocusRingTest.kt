@@ -11,7 +11,9 @@ import org.junit.Test
  * device px and inclusive clamp semantics. The golden IS the SPA's own
  * computation at the box's geometry (dpr 2.0, 1920px wide). If one of these
  * moves, the on-panel ring width moves with it: re-derive from the SPA
- * sources before shipping.
+ * sources before shipping. The collections rail's rows are the one
+ * rail-scoped exception ([railFocusRingWidthPx] — a fixed 2dp pastel band),
+ * pinned here too.
  */
 class FocusRingTest {
     @Test
@@ -53,5 +55,16 @@ class FocusRingTest {
         assertEquals(3f, tvFocusRingWidth(1.5f, 1920f))
         // dpr 3.0: bounds floor(0.67)=0 .. floor(1.67)=1 — 1920px caps at 1.
         assertEquals(1f, tvFocusRingWidth(3f, 1920f))
+    }
+
+    @Test
+    fun the_rail_row_ring_is_a_fixed_2dp_band_double_the_surface_law() {
+        // The rail exception: the row's ring is a FIXED 2dp band in the row's
+        // module type-pastel — at the box's dpr 2.0 that is 4px, DOUBLE the
+        // surface law's 2px (=1dp) golden at the same geometry above. The
+        // width reads no scale mode and no viewport («no scale anywhere»),
+        // so the band is the same px at Компактный/Обычный/Крупный.
+        assertEquals(4f, railFocusRingWidthPx(2f))
+        assertEquals(2f, railFocusRingWidthPx(1f))
     }
 }

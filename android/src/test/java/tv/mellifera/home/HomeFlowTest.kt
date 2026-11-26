@@ -1,5 +1,7 @@
 package tv.mellifera.home
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -224,6 +226,106 @@ class HomeFlowTest {
         assertEquals(1, state.rows.size)
         assertEquals(0, state.continueFocus) // 1 clamped into one resume row
         assertEquals(0, state.nextUpFocus)
+    }
+
+    // ---- resumeRefetch: the foreground-refetch law (§3.1 step 7, Q4) ----
+
+    @Test
+    fun resume_refetch_keeps_rows_and_error_while_in_flight() = runBlocking {
+        // The stale posture: the first fetch failed — no rows, the error
+        // line on screen (the exact surface the next foreground heals).
+        server.enqueue(MockResponse().setResponseCode(500))
+        flow.load()
+        val stale = flow.state.value
+        assertEquals(
+            "Не удалось загрузить продолжения — проверьте сервер",
+            homeErrorLine(stale),
+        )
+
+        // The resume round-trip goes out WITHOUT load()'s opening clear:
+        // hold the request at the server (no enqueued response) and read
+        // the state mid-flight — byte-identical to the stale posture, the
+        // loading flare never fires (load() would have flipped isLoading
+        // before the wire resolved).
+        val job = launch(Dispatchers.IO) { flow.resumeRefetch() }
+        val recorded = server.takeRequestOrFail(
+            "HomeFlowTest.resume_refetch_keeps_rows_and_error_while_in_flight",
+        )
+        assertEquals("GET", recorded.method)
+        assertEquals("/api/v1/home", recorded.path)
+        assertEquals(stale, flow.state.value)
+        assertEquals(
+            "Не удалось загрузить продолжения — проверьте сервер",
+            homeErrorLine(flow.state.value),
+        )
+
+        // Answer the held request; the failure law keeps the same posture.
+        server.enqueue(MockResponse().setResponseCode(500))
+        job.join()
+        assertEquals(stale, flow.state.value)
+        server.assertDrained(
+            "HomeFlowTest.resume_refetch_keeps_rows_and_error_while_in_flight",
+            2,
+        )
+    }
+
+    @Test
+    fun resume_refetch_success_replaces_the_state_whole_by_the_load_law() = runBlocking {
+        // The stale posture: a failed fetch left the error line over an
+        // empty surface — the foreground round-trip heals it.
+        server.enqueue(MockResponse().setResponseCode(500))
+        flow.load()
+
+        server.enqueue(json(homeBody()))
+        flow.resumeRefetch()
+
+        var state = flow.state.value
+        // The load law: the served rows replace the state WHOLE — served
+        // order verbatim, no re-sort — and the stale error line is gone.
+        assertEquals(listOf("s-2", "s-1", ""), state.rows.map { it.seriesId })
+        assertNull(state.error)
+        assertTrue(!state.isLoading)
+        assertNull(homeErrorLine(state))
+
+        // The cursors ride through, coerce-clamped (the same law load()
+        // lands): a stale cursor past a shrunken served set never aims
+        // past the end.
+        flow.onContinueFocusMoved(1)
+        flow.onNextUpFocusMoved(0)
+        server.enqueue(
+            json(
+                """{"continue":[
+                  {"series_id":"s-1","series_display_name":"Сага","library_id":1,
+                   "current":{"item_id":"e-1","display_name":"Сага S01E01",
+                              "position_seconds":300,"duration_seconds":2400}}
+                ]}""",
+            ),
+        )
+        flow.resumeRefetch()
+
+        state = flow.state.value
+        assertEquals(1, state.rows.size)
+        assertEquals(0, state.continueFocus) // 1 clamped into one resume row
+        assertEquals(0, state.nextUpFocus)
+        assertTrue(!state.isLoading)
+    }
+
+    @Test
+    fun resume_refetch_failure_keeps_the_prior_rows() = runBlocking {
+        server.enqueue(json(homeBody()))
+        flow.load()
+
+        server.enqueue(MockResponse().setResponseCode(500))
+        flow.resumeRefetch()
+
+        val state = flow.state.value
+        // The failure law (the same one load() lands on): the prior rows
+        // stay on screen and the honest RU error surfaces — the line
+        // itself never shows while rows are live.
+        assertEquals(3, state.rows.size)
+        assertEquals("Не удалось загрузить продолжения — проверьте сервер", state.error)
+        assertTrue(!state.isLoading)
+        assertNull(homeErrorLine(state))
     }
 
     // ---- entryLandsOnHome: the entry-destination law (task 8.15, #18) ----

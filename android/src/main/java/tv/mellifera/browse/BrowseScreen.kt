@@ -105,6 +105,7 @@ import tv.mellifera.ui.requestFocusSafely
 import tv.mellifera.ui.tvAccent
 import tv.mellifera.ui.tvFocusStyle
 import tv.mellifera.ui.tvMuted
+import tv.mellifera.ui.tvRailFocusStyle
 
 /**
  * The browse surface (5.6): the serial+tv series grid and, one level down,
@@ -208,10 +209,15 @@ fun BrowseScreen(viewModel: AppViewModel) {
                 )
             } else {
                 // The parity content column (design D13, task 8.2): the home
-                // rows and the collection body sit in a CENTERED 60%-width
-                // column — the SPA's `mx-auto max-w-6xl` proportion. The
-                // rail overlay is NOT part of it (360dp, unchanged).
-                ContentColumn { columnWidth, bodyHeight ->
+                // rows and the collection body sit in a CENTERED column —
+                // the SPA tv shell's `max-width: min(92vw, 1800px)`
+                // proportion. The rail overlay is NOT part of it: while the
+                // rail is open the column offsets by the panel's width (the
+                // rail-open offset law — the first card's left edge clears
+                // the panel, never hides under it).
+                ContentColumn(
+                    railOffset = if (state.isRailOpen) railPanelWidth(LocalUiScale.current) else 0.dp,
+                ) { columnWidth, bodyHeight ->
                     // The reachability law (task 8.3, the walk-found fix):
                     // the home column SCROLLS vertically — HomeRows + the
                     // body stack into one verticalScroll column, so the
@@ -306,7 +312,9 @@ fun BrowseScreen(viewModel: AppViewModel) {
                 }
             }
         }
-        // The collections rail (5.15): slides in over the grid's left edge.
+        // The collections rail (5.15): slides in at the screen's left edge —
+        // the content column offsets aside while it is open (the
+        // ContentColumn railOffset law), so nothing hides under the panel.
         // It is a rail of the Browse surface — never a third Screen (the
         // when-shell law, ui/App.kt). Focus crosses INTO the rail's rows on
         // open (the current-collection row holds it); OK enters the focused
@@ -371,23 +379,49 @@ fun BrowseScreen(viewModel: AppViewModel) {
 }
 
 /**
- * The centered content column (design D13, task 8.2): a [CONTENT_COLUMN_FRACTION]-width
- * column centered on the screen — the SPA tv shell's
- * `html.tv main { max-width: min(92vw, 1800px) }` proportion. Compose has
- * no widthFraction modifier, so the width is fraction math on
+ * The rail-open offset's width law: while the collections rail is open the
+ * column's fraction reads the REDUCED width — the screen minus the panel's
+ * [railOffset] ([railPanelWidth] at the active scale) — so the rendered
+ * column never overflows past the right edge and the grid plans
+ * ([gridPlan]'s W) against exactly the width that renders. A closed rail
+ * passes offset 0 and this is the untouched parity width
+ * ([CONTENT_COLUMN_FRACTION] × screen).
+ */
+internal fun railOpenColumnWidth(screenWidth: Dp, railOffset: Dp): Dp =
+    (screenWidth - railOffset) * CONTENT_COLUMN_FRACTION
+
+/**
+ * The rail-open offset's landing law: the narrowed column re-centers inside
+ * the reduced area, so its left edge — the first card's left edge — clears
+ * the open panel (≥ 192px at Обычный, the panel's own 192px) instead of
+ * hiding under it. Pure so [RailLawTest] pins the acceptance at the box
+ * geometry.
+ */
+internal fun railOpenColumnLeft(screenWidth: Dp, railOffset: Dp): Dp =
+    railOffset + (screenWidth - railOffset - railOpenColumnWidth(screenWidth, railOffset)) / 2f
+
+/**
+ * The centered content column (design D13, task 8.2): a
+ * [CONTENT_COLUMN_FRACTION]-width column centered on the screen — the SPA
+ * tv shell's `html.tv main { max-width: min(92vw, 1800px) }` proportion.
+ * Compose has no widthFraction modifier, so the width is fraction math on
  * BoxWithConstraints' maxWidth. The content lambda receives the column's
  * width (the density law's W) and the viewport height (maxHeight) — the
  * body page sizes itself to the height (task 8.3: the body top-aligned at
  * the viewport top IS the visible page) and plans its grids against the
- * width.
+ * width. While the collections rail is open the caller passes
+ * [railOffset] — the panel's width at the active scale — and the column
+ * narrows ([railOpenColumnWidth]) and re-centers inside the reduced area
+ * ([railOpenColumnLeft]), the offset arriving as a parameter the same way
+ * the measurements travel, never read from a global.
  */
 @Composable
-private fun ContentColumn(content: @Composable (Dp, Dp) -> Unit) {
+private fun ContentColumn(railOffset: Dp, content: @Composable (Dp, Dp) -> Unit) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val columnWidth = maxWidth * CONTENT_COLUMN_FRACTION
+        val columnWidth = railOpenColumnWidth(maxWidth, railOffset)
         val columnHeight = maxHeight
         Box(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(start = railOffset),
             contentAlignment = Alignment.TopCenter,
         ) {
             Box(modifier = Modifier.width(columnWidth)) { content(columnWidth, columnHeight) }
@@ -1089,6 +1123,10 @@ private fun FolderChip(
  * [railPanelWidth] (96dp at Компактный/Обычный, 112dp at Крупный) with a
  * 1dp end-edge [railBorder] border — D11's rail scrim is retired; the flow
  * laws (slide-in 5.15, hidden-by-default, focus restore) stand untouched.
+ * The focused row's ring is the design's rail-scoped exception
+ * ([tvRailFocusStyle]): a fixed 2dp band in the row's module type-pastel —
+ * the settings row's empty-module case resolves the neutral default —
+ * while every other focusable keeps the slate outline law.
  */
 @Composable
 private fun CollectionsRail(
@@ -1163,7 +1201,8 @@ private fun CollectionsRail(
                             else -> false // rail-top UP still crosses natively
                         }
                     },
-                    modifier = Modifier.focusRequester(requester).tvFocusStyle(shape = RoundedCornerShape(4.dp)),
+                    modifier = Modifier.focusRequester(requester)
+                        .tvRailFocusStyle(ringColor = typeAccent(library.moduleId), shape = RoundedCornerShape(4.dp)),
                 )
             }
             // The fixed settings row (18.3): the walk's +1 row. The divider
@@ -1208,7 +1247,8 @@ private fun CollectionsRail(
                             else -> false // the rail's bottom edge: unconsumed
                         }
                     },
-                    modifier = Modifier.focusRequester(requester).tvFocusStyle(shape = RoundedCornerShape(4.dp)),
+                    modifier = Modifier.focusRequester(requester)
+                        .tvRailFocusStyle(ringColor = typeAccent(""), shape = RoundedCornerShape(4.dp)),
                 )
             }
         }
@@ -1275,8 +1315,9 @@ private const val SWAP_RETRY_FRAMES = 60
  * --radius ÷ 2), a 4dp module dot in the type pastel (the D3 map = SPA
  * dotClass), the name at TYPE_META (.clink ÷ 2) — [tvAccent] when selected
  * (the existing law), [tvMuted] otherwise — and the count TYPE_META
- * [tvMuted] (.cnt). The FOCUS law rides the caller's [tvFocusStyle] (the
- * slate ring at this row's own 4dp corner) plus the .clink-active slate fill
+ * [tvMuted] (.cnt). The FOCUS law rides the caller's [tvRailFocusStyle] —
+ * the rail-scoped exception: a 2dp ring in the row's module type-pastel
+ * ([dot]) at this row's own 4dp corner — plus the .clink-active slate fill
  * over the panel bg. Field-driven: a blank name renders nothing; the
  * module label is always readable (moduleLabel's law); the count renders
  * ONLY when a summary answered — no count yet, no count block.
