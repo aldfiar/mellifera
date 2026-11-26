@@ -39,20 +39,6 @@ const val STILL_ASPECT = 16f / 9f
  * same square, Crop-filled. */
 const val PHOTO_TILE_ASPECT = 1f
 
-/** The tv file-still grid's column count — 3 ACROSS (D13), retired fixed-3
- * law kept only until its last call site re-tiles onto [gridPlan]
- * (task 17.4, the tv + photo grids re-tile). Value unchanged so the tree
- * compiles. */
-@Deprecated("Superseded by gridPlan; retires with task 17.4")
-const val TV_FILE_GRID_COLUMNS = 3
-
-/** The photo grid's column count — 3 ACROSS under the uniform-row ruling,
- * retired fixed-3 law kept only until its last call site re-tiles onto
- * [gridPlan] (task 17.4, the tv + photo grids re-tile). Value unchanged so
- * the tree compiles. */
-@Deprecated("Superseded by gridPlan; retires with task 17.4")
-const val PHOTO_GRID_COLUMNS = 3
-
 // The two-row fit check's float tolerance in dp — the height-fit identity
 // makes two rows consume the budget exactly, so only noise crosses it.
 private const val FIT_EPSILON_DP = 0.05f

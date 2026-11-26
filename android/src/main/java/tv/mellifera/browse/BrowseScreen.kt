@@ -442,6 +442,9 @@ private fun SeriesGrid(
                 )
             }
         }
+        // The density law's scale mode — every grid branch's [gridPlan] reads
+        // its surface reserves through it.
+        val mode = LocalUiScale.current
         when (library?.moduleId) {
             "serial" -> Column(modifier = Modifier.fillMaxSize()) {
                 // The facet lane (task 10.2 — the SPA's facetLane law) renders
@@ -468,7 +471,6 @@ private fun SeriesGrid(
                         // (LayoutParity gridPlan) — the column count is the
                         // height budget's output, the operator's «Постеров в
                         // ряду» override clamps inside the planner.
-                        val mode = LocalUiScale.current
                         val plan = gridPlan(
                             width = columnWidth,
                             height = bodyHeight,
@@ -503,26 +505,38 @@ private fun SeriesGrid(
                 state.error != null -> Text(state.error, fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                 state.isLoading -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                 state.items.isEmpty() -> EmptyCollection()
-                else -> CardGrid(
-                    state = state,
-                    // D13: 3 stills across the column (the fixed 16:9 tile).
-                    columns = TV_FILE_GRID_COLUMNS,
-                    surface = GridSurface.TV,
-                    homeHoldsEntry = homeHoldsEntry,
-                    tileAspect = STILL_ASPECT,
-                    count = state.items.size,
-                    keyOf = { index -> state.items[index].id },
-                    cardOf = { index -> state.items[index].toFileCard() },
-                    accent = accent,
-                    // The file card's OK act: play the file (D2's card OK
-                    // keeps its act — the play verb is the item's own).
-                    onClick = { index -> onPlay(state.items[index].id) },
-                    onFocusMoved = onFocusMoved,
-                    onExtend = onExtendItems,
-                    onOpenRail = onOpenRail,
-                    serverBase = serverBase,
-                    token = token,
-                )
+                else -> {
+                    // The same planner the poster grid reads — the still grid
+                    // plans under the TV surface's reserves with the 16:9
+                    // aspect; the column count is the height budget's output,
+                    // no tv special case (the caption stays title + duration).
+                    val plan = gridPlan(
+                        width = columnWidth,
+                        height = bodyHeight,
+                        chrome = chromeReserve(mode, GridSurface.TV),
+                        caption = captionReserve(mode, GridSurface.TV),
+                        aspect = STILL_ASPECT,
+                    )
+                    CardGrid(
+                        state = state,
+                        columns = plan.columns,
+                        surface = GridSurface.TV,
+                        homeHoldsEntry = homeHoldsEntry,
+                        tileAspect = STILL_ASPECT,
+                        count = state.items.size,
+                        keyOf = { index -> state.items[index].id },
+                        cardOf = { index -> state.items[index].toFileCard() },
+                        accent = accent,
+                        // The file card's OK act: play the file (D2's card OK
+                        // keeps its act — the play verb is the item's own).
+                        onClick = { index -> onPlay(state.items[index].id) },
+                        onFocusMoved = onFocusMoved,
+                        onExtend = onExtendItems,
+                        onOpenRail = onOpenRail,
+                        serverBase = serverBase,
+                        token = token,
+                    )
+                }
             }
             "image" -> Column(modifier = Modifier.fillMaxSize()) {
                 // The chip lane renders in EVERY body state (the SPA's
@@ -541,28 +555,42 @@ private fun SeriesGrid(
                     state.error != null -> Text(state.error, fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                     state.isLoading -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                     state.items.isEmpty() -> EmptyCollection()
-                    else -> CardGrid(
-                        state = state,
-                        // 3 uniform squares across (the count + uniform-row
-                        // laws, 8.10): every photo tile the same fixed square.
-                        columns = PHOTO_GRID_COLUMNS,
-                        surface = GridSurface.PHOTO,
-                        homeHoldsEntry = homeHoldsEntry,
-                        tileAspect = PHOTO_TILE_ASPECT,
-                        count = state.items.size,
-                        keyOf = { index -> state.items[index].id },
-                        cardOf = { index -> state.items[index].toPhotoCard() },
-                        accent = accent,
-                        // The tile's OK act (task 8.13 — was an empty lambda,
-                        // the operator-reported gap): open the photo viewer
-                        // on this row.
-                        onClick = { index -> onPhotoOpened(index) },
-                        onFocusMoved = onFocusMoved,
-                        onExtend = onExtendItems,
-                        onOpenRail = onOpenRail,
-                        serverBase = serverBase,
-                        token = token,
-                    )
+                    else -> {
+                        // The planner's photo cell («Авто» = 4, 216dp squares
+                        // at 540dp/Обычный — the uniform-row ruling keeps the
+                        // 1:1 aspect; the tile RENDERING stays the photo
+                        // grid's own): the columns law only, the poster
+                        // override rides null («Авто») until the photo prefs
+                        // lane lands.
+                        val plan = gridPlan(
+                            width = columnWidth,
+                            height = bodyHeight,
+                            chrome = chromeReserve(mode, GridSurface.PHOTO),
+                            caption = captionReserve(mode, GridSurface.PHOTO),
+                            aspect = PHOTO_TILE_ASPECT,
+                            columnOverride = LocalGridPrefs.current.posterColumns,
+                        )
+                        CardGrid(
+                            state = state,
+                            columns = plan.columns,
+                            surface = GridSurface.PHOTO,
+                            homeHoldsEntry = homeHoldsEntry,
+                            tileAspect = PHOTO_TILE_ASPECT,
+                            count = state.items.size,
+                            keyOf = { index -> state.items[index].id },
+                            cardOf = { index -> state.items[index].toPhotoCard() },
+                            accent = accent,
+                            // The tile's OK act (task 8.13 — was an empty lambda,
+                            // the operator-reported gap): open the photo viewer
+                            // on this row.
+                            onClick = { index -> onPhotoOpened(index) },
+                            onFocusMoved = onFocusMoved,
+                            onExtend = onExtendItems,
+                            onOpenRail = onOpenRail,
+                            serverBase = serverBase,
+                            token = token,
+                        )
+                    }
                 }
             }
             // The unknown module's honest empty state (D6's stated TV
