@@ -72,7 +72,6 @@ import coil.request.ImageRequest
 import kotlinx.coroutines.launch
 import tv.mellifera.AppViewModel
 import tv.mellifera.dpad.DpadKey
-import tv.mellifera.dpad.chipsRowConsumesUp
 import tv.mellifera.dpad.isDirectional
 import tv.mellifera.dpad.moveInGrid
 import tv.mellifera.dpad.moveInList
@@ -92,7 +91,6 @@ import tv.mellifera.ui.typeHeading
 import tv.mellifera.ui.typeMeta
 import tv.mellifera.ui.typeSmall
 import tv.mellifera.ui.AppCanvas
-import tv.mellifera.ui.SettingsSection
 import tv.mellifera.ui.chipActiveBg
 import tv.mellifera.ui.chipActiveText
 import tv.mellifera.ui.inProgressFill
@@ -128,9 +126,6 @@ fun BrowseScreen(viewModel: AppViewModel) {
     val browse = viewModel.browse
     val state by browse.state.collectAsState()
     val appState by viewModel.state.collectAsState()
-    // The settings affordance above the body is focusable only while the
-    // telemetry gate is on — the chips row's UP clamp reads it (task 8.6).
-    val settingsFocusable by viewModel.telemetry.isOpen.collectAsState()
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         browse.enter()
@@ -173,8 +168,6 @@ fun BrowseScreen(viewModel: AppViewModel) {
     val token = appState.token
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // The minimal settings surface (5.11): the share affordance, gated.
-            SettingsSection(viewModel)
             if (selected != null) {
                 SeriesPage(
                     series = selected,
@@ -282,7 +275,6 @@ fun BrowseScreen(viewModel: AppViewModel) {
                                 onPickFolder = { path -> scope.launch { browse.pickFolder(path) } },
                                 onToggleFacet = { key, value -> scope.launch { browse.toggleFacet(key, value) } },
                                 onPhotoOpened = { browse.openPhoto(it) },
-                                aboveFocusable = settingsFocusable,
                                 serverBase = serverBase,
                                 token = token,
                             )
@@ -405,10 +397,6 @@ private fun SeriesGrid(
     // The photo tile's OK act (task 8.13): open the modal viewer on this
     // loaded row.
     onPhotoOpened: (Int) -> Unit,
-    // Whether a focusable target (the gated settings affordance) exists
-    // above the body — the chips row's UP clamp consumes UP without one
-    // (task 8.6), so focus never escapes the body by native search.
-    aboveFocusable: Boolean,
     serverBase: String?,
     token: String?,
 ) {
@@ -458,7 +446,6 @@ private fun SeriesGrid(
                     onFocused = onChipFocused,
                     onLeft = onChipsLeft,
                     onToggle = onToggleFacet,
-                    aboveFocusable = aboveFocusable,
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 when {
@@ -548,7 +535,6 @@ private fun SeriesGrid(
                     onFocused = onChipFocused,
                     onLeft = onChipsLeft,
                     onPick = onPickFolder,
-                    aboveFocusable = aboveFocusable,
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 when {
@@ -808,10 +794,11 @@ private suspend fun LazyListState.revealChip(cursor: Int) {
  * pages exactly the stream a chip counts. The row walks Left/Right under the
  * moveInRow law, the lane scrolling the focused chip into view. DOWN stays
  * UNCONSUMED so the cursor crosses into the grid
- * below natively (D12's chips row, the L2 law); UP is clamped when nothing
- * focusable sits above the body ([aboveFocusable] — task 8.6): the key is
- * consumed, the chip keeps focus, and focus never escapes the body by a
- * runaway native search into the home rows.
+ * below natively (D12's chips row, the L2 law); UP is always clamped (the
+ * body-top clamp — with the settings affordance retired into the overlay,
+ * 18.2, nothing focusable ever sits above the body): the key is consumed,
+ * the chip keeps focus, and focus never escapes the body by a runaway
+ * native search into the home rows.
  */
 @Composable
 private fun FolderChipsRow(
@@ -819,7 +806,6 @@ private fun FolderChipsRow(
     onFocused: (Int) -> Unit,
     onLeft: () -> Unit,
     onPick: (String?) -> Unit,
-    aboveFocusable: Boolean,
     modifier: Modifier = Modifier,
 ) {
     // Chip 0 = [Все] (no filter); chip i > 0 = the served folders[i - 1] —
@@ -863,11 +849,12 @@ private fun FolderChipsRow(
                             onFocused(next)
                             true // consumed inside the chips row
                         }
-                        // The body-boundary clamp (task 8.6): no focusable
-                        // target above the body — the key is consumed and
-                        // the chip keeps focus (never a runaway native
-                        // search into the home rows).
-                        chipsRowConsumesUp(key, aboveFocusable) -> true
+                        // The body-boundary clamp (task 8.6): with the
+                        // settings affordance retired into the overlay
+                        // (18.2) nothing focusable ever sits above the body
+                        // — UP is consumed and the chip keeps focus (never
+                        // a runaway native search into the home rows).
+                        key == DpadKey.Up -> true
                         else -> false // DOWN (→ grid) and the edge clamps cross natively
                     }
                 },
@@ -897,8 +884,9 @@ private fun FolderChipsRow(
  * serves no folders), so consuming and re-landing through it would
  * dead-end the walk. The lane keeps its own cursor for the walk + scroll
  * ([revealChip]); every focus report still rides [onFocused] into the
- * shared cursor for the Back law. UP rides the [chipsRowConsumesUp]
- * body-top clamp (the one-row lane IS the body's top row — focus never
+ * shared cursor for the Back law. UP rides the body-top clamp (the one-row
+ * lane IS the body's top row — with the settings affordance retired into
+ * the overlay, 18.2, nothing focusable ever sits above it, so focus never
  * escapes by a runaway native search into the home rows); DOWN crosses
  * natively into the grid below.
  */
@@ -908,7 +896,6 @@ private fun FacetChipsRow(
     onFocused: (Int) -> Unit,
     onLeft: () -> Unit,
     onToggle: (String, String) -> Unit,
-    aboveFocusable: Boolean,
     modifier: Modifier = Modifier,
 ) {
     // The flat chip index across the lane (served order, facet-major) —
@@ -967,10 +954,12 @@ private fun FacetChipsRow(
                             true // consumed inside the chips row
                         }
                         // The body-top clamp: nothing sits between this
-                        // one-row lane and the body top — the key is
-                        // consumed (never a runaway native search into the
-                        // home rows) when no target exists above.
-                        chipsRowConsumesUp(key, aboveFocusable) -> true
+                        // one-row lane and the body top — with the settings
+                        // affordance retired into the overlay (18.2) no
+                        // target above ever exists, so UP is consumed
+                        // (never a runaway native search into the home
+                        // rows).
+                        key == DpadKey.Up -> true
                         else -> false // DOWN crosses natively into the grid
                     }
                 },
