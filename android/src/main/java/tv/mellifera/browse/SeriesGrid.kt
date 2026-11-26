@@ -38,6 +38,12 @@ data class DisplayCard(
     /** The ONE field-driven meta/facts line — null means "no meta block". */
     val meta: String?,
 
+    /** The served ★ score off the about block — the serial caption's
+     * compact fact at lanes denser than the facts line fits
+     * ([FACTS_LINE_MAX_COLUMNS]). Absent → null renders no fact, never a
+     * placeholder. */
+    val score: Double? = null,
+
     /** The tile's footer line (the photo tile's capture date, D6) — null
      * means "no footer block" (an absent fact renders no date, never a
      * faked one). */
@@ -78,6 +84,8 @@ fun SeriesDto.toCard(): DisplayCard = DisplayCard(
     // formatter, never a duplicate. Absent metadata/about (or a block with
     // no facts at all) → null: no meta block, never a padded line (L1).
     meta = metadata?.about?.let(::factsOf),
+    // The served about.score — the caption's compact ★ fact; absent → null.
+    score = metadata?.about?.score,
 )
 
 /**

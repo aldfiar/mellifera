@@ -81,6 +81,7 @@ import tv.mellifera.dpad.toDpadKey
 import tv.mellifera.home.entryLandsOnHome
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.SeriesDto
+import tv.mellifera.ui.LocalGridPrefs
 import tv.mellifera.ui.LocalUiScale
 import tv.mellifera.ui.chipHeight
 import tv.mellifera.ui.railPanelWidth
@@ -194,7 +195,7 @@ fun BrowseScreen(viewModel: AppViewModel) {
                 // rows and the collection body sit in a CENTERED 60%-width
                 // column — the SPA's `mx-auto max-w-6xl` proportion. The
                 // rail overlay is NOT part of it (360dp, unchanged).
-                ContentColumn { bodyHeight ->
+                ContentColumn { columnWidth, bodyHeight ->
                     // The reachability law (task 8.3, the walk-found fix):
                     // the home column SCROLLS vertically — HomeRows + the
                     // body stack into one verticalScroll column, so the
@@ -236,6 +237,7 @@ fun BrowseScreen(viewModel: AppViewModel) {
                             isRailOpen = state.isRailOpen,
                             shouldRestoreHome = state.shouldRestoreHome,
                             libraries = state.libraries,
+                            viewportHeight = bodyHeight,
                             serverBase = serverBase,
                             token = token,
                             onContinueFocusMoved = { viewModel.home.onContinueFocusMoved(it) },
@@ -255,6 +257,7 @@ fun BrowseScreen(viewModel: AppViewModel) {
                         if (state.isBodyOpen) {
                             SeriesGrid(
                                 state = state,
+                                columnWidth = columnWidth,
                                 bodyHeight = bodyHeight,
                                 intoView = bodyIntoView,
                                 homeHoldsEntry = homeHoldsEntry,
@@ -323,16 +326,18 @@ fun BrowseScreen(viewModel: AppViewModel) {
 }
 
 /**
- * The centered content column (design D13, task 8.2): a 60%-width column
- * centered on the screen — the SPA's `mx-auto max-w-6xl` proportion
- * (1152px of 1920 = 60%, i.e. 576dp at the box's density 320). Compose has
+ * The centered content column (design D13, task 8.2): a [CONTENT_COLUMN_FRACTION]-width
+ * column centered on the screen — the SPA tv shell's
+ * `html.tv main { max-width: min(92vw, 1800px) }` proportion. Compose has
  * no widthFraction modifier, so the width is fraction math on
  * BoxWithConstraints' maxWidth. The content lambda receives the column's
- * viewport height (maxHeight) — the body page sizes itself to it (task
- * 8.3: the body top-aligned at the viewport top IS the visible page).
+ * width (the density law's W) and the viewport height (maxHeight) — the
+ * body page sizes itself to the height (task 8.3: the body top-aligned at
+ * the viewport top IS the visible page) and plans its grids against the
+ * width.
  */
 @Composable
-private fun ContentColumn(content: @Composable (Dp) -> Unit) {
+private fun ContentColumn(content: @Composable (Dp, Dp) -> Unit) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val columnWidth = maxWidth * CONTENT_COLUMN_FRACTION
         val columnHeight = maxHeight
@@ -340,7 +345,7 @@ private fun ContentColumn(content: @Composable (Dp) -> Unit) {
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.TopCenter,
         ) {
-            Box(modifier = Modifier.width(columnWidth)) { content(columnHeight) }
+            Box(modifier = Modifier.width(columnWidth)) { content(columnWidth, columnHeight) }
         }
     }
 }
@@ -358,11 +363,14 @@ private fun ContentColumn(content: @Composable (Dp) -> Unit) {
  * and renders within the viewport once the section's top is scrolled to it
  * (the [intoView] anchor the rail-OK swap targets). The fixed height is also
  * what lets the lazy grid measure inside the scrollable home column.
+ * [columnWidth] is the content column's width — the density law's W
+ * ([gridPlan]).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SeriesGrid(
     state: BrowseState,
+    columnWidth: Dp,
     bodyHeight: Dp,
     intoView: BringIntoViewRequester,
     // The entry-destination verdict (task 8.15, the 15.1 split): true while
@@ -424,24 +432,41 @@ private fun SeriesGrid(
                     state.error != null -> Text(state.error, fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                     state.isLoading -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                     state.series.isEmpty() -> EmptyCollection()
-                    else -> CardGrid(
-                        state = state,
-                        // 3 posters across (the count ruling, 8.10): each poster
-                        // consumes a third of the column — the fixed 2:3 tile.
-                        columns = SERIES_GRID_COLUMNS,
-                        homeHoldsEntry = homeHoldsEntry,
-                        tileAspect = POSTER_ASPECT,
-                        count = state.series.size,
-                        keyOf = { index -> state.series[index].id },
-                        cardOf = { index -> state.series[index].toCard() },
-                        accent = accent,
-                        onClick = { index -> onOpen(state.series[index]) },
-                        onFocusMoved = onFocusMoved,
-                        onExtend = onExtendItems,
-                        onOpenRail = onOpenRail,
-                        serverBase = serverBase,
-                        token = token,
-                    )
+                    else -> {
+                        // The density law's reserves ride the surface and the
+                        // scale mode; the plan derives from the viewport
+                        // (LayoutParity gridPlan) — the column count is the
+                        // height budget's output, the operator's «Постеров в
+                        // ряду» override clamps inside the planner.
+                        val mode = LocalUiScale.current
+                        val plan = gridPlan(
+                            width = columnWidth,
+                            height = bodyHeight,
+                            chrome = chromeReserve(mode, GridSurface.SERIAL),
+                            caption = captionReserve(mode, GridSurface.SERIAL),
+                            aspect = POSTER_ASPECT,
+                            columnOverride = LocalGridPrefs.current.posterColumns,
+                        )
+                        CardGrid(
+                            state = state,
+                            columns = plan.columns,
+                            surface = GridSurface.SERIAL,
+                            homeHoldsEntry = homeHoldsEntry,
+                            // The poster's FIXED aspect — never unified with
+                            // the tv/photo tiles.
+                            tileAspect = POSTER_ASPECT,
+                            count = state.series.size,
+                            keyOf = { index -> state.series[index].id },
+                            cardOf = { index -> state.series[index].toCard() },
+                            accent = accent,
+                            onClick = { index -> onOpen(state.series[index]) },
+                            onFocusMoved = onFocusMoved,
+                            onExtend = onExtendItems,
+                            onOpenRail = onOpenRail,
+                            serverBase = serverBase,
+                            token = token,
+                        )
+                    }
                 }
             }
             "tv" -> when {
@@ -452,6 +477,7 @@ private fun SeriesGrid(
                     state = state,
                     // D13: 3 stills across the column (the fixed 16:9 tile).
                     columns = TV_FILE_GRID_COLUMNS,
+                    surface = GridSurface.TV,
                     homeHoldsEntry = homeHoldsEntry,
                     tileAspect = STILL_ASPECT,
                     count = state.items.size,
@@ -490,6 +516,7 @@ private fun SeriesGrid(
                         // 3 uniform squares across (the count + uniform-row
                         // laws, 8.10): every photo tile the same fixed square.
                         columns = PHOTO_GRID_COLUMNS,
+                        surface = GridSurface.PHOTO,
                         homeHoldsEntry = homeHoldsEntry,
                         tileAspect = PHOTO_TILE_ASPECT,
                         count = state.items.size,
@@ -533,13 +560,11 @@ private fun EmptyCollection() {
 }
 
 /**
- * The card grid walker (the law's one landing for every body): the module's
- * width-driven tracks (D13 as amended by the count ruling, 8.10 — serial /
- * tv / photo all 3 across the centered
- * column), the cursor-in-state law, the left-edge rail-open trigger, and the
- * paged stream's append trigger — the cursor landing on the LAST loaded card
- * asks the flow for the next page (D6's paged stream; a chip pick restarts
- * it at offset 0).
+ * The card grid walker (the law's one landing for every body): the caller's
+ * plan (the density law's [gridPlan] output per surface), the cursor-in-state
+ * law, the left-edge rail-open trigger, and the paged stream's append
+ * trigger — the cursor landing on the LAST loaded card asks the flow for the
+ * next page (D6's paged stream; a chip pick restarts it at offset 0).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -555,6 +580,9 @@ private fun CardGrid(
     // the grid's cursor 0. The law-move cursor actuator reads it NOT (D1).
     homeHoldsEntry: Boolean,
     columns: Int,
+    // The grid's surface — each card renders its surface's caption law
+    // (the serial caption reads the lane width).
+    surface: GridSurface,
     // The grid's uniform tile aspect (the uniform-row law, task 8.10): every
     // card in THIS grid renders the same fixed-aspect art block.
     tileAspect: Float,
@@ -663,6 +691,8 @@ private fun CardGrid(
                 card = cardOf(index),
                 accent = accent,
                 tileAspect = tileAspect,
+                surface = surface,
+                laneColumns = columns,
                 onClick = { onClick(index) },
                 onFocused = {
                     onFocusMoved(index)
@@ -1306,7 +1336,10 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
  * The grid card (design D2 — the SPA card law, TV-rendered): artwork with
  * the ✓ corner mark OVER the art (WatchedCornerMark, task 12.1 — it LEFT the
  * text stack so card heights are watched-independent), the in-progress bar
- * UNDER the art, the title (dimmed when watched), and the ONE meta line —
+ * UNDER the art, the title (dimmed when watched), and the ONE caption line
+ * — the serial card reads the lane WIDTH ([laneColumns] against
+ * [FACTS_LINE_MAX_COLUMNS]: the compact ★ score at a denser lane, the full
+ * facts line at a lane the line fits), tv/photo keep the ONE meta line.
  * ONE glyph, type-agnostic (the SPA .watched-mark pastel, D3) at meta scale,
  * never a word chip. The tri-state is a rendering null-check on the
  * DisplayCard carriers: watched → corner mark + dim + NO bar; in-progress →
@@ -1321,6 +1354,11 @@ private fun CardView(
     // absence leaves a placeholder surface — so a row's heights and the
     // title/meta baselines can never go ragged.
     tileAspect: Float,
+    // The caption law's inputs: which surface's caption renders and the
+    // lane's column count (the plan's — the serial caption decides on the
+    // lane WIDTH, never a per-card count).
+    surface: GridSurface,
+    laneColumns: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     serverBase: String? = null,
@@ -1383,9 +1421,23 @@ private fun CardView(
                     .alpha(if (card.watched == true) WATCHED_DIM else 1f),
             )
         }
-        if (card.meta != null) {
+        // The ONE caption line. The serial card decides on the lane WIDTH
+        // (the plan's column count): denser than [FACTS_LINE_MAX_COLUMNS] →
+        // the compact caption (the ★ score; the Season chip's slot renders
+        // absent — season has no carrier on the series wire, the SPA derives
+        // it from the opaque series document the TV client does not carry);
+        // at a lane the facts line fits → the full facts line. tv/photo keep
+        // the meta line at any lane width. Every slot is a null-check on the
+        // served carrier — absent → absent, never a placeholder (L1).
+        val compactLane = surface == GridSurface.SERIAL && laneColumns > FACTS_LINE_MAX_COLUMNS
+        val caption = if (compactLane) {
+            card.score?.let { "★ ${scoreText(it)}" }
+        } else {
+            card.meta
+        }
+        if (caption != null) {
             Text(
-                card.meta,
+                caption,
                 fontSize = typeMeta(),
                 color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),

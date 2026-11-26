@@ -58,6 +58,34 @@ class SeriesGridTest {
     }
 
     @Test
+    fun series_card_score_carrier_law() {
+        // The compact caption's ★ fact rides the served about.score through
+        // toCard VERBATIM — no formatting at the carrier (the caption
+        // renders it through scoreText, ONE formatter).
+        val served = SeriesDto(
+            id = "s-5",
+            displayName = "Клевер",
+            metadata = ElementMetadata(
+                about = MetadataAbout(description = "Описание", score = 8.1),
+            ),
+        ).toCard()
+        assertEquals(8.1, served.score!!, 1e-9)
+
+        // Absent metadata → no score fact (the field-driven law: absence
+        // renders absent, never a placeholder).
+        assertNull(SeriesDto(id = "s-9", displayName = "Сага").toCard().score)
+
+        // An about block without a score → no score fact either.
+        assertNull(
+            SeriesDto(
+                id = "s-10",
+                displayName = "Без оценки",
+                metadata = ElementMetadata(about = MetadataAbout(description = "Только описание")),
+            ).toCard().score,
+        )
+    }
+
+    @Test
     fun episode_rows_follow_the_same_law() {
         // Absent artwork/watched → null blocks; present → verbatim.
         val bare = ItemDto(id = "e-1", displayName = "Серия 1").toCard()

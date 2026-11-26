@@ -39,13 +39,6 @@ const val STILL_ASPECT = 16f / 9f
  * same square, Crop-filled. */
 const val PHOTO_TILE_ASPECT = 1f
 
-/** The series poster grid's column count — 3 ACROSS, the retired fixed-3
- * law kept only until its last call site re-tiles onto [gridPlan]
- * (task 17.2, the serial grid re-tile; the fixed-3 history lives in
- * gridPlan's KDoc). Value unchanged so the tree compiles. */
-@Deprecated("Superseded by gridPlan; retires with task 17.2")
-const val SERIES_GRID_COLUMNS = 3
-
 /** The tv file-still grid's column count — 3 ACROSS (D13), retired fixed-3
  * law kept only until its last call site re-tiles onto [gridPlan]
  * (task 17.4, the tv + photo grids re-tile). Value unchanged so the tree
@@ -60,13 +53,6 @@ const val TV_FILE_GRID_COLUMNS = 3
 @Deprecated("Superseded by gridPlan; retires with task 17.4")
 const val PHOTO_GRID_COLUMNS = 3
 
-/** The home rows' 16:9 card count — 3 ACROSS (D13), retired fixed-3 law
- * kept only until its last call site re-tiles onto [gridPlan]
- * (task 17.5, the home rows density). Value unchanged so the tree
- * compiles. */
-@Deprecated("Superseded by gridPlan; retires with task 17.5")
-const val HOME_ROW_COLUMNS = 3
-
 // The two-row fit check's float tolerance in dp — the height-fit identity
 // makes two rows consume the budget exactly, so only noise crosses it.
 private const val FIT_EPSILON_DP = 0.05f
@@ -78,8 +64,8 @@ private const val FIT_EPSILON_DP = 0.05f
 val POSTER_TRACK_FLOOR: Dp = 110.dp
 
 /** The shared gutter between tiles — the SPA's `gap-3` (12px) halved at the
- * 2.0× density: 12px ÷ 2 = 6dp. The grid rows', the rows' and the home rows'
- * track math all subtract this ([rowCardTrack] consumers flow with it). */
+ * 2.0× density: 12px ÷ 2 = 6dp. The planner's width-fit math subtracts it
+ * ([gridPlan], [rowCardTrack]). */
 val PARITY_GUTTER: Dp = 6.dp
 
 /** The page's horizontal overscan edge — the SPA tv shell's
@@ -136,6 +122,14 @@ fun chromeReserve(mode: UiScaleMode, surface: GridSurface): Dp =
  * subtracted once per row tier before the track derives. */
 fun captionReserve(mode: UiScaleMode, surface: GridSurface): Dp =
     CAPTION_RESERVE.getValue(surface)[mode.ordinal].dp
+
+/** The widest lane whose serial cards still render the full facts line —
+ * the ruled caption boundary: at a lane of this many columns or fewer the
+ * caption line carries the facts (the ★ score among them); a DENSER lane
+ * (the 7-column AUTO tier at Обычный) renders the compact caption instead.
+ * The decision reads the lane WIDTH — the plan's column count — never a
+ * per-card or per-surface count. */
+const val FACTS_LINE_MAX_COLUMNS = 6
 
 /** One grid plan: the column count, the tile track width, the full-row tier
  * and the leftover height that lets the next row peek. */
@@ -229,8 +223,9 @@ private fun trackFromHeight(height: Float, chrome: Float, caption: Float, rows: 
 /**
  * rowCardTrack — the fixed-track math for a row that fits [columns] cards
  * across a [columnWidth]: subtract the (columns − 1) inner gutters, divide
- * evenly. The home rows' LazyRow has no width-driven tracks (a horizontal
- * walker), so its cards take this fixed width.
+ * evenly. The home rows (its last consumers) plan their card width through
+ * [gridPlan] now; this helper survives only as a pinned arithmetic in
+ * LayoutParityTest.
  */
 internal fun rowCardTrack(columnWidth: Dp, columns: Int, gutter: Dp = PARITY_GUTTER): Dp =
     (columnWidth - gutter * (columns - 1)) / columns

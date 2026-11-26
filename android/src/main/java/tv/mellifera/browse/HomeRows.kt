@@ -47,6 +47,7 @@ import tv.mellifera.home.ResumeCardModel
 import tv.mellifera.home.toAnchorCard
 import tv.mellifera.home.toResumeCard
 import tv.mellifera.net.LibraryDto
+import tv.mellifera.ui.LocalUiScale
 import tv.mellifera.ui.typeBody
 import tv.mellifera.ui.typeHeading
 import tv.mellifera.ui.typeMeta
@@ -112,6 +113,7 @@ internal fun HomeRows(
     isRailOpen: Boolean,
     shouldRestoreHome: Boolean,
     libraries: List<LibraryDto>,
+    viewportHeight: Dp,
     serverBase: String?,
     token: String?,
     onContinueFocusMoved: (Int) -> Unit,
@@ -133,9 +135,20 @@ internal fun HomeRows(
     }
     if (resumes.isEmpty() && anchors.isEmpty()) return
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        // The parity card width (D13): 3 fixed 16:9 cards across the content
-        // column — the fixed-track math, the (columns − 1) gutters removed.
-        val cardWidth = rowCardTrack(maxWidth, HOME_ROW_COLUMNS)
+        // The density law sizes the row cards: the HOME reserves at the
+        // composition's scale mode and the 16:9 still aspect plan the row —
+        // 4 across at Обычный/Авто (≈209×118dp cards, ≈68dp captions, no
+        // peek at the reference viewport). The height budget is the content
+        // column's viewport ([ContentColumn]'s measurement, passed in — a
+        // scrollable column's own max height is unbounded); the home rows
+        // carry no override lane, so the plan is AUTO.
+        val cardWidth = gridPlan(
+            maxWidth,
+            viewportHeight,
+            chromeReserve(LocalUiScale.current, GridSurface.HOME),
+            captionReserve(LocalUiScale.current, GridSurface.HOME),
+            STILL_ASPECT,
+        ).track
         Column(modifier = Modifier.padding(start = PARITY_OVERSCAN_X, top = 8.dp)) {
             // Row 0 is the topmost RENDERED row — row-0's LEFT@x=0 is the rail
             // trigger, so the anchor row counts as row 0 only with no resumes
