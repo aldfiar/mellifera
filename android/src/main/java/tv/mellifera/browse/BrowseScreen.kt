@@ -28,7 +28,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.relocation.BringIntoViewRequester
@@ -79,7 +81,10 @@ import tv.mellifera.dpad.toDpadKey
 import tv.mellifera.home.entryLandsOnHome
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.SeriesDto
+import tv.mellifera.ui.LocalUiScale
 import tv.mellifera.ui.RAIL_PANEL_WIDTH
+import tv.mellifera.ui.chipHeight
+import tv.mellifera.ui.railRowHeight
 import tv.mellifera.ui.typeBody
 import tv.mellifera.ui.typeDisplay
 import tv.mellifera.ui.typeHeading
@@ -690,12 +695,31 @@ private fun CardGrid(
 }
 
 /**
+ * The chips lane's scroll-to-focused: a walked cursor can point at a chip
+ * the lane has not composed yet — the walk consumed the arrow and the
+ * target's [FocusRequester] does not exist past the composed window, so
+ * the walk would stall at the viewport edge. The lane scrolls only when
+ * the cursor's chip is missing from the viewport (a visible walk never
+ * moves the lane), and an out-of-range cursor (a stale one carried across
+ * a body swap) scrolls nowhere.
+ */
+private suspend fun LazyListState.revealChip(cursor: Int) {
+    if (cursor >= 0 &&
+        cursor < layoutInfo.totalItemsCount &&
+        layoutInfo.visibleItemsInfo.none { it.index == cursor }
+    ) {
+        animateScrollToItem(cursor)
+    }
+}
+
+/**
  * The photo body's folder-chips row (design D6, wireframe 3.6 — the SPA's
  * PhotosBody FolderChip lane): [Все] + the served GET /libraries/{id}/folders
  * rows with their counts. A chip pick SERVER-FILTERS the paged stream
  * (path_prefix / top_level=true) and restarts it at offset 0 — the grid
  * pages exactly the stream a chip counts. The row walks Left/Right under the
- * moveInRow law. DOWN stays UNCONSUMED so the cursor crosses into the grid
+ * moveInRow law, the lane scrolling the focused chip into view. DOWN stays
+ * UNCONSUMED so the cursor crosses into the grid
  * below natively (D12's chips row, the L2 law); UP is clamped when nothing
  * focusable sits above the body ([aboveFocusable] — task 8.6): the key is
  * consumed, the chip keeps focus, and focus never escapes the body by a
@@ -713,7 +737,12 @@ private fun FolderChipsRow(
     // Chip 0 = [Все] (no filter); chip i > 0 = the served folders[i - 1] —
     // the top-level chip reports path "" and filters with top_level=true.
     val chipCount = state.folders.size + 1
+    val laneScroll = rememberLazyListState()
+    // The scroll rides the cursor: every walk landing re-reveals the
+    // focused chip (a no-op inside the visible window).
+    LaunchedEffect(state.chipFocus) { laneScroll.revealChip(state.chipFocus) }
     LazyRow(
+        state = laneScroll,
         modifier = modifier
             // The BackHandler's enabler reads the cursor: no chip focused →
             // the law stands down and Back reaches the app's own behavior.
@@ -761,11 +790,11 @@ private fun FolderChipsRow(
 }
 
 /**
- * The serial body's facet lane (task 10.2 — the SPA's facetLane, audit
- * P1-3): one chips row per served facet key (GET /libraries/{id}/facets,
- * served order), the values verbatim with their counts, the active conjunct
- * in the accent (the FolderChip active law). The call site is UNCONDITIONAL
- * — the lane renders in EVERY serial body state (loading, error, empty,
+ * The serial body's facet lane (the SPA's facetLane): the served facet
+ * values verbatim with their counts (GET /libraries/{id}/facets, served
+ * order) in ONE horizontally scrollable lane, the active conjunct in the
+ * accent (the FolderChip active law). The call site is UNCONDITIONAL —
+ * the lane renders in EVERY serial body state (loading, error, empty,
  * grid) above the body content, because it is the CONTROL driving the
  * /series refetch, not a data block; undefined facets (the best-effort
  * fetch failed or served nothing) render no chips while the shell still
@@ -774,14 +803,16 @@ private fun FolderChipsRow(
  * It reuses the FolderChipsRow shell: the shared [BrowseState.chipFocus]
  * cursor carries the Back law (the top-level chips link — chips Back
  * re-lands the parked grid cursor, and the body-closed Back stands down
- * while a facet chip holds focus), and the lane's TOP row rides the
- * [chipsRowConsumesUp] clamp so focus never escapes the body by a runaway
- * native search into the home rows. The cursor WALK itself is left to
- * Compose's native focus search (LEFT/RIGHT inside a row, DOWN across the
- * facet rows and into the grid below): the cursor writer's clamp is
- * folder-sized and the serial body serves no folders, so consuming and
- * re-landing through it would dead-end the walk — the same native crossing
- * the grid's law-unsatisfiable arrows ride (5.9).
+ * while a facet chip holds focus). The LEFT/RIGHT landing walk itself
+ * stays LOCAL: the shared cursor's writer is folder-sized
+ * (BrowseFlow.onChipFocusMoved clamps to folders.size — the serial body
+ * serves no folders), so consuming and re-landing through it would
+ * dead-end the walk. The lane keeps its own cursor for the walk + scroll
+ * ([revealChip]); every focus report still rides [onFocused] into the
+ * shared cursor for the Back law. UP rides the [chipsRowConsumesUp]
+ * body-top clamp (the one-row lane IS the body's top row — focus never
+ * escapes by a runaway native search into the home rows); DOWN crosses
+ * natively into the grid below.
  */
 @Composable
 private fun FacetChipsRow(
@@ -792,40 +823,73 @@ private fun FacetChipsRow(
     aboveFocusable: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    // The lane-level focus watcher, NOT a per-row one: a walk BETWEEN facet
-    // rows must never drop the cursor — the Back link stands while any chip
-    // of any row holds focus (the FolderChipsRow !hasFocus law, lifted to
-    // the whole lane).
-    Column(
-        modifier = modifier.onFocusChanged { if (!it.hasFocus) onLeft() },
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        // The flat chip index across the lane's rows (row-major, served
-        // order) — the cursor report's index space.
-        val rowOffsets = state.facets.runningFold(0) { acc, facet -> acc + facet.values.size }
-        state.facets.forEachIndexed { rowIndex, facet ->
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(
-                    count = facet.values.size,
-                    key = { index -> facet.values[index].value },
-                ) { index ->
-                    val value = facet.values[index]
-                    FolderChip(
-                        label = value.value,
-                        count = value.count.toLong(),
-                        active = state.facetSelection[facet.key] == value.value,
-                        onClick = { onToggle(facet.key, value.value) },
-                        onFocused = { onFocused(rowOffsets[rowIndex] + index) },
-                        onDirection = { key ->
-                            // The body-top clamp (task 8.6) rides the lane's
-                            // FIRST row only — from the rows below, UP crosses
-                            // natively into the facet row above.
-                            chipsRowConsumesUp(key, aboveFocusable && rowIndex == 0)
-                        },
-                        modifier = Modifier.tvFocusStyle(shape = RoundedCornerShape(50)),
-                    )
-                }
+    // The flat chip index across the lane (served order, facet-major) —
+    // the cursor report's index space.
+    val rowOffsets = state.facets.runningFold(0) { acc, facet -> acc + facet.values.size }
+    val chipTotal = rowOffsets.lastOrNull() ?: 0
+    // The lane-local landing cursor: the walk's law state, deliberately
+    // separate from the folder-sized shared cursor (the KDoc).
+    var laneCursor by remember { mutableStateOf(-1) }
+    val laneScroll = rememberLazyListState()
+    // The scroll rides the cursor: every walk landing re-reveals the
+    // focused chip (a no-op inside the visible window).
+    LaunchedEffect(laneCursor) { laneScroll.revealChip(laneCursor) }
+    LazyRow(
+        state = laneScroll,
+        modifier = modifier.onFocusChanged {
+            // The lane-level focus watcher (the FolderChipsRow law): no
+            // chip focused → the Back link stands down and the local walk
+            // cursor resets.
+            if (!it.hasFocus) {
+                laneCursor = -1
+                onLeft()
             }
+        },
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(
+            count = chipTotal,
+            key = { flat ->
+                val facetIndex = rowOffsets.indexOfLast { it <= flat }
+                val facet = state.facets[facetIndex]
+                "${facet.key}:${facet.values[flat - rowOffsets[facetIndex]].value}"
+            },
+        ) { flat ->
+            val facetIndex = rowOffsets.indexOfLast { it <= flat }
+            val facet = state.facets[facetIndex]
+            val value = facet.values[flat - rowOffsets[facetIndex]]
+            val requester = remember { FocusRequester() }
+            LaunchedEffect(laneCursor) {
+                if (laneCursor == flat) requester.requestFocusSafely()
+            }
+            FolderChip(
+                label = value.value,
+                count = value.count.toLong(),
+                active = state.facetSelection[facet.key] == value.value,
+                onClick = { onToggle(facet.key, value.value) },
+                onFocused = {
+                    laneCursor = flat
+                    onFocused(flat)
+                },
+                onDirection = { key ->
+                    val next = moveInRow(flat, chipTotal, key)
+                    when {
+                        next != flat -> {
+                            laneCursor = next
+                            true // consumed inside the chips row
+                        }
+                        // The body-top clamp: nothing sits between this
+                        // one-row lane and the body top — the key is
+                        // consumed (never a runaway native search into the
+                        // home rows) when no target exists above.
+                        chipsRowConsumesUp(key, aboveFocusable) -> true
+                        else -> false // DOWN crosses natively into the grid
+                    }
+                },
+                modifier = Modifier
+                    .focusRequester(requester)
+                    .tvFocusStyle(shape = RoundedCornerShape(50)),
+            )
         }
     }
 }
@@ -834,8 +898,9 @@ private fun FacetChipsRow(
  * One folder filter chip (the SPA's FolderChip): the label, the folder's
  * count (the folders-endpoint total the filtered stream pages 1:1 — the
  * [Все] chip carries none), and the chip-active surface on the active chip
- * (the SPA .chip idiom). Focus rides the L4 visual law; OK applies the
- * filter.
+ * (the SPA .chip idiom). Every chip measures the mode-derived lane height
+ * (chipHeight) — one uniform pill row per lane at any label length, at any
+ * scale. Focus rides the L4 visual law; OK applies the filter.
  */
 @Composable
 private fun FolderChip(
@@ -855,7 +920,9 @@ private fun FolderChip(
             .onFocusChanged { if (it.isFocused) onFocused() }
             .onKeyEvent { event -> routeDirectionEvent(event, onDirection) }
             .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 3.dp),
+            .height(chipHeight(LocalUiScale.current))
+            .padding(horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(
@@ -1054,10 +1121,14 @@ private fun RailRow(
             // (no summary yet) never wraps narrower than a count-ful one,
             // and Row2's weight(1f) spacer stays deterministic.
             .fillMaxWidth()
+            // The mode-derived rail row height: every row's card is the
+            // same height at any data state, riding the scale tier.
+            .height(railRowHeight(LocalUiScale.current))
             .background(if (focused) Color(0xFF1E293B) else Color.Transparent, cardShape)
             .border(1.dp, railBorder, cardShape)
             // The TV collection card's padding (SPA Home.tsx:266 p-4 16px ÷ 2)
             .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.Center,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(4.dp).clip(CircleShape).background(dot))
