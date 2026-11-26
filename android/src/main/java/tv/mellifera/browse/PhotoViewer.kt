@@ -27,7 +27,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import tv.mellifera.dpad.DpadKey
 import tv.mellifera.dpad.toDpadKey
-import tv.mellifera.ui.TYPE_SMALL
+import tv.mellifera.ui.typeSmall
 import tv.mellifera.ui.tvMuted
 
 /**
@@ -97,7 +97,7 @@ fun PhotoViewer(
                 captureDate(document)?.let(::formatDatePart),
                 photoDimensions(document),
             ),
-            fontSize = TYPE_SMALL,
+            fontSize = typeSmall(),
             color = tvMuted,
             modifier = Modifier
                 .align(Alignment.BottomStart)

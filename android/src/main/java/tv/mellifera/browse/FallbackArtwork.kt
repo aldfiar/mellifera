@@ -10,7 +10,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.tv.material3.Text
-import tv.mellifera.ui.TYPE_FALLBACK_INITIAL
+import tv.mellifera.ui.typeFallbackInitial
 import tv.mellifera.ui.tvForeground
 import kotlin.math.abs
 import kotlin.math.cos
@@ -53,7 +53,7 @@ internal fun FallbackArtwork(
     ) {
         Text(
             gradient.initial,
-            fontSize = TYPE_FALLBACK_INITIAL,
+            fontSize = typeFallbackInitial(),
             fontWeight = FontWeight.SemiBold,
             color = tvForeground.copy(alpha = FALLBACK_INITIAL_ALPHA),
         )

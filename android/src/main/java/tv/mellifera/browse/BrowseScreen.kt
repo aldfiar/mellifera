@@ -80,11 +80,11 @@ import tv.mellifera.home.entryLandsOnHome
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.SeriesDto
 import tv.mellifera.ui.RAIL_PANEL_WIDTH
-import tv.mellifera.ui.TYPE_BODY
-import tv.mellifera.ui.TYPE_DISPLAY
-import tv.mellifera.ui.TYPE_HEADING
-import tv.mellifera.ui.TYPE_META
-import tv.mellifera.ui.TYPE_SMALL
+import tv.mellifera.ui.typeBody
+import tv.mellifera.ui.typeDisplay
+import tv.mellifera.ui.typeHeading
+import tv.mellifera.ui.typeMeta
+import tv.mellifera.ui.typeSmall
 import tv.mellifera.ui.AppCanvas
 import tv.mellifera.ui.SettingsSection
 import tv.mellifera.ui.chipActiveBg
@@ -396,7 +396,7 @@ private fun SeriesGrid(
     ) {
         val library = state.libraries.firstOrNull { it.id == state.libraryId }
         if (library != null) {
-            Text(library.displayName, fontSize = TYPE_DISPLAY, fontWeight = FontWeight.SemiBold)
+            Text(library.displayName, fontSize = typeDisplay(), fontWeight = FontWeight.SemiBold)
         }
         val accent = typeAccent(library?.moduleId ?: "")
         when (library?.moduleId) {
@@ -416,8 +416,8 @@ private fun SeriesGrid(
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 when {
-                    state.error != null -> Text(state.error, fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
-                    state.isLoading -> Text("Загрузка…", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
+                    state.error != null -> Text(state.error, fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
+                    state.isLoading -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                     state.series.isEmpty() -> EmptyCollection()
                     else -> CardGrid(
                         state = state,
@@ -440,8 +440,8 @@ private fun SeriesGrid(
                 }
             }
             "tv" -> when {
-                state.error != null -> Text(state.error, fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
-                state.isLoading -> Text("Загрузка…", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
+                state.error != null -> Text(state.error, fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
+                state.isLoading -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                 state.items.isEmpty() -> EmptyCollection()
                 else -> CardGrid(
                     state = state,
@@ -477,8 +477,8 @@ private fun SeriesGrid(
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 when {
-                    state.error != null -> Text(state.error, fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
-                    state.isLoading -> Text("Загрузка…", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
+                    state.error != null -> Text(state.error, fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
+                    state.isLoading -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                     state.items.isEmpty() -> EmptyCollection()
                     else -> CardGrid(
                         state = state,
@@ -508,7 +508,7 @@ private fun SeriesGrid(
             // never a hardcoded type list.
             else -> Column(modifier = Modifier.padding(top = 8.dp)) {
                 if (library != null) {
-                    Text(moduleLabel(library.moduleId), fontSize = TYPE_HEADING)
+                    Text(moduleLabel(library.moduleId), fontSize = typeHeading())
                 }
                 EmptyCollection()
             }
@@ -521,7 +521,7 @@ private fun SeriesGrid(
 private fun EmptyCollection() {
     Text(
         "В коллекции пока нет элементов",
-        fontSize = TYPE_BODY,
+        fontSize = typeBody(),
         modifier = Modifier.padding(top = 8.dp),
         color = tvMuted,
     )
@@ -860,13 +860,13 @@ private fun FolderChip(
     ) {
         Text(
             label,
-            fontSize = TYPE_SMALL,
+            fontSize = typeSmall(),
             color = if (active) chipActiveText else tvMuted,
         )
         if (count != null) {
             Text(
                 count.toString(),
-                fontSize = TYPE_META,
+                fontSize = typeMeta(),
                 color = if (active) chipActiveText else tvMuted,
             )
         }
@@ -1068,7 +1068,7 @@ private fun RailRow(
                     // The SPA's .clink truncates (design §B): one line, no
                     // wrap — a long Cyrillic name must not grow the card.
                     overflow = TextOverflow.Ellipsis,
-                    fontSize = TYPE_META,
+                    fontSize = typeMeta(),
                     color = if (selected) tvAccent else tvMuted,
                     modifier = Modifier.padding(start = 6.dp),
                 )
@@ -1078,12 +1078,12 @@ private fun RailRow(
             Text(module,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                fontSize = TYPE_META,
+                fontSize = typeMeta(),
                 color = tvMuted,
             )
             if (count != null) {
                 Spacer(Modifier.weight(1f))
-                Text(count.toString(), fontSize = TYPE_META, color = tvMuted)
+                Text(count.toString(), fontSize = typeMeta(), color = tvMuted)
             }
         }
     }
@@ -1110,8 +1110,8 @@ private fun SeriesPage(
         // walker's home and keeps the initial focus.
         SeriesHeroView(series, serverBase, token)
         when {
-            isLoading && episodes.isEmpty() -> Text("Загрузка…", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
-            episodes.isEmpty() -> Text("Эпизоды не найдены", fontSize = TYPE_BODY, modifier = Modifier.padding(top = 8.dp))
+            isLoading && episodes.isEmpty() -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
+            episodes.isEmpty() -> Text("Эпизоды не найдены", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
             else -> LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(top = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -1183,7 +1183,7 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
             if (hero.title != null) {
                 Text(
                     hero.title,
-                    fontSize = TYPE_DISPLAY,
+                    fontSize = typeDisplay(),
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -1194,14 +1194,14 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
                 if (about.facts != null) {
                     Text(
                         about.facts,
-                        fontSize = TYPE_META,
+                        fontSize = typeMeta(),
                         color = tvMuted,
                         modifier = Modifier.padding(top = 3.dp),
                     )
                 }
                 Text(
                     about.description,
-                    fontSize = TYPE_SMALL,
+                    fontSize = typeSmall(),
                     color = tvMuted,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -1215,7 +1215,7 @@ private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String
                         about.genres.forEach { genre ->
                             Text(
                                 genre,
-                                fontSize = TYPE_META,
+                                fontSize = typeMeta(),
                                 color = tvMuted,
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(50))
@@ -1302,7 +1302,7 @@ private fun CardView(
         if (card.title != null) {
             Text(
                 card.title,
-                fontSize = TYPE_SMALL,
+                fontSize = typeSmall(),
                 fontWeight = FontWeight.SemiBold, // the SPA .scard-title font-semibold
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -1314,7 +1314,7 @@ private fun CardView(
         if (card.meta != null) {
             Text(
                 card.meta,
-                fontSize = TYPE_META,
+                fontSize = typeMeta(),
                 color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
@@ -1324,7 +1324,7 @@ private fun CardView(
         if (card.footer != null) {
             Text(
                 card.footer,
-                fontSize = TYPE_META,
+                fontSize = typeMeta(),
                 color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
@@ -1345,7 +1345,7 @@ private fun WatchedCornerMark(watched: Boolean, modifier: Modifier = Modifier) {
     if (!watched) return
     Text(
         "✓",
-        fontSize = TYPE_META,
+        fontSize = typeMeta(),
         color = DEFAULT_TYPE_ACCENT, // the SPA .watched-mark law: the mark is type-agnostic
         modifier = modifier.padding(3.dp),
     )
@@ -1412,7 +1412,7 @@ private fun EpisodeRow(
             if (card.title != null) {
                 Text(
                     card.title,
-                    fontSize = TYPE_SMALL,
+                    fontSize = typeSmall(),
                     fontWeight = FontWeight.Medium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -1422,7 +1422,7 @@ private fun EpisodeRow(
             if (card.meta != null) {
                 Text(
                     card.meta,
-                    fontSize = TYPE_META,
+                    fontSize = typeMeta(),
                     color = tvMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

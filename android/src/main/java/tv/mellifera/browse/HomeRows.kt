@@ -47,10 +47,10 @@ import tv.mellifera.home.ResumeCardModel
 import tv.mellifera.home.toAnchorCard
 import tv.mellifera.home.toResumeCard
 import tv.mellifera.net.LibraryDto
-import tv.mellifera.ui.TYPE_BODY
-import tv.mellifera.ui.TYPE_HEADING
-import tv.mellifera.ui.TYPE_META
-import tv.mellifera.ui.TYPE_SMALL
+import tv.mellifera.ui.typeBody
+import tv.mellifera.ui.typeHeading
+import tv.mellifera.ui.typeMeta
+import tv.mellifera.ui.typeSmall
 import tv.mellifera.ui.railBorder
 import tv.mellifera.ui.requestFocusSafely
 import tv.mellifera.ui.tvFocusStyle
@@ -129,7 +129,7 @@ internal fun HomeRows(
     // error-branch idiom — before the empty-rows early return; rows
     // present → the pure gate keeps it null.
     homeErrorLine(home)?.let { line ->
-        Text(line, fontSize = TYPE_BODY, modifier = Modifier.padding(start = PARITY_OVERSCAN_X, top = 8.dp))
+        Text(line, fontSize = typeBody(), modifier = Modifier.padding(start = PARITY_OVERSCAN_X, top = 8.dp))
     }
     if (resumes.isEmpty() && anchors.isEmpty()) return
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -208,7 +208,7 @@ private fun HomeRow(
     card: @Composable (Int) -> Unit,
 ) {
     Column(modifier = Modifier.padding(top = 6.dp)) {
-        Text(label, fontSize = TYPE_HEADING, fontWeight = FontWeight.SemiBold) // the SPA Continue h2 text-lg font-semibold
+        Text(label, fontSize = typeHeading(), fontWeight = FontWeight.SemiBold) // the SPA Continue h2 text-lg font-semibold
         LazyRow(
             modifier = Modifier.padding(top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -371,25 +371,25 @@ private fun ResumeCard(
         if (model.seriesName != null) {
             Text(
                 model.seriesName,
-                fontSize = TYPE_META,
+                fontSize = typeMeta(),
                 color = tvMuted,
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
         if (model.title != null) {
-            Text(model.title, fontSize = TYPE_SMALL, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp)) // the SPA text-sm font-medium
+            Text(model.title, fontSize = typeSmall(), fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp)) // the SPA text-sm font-medium
         }
         if (model.episodeTitle != null) {
             Text(
                 model.episodeTitle,
-                fontSize = TYPE_META,
+                fontSize = typeMeta(),
                 color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
         Text(
             model.positionLine,
-            fontSize = TYPE_META,
+            fontSize = typeMeta(),
             color = tvMuted,
             modifier = Modifier.padding(top = 2.dp),
         )
@@ -440,12 +440,12 @@ private fun AnchorCard(
             }
         }
         if (model.title != null) {
-            Text(model.title, fontSize = TYPE_SMALL, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp)) // the SPA text-sm font-medium
+            Text(model.title, fontSize = typeSmall(), fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp)) // the SPA text-sm font-medium
         }
         if (model.libraryName != null) {
             Text(
                 model.libraryName,
-                fontSize = TYPE_META,
+                fontSize = typeMeta(),
                 color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
@@ -453,7 +453,7 @@ private fun AnchorCard(
         if (model.nextLabel != null) {
             Text(
                 model.nextLabel,
-                fontSize = TYPE_META,
+                fontSize = typeMeta(),
                 color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
