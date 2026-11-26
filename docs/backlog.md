@@ -265,3 +265,37 @@ Seeded non-blocking at the gate (the change's review.md P3 observations):
   the reconcile tick drops the root. Design-pinned failure re-arm law,
   bounded by the tick; documented in the runbook §8. A future refinement
   could cap in-gap retries.
+
+## tv-style-parity follow-ups (GATE 2 flags, 2026-11-26)
+
+Seeded non-blocking at the gate (the change's review.md residual seeds):
+
+- **P3: retire `rowCardTrack`** (`browse/LayoutParity.kt`) + its
+  `LayoutParityTest` cell — production-dead post-17.5, disclosed in-change.
+- **P3: delete the 8 private `TYPE_*` vals** (`ui/TypeScale.kt`) and fix
+  their KDoc's "the table's base column" claim — the type table is
+  `TYPE_TABLE` in `ui/UiScale.kt` now.
+- **P3: stale crop docs ×2** — `browse/ItemCards.kt` (~:136) and
+  `browse/LayoutParity.kt` (~:39) still say "Crop fills"; post-20.1
+  fit-over-blur made that false.
+- **P3: `chipsRowConsumesUp` retirement sweep** — the flag + its 6
+  `FocusLawTest` pins are production-orphaned under the Q9 waiver;
+  candidate once the freeze lifts.
+- **Season chip server follow-up (zero-delta seeded at 17.2)** — read-time
+  `season` on seriesDTO mirroring the SPA derivation + a one-line
+  `DisplayCard` passthrough; the wire serves no season on series rows
+  today, so the «Season N» chip stays dark (score-only compact caption in
+  force).
+- **P3: EPISODE chrome reserve re-measure** — the 100dp reserve is
+  optimistic vs the reworked hero (~150dp with breadcrumb); the lazy grid
+  absorbs it — re-measure on the next device walk.
+- **Крупный taller-viewport tier** — the two-row tier regains at 720/1080
+  viewports; the 22.2 walk measured at 540dp only.
+- **P3 (note only): photo grid reads the poster-columns pref as its
+  override** — inert at the pinned viewports under the caption clamp;
+  intentional, disclosed.
+- **Docs debt (pre-existing, now blocking): the machine page
+  `docs/project_structure.md` is OUT OF CONTRACT** — `wf index regen`
+  refuses («unknown section», hand-authored narrative sections); needs a
+  dedicated contract-repair pass (move narrative to topics/ or
+  annotations) before the tree page can regenerate.
