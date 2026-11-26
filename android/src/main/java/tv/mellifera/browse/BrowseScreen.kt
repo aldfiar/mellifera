@@ -82,8 +82,8 @@ import tv.mellifera.home.entryLandsOnHome
 import tv.mellifera.net.ItemDto
 import tv.mellifera.net.SeriesDto
 import tv.mellifera.ui.LocalUiScale
-import tv.mellifera.ui.RAIL_PANEL_WIDTH
 import tv.mellifera.ui.chipHeight
+import tv.mellifera.ui.railPanelWidth
 import tv.mellifera.ui.railRowHeight
 import tv.mellifera.ui.typeBody
 import tv.mellifera.ui.typeDisplay
@@ -953,9 +953,9 @@ private fun FolderChip(
  * closes into it, and a body that cannot open keeps the rail + focus).
  *
  * Presentation (14.1, amendment §B): the panel is [AppCanvas] at
- * [RAIL_PANEL_WIDTH] (the SPA `.side`'s 224px ÷ 2) with a 1dp end-edge
- * [railBorder] border — D11's rail scrim is retired; the flow laws
- * (slide-in 5.15, hidden-by-default, focus restore) stand untouched.
+ * [railPanelWidth] (96dp at Компактный/Обычный, 112dp at Крупный) with a
+ * 1dp end-edge [railBorder] border — D11's rail scrim is retired; the flow
+ * laws (slide-in 5.15, hidden-by-default, focus restore) stand untouched.
  */
 @Composable
 private fun CollectionsRail(
@@ -964,10 +964,11 @@ private fun CollectionsRail(
     onClose: () -> Unit,
     onFocusMoved: (Int) -> Unit,
 ) {
+    val uiScale = LocalUiScale.current
     Row(
         modifier = Modifier
             .fillMaxHeight()
-            .width(RAIL_PANEL_WIDTH)
+            .width(railPanelWidth(uiScale))
             .background(AppCanvas),
     ) {
         LazyColumn(
