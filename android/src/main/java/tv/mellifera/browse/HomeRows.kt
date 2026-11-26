@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
@@ -33,6 +35,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -85,6 +88,13 @@ import tv.mellifera.ui.tvMuted
  */
 private const val CONTINUE_LABEL = "Продолжить"
 private const val NEXT_UP_LABEL = "Следующая серия"
+
+/**
+ * The anchor card's next-offer prefix (the SPA's `Next {label}` chip): the
+ * served `next.label` is the bare SxxEyy, so the label form composes the RU
+ * prefix over the served facts — the facts themselves are never re-derived.
+ */
+private const val NEXT_OFFER_PREFIX = "Следующая: "
 
 /**
  * The home card's chrome radius (the SPA continue-row card, Home.tsx:407
@@ -149,7 +159,18 @@ internal fun HomeRows(
             captionReserve(LocalUiScale.current, GridSurface.HOME),
             STILL_ASPECT,
         ).track
-        Column(modifier = Modifier.padding(start = PARITY_OVERSCAN_X, top = 8.dp)) {
+        // The rows block centers vertically when its content is shorter
+        // than the viewport. The parent is the scrollable
+        // home column — its height axis is unbounded, so `fillMaxHeight`
+        // would no-op; the bounded form of the same fill is the min-height
+        // over the served viewport measurement ([viewportHeight]). Taller
+        // content wraps past the minimum and scrolls exactly as before.
+        Column(
+            modifier = Modifier
+                .heightIn(min = viewportHeight)
+                .padding(start = PARITY_OVERSCAN_X, top = 8.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
             // Row 0 is the topmost RENDERED row — row-0's LEFT@x=0 is the rail
             // trigger, so the anchor row counts as row 0 only with no resumes
             // above it.
@@ -225,6 +246,9 @@ private fun HomeRow(
         LazyRow(
             modifier = Modifier.padding(top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
+            // The row's end padding mirrors the left margin, so a peeking
+            // card clips at the same inset on both sides.
+            contentPadding = PaddingValues(end = PARITY_OVERSCAN_X),
         ) {
             items(count) { index -> card(index) }
         }
@@ -332,10 +356,13 @@ private fun HomeCardShell(
 }
 
 /**
- * The resume card (D4, anatomy 3.4): the 16:9 still, the bar ONLY when the
- * row serves duration_seconds (the pure percent carrier), the served title
- * and the served position line. OK resumes through the play verb — the
- * launch leg carries the stored position (no client seek math).
+ * The resume card (the SPA ContinueCard's resume branch): the 16:9 still,
+ * then the caption — the served eyebrow, the title clamped to ONE line (a
+ * long title grows the card and rags the row), the served episode title,
+ * the position line sitting directly OVER the progress bar — and the bar
+ * ONLY when the row serves duration_seconds (the pure percent carrier).
+ * OK resumes through the play verb — the launch leg carries the stored
+ * position (no client seek math).
  */
 @Composable
 private fun ResumeCard(
@@ -374,13 +401,6 @@ private fun ResumeCard(
                 FallbackArtwork(name = model.title, modifier = Modifier.fillMaxSize())
             }
         }
-        if (model.percent != null) {
-            InProgressBar(
-                percent = model.percent,
-                accent = accent,
-                modifier = Modifier.padding(top = 3.dp),
-            )
-        }
         if (model.seriesName != null) {
             Text(
                 model.seriesName,
@@ -390,7 +410,16 @@ private fun ResumeCard(
             )
         }
         if (model.title != null) {
-            Text(model.title, fontSize = typeSmall(), fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp)) // the SPA text-sm font-medium
+            // ONE line: the row's cards stay equal-height — a long title
+            // truncates instead of growing the card and ragging the row.
+            Text(
+                model.title,
+                fontSize = typeSmall(),
+                fontWeight = FontWeight.Medium, // the SPA text-sm font-medium
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
         if (model.episodeTitle != null) {
             Text(
@@ -406,15 +435,22 @@ private fun ResumeCard(
             color = tvMuted,
             modifier = Modifier.padding(top = 2.dp),
         )
+        if (model.percent != null) {
+            InProgressBar(
+                percent = model.percent,
+                accent = accent,
+                modifier = Modifier.padding(top = 3.dp),
+            )
+        }
     }
 }
 
 /**
- * The anchor card (D4): the 16:9 still, the served series name promoted to
- * the title slot, the served library meta line (parity P3-3) and the served
- * next label verbatim tinted by the row's type accent. OK plays the served
+ * The anchor card: the 16:9 still, the served series name as the ONE-line
+ * title, the next offer in label form («Следующая: » over the served
+ * SxxEyy) and the served library meta line. OK plays the served
  * next.item_id; a row with no next offer renders BARE — still and title, no
- * OK affordance, never a fabricated link (D4).
+ * OK affordance, never a fabricated link.
  */
 @Composable
 private fun AnchorCard(
@@ -453,19 +489,28 @@ private fun AnchorCard(
             }
         }
         if (model.title != null) {
-            Text(model.title, fontSize = typeSmall(), fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp)) // the SPA text-sm font-medium
-        }
-        if (model.libraryName != null) {
+            // ONE line: the row's cards stay equal-height — a long title
+            // truncates instead of growing the card and ragging the row.
             Text(
-                model.libraryName,
+                model.title,
+                fontSize = typeSmall(),
+                fontWeight = FontWeight.Medium, // the SPA text-sm font-medium
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        if (model.nextLabel != null) {
+            Text(
+                NEXT_OFFER_PREFIX + model.nextLabel,
                 fontSize = typeMeta(),
                 color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
-        if (model.nextLabel != null) {
+        if (model.libraryName != null) {
             Text(
-                model.nextLabel,
+                model.libraryName,
                 fontSize = typeMeta(),
                 color = tvMuted,
                 modifier = Modifier.padding(top = 2.dp),
