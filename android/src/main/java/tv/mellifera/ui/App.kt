@@ -44,7 +44,7 @@ val MelliferaDarkScheme: ColorScheme = darkColorScheme(
 @Composable
 fun App(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsState()
-    // G18: the persisted scale/columns ride the same root provider — every
+    // The persisted scale/columns ride the same root provider — every
     // surface re-reads them per emission (the settings overlay's LIVE
     // cycling re-tiles grids while it is open).
     val uiScale by viewModel.uiPrefs.uiScale.collectAsState()

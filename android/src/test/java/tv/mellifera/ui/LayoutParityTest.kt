@@ -22,7 +22,7 @@ class LayoutParityTest {
     @Test
     fun the_rail_panel_widens_to_112dp_at_large() {
         // The Крупный leg serves the 8-char name floor with the mode's
-        // larger type (the Q5 default; the on-device walk confirms).
+        // larger type (the ruled default; the on-device walk confirms).
         assertEquals(112f, railPanelWidth(UiScaleMode.LARGE).value, 1e-6f)
     }
 

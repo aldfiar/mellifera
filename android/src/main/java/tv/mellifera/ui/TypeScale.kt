@@ -5,10 +5,10 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 
 /**
- * The type scale (G16). The old derivation — SPA Tailwind px authored 1:1
+ * The type scale. The old derivation — SPA Tailwind px authored 1:1
  * (×2 at the box's 2.0× density) — was ruled too large on the panel
  * (2026-11-17), and the ×1 sp literal was ruled too small (2026-11-25). The
- * operator therefore ruled the F-1 table per mode column ([typeSize], the
+ * operator therefore ruled the table per mode column ([typeSize], the
  * acceptance floor), and ÷2 stays the px→sp law: a column's sp value renders
  * its panel px at the box's 2.0× density. Call sites read the composable
  * getters below — never a raw sp literal. The private TYPE_* constants are

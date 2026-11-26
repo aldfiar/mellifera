@@ -52,7 +52,7 @@ data class DisplayCard(
     /** The episode card's duration line (the document's ffprobe duration,
      * display-formatted) — null means "no duration line" (an absent or
      * unparseable duration renders absence, never a guessed value). The
-     * episode grid is its only reader (F-3's episode anatomy). */
+     * episode grid is its only reader (the episode card's anatomy). */
     val duration: String? = null,
 )
 
@@ -103,7 +103,7 @@ fun SeriesDto.toCard(): DisplayCard = DisplayCard(
  * guessed percent. The meta line is the document's field-driven fact line.
  * The title rides the served-title precedence ([episodeTitle]); the
  * duration line is the document duration, display-formatted, absent → no
- * line (the episode card's F-3 anatomy).
+ * line (the episode card's anatomy).
  */
 fun ItemDto.toCard(positionSeconds: Long? = null): DisplayCard {
     val duration = documentDuration(document)

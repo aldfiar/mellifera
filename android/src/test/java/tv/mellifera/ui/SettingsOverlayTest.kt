@@ -7,12 +7,12 @@ import org.junit.Test
 import tv.mellifera.dpad.DpadKey
 
 /**
- * The settings overlay's pure law (F-5, design D5) pinned on the JVM: the
+ * The settings overlay's pure law pinned on the JVM: the
  * option rings ride the settings order, the cycle law wraps and reads
  * absence as «Авто», the key law routes the modal keys, the cursor law
  * keeps the selection inside the overlay, and every row × act resolves to
  * its exact effect — the LIVE-apply legs (Set* → the persist-through
- * setters → the flows) ride AppSmokeTest's 18.1 pins; the composition is
+ * setters → the flows) ride AppSmokeTest's live-apply pins; the composition is
  * only the routing wrapper. If one of these moves, what the operator's
  * OK/LEFT/RIGHT does on the panel moves with it.
  */

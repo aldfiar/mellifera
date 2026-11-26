@@ -59,7 +59,7 @@ class LayoutParityTest {
     fun track_math_fits_the_cards_in_the_tv_shell_column() {
         // The tv shell column: 92vw of 1920px ÷ 2 = 883.2dp. The home rows'
         // fixed track: (883.2 − 2·6) / 3 = 290.4dp per 16:9 card (the 3 is
-        // the retired fixed-3 count — task 17.5 moves the home rows onto
+        // the retired fixed-3 count — the home rows move onto
         // the density law).
         assertEquals(290.4f, rowCardTrack(883.2.dp, 3).value, 0.01f)
     }
@@ -82,7 +82,7 @@ class LayoutParityTest {
     }
 
     // ---- the pinned output table: 960×540 dp ---------------------------------
-    // Every cell of the F-2 table per mode × override, computed from the
+    // Every cell of the ruled plan table per mode × override, computed from the
     // formula at W = 0.92 × 960 = 883.2dp (W + gutter = 889.2).
 
     private fun serialPlan(mode: UiScaleMode, override: Int? = null): GridPlan = gridPlan(
@@ -372,7 +372,7 @@ class LayoutParityTest {
 
     @Test
     fun tv_stills_take_the_law_s_output_with_no_special_case() {
-        // Q6: the law decides. heightFit(2) = ((540 − 80 − 2·42)/2)·(16/9) =
+        // The law decides, no tv special case. heightFit(2) = ((540 − 80 − 2·42)/2)·(16/9) =
         // 334.22dp ≥ 110 → two rows; columnsAuto = floor(889.2/340.22) = 2.
         val plan = gridPlan(
             883.2.dp, 540.dp,

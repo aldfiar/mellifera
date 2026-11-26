@@ -24,7 +24,7 @@ class SessionStore(private val backing: SessionBacking) {
     fun writeServerAddress(address: String) = backing.put(KEY_ADDRESS, address)
 
     /**
-     * The display-settings keys (G18): typed decodes of the settings
+     * The display-settings keys: typed decodes of the settings
      * strings. Null means the key is absent (first run — no setup needed)
      * or unreadable, and the caller applies its default; an unreadable
      * stored value degrades to that same null rather than crashing the

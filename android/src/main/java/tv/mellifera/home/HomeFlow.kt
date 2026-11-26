@@ -93,7 +93,7 @@ class HomeFlow(
     }
 
     /**
-     * The foreground-resume refetch (§3.1 step 7, Q4): the SAME /home
+     * The foreground-resume refetch: the SAME /home
      * round-trip as [load] WITHOUT the opening state clear — the rows and
      * the error line already on screen stay visible while in flight (no
      * born-loading flare, the entry focus is never re-grabbed mid-session).

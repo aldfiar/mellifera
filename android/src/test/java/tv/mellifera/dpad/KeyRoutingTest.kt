@@ -125,9 +125,9 @@ class KeyRoutingTest {
 
     @Test
     fun episode_grid_walks_the_poster_law_at_the_episode_shape() {
-        // The series page's episode grid (G19) rides the SAME moveInGrid
+        // The series page's episode grid rides the SAME moveInGrid
         // law the poster grids use — dpad untouched; these pins cover the
-        // counts the D-1 plan actually serves (Авто = 3 columns; 7 episodes
+        // counts the episode plan actually serves (Авто = 3 columns; 7 episodes
         // — the last row holds one).
         // Within the rows: Right steps to the last episode; the last row's
         // column-0 Left and the count-clamped Right stay put (the wiring

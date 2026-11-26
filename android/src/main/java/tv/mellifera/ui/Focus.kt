@@ -73,7 +73,8 @@ private fun tvFocusRingOffset(viewportWidthPx: Float): Float {
  * The rail row's focus-ring width — the design's ONE rail-scoped exception
  * to the slate outline law: a FIXED 2dp band (4px at the box's dpr 2.0,
  * double the surface law's 2px = 1dp golden at the same geometry). The
- * width reads no scale mode and no viewport — Q3's «no scale anywhere» —
+ * width reads no scale mode and no viewport — the ring sits outside the
+ * scale system entirely («no scale anywhere») —
  * so the rail row's ring is the same band at Компактный/Обычный/Крупный.
  * JVM-pure so [FocusRingTest] pins it against [tvFocusRingWidth].
  */

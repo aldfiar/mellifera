@@ -39,9 +39,9 @@ import tv.mellifera.dpad.DpadKey
 import tv.mellifera.dpad.toDpadKey
 
 /**
- * The settings overlay (F-5): a focused dialog over the browse shell per
+ * The settings overlay: a focused dialog over the browse shell per
  * the standard overlay law — BACK closes (the [BackHandler] below; the
- * rail-focus restore is 18.3's wiring at its composition site), focus lives
+ * rail-focus restore is wired at its composition site), focus lives
  * inside (every row is focusable, the cursor is overlay-local, the modal
  * router consumes what it cannot satisfy — nothing beneath native-searches),
  * and the rows carry the [tvFocusStyle] ring.

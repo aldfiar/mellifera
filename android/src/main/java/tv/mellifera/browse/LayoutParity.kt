@@ -67,7 +67,7 @@ val PARITY_OVERSCAN_Y: Dp = 14.dp
 /** The surfaces a grid plan serves; each carries its own chrome and caption
  * reserves ([chromeReserve]/[captionReserve]). SERIAL = the 2:3 poster
  * grids (collections, folders), TV = the 16:9 file-still grid (no special
- * case — the same law, Q6), PHOTO = the 1:1 square grid (no caption on the
+ * case — the same law), PHOTO = the 1:1 square grid (no caption on the
  * grid), HOME = the home rows' 16:9 cards, EPISODE = the series page's
  * episode grid under its hero. */
 enum class GridSurface { SERIAL, TV, PHOTO, HOME, EPISODE }

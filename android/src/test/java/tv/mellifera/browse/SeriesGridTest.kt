@@ -218,7 +218,7 @@ class SeriesGridTest {
 
     @Test
     fun episode_card_carries_the_display_formatted_duration_line() {
-        // The F-3 anatomy's duration line: the document's ffprobe duration,
+        // The episode card's duration line: the document's ffprobe duration,
         // display-formatted (ONE formatter — formatPosition)...
         val card = ItemDto(id = "e-12", displayName = "S01E01", document = Json.parseToJsonElement(probedDoc())).toCard()
         assertEquals("23:50", card.duration)

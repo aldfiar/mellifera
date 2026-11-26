@@ -156,8 +156,8 @@ class RailLawTest {
         // aim outside the SERVED rows — past the last row clamps to it,
         // before the first clamps to row 0 (the same live-rows clamp as the
         // grid cursor), so UP/DOWN walking the open rail is a pure
-        // cursor-in-state movement over exactly the rendered rows. 18.3:
-        // the rendered row space grew by the fixed settings row — the
+        // cursor-in-state movement over exactly the rendered rows. The
+        // rendered row space includes the fixed settings row — the
         // walker's count is libraries.size + 1 and the clamp lands on the
         // settings index (libraries.size = 2), the walk's last row.
         flow.onRailFocusMoved(99)
@@ -169,7 +169,7 @@ class RailLawTest {
 
     @Test
     fun rail_walks_into_the_settings_row_and_ok_there_is_a_no_op() = runBlocking {
-        // The fixed settings row (18.3): the rail walk's +1 row. The walker
+        // The fixed settings row: the rail walk's +1 row. The walker
         // (the pure moveInList law, dpad/KeyRouting.kt) and the flow's
         // landing clamp ride the SAME count — libraries.size + 1 — so DOWN
         // from the last library lands the settings index and the walk

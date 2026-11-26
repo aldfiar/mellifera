@@ -127,7 +127,7 @@ import tv.mellifera.ui.tvRailFocusStyle
 internal const val WATCHED_DIM = 0.55f
 
 /**
- * The photo tile's fill blur (design D-2): strong enough that the fill reads
+ * The photo tile's fill blur: strong enough that the fill reads
  * as atmosphere, never as a second image.
  */
 private val PHOTO_FILL_BLUR = 16.dp
@@ -178,7 +178,7 @@ fun BrowseScreen(viewModel: AppViewModel) {
     // artwork fetches (Api.kt's interceptor covers Retrofit only, not Coil).
     val serverBase = viewModel.serverAddress
     val token = appState.token
-    // The settings overlay's open state (18.3): composition-local — the
+    // The settings overlay's open state: composition-local — the
     // rail stays open beneath it ([BrowseState.isRailOpen] untouched) and
     // BACK is the overlay's own BackHandler (it composes last in the
     // chain). The nonce re-arms the rail's focus actuator on dismiss: the
@@ -245,7 +245,7 @@ fun BrowseScreen(viewModel: AppViewModel) {
                     }
                     Column(
                         // The bottom headroom retires the walk-measured 27px
-                        // home sliver above the body (D-3): end-of-scroll may
+                        // home sliver above the body: end-of-scroll may
                         // now rest one [PARITY_OVERSCAN_Y] past the body's top
                         // edge, and the body's own top overscan absorbs it —
                         // the body lands at y=0 with no scroll range left for
@@ -334,15 +334,15 @@ fun BrowseScreen(viewModel: AppViewModel) {
                 // the focused row's body opens and the rail closes into it;
                 // a body that cannot open keeps the rail open with its focus
                 // (the activation law, BrowseFlow.activateRailRow). The fixed
-                // settings row is NOT a library — its OK lands here instead
-                // (18.3): open the overlay, never a collection body.
+                // settings row is NOT a library — its OK lands here instead:
+                // open the overlay, never a collection body.
                 onSelect = { scope.launch { browse.activateRailRow() } },
                 onOpenSettings = { settingsOpen = true },
                 onClose = { browse.closeRail() },
                 onFocusMoved = { browse.onRailFocusMoved(it) },
             )
         }
-        // The settings overlay (18.3): composed after the rail so its
+        // The settings overlay: composed after the rail so its
         // BackHandler sits at the chain's top — while it is open, BACK's
         // whole act is the close (the standard overlay law). The dismiss
         // bumps the nonce that re-lands the rail's focus on the settings
@@ -485,7 +485,7 @@ private fun SeriesGrid(
         val library = state.libraries.firstOrNull { it.id == state.libraryId }
         val accent = typeAccent(library?.moduleId ?: "")
         if (library != null) {
-            // The ONE-line header (D-3): the title at DISPLAY plus the
+            // The ONE-line header: the title at DISPLAY plus the
             // module's type badge chip in its pastel (the rail dot map) — the
             // chip's label is the rail rows' own moduleLabel (the same served
             // module_id, field-driven), and no count or description line
@@ -872,7 +872,7 @@ private suspend fun LazyListState.revealChip(cursor: Int) {
  * UNCONSUMED so the cursor crosses into the grid
  * below natively (D12's chips row, the L2 law); UP is always clamped (the
  * body-top clamp — with the settings affordance retired into the overlay,
- * 18.2, nothing focusable ever sits above the body): the key is consumed,
+ * nothing focusable ever sits above the body): the key is consumed,
  * the chip keeps focus, and focus never escapes the body by a runaway
  * native search into the home rows.
  */
@@ -926,8 +926,8 @@ private fun FolderChipsRow(
                             true // consumed inside the chips row
                         }
                         // The body-boundary clamp (task 8.6): with the
-                        // settings affordance retired into the overlay
-                        // (18.2) nothing focusable ever sits above the body
+                        // settings affordance retired into the overlay,
+                        // nothing focusable ever sits above the body
                         // — UP is consumed and the chip keeps focus (never
                         // a runaway native search into the home rows).
                         key == DpadKey.Up -> true
@@ -962,7 +962,7 @@ private fun FolderChipsRow(
  * ([revealChip]); every focus report still rides [onFocused] into the
  * shared cursor for the Back law. UP rides the body-top clamp (the one-row
  * lane IS the body's top row — with the settings affordance retired into
- * the overlay, 18.2, nothing focusable ever sits above it, so focus never
+ * the overlay, nothing focusable ever sits above it, so focus never
  * escapes by a runaway native search into the home rows); DOWN crosses
  * natively into the grid below.
  */
@@ -1031,7 +1031,7 @@ private fun FacetChipsRow(
                         }
                         // The body-top clamp: nothing sits between this
                         // one-row lane and the body top — with the settings
-                        // affordance retired into the overlay (18.2) no
+                        // affordance retired into the overlay, no
                         // target above ever exists, so UP is consumed
                         // (never a runaway native search into the home
                         // rows).
@@ -1096,7 +1096,7 @@ private fun FolderChip(
 /**
  * The collections rail (5.15 — the SPA sidebar translated to remote-native
  * navigation): one scrollable row per served collection, then the FIXED
- * settings row (18.3) — a divider, then the always-present «Настройки»
+ * settings row — a divider, then the always-present «Настройки»
  * row. The settings row renders through the SAME [RailRow] (the uniform
  * width/height and one-line clamp row laws hold by construction) and is
  * count-less forever — no summary exists for it. The rail cursor walks
@@ -1111,7 +1111,8 @@ private fun FolderChip(
  * trigger). LEFT/RIGHT close the rail (consumed — focus returns to the
  * content's parked cursor, the L3 restore law); the rail-top UP stays
  * unconsumed (native crossing — nothing focusable sits above the rail
- * since 18.2 retired the settings section, so the key drops harmlessly).
+ * since the settings section retired into the overlay, so the key drops
+ * harmlessly).
  * Rows render field-driven — name, module label (the pure 5.14 law) and
  * the count only when a summary answered; the current collection carries
  * the accent. OK on a LIBRARY row acts on the FOCUSED row through
@@ -1163,7 +1164,7 @@ private fun CollectionsRail(
                 // attached to the window yet — the walk-found 4.2 dead rail:
                 // rows render, no row ever focused). The re-arming actuator
                 // keeps asking until the request lands or the rail closes.
-                // The nonce joins the keys (18.3): the overlay's BACK dismiss
+                // The nonce joins the keys: the overlay's BACK dismiss
                 // bumps it, restarting every row's effect — only the row
                 // matching [BrowseState.railFocus] passes the guard and
                 // re-lands (the settings row when the overlay was opened
@@ -1182,7 +1183,7 @@ private fun CollectionsRail(
                     onClick = onSelect,
                     onFocused = { onFocusMoved(index) },
                     onDirection = { key ->
-                        // 18.3: the walker's count is libraries.size + 1 —
+                        // The walker's count is libraries.size + 1 —
                         // the fixed settings row rides the SAME count, so
                         // DOWN from the last library lands it (consumed) and
                         // the bounds still clamp inside the rail.
@@ -1205,7 +1206,7 @@ private fun CollectionsRail(
                         .tvRailFocusStyle(ringColor = typeAccent(library.moduleId), shape = RoundedCornerShape(4.dp)),
                 )
             }
-            // The fixed settings row (18.3): the walk's +1 row. The divider
+            // The fixed settings row: the walk's +1 row. The divider
             // rides its own item (spacedBy spaces it like every row); the
             // row itself is a RailRow — «Настройки», no module, no count,
             // never selected — so the uniform width/height and one-line
@@ -1428,7 +1429,7 @@ private fun SeriesPage(
                     isLoading && episodes.isEmpty() -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                     episodes.isEmpty() -> Text("Эпизоды не найдены", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                     else -> {
-                        // The density law (D-1): «Эпизодов в ряду» — null
+                        // The density law: «Эпизодов в ряду» — null
                         // = Авто → the plan over the ~100dp hero reserve
                         // (3 across at Обычный @960×540); 2/3/4 override,
                         // clamped inside the planner so a caption never
@@ -1662,7 +1663,7 @@ private fun CardView(
         Box(modifier = Modifier.fillMaxWidth().aspectRatio(tileAspect).clip(cardShape)) {
             val artwork = resolveArtworkUrl(serverBase, card.artworkUrl)
             if (surface == GridSurface.PHOTO && artwork != null) {
-                // The photo tile's fit-over-blur law (D-2 = b): the photo
+                // The photo tile's fit-over-blur law: the photo
                 // FITS whole over a blurred fill — one request, two layers.
                 PhotoTileImage(
                     artwork = artwork,
@@ -1799,7 +1800,7 @@ internal fun ArtworkImage(
 }
 
 /**
- * The photo tile's fit-over-blur rendering (design D-2 = b): ONE Coil
+ * The photo tile's fit-over-blur rendering: ONE Coil
  * request per tile — one [ImageRequest] remembered over the resolved
  * artwork, its painter shared by BOTH layers — so a tile can never issue
  * two independent fetches. The background layer Crop-fills the square under

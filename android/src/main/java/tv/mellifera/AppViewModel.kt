@@ -84,7 +84,7 @@ class AppViewModel(
     val serverAddress: String? get() = store.readServerAddress()
 
     /**
-     * The persisted display settings (G18) as live flows — App.kt's root
+     * The persisted display settings as live flows — App.kt's root
      * provider collects them into LocalUiScale/LocalGridPrefs; the settings
      * overlay writes through this same object.
      */
@@ -237,7 +237,7 @@ class AppViewModel(
      * immediately and /profile is REFETCHED, so an admin debug flip lands
      * within one app-switch; events emitted before the fresh answer lands
      * are dropped (a debug build stays open across the window). The home
-     * rows re-fetch beside it (§3.1 step 7): [HomeFlow.resumeRefetch], not
+     * rows re-fetch beside it: [HomeFlow.resumeRefetch], not
      * [HomeFlow.load] — the opening clear would blank the surface and drop
      * a stale error line before the verdict, so the stale «Не удалось
      * загрузить продолжения» line heals only when the fresh answer lands.

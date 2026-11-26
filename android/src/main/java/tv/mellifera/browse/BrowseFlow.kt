@@ -769,7 +769,7 @@ class BrowseFlow(
      * The D-pad moved the rail cursor (the moveInList law's landing, the
      * same clamp-to-the-walker's-count semantics as [onGridFocusMoved]).
      * The rail walk's count is the served libraries PLUS the fixed settings
-     * row (18.3): the settings index (libraries.size) is walkable state —
+     * row: the settings index (libraries.size) is walkable state —
      * the walk lands on it and clamps inside it — but never an activatable
      * library ([activateRailRow]'s getOrNull guard refuses the virtual
      * index; the overlay opens at the composition site instead).
@@ -784,7 +784,7 @@ class BrowseFlow(
      * best-effort positions walk for the episode rows' in-progress bars.
      * The rows render as soon as the episodes land; the bars arrive with
      * the progress walk. The grid cursor PARKS — untouched — so Back
-     * restores the exact card; the episode cursor seeds the G19
+     * restores the exact card; the episode cursor seeds the
      * first-unwatched law (nav/InitialFocus.kt — the served rows' watched
      * states pick the landing; no states or an all-watched page → 0) and
      * the walk keeps it from there. */

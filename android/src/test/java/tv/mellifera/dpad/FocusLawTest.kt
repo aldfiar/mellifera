@@ -47,7 +47,7 @@ class FocusLawTest {
         assertEquals(FocusTarget.Surface, pairingFocusTarget(PairingState.Paired))
 
         // Browse: grid → the card at the cursor; series page → the episode
-        // GRID card at the cursor (G19 — the target renamed with the 36dp
+        // GRID card at the cursor (the target renamed with the 36dp
         // row list's retirement); loading/error → the shell.
         val grid = BrowseState(series = List(5) { SeriesDto(id = "s-$it") }, gridFocus = 3)
         assertEquals(FocusTarget.GridCard(3), browseFocusTarget(grid))
@@ -63,7 +63,7 @@ class FocusLawTest {
         assertEquals(FocusTarget.Surface, browseFocusTarget(BrowseState(isLoading = true)))
         assertEquals(FocusTarget.Surface, browseFocusTarget(BrowseState(error = "сбой")))
 
-        // The episode grid's first-unwatched law (G19, nav/InitialFocus.kt):
+        // The episode grid's first-unwatched law (nav/InitialFocus.kt):
         // the seed picks the FIRST row that is not watched when the served
         // rows carry watched states...
         val watched = listOf(

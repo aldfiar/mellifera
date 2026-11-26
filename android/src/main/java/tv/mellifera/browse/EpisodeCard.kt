@@ -27,8 +27,8 @@ import tv.mellifera.ui.typeMeta
 import tv.mellifera.ui.typeSmall
 
 /**
- * The episode card (design D3's episode anatomy row, G19 — the series
- * page's grid card): the 16:9 still → the served-title title clamped to
+ * The episode card (the series page's grid card — the episode anatomy
+ * row): the 16:9 still → the served-title title clamped to
  * two lines at SMALL → the duration line at META. The tri-state rides ON
  * the still (the 36dp row had no room; the still is the card's one stage):
  * watched → the ✓ corner and NO bar; in-progress → the bar and NO ✓; a new
@@ -84,7 +84,7 @@ fun EpisodeCard(
                     modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
                 )
             }
-            // The watched ✓ rides the still's top-end corner (task 12.1);
+            // The watched ✓ rides the still's top-end corner;
             // unwatched renders absence (no mark, no space — L1).
             WatchedCornerMark(
                 watched = card.watched == true,

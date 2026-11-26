@@ -23,8 +23,8 @@ sealed interface FocusTarget {
     /** The series grid card at [index] (the browse cursor). */
     data class GridCard(val index: Int) : FocusTarget
 
-    /** The open series' episode GRID card at [index] (G19 — the 36dp row
-     * list retired from the series page; the target renamed with it). */
+    /** The open series' episode GRID card at [index] (the 36dp row
+     * list was retired from the series page; the target renamed with it). */
     data class EpisodeGrid(val index: Int) : FocusTarget
 
     /** The player overlay itself (it owns every key while visible). */
@@ -45,7 +45,7 @@ fun pairingFocusTarget(state: PairingState): FocusTarget = when (state) {
 }
 
 /**
- * The episode grid's first-unwatched law (G19): the FIRST row that is not
+ * The episode grid's first-unwatched law: the FIRST row that is not
  * watched, when the served rows carry watched states; with no served states
  * (or an all-watched page) the law floors to index 0 — the arithmetic is
  * one law, not two: "no states" and "first row unwatched" resolve the same

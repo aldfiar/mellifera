@@ -228,7 +228,7 @@ class HomeFlowTest {
         assertEquals(0, state.nextUpFocus)
     }
 
-    // ---- resumeRefetch: the foreground-refetch law (§3.1 step 7, Q4) ----
+    // ---- resumeRefetch: the foreground-refetch law ----
 
     @Test
     fun resume_refetch_keeps_rows_and_error_while_in_flight() = runBlocking {

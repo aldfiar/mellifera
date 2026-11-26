@@ -8,7 +8,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * The in-app UI scale (G16, design D1/F-4). The columns are the operator's
+ * The in-app UI scale. The columns are the operator's
  * RULED values, not a multiplier: «×2» (SPA px authored 1:1) was ruled too
  * large on the panel (2026-11-17) and «×1» too small (2026-11-25), so each
  * token's column was ruled individually and deviates from pure
@@ -30,7 +30,7 @@ enum class TypeToken {
     META, SMALL, BODY, HEADING, READOUT, DISPLAY, CODE, FALLBACK_INITIAL
 }
 
-// The ruled F-1 columns in sp (sp = panel px ÷ 2 — the box renders at 2.0×
+// The ruled type-size columns in sp (sp = panel px ÷ 2 — the box renders at 2.0×
 // density), [COMPACT, REGULAR, LARGE] per row. CODE's constant row is the
 // operator's ruling too (mode-independent 36px).
 private val TYPE_TABLE: Map<TypeToken, FloatArray> = mapOf(
@@ -48,13 +48,13 @@ private val TYPE_TABLE: Map<TypeToken, FloatArray> = mapOf(
 fun typeSize(mode: UiScaleMode, token: TypeToken): TextUnit =
     TYPE_TABLE.getValue(token)[mode.ordinal].sp
 
-// F-4's ruled chips lane heights in dp: [COMPACT, REGULAR, LARGE].
+// The ruled chips lane heights in dp: [COMPACT, REGULAR, LARGE].
 private val CHIP_HEIGHTS = floatArrayOf(30f, 36f, 48f)
 
-/** The chips lane height at [mode] (F-4 ruled). */
+/** The chips lane height at [mode] (the ruled 30/36/48dp tier). */
 fun chipHeight(mode: UiScaleMode): Dp = CHIP_HEIGHTS[mode.ordinal].dp
 
-/** The rail row height at [mode] — chipHeight × 4/3 (the §3.2 ruled anchor
+/** The rail row height at [mode] — chipHeight × 4/3 (the ruled anchor
  * 48dp at Обычный derives the tier; 40/48/64dp). */
 fun railRowHeight(mode: UiScaleMode): Dp = chipHeight(mode) * 4f / 3f
 

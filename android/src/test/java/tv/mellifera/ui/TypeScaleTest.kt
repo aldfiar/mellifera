@@ -11,7 +11,7 @@ import org.junit.Test
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
- * The G16 scale law's JVM pin: the ruled F-1 table (design D1) cell by cell,
+ * The scale law's JVM pin: the ruled type table cell by cell,
  * both geometry ladders, and a per-token canary proving every composable
  * getter resolves through [typeSize] under a stub-provided [LocalUiScale] —
  * a wrong token→getter swap at a sweep site fails a named test here, not on

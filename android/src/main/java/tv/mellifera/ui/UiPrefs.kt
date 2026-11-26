@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import tv.mellifera.pairing.SessionStore
 
 /**
- * The persisted display settings (G18) as live state: the three
+ * The persisted display settings as live state: the three
  * SessionStore keys decoded once at construction — absence decodes to the
  * defaults (REGULAR / Авто), so first run needs no setup — and exposed as
  * StateFlows for the composition locals and the settings overlay. The

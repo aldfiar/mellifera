@@ -137,7 +137,7 @@ fun episodesBody(): String = """
 """.trimIndent()
 
 /**
- * The G19 first-unwatched seed fixture: e-1 watched (its document carries
+ * The first-unwatched seed fixture: e-1 watched (its document carries
  * the served `_view` title «Пилот» and the ffprobe duration), e-2 the bare
  * unwatched row — the openSeries seed lands the cursor on index 1.
  */

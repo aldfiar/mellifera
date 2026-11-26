@@ -67,8 +67,8 @@ never a raw dp literal at the call site.
 
 #### Scenario: Screen edges carry the SPA-relative overscan
 
-- **WHEN** a page-edge inset is applied (series page, collection body, home rows, settings overlay, pairing page)
-- **THEN** it reads the 24dp/14dp overscan constants
+- **WHEN** a page-edge inset is applied (series page, collection body, home rows, pairing page)
+- **THEN** it reads the 24dp/14dp overscan constants — a centered modal dialog's internal padding (the settings overlay) is not a page-edge inset and keeps its own dialog padding law
 
 #### Scenario: The content column spans the tv shell width
 
@@ -417,17 +417,21 @@ and restores the rail's focus on the «Настройки» row.
 ### Requirement: Player controls chrome
 
 The player overlay's revealed controls SHALL carry the web's chrome: a top
-title bar — series · SxxEyy · episode title at HEADING over a top gradient,
+title bar — the served episode identity at HEADING over a top gradient,
 read from the same served info blocks the info column reads (absent → no
-bar); a seek bar 6dp thick with a 14dp knob at the playhead (accent fill
+bar); the identity line is the two-leg join the SPA's info column renders
+(eyebrow · episode title, e.g. «S01E02 · Название серии»; a film floors to
+its served display name — the served blocks carry no series-name leg, and
+inventing one would break the served-names law); a seek bar 6dp thick with
+a 14dp knob at the playhead (accent fill
 kept); the clock at READOUT, the key-hint legend at SMALL, info headings at
 SMALL with body lines at META, and the voiceover line at META. The auto-hide
 timing and the key routing (arrows seek, OK toggles/reveals) are unchanged.
 
 #### Scenario: Title header renders from served blocks
 
-- **WHEN** the controls reveal for an episode whose served info blocks carry series and episode names
-- **THEN** the title bar renders series · SxxEyy · episode title at HEADING over the gradient; a playback without served info renders no bar
+- **WHEN** the controls reveal for a playback whose served info blocks carry the episode identity
+- **THEN** the title bar renders the two-leg identity line (SxxEyy · episode title; a film: the served display name) at HEADING over the gradient; a playback without served info renders no bar
 
 #### Scenario: The knob marks the playhead
 

@@ -23,10 +23,10 @@ import tv.mellifera.ui.UiScaleMode
 /**
  * The series page route pin (5.6): navigating into a series fetches
  * GET /series/{id}/episodes with the EXACT id, and the served episode rows
- * map verbatim into the state (the field-driven law downstream). G19
- * extends the page's data laws here: the first-unwatched entry seed, the
+ * map verbatim into the state (the field-driven law downstream). The
+ * page's data laws hold here: the first-unwatched entry seed, the
  * served-title precedence and the duration line over the SERVED rows, and
- * the D-1 column law at the series page's own grid inputs.
+ * the episode column law at the series page's own grid inputs.
  */
 class EpisodesTest {
     private lateinit var server: MockWebServer
@@ -115,7 +115,7 @@ class EpisodesTest {
         flow.openSeries(SeriesDto(id = "s-1", displayName = "Сага"))
 
         val state = flow.state.value
-        // The G19 entry seed (nav/InitialFocus.kt's law): e-1 is served
+        // The entry seed (nav/InitialFocus.kt's law): e-1 is served
         // watched — the first-unwatched episode takes the initial focus.
         // FocusLawTest pins the pure law; this pin ties it to the wire —
         // the flow seeds it from the SERVED watched states.
@@ -151,7 +151,7 @@ class EpisodesTest {
 
     @Test
     fun episode_grid_columns_ride_the_pref_over_the_plan() {
-        // D-1's ruled cell at the series page's own inputs: «Авто» = 3 at
+        // The ruled cell at the series page's own inputs: «Авто» = 3 at
         // Обычный @960×540 under the ~100dp hero chrome reserve
         // (LayoutParityTest pins the planner's full table; this pin ties
         // the SERIES-PAGE surface inputs and the pref override together).
