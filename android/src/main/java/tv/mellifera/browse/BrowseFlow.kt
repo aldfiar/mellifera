@@ -764,11 +764,18 @@ class BrowseFlow(
         return opened
     }
 
-    /** The D-pad moved the rail cursor (the moveInList law's landing,
-     * same clamp semantics as [onGridFocusMoved]). */
+    /**
+     * The D-pad moved the rail cursor (the moveInList law's landing, the
+     * same clamp-to-the-walker's-count semantics as [onGridFocusMoved]).
+     * The rail walk's count is the served libraries PLUS the fixed settings
+     * row (18.3): the settings index (libraries.size) is walkable state —
+     * the walk lands on it and clamps inside it — but never an activatable
+     * library ([activateRailRow]'s getOrNull guard refuses the virtual
+     * index; the overlay opens at the composition site instead).
+     */
     fun onRailFocusMoved(index: Int) {
         _state.value = _state.value.copy(
-            railFocus = index.coerceIn(0, _state.value.libraries.lastIndex.coerceAtLeast(0)),
+            railFocus = index.coerceIn(0, _state.value.libraries.size.coerceAtLeast(0)),
         )
     }
 

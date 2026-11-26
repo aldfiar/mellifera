@@ -85,6 +85,7 @@ import tv.mellifera.ui.LocalUiScale
 import tv.mellifera.ui.chipHeight
 import tv.mellifera.ui.railPanelWidth
 import tv.mellifera.ui.railRowHeight
+import tv.mellifera.ui.SettingsOverlay
 import tv.mellifera.ui.typeBody
 import tv.mellifera.ui.typeDisplay
 import tv.mellifera.ui.typeHeading
@@ -166,6 +167,14 @@ fun BrowseScreen(viewModel: AppViewModel) {
     // artwork fetches (Api.kt's interceptor covers Retrofit only, not Coil).
     val serverBase = viewModel.serverAddress
     val token = appState.token
+    // The settings overlay's open state (18.3): composition-local — the
+    // rail stays open beneath it ([BrowseState.isRailOpen] untouched) and
+    // BACK is the overlay's own BackHandler (it composes last in the
+    // chain). The nonce re-arms the rail's focus actuator on dismiss: the
+    // actuator's state keys cannot change across a state-less overlay, so
+    // the dismiss bump is the re-land trigger (the gridFocusNonce idiom).
+    var settingsOpen by remember { mutableStateOf(false) }
+    var settingsFocusNonce by remember { mutableStateOf(0) }
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (selected != null) {
@@ -298,13 +307,32 @@ fun BrowseScreen(viewModel: AppViewModel) {
         ) {
             CollectionsRail(
                 state = state,
+                settingsFocusNonce = settingsFocusNonce,
                 // The rail row's OK (design D12's "select+close", task 4.3):
                 // the focused row's body opens and the rail closes into it;
                 // a body that cannot open keeps the rail open with its focus
-                // (the activation law, BrowseFlow.activateRailRow).
+                // (the activation law, BrowseFlow.activateRailRow). The fixed
+                // settings row is NOT a library — its OK lands here instead
+                // (18.3): open the overlay, never a collection body.
                 onSelect = { scope.launch { browse.activateRailRow() } },
+                onOpenSettings = { settingsOpen = true },
                 onClose = { browse.closeRail() },
                 onFocusMoved = { browse.onRailFocusMoved(it) },
+            )
+        }
+        // The settings overlay (18.3): composed after the rail so its
+        // BackHandler sits at the chain's top — while it is open, BACK's
+        // whole act is the close (the standard overlay law). The dismiss
+        // bumps the nonce that re-lands the rail's focus on the settings
+        // row (the rail-focus-restore law extended to the new index).
+        if (settingsOpen) {
+            SettingsOverlay(
+                prefs = viewModel.uiPrefs,
+                viewModel = viewModel,
+                onDismiss = {
+                    settingsOpen = false
+                    settingsFocusNonce++
+                },
             )
         }
         // The photo viewer (task 8.13): a MODAL full-screen surface over the
@@ -1019,15 +1047,29 @@ private fun FolderChip(
 
 /**
  * The collections rail (5.15 — the SPA sidebar translated to remote-native
- * navigation): one scrollable row per served collection. The rail cursor
- * walks through the moveInList law; LEFT/RIGHT close the rail (consumed —
- * focus returns to the content's parked cursor, the L3 restore law), and a
- * rail-top UP stays unconsumed so it still crosses to settings natively.
- * Rows render field-driven — name, module label (the pure 5.14 law) and the
- * count only when a summary answered; the current collection carries the
- * accent. OK acts on the FOCUSED row through clickable — the activation
- * routes to BrowseFlow.activateRailRow (the row's body opens, the rail
- * closes into it, and a body that cannot open keeps the rail + focus).
+ * navigation): one scrollable row per served collection, then the FIXED
+ * settings row (18.3) — a divider, then the always-present «Настройки»
+ * row. The settings row renders through the SAME [RailRow] (the uniform
+ * width/height and one-line clamp row laws hold by construction) and is
+ * count-less forever — no summary exists for it. The rail cursor walks
+ * through the moveInList law with the walker's count = libraries.size + 1
+ * (the bounds ride the count — DOWN from the last library lands the
+ * settings index, the walk clamps inside it); the settings row is NOT a
+ * library: its OK opens the overlay ([onOpenSettings], never
+ * [BrowseFlow.activateRailRow] — the flow's getOrNull guard refuses the
+ * virtual index). The overlay's BACK dismiss bumps [settingsFocusNonce],
+ * re-arming this rail's focus actuators (the restore law — the state keys
+ * cannot change across a state-less overlay, so the nonce is the re-land
+ * trigger). LEFT/RIGHT close the rail (consumed — focus returns to the
+ * content's parked cursor, the L3 restore law); the rail-top UP stays
+ * unconsumed (native crossing — nothing focusable sits above the rail
+ * since 18.2 retired the settings section, so the key drops harmlessly).
+ * Rows render field-driven — name, module label (the pure 5.14 law) and
+ * the count only when a summary answered; the current collection carries
+ * the accent. OK on a LIBRARY row acts on the FOCUSED row through
+ * clickable — the activation routes to BrowseFlow.activateRailRow (the
+ * row's body opens, the rail closes into it, and a body that cannot open
+ * keeps the rail + focus).
  *
  * Presentation (14.1, amendment §B): the panel is [AppCanvas] at
  * [railPanelWidth] (96dp at Компактный/Обычный, 112dp at Крупный) with a
@@ -1037,7 +1079,9 @@ private fun FolderChip(
 @Composable
 private fun CollectionsRail(
     state: BrowseState,
+    settingsFocusNonce: Int,
     onSelect: () -> Unit,
+    onOpenSettings: () -> Unit,
     onClose: () -> Unit,
     onFocusMoved: (Int) -> Unit,
 ) {
@@ -1067,7 +1111,12 @@ private fun CollectionsRail(
                 // attached to the window yet — the walk-found 4.2 dead rail:
                 // rows render, no row ever focused). The re-arming actuator
                 // keeps asking until the request lands or the rail closes.
-                LaunchedEffect(state.isRailOpen, state.railFocus) {
+                // The nonce joins the keys (18.3): the overlay's BACK dismiss
+                // bumps it, restarting every row's effect — only the row
+                // matching [BrowseState.railFocus] passes the guard and
+                // re-lands (the settings row when the overlay was opened
+                // from it).
+                LaunchedEffect(state.isRailOpen, state.railFocus, settingsFocusNonce) {
                     if (state.isRailOpen && state.railFocus == index) {
                         requester.focusUntilAttached()
                     }
@@ -1081,7 +1130,11 @@ private fun CollectionsRail(
                     onClick = onSelect,
                     onFocused = { onFocusMoved(index) },
                     onDirection = { key ->
-                        val next = moveInList(index, state.libraries.size, key)
+                        // 18.3: the walker's count is libraries.size + 1 —
+                        // the fixed settings row rides the SAME count, so
+                        // DOWN from the last library lands it (consumed) and
+                        // the bounds still clamp inside the rail.
+                        val next = moveInList(index, state.libraries.size + 1, key)
                         when {
                             next != index -> {
                                 onFocusMoved(next)
@@ -1094,6 +1147,51 @@ private fun CollectionsRail(
                                 true
                             }
                             else -> false // rail-top UP still crosses natively
+                        }
+                    },
+                    modifier = Modifier.focusRequester(requester).tvFocusStyle(shape = RoundedCornerShape(4.dp)),
+                )
+            }
+            // The fixed settings row (18.3): the walk's +1 row. The divider
+            // rides its own item (spacedBy spaces it like every row); the
+            // row itself is a RailRow — «Настройки», no module, no count,
+            // never selected — so the uniform width/height and one-line
+            // clamp laws hold by construction. Its OK opens the overlay,
+            // never a collection body.
+            item(key = "settings-divider") {
+                Box(Modifier.fillMaxWidth().height(1.dp).background(railBorder))
+            }
+            item(key = "settings") {
+                val requester = remember { FocusRequester() }
+                val settingsIndex = state.libraries.size
+                // The same re-arming actuator as the library rows (the 4.2
+                // dead-rail law), with the nonce key that re-lands it after
+                // the overlay's BACK dismiss (the restore law).
+                LaunchedEffect(state.isRailOpen, state.railFocus, settingsFocusNonce) {
+                    if (state.isRailOpen && state.railFocus == settingsIndex) {
+                        requester.focusUntilAttached()
+                    }
+                }
+                RailRow(
+                    name = "Настройки",
+                    module = "",
+                    dot = typeAccent(""),
+                    count = null,
+                    selected = false,
+                    onClick = onOpenSettings,
+                    onFocused = { onFocusMoved(settingsIndex) },
+                    onDirection = { key ->
+                        val next = moveInList(settingsIndex, state.libraries.size + 1, key)
+                        when {
+                            next != settingsIndex -> {
+                                onFocusMoved(next)
+                                true // consumed inside the rail
+                            }
+                            key == DpadKey.Left || key == DpadKey.Right -> {
+                                onClose()
+                                true
+                            }
+                            else -> false // the rail's bottom edge: unconsumed
                         }
                     },
                     modifier = Modifier.focusRequester(requester).tvFocusStyle(shape = RoundedCornerShape(4.dp)),

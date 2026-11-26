@@ -24,6 +24,8 @@ import tv.mellifera.browse.fixtures.photoLibrariesBody
 import tv.mellifera.browse.fixtures.seriesBody
 import tv.mellifera.browse.fixtures.tvItemsBody
 import tv.mellifera.browse.fixtures.tvLibrariesBody
+import tv.mellifera.dpad.DpadKey
+import tv.mellifera.dpad.moveInList
 import tv.mellifera.net.Api
 import tv.mellifera.takeRequestOrFail
 
@@ -149,12 +151,74 @@ class RailLawTest {
         // aim outside the SERVED rows — past the last row clamps to it,
         // before the first clamps to row 0 (the same live-rows clamp as the
         // grid cursor), so UP/DOWN walking the open rail is a pure
-        // cursor-in-state movement over exactly the rendered rows.
+        // cursor-in-state movement over exactly the rendered rows. 18.3:
+        // the rendered row space grew by the fixed settings row — the
+        // walker's count is libraries.size + 1 and the clamp lands on the
+        // settings index (libraries.size = 2), the walk's last row.
         flow.onRailFocusMoved(99)
-        assertEquals(1, flow.state.value.railFocus)
+        assertEquals(2, flow.state.value.railFocus)
         flow.onRailFocusMoved(-3)
         assertEquals(0, flow.state.value.railFocus)
         server.assertDrained("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows", 3)
+    }
+
+    @Test
+    fun rail_walks_into_the_settings_row_and_ok_there_is_a_no_op() = runBlocking {
+        // The fixed settings row (18.3): the rail walk's +1 row. The walker
+        // (the pure moveInList law, dpad/KeyRouting.kt) and the flow's
+        // landing clamp ride the SAME count — libraries.size + 1 — so DOWN
+        // from the last library lands the settings index and the walk
+        // clamps INSIDE it. The row is NOT a library: OK there is a no-op —
+        // no body fetch, no rail close, the focus kept (the flow's
+        // getOrNull guard refuses the virtual index; the overlay opens at
+        // the composition site instead).
+        server.enqueue(json(librariesBody()))
+        flow.enter()
+        server.takeRequestOrFail("RailLawTest.rail_walks_into_the_settings_row_and_ok_there_is_a_no_op") // /libraries
+
+        server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
+        server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
+        flow.openRail()
+        server.takeRequestOrFail("RailLawTest.rail_walks_into_the_settings_row_and_ok_there_is_a_no_op")
+        server.takeRequestOrFail("RailLawTest.rail_walks_into_the_settings_row_and_ok_there_is_a_no_op")
+
+        // DOWN from the last library row lands the settings index; DOWN at
+        // the settings row clamps inside it; UP walks back to the
+        // libraries. The screen composes exactly these steps (the walker's
+        // landing rides onRailFocusMoved), so the joint law is pinned over
+        // the REAL moveInList + the REAL flow — no mocks between them; the
+        // walker's count is the SERVED size + 1, read live off the flow.
+        val walkerCount = flow.state.value.libraries.size + 1
+        assertEquals(3, walkerCount)
+        assertEquals(2, moveInList(1, walkerCount, DpadKey.Down))
+        flow.onRailFocusMoved(moveInList(1, 3, DpadKey.Down))
+        assertEquals(2, flow.state.value.railFocus)
+        assertEquals(2, moveInList(2, 3, DpadKey.Down))
+        assertEquals(1, moveInList(2, 3, DpadKey.Up))
+        flow.onRailFocusMoved(2)
+        assertEquals(2, flow.state.value.railFocus)
+
+        // OK on the settings index: refused, silently — no request rides
+        // the act, the rail stays open on the settings row, the served
+        // state (libraryId, summaries) is exactly what the walk left.
+        assertFalse(flow.activateRailRow())
+        val state = flow.state.value
+        assertTrue(state.isRailOpen)
+        assertEquals(2, state.railFocus)
+        // The served entry default (enter pins the first library) stands —
+        // the settings OK swaps nothing.
+        assertEquals(1L, state.libraryId)
+        assertNull(state.error)
+        assertEquals(42L, state.summaries[2L]?.items)
+        server.assertDrained("RailLawTest.rail_walks_into_the_settings_row_and_ok_there_is_a_no_op", 3)
+
+        // The settings focus survives a plain re-report: the composition's
+        // restore law re-lands the row by railFocus — the state half is
+        // that the index still holds after the walk-away-and-back.
+        flow.onRailFocusMoved(0)
+        flow.onRailFocusMoved(2)
+        assertEquals(2, flow.state.value.railFocus)
+        server.assertDrained("RailLawTest.rail_walks_into_the_settings_row_and_ok_there_is_a_no_op", 3)
     }
 
     @Test
