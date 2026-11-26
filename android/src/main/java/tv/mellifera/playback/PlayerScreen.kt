@@ -38,7 +38,6 @@ import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Button
 import androidx.tv.material3.Text
@@ -50,16 +49,16 @@ import tv.mellifera.dpad.routePlayerKey
 import tv.mellifera.dpad.toDpadKey
 import tv.mellifera.state.Phase
 import tv.mellifera.state.PlaybackState
-import tv.mellifera.ui.TYPE_HEADING
-import tv.mellifera.ui.TYPE_META
-import tv.mellifera.ui.TYPE_READOUT
-import tv.mellifera.ui.TYPE_SMALL
 import tv.mellifera.ui.chipColor
 import tv.mellifera.ui.tvAccent
 import tv.mellifera.ui.tvDestructive
 import tv.mellifera.ui.tvDestructiveBorder
 import tv.mellifera.ui.tvInitialFocus
 import tv.mellifera.ui.tvMuted
+import tv.mellifera.ui.typeHeading
+import tv.mellifera.ui.typeMeta
+import tv.mellifera.ui.typeReadout
+import tv.mellifera.ui.typeSmall
 
 /**
  * The player as OVERLAY (D1/D8): never a Screen route — it renders above
@@ -240,7 +239,7 @@ private fun BoxScope.SkipChip(active: SkipSection) {
     ) {
         Text(
             active.kind.label,
-            fontSize = TYPE_SMALL,
+            fontSize = typeSmall(),
             color = tone.text,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
         )
@@ -275,19 +274,19 @@ private fun BoxScope.AutoNextCard(playback: PlayerOrchestration) {
             .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text("Следующая серия", fontSize = TYPE_SMALL, color = AUTO_NEXT_TONE.text)
+        Text("Следующая серия", fontSize = typeSmall(), color = AUTO_NEXT_TONE.text)
         if (next.nameLine.isNotEmpty()) {
-            Text(next.nameLine, fontSize = TYPE_META, color = tvMuted)
+            Text(next.nameLine, fontSize = typeMeta(), color = tvMuted)
         }
         if (next.episodeTitle.isNotEmpty()) {
-            Text(next.episodeTitle, fontSize = TYPE_META, color = AUTO_NEXT_TONE.text)
+            Text(next.episodeTitle, fontSize = typeMeta(), color = AUTO_NEXT_TONE.text)
         }
         countdown?.let {
-            Text("Автопереход через $it с", fontSize = TYPE_META, color = tvMuted)
+            Text("Автопереход через $it с", fontSize = typeMeta(), color = tvMuted)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Button(onClick = { playback.play(next.itemId) }) { Text("Смотреть", fontSize = TYPE_SMALL) }
-            Button(onClick = { playback.cancelNextUp() }) { Text("Отмена", fontSize = TYPE_SMALL) }
+            Button(onClick = { playback.play(next.itemId) }) { Text("Смотреть", fontSize = typeSmall()) }
+            Button(onClick = { playback.cancelNextUp() }) { Text("Отмена", fontSize = typeSmall()) }
         }
     }
 }
@@ -344,9 +343,9 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
                 } else {
                     formatClock(readout.positionMs)
                 },
-                fontSize = TYPE_READOUT,
+                fontSize = typeReadout(),
             )
-            Text("← → перемотка · OK пауза · Back скрыть", fontSize = TYPE_SMALL, color = tvMuted)
+            Text("← → перемотка · OK пауза · Back скрыть", fontSize = typeSmall(), color = tvMuted)
         }
         info?.let { InfoBlocks(it) }
         if (voiceovers.isNotEmpty()) {
@@ -354,7 +353,7 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
             // document order; empty = the block is absent (L1).
             Text(
                 "Озвучка: " + voiceovers.joinToString(" · ") { it.label },
-                fontSize = TYPE_META,
+                fontSize = typeMeta(),
                 color = tvMuted,
             )
         }
@@ -372,23 +371,23 @@ private fun InfoBlocks(info: PlayerInfoBlocks) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (info.eyebrow != null || info.heading != null) {
             Column {
-                info.eyebrow?.let { Text(it, fontSize = TYPE_META, color = tvMuted) }
-                info.heading?.let { Text(it, fontSize = TYPE_HEADING) }
+                info.eyebrow?.let { Text(it, fontSize = typeMeta(), color = tvMuted) }
+                info.heading?.let { Text(it, fontSize = typeHeading()) }
             }
         }
         info.episodeDescription?.let {
             Column {
-                Text("Серия", fontSize = TYPE_META)
-                Text(it, fontSize = TYPE_META, color = tvMuted)
+                Text("Серия", fontSize = typeMeta())
+                Text(it, fontSize = typeMeta(), color = tvMuted)
             }
         }
         if (info.cast.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("В ролях", fontSize = TYPE_META)
+                Text("В ролях", fontSize = typeMeta())
                 info.cast.forEach { entry -> CastRow(entry.toCastRow()) }
             }
         }
-        info.about?.let { Text(it, fontSize = TYPE_META, color = tvMuted) }
+        info.about?.let { Text(it, fontSize = typeMeta(), color = tvMuted) }
     }
 }
 
@@ -420,8 +419,8 @@ private fun CastRow(row: CastRow) {
             }
         }
         Column {
-            Text(row.name, fontSize = TYPE_META)
-            row.role?.let { Text(it, fontSize = TYPE_META, color = tvMuted) }
+            Text(row.name, fontSize = typeMeta())
+            row.role?.let { Text(it, fontSize = typeMeta(), color = tvMuted) }
         }
     }
 }

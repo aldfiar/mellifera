@@ -14,7 +14,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import tv.mellifera.AppViewModel
 import tv.mellifera.browse.PARITY_OVERSCAN_X
@@ -34,10 +33,10 @@ fun SettingsSection(viewModel: AppViewModel) {
     if (!isOpen) return
     val context = LocalContext.current
     Column(modifier = Modifier.padding(start = PARITY_OVERSCAN_X, top = 12.dp)) {
-        Text("Настройки", fontSize = TYPE_HEADING)
+        Text("Настройки", fontSize = typeHeading())
         Text(
             "Поделиться диагностикой",
-            fontSize = TYPE_SMALL,
+            fontSize = typeSmall(),
             color = tvMuted,
             modifier = Modifier
                 .padding(top = 6.dp)
