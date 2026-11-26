@@ -178,15 +178,19 @@ fun BrowseScreen(viewModel: AppViewModel) {
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (selected != null) {
+                // The series' served library row — the accent and the hero
+                // breadcrumb's shared source (the same field-driven idiom the
+                // rail rows and the body header read: no separate fetch, and
+                // an unmatched library renders no breadcrumb).
+                val library = state.libraries.firstOrNull { it.id == selected.libraryId }
                 SeriesPage(
                     series = selected,
                     episodes = state.episodes,
                     positions = state.positions,
                     isLoading = state.isLoading,
                     focusIndex = state.episodeFocus,
-                    accent = typeAccent(
-                        state.libraries.firstOrNull { it.id == selected.libraryId }?.moduleId ?: "",
-                    ),
+                    accent = typeAccent(library?.moduleId ?: ""),
+                    breadcrumbLabel = library?.let { moduleLabel(it.moduleId) },
                     serverBase = serverBase,
                     token = token,
                     onFocusMoved = { browse.onEpisodeFocusMoved(it) },
@@ -1345,6 +1349,7 @@ private fun SeriesPage(
     isLoading: Boolean,
     focusIndex: Int,
     accent: Color,
+    breadcrumbLabel: String?,
     serverBase: String?,
     token: String?,
     onFocusMoved: (Int) -> Unit,
@@ -1367,7 +1372,7 @@ private fun SeriesPage(
                 // chips. The hero carries NO focus modifiers: the episode
                 // grid below is the walker's home and keeps the initial
                 // focus (nav/InitialFocus.kt's first-unwatched law seeds it).
-                SeriesHeroView(series, serverBase, token)
+                SeriesHeroView(series, breadcrumbLabel, serverBase, token)
                 when {
                     isLoading && episodes.isEmpty() -> Text("Загрузка…", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
                     episodes.isEmpty() -> Text("Эпизоды не найдены", fontSize = typeBody(), modifier = Modifier.padding(top = 8.dp))
@@ -1457,74 +1462,93 @@ private fun SeriesPage(
 
 /**
  * The hero zone (design D5 — the SPA's ItemDetail hero + Synopsis.tsx):
- * poster, title, facts line, Synopsis and the genre chips, every block a
+ * the breadcrumb line «<library label> › <title>» at META on top (the web's
+ * back link is BACK on TV — no on-screen link; an unmatched served library
+ * or a title-less row renders no breadcrumb), then the poster at its
+ * natural 2:3 from a 72dp width (aspect-ratio, uncropped — no fixed box),
+ * the title, facts line, Synopsis and the genre chips, every block a
  * null-check on the [SeriesHero] carriers — absent metadata or an empty
  * description renders NO panel, no facts line, no chips (L1). The muted
- * Synopsis clamps at 2 lines so the hero never towers (the Synopsis.tsx:48
- * law). Nothing here is focusable.
+ * Synopsis clamps at 3 lines. Nothing here is focusable (the episode grid
+ * below holds the initial focus).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SeriesHeroView(series: SeriesDto, serverBase: String?, token: String?) {
+private fun SeriesHeroView(
+    series: SeriesDto,
+    breadcrumbLabel: String?,
+    serverBase: String?,
+    token: String?,
+) {
     val hero = series.toHero()
     if (hero.title == null && hero.posterUrl == null && hero.about == null) return
-    Row(
-        modifier = Modifier.padding(bottom = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        // FIELD-DRIVEN: absent artwork → no poster block, nothing fabricated
-        // (the same artwork law as the cards — 5.13).
-        val artwork = resolveArtworkUrl(serverBase, hero.posterUrl)
-        if (artwork != null) {
-            ArtworkImage(
-                artwork = artwork,
-                token = token,
-                modifier = Modifier.width(48.dp).height(72.dp),
+    Column(modifier = Modifier.padding(bottom = 8.dp)) {
+        val title = hero.title
+        if (breadcrumbLabel != null && title != null) {
+            Text(
+                "$breadcrumbLabel › $title",
+                fontSize = typeMeta(),
+                color = tvMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(bottom = 2.dp),
             )
         }
-        Column(modifier = Modifier.weight(1f)) {
-            if (hero.title != null) {
-                Text(
-                    hero.title,
-                    fontSize = typeDisplay(),
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // FIELD-DRIVEN: absent artwork → no poster block, nothing fabricated
+            // (the same artwork law as the cards — 5.13).
+            val artwork = resolveArtworkUrl(serverBase, hero.posterUrl)
+            if (artwork != null) {
+                ArtworkImage(
+                    artwork = artwork,
+                    token = token,
+                    modifier = Modifier.width(72.dp).aspectRatio(POSTER_ASPECT),
                 )
             }
-            val about = hero.about
-            if (about != null) {
-                if (about.facts != null) {
+            Column(modifier = Modifier.weight(1f)) {
+                if (title != null) {
                     Text(
-                        about.facts,
-                        fontSize = typeMeta(),
-                        color = tvMuted,
-                        modifier = Modifier.padding(top = 3.dp),
+                        title,
+                        fontSize = typeDisplay(),
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Text(
-                    about.description,
-                    fontSize = typeSmall(),
-                    color = tvMuted,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-                if (about.genres.isNotEmpty()) {
-                    FlowRow(
+                val about = hero.about
+                if (about != null) {
+                    if (about.facts != null) {
+                        Text(
+                            about.facts,
+                            fontSize = typeMeta(),
+                            color = tvMuted,
+                            modifier = Modifier.padding(top = 3.dp),
+                        )
+                    }
+                    Text(
+                        about.description,
+                        fontSize = typeSmall(),
+                        color = tvMuted,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
-                    ) {
-                        about.genres.forEach { genre ->
-                            Text(
-                                genre,
-                                fontSize = typeMeta(),
-                                color = tvMuted,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(50))
-                                    .border(1.dp, railBorder, RoundedCornerShape(50))
-                                    .padding(horizontal = 4.dp, vertical = 1.dp),
-                            )
+                    )
+                    if (about.genres.isNotEmpty()) {
+                        FlowRow(
+                            modifier = Modifier.padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            about.genres.forEach { genre ->
+                                Text(
+                                    genre,
+                                    fontSize = typeMeta(),
+                                    color = tvMuted,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .border(1.dp, railBorder, RoundedCornerShape(50))
+                                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                                )
+                            }
                         }
                     }
                 }

@@ -136,6 +136,26 @@ fun episodesBody(): String = """
     ]}
 """.trimIndent()
 
+/**
+ * The G19 first-unwatched seed fixture: e-1 watched (its document carries
+ * the served `_view` title «Пилот» and the ffprobe duration), e-2 the bare
+ * unwatched row — the openSeries seed lands the cursor on index 1.
+ */
+fun episodesWatchedPrefixBody(): String = """
+    {"items":[
+      {"id":"e-1","module_id":"serial","library_id":1,"file_id":"f-1",
+       "relative_path":"Saga/s01e01.mkv","media_type":"serial",
+       "document":{"_view":{"title":{"value":"Пилот"}},
+                   "ffprobe":{"format":{"duration":"2700"}}},
+       "schema_version":1,"status":"active","title_override":"",
+       "display_name":"Сага · S01E01","watched":true},
+      {"id":"e-2","module_id":"serial","library_id":1,"file_id":"f-2",
+       "relative_path":"Saga/s01e02.mkv","media_type":"serial",
+       "document":{},"schema_version":1,"status":"active","title_override":"",
+       "display_name":"Сага · S01E02"}
+    ]}
+""".trimIndent()
+
 /** Refreshed episodes: e-1 has since been watched — the refresh law's proof. */
 fun refreshedEpisodesBody(): String = """
     {"items":[
