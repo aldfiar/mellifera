@@ -1,10 +1,12 @@
 package tv.mellifera.browse
 
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -51,6 +53,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -68,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
+import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
 import kotlinx.coroutines.launch
 import tv.mellifera.AppViewModel
@@ -120,6 +124,12 @@ import tv.mellifera.ui.tvMuted
  */
 /** The watched title's dim (design D2 — the SPA's .watched-dim, 0.55). */
 internal const val WATCHED_DIM = 0.55f
+
+/**
+ * The photo tile's fill blur (design D-2): strong enough that the fill reads
+ * as atmosphere, never as a second image.
+ */
+private val PHOTO_FILL_BLUR = 16.dp
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1564,7 +1574,10 @@ private fun SeriesHeroView(
  * UNDER the art, the title (dimmed when watched), and the ONE caption line
  * — the serial card reads the lane WIDTH ([laneColumns] against
  * [FACTS_LINE_MAX_COLUMNS]: the compact ★ score at a denser lane, the full
- * facts line at a lane the line fits), tv/photo keep the ONE meta line.
+ * facts line at a lane the line fits), tv keeps the ONE meta line, and the
+ * photo tile renders NO text under its art (fit-over-blur via
+ * [PhotoTileImage]; the masonry stays retired — its date footer with it, the
+ * capture date lives in the viewer's status line).
  * ONE glyph, type-agnostic (the SPA .watched-mark pastel, D3) at meta scale,
  * never a word chip. The tri-state is a rendering null-check on the
  * DisplayCard carriers: watched → corner mark + dim + NO bar; in-progress →
@@ -1607,7 +1620,15 @@ private fun CardView(
         // surface), never a shorter card that shifts the row's text rows.
         Box(modifier = Modifier.fillMaxWidth().aspectRatio(tileAspect).clip(cardShape)) {
             val artwork = resolveArtworkUrl(serverBase, card.artworkUrl)
-            if (artwork != null) {
+            if (surface == GridSurface.PHOTO && artwork != null) {
+                // The photo tile's fit-over-blur law (D-2 = b): the photo
+                // FITS whole over a blurred fill — one request, two layers.
+                PhotoTileImage(
+                    artwork = artwork,
+                    token = token,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else if (artwork != null) {
                 ArtworkImage(
                     artwork = artwork,
                     token = token,
@@ -1651,9 +1672,10 @@ private fun CardView(
         // the compact caption (the ★ score; the Season chip's slot renders
         // absent — season has no carrier on the series wire, the SPA derives
         // it from the opaque series document the TV client does not carry);
-        // at a lane the facts line fits → the full facts line. tv/photo keep
-        // the meta line at any lane width. Every slot is a null-check on the
-        // served carrier — absent → absent, never a placeholder (L1).
+        // at a lane the facts line fits → the full facts line. tv keeps the
+        // meta line at any lane width (the photo tile renders NO text under
+        // its art — the footer guard below). Every slot is a null-check on
+        // the served carrier — absent → absent, never a placeholder (L1).
         val compactLane = surface == GridSurface.SERIAL && laneColumns > FACTS_LINE_MAX_COLUMNS
         val caption = if (compactLane) {
             card.score?.let { "★ ${scoreText(it)}" }
@@ -1668,9 +1690,12 @@ private fun CardView(
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
-        // The photo tile's capture-date footer (D6): the served date ONLY —
-        // an absent fact carries no footer block (L1).
-        if (card.footer != null) {
+        // The photo grid renders NO caption at all (the masonry stays
+        // retired — its date footer retired with it; the capture date lives
+        // in the viewer's status line): the photo surface renders no footer
+        // even when the card carries one. Every other surface's footer is a
+        // null-check on the served carrier — absent → absent (L1).
+        if (surface != GridSurface.PHOTO && card.footer != null) {
             Text(
                 card.footer,
                 fontSize = typeMeta(),
@@ -1730,6 +1755,59 @@ internal fun ArtworkImage(
         contentScale = contentScale,
         modifier = modifier,
     )
+}
+
+/**
+ * The photo tile's fit-over-blur rendering (design D-2 = b): ONE Coil
+ * request per tile — one [ImageRequest] remembered over the resolved
+ * artwork, its painter shared by BOTH layers — so a tile can never issue
+ * two independent fetches. The background layer Crop-fills the square under
+ * [Modifier.blur] (API 31+; below 31 the fill is the solid canvas color —
+ * a one-line branch, not a strategy split), the foreground layer FITs whole
+ * (the viewer's law: a photograph is shown, never cropped away) — a portrait
+ * photo keeps head and feet inside the square, the blurred fill carries the
+ * side bands.
+ */
+@Composable
+private fun PhotoTileImage(
+    artwork: ArtworkRequest,
+    token: String?,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val request = remember(artwork, token) {
+        ImageRequest.Builder(context)
+            .data(artwork.url)
+            .apply {
+                if (artwork.isAuthorized && !token.isNullOrBlank()) {
+                    setHeader("Authorization", "Bearer $token")
+                }
+            }
+            .build()
+    }
+    // One painter, two Image nodes: both draw the same load state, so the
+    // fetch happens exactly once per tile.
+    val painter = rememberAsyncImagePainter(request)
+    Box(modifier) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Image(
+                painter = painter,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(PHOTO_FILL_BLUR),
+            )
+        } else {
+            Box(modifier = Modifier.fillMaxSize().background(AppCanvas))
+        }
+        Image(
+            painter = painter,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
 }
 
 /**
