@@ -44,6 +44,12 @@ val MelliferaDarkScheme: ColorScheme = darkColorScheme(
 @Composable
 fun App(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsState()
+    // G18: the persisted scale/columns ride the same root provider — every
+    // surface re-reads them per emission (the settings overlay's LIVE
+    // cycling re-tiles grids while it is open).
+    val uiScale by viewModel.uiPrefs.uiScale.collectAsState()
+    val gridColumns by viewModel.uiPrefs.gridColumns.collectAsState()
+    val episodeColumns by viewModel.uiPrefs.episodeColumns.collectAsState()
     MaterialTheme(colorScheme = MelliferaDarkScheme) {
         // The invisible-titles fix (task 8.12, ledger #15 — walk61d's pixel
         // proof + the operator's live report «episode number and title is
@@ -62,7 +68,11 @@ fun App(viewModel: AppViewModel) {
         // foreground token [tvForeground] (#F8FAFC, --foreground in
         // styles/index.css .dark) — the web's own text color — replacing
         // the scheme's onBackground.
-        CompositionLocalProvider(LocalContentColor provides tvForeground) {
+        CompositionLocalProvider(
+            LocalContentColor provides tvForeground,
+            LocalUiScale provides uiScale,
+            LocalGridPrefs provides GridPrefs(gridColumns, episodeColumns),
+        ) {
             when (state.screen) {
                 Screen.Pairing -> PairingScreen(viewModel.pairing)
                 Screen.Browse -> BrowseScreen(viewModel)

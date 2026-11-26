@@ -26,6 +26,7 @@ import tv.mellifera.playback.PlaybackTransport
 import tv.mellifera.playback.apiInfoLoader
 import tv.mellifera.playback.apiNextUpLoader
 import tv.mellifera.player.PlayerController
+import tv.mellifera.ui.UiPrefs
 
 /** Top-level navigation: `when (state.screen)` IS the navigation (D1, no nav library). */
 enum class Screen {
@@ -81,6 +82,13 @@ class AppViewModel(
      * against. Null while unpaired (nothing has resolved artwork to show).
      */
     val serverAddress: String? get() = store.readServerAddress()
+
+    /**
+     * The persisted display settings (G18) as live flows — App.kt's root
+     * provider collects them into LocalUiScale/LocalGridPrefs; the settings
+     * overlay writes through this same object.
+     */
+    val uiPrefs: UiPrefs = UiPrefs(store, appScope)
 
     val pairing: PairingFlow = PairingFlow(
         apiFor = { address -> apiFactory(address, null).service },
