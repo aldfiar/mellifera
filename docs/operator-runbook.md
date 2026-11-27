@@ -95,6 +95,8 @@ every other malformed/missing value falls back to its default with a warning
 | `MELLIFERA_SERIAL_PARSER` | `bin/serial-parser` | Plugin binary path. |
 | `MELLIFERA_FRAME_GRABBER` | `bin/frame-grabber` | Plugin binary path (needs `ffmpeg` at runtime). |
 | `MELLIFERA_SHIKIMORI` | `bin/shikimori` | Plugin binary path (fetches shikimori.io anonymously — needs outbound HTTPS). |
+| `MELLIFERA_JAV_PARSER` | `bin/jav-parser` | Optional external plugin binary path (external-jav-plugins, §4): the resolved path is the dormancy switch — an absent binary never aborts boot, it synthesizes a `not_serving` status row. |
+| `MELLIFERA_JAVINIZER` | `bin/javinizer` | Same optional-load law as `MELLIFERA_JAV_PARSER` (§4). |
 | `MELLIFERA_ART_INTERVAL` | `6h` | The janitor `art` task's settle+GC cadence (art-store housekeeping — staged lookups materialize, stale fetch rows + orphaned blobs GC, legacy placeholder poster keys stripped from stored docs — repair leg, write-back only on change; artwork). `0` or negative disables the art task ALONE — the `streams` task keeps its fixed 60 s cadence. |
 | `MELLIFERA_WATCH_INTERVAL` | `1h` | The watcher's reconcile cadence (watch-scan): every tick re-reads the library set (new roots get watched, deleted roots dropped) and triggers a scan for every watched library even with no filesystem events — the walk probes every file, so raise the interval before lowering the budget of attention. `0` or negative disables the watcher ALONE — manual `POST /libraries/{id}/scan` remains the only trigger. No boot scan: changes made while the server was down surface up to one `MELLIFERA_WATCH_INTERVAL` after boot — lower the interval for faster convergence. |
 | `MELLIFERA_WATCH_DEBOUNCE` | `30s` | The quiet window a library root must sit still for before its scan fires (watch-scan): each filesystem event extends the window, so an event burst yields one scan, not one per event. Floored at 1s. |
@@ -153,9 +155,30 @@ Seven subprocess binaries ship (all pure Go, built by `make build-plugin`):
   from module config (`internal/module/registry.go` — seeded `tv` and `image`
   modules), never media-type branching.
 - The plugin **process** is mandatory at startup (a missing binary aborts
-  startup); the external tools it shells out to (ffprobe, exiftool) are
-  optional at runtime (soft-fail). Override binary paths with the per-plugin
-  `MELLIFERA_*` env vars (§2).
+  startup) for the seven in-repo binaries above; the external tools it shells
+  out to (ffprobe, exiftool) are optional at runtime (soft-fail). Override
+  binary paths with the per-plugin `MELLIFERA_*` env vars (§2).
+- **Optional external plugins (external-jav-plugins).** Two further
+  `metadata_source` plugins — `jav-parser` and `javinizer` — ship OUT of this
+  repo (separate repo `mellifera-jav-plugins`; subprocess binaries, same
+  magic-cookie handshake) and load through the OPTIONAL load site
+  (`cmd/mellifera` `loadPluginOptional`): a missing or broken binary never
+  aborts boot — it degrades to a synthesized `not_serving` row in
+  `/admin/status` + `/admin/plugins`.
+  - **Deploy layout (FRAME-A prebuilt-release):** binaries live on the host at
+    `plugins-external/releases/<tag>/` with a `current` symlink selecting the
+    serving release (the deploy script lives in the external repo).
+    `compose.yaml` mounts the parent dir read-only
+    (`./plugins-external:/app/bin-extra:ro` — the dir, not the symlink, so a
+    dangling `current` never breaks `compose up`) and sets
+    `MELLIFERA_JAV_PARSER=/app/bin-extra/current/jav-parser` +
+    `MELLIFERA_JAVINIZER=/app/bin-extra/current/javinizer`. `.env.example`
+    ships these lines commented — uncomment only after populating
+    `releases/` + the `current` symlink on the host.
+  - Module bindings may declare `no_relay` (external-jav-plugins): such
+    sources are never relayed to clients — the guard sits at the enrich chain
+    hand-off/consult and the search relay-exempt path (behavior:
+    `openspec/specs/plugin-pipeline/` + `openspec/specs/client-relayed-fetch/`).
 - Image discovery is module-type-gated: a `module_type == "image"` library
   discovers exactly `.jpg .jpeg .png .webp .heic .heif` (stdlib base dims for
   jpeg/png only — webp/heic get their dims from exiftool at enrichment).

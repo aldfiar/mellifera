@@ -1,3 +1,8 @@
+# Project Structure
+
+<!-- wf:regen:stamp emitter=2 map_fp=composite:7848f7f91173359f2e9595d1f42c72148cba567b793501864cba13ccc29a910a -->
+
+<!-- wf:regen:annotations -->
 # Mellifera — Project Structure
 
 > **Foundational slice shipped.** The `scan-library` feature implemented the
@@ -1339,3 +1344,2506 @@ From the enhanced objective (nice-to-have unless marked blocking):
 3. Module path — `github.com/mellifera/mellifera` (confirm or flag).
 4. (Blocking at completion only) Whether `.claude/` (gitignored repo-wide) gets force-added on commit.
 5. (Blocking at completion only) Whether `docs/` design docs get committed with the feature or separately.
+<!-- /wf:regen:annotations -->
+
+## Directory Layout
+
+```
+external-jav-plugins/
+├── .claude/             # 7 files
+│   └── skills/  # 7 files
+│       ├── mellifera-build/  # 6 files
+│       │   ├── module-template/  # 4 files
+│       │   │   ├── README.md
+│       │   │   ├── doc.go
+│       │   │   ├── greet.go
+│       │   │   └── greet_test.go
+│       │   ├── scripts/          # 1 files
+│       │   │   └── check.sh
+│       │   └── SKILL.md
+│       └── mellifera-ui/     # 1 files
+│           └── SKILL.md
+├── .github/             # 1 files
+│   └── workflows/  # 1 files
+│       └── docker.yml
+├── android/             # 119 files
+│   ├── apk/                 # 1 files
+│   │   └── .gitkeep
+│   ├── gradle/              # 2 files
+│   │   └── wrapper/  # 2 files
+│   │       ├── gradle-wrapper.jar
+│   │       └── gradle-wrapper.properties
+│   ├── src/                 # 110 files
+│   │   ├── main/  # 54 files
+│   │   │   ├── java/                # 51 files
+│   │   │   │   └── tv/  # 51 files
+│   │   │   │       └── mellifera/  # 51 files
+│   │   │   │           ├── browse/          # 12 files
+│   │   │   │           │   ├── ArtworkUrl.kt
+│   │   │   │           │   ├── BrowseFlow.kt
+│   │   │   │           │   ├── BrowseScreen.kt
+│   │   │   │           │   ├── EpisodeCard.kt
+│   │   │   │           │   ├── FallbackArtwork.kt
+│   │   │   │           │   ├── FallbackGradient.kt
+│   │   │   │           │   ├── HomeRows.kt
+│   │   │   │           │   ├── ItemCards.kt
+│   │   │   │           │   ├── LayoutParity.kt
+│   │   │   │           │   ├── PhotoViewer.kt
+│   │   │   │           │   ├── SeriesGrid.kt
+│   │   │   │           │   └── SeriesHero.kt
+│   │   │   │           ├── diag/            # 7 files
+│   │   │   │           │   ├── AnalyticsTracer.kt
+│   │   │   │           │   ├── CapabilitySnapshot.kt
+│   │   │   │           │   ├── DeviceFactsCollector.kt
+│   │   │   │           │   ├── Sender.kt
+│   │   │   │           │   ├── Telemetry.kt
+│   │   │   │           │   ├── TelemetryGate.kt
+│   │   │   │           │   └── Tracer.kt
+│   │   │   │           ├── dpad/            # 2 files
+│   │   │   │           │   ├── KeyMap.kt
+│   │   │   │           │   └── KeyRouting.kt
+│   │   │   │           ├── home/            # 2 files
+│   │   │   │           │   ├── HomeCards.kt
+│   │   │   │           │   └── HomeFlow.kt
+│   │   │   │           ├── nav/             # 1 files
+│   │   │   │           │   └── InitialFocus.kt
+│   │   │   │           ├── net/             # 2 files
+│   │   │   │           │   ├── Api.kt
+│   │   │   │           │   └── Dtos.kt
+│   │   │   │           ├── pairing/         # 4 files
+│   │   │   │           │   ├── PairingFlow.kt
+│   │   │   │           │   ├── PairingScreen.kt
+│   │   │   │           │   ├── PollClassifier.kt
+│   │   │   │           │   └── SessionStore.kt
+│   │   │   │           ├── playback/        # 7 files
+│   │   │   │           │   ├── BeaconWorker.kt
+│   │   │   │           │   ├── ControlsHide.kt
+│   │   │   │           │   ├── NextUp.kt
+│   │   │   │           │   ├── PlayerInfo.kt
+│   │   │   │           │   ├── PlayerOrchestration.kt
+│   │   │   │           │   ├── PlayerScreen.kt
+│   │   │   │           │   └── SkipSections.kt
+│   │   │   │           ├── player/          # 3 files
+│   │   │   │           │   ├── Media3Controller.kt
+│   │   │   │           │   ├── PlayerController.kt
+│   │   │   │           │   └── VoiceoverSelection.kt
+│   │   │   │           ├── state/           # 1 files
+│   │   │   │           │   └── Playback.kt
+│   │   │   │           ├── ui/              # 8 files
+│   │   │   │           │   ├── App.kt
+│   │   │   │           │   ├── Colors.kt
+│   │   │   │           │   ├── Focus.kt
+│   │   │   │           │   ├── LayoutParity.kt
+│   │   │   │           │   ├── SettingsOverlay.kt
+│   │   │   │           │   ├── TypeScale.kt
+│   │   │   │           │   ├── UiPrefs.kt
+│   │   │   │           │   └── UiScale.kt
+│   │   │   │           ├── AppViewModel.kt
+│   │   │   │           └── MainActivity.kt
+│   │   │   ├── res/                 # 2 files
+│   │   │   │   └── values/  # 2 files
+│   │   │   │       ├── colors.xml
+│   │   │   │       └── themes.xml
+│   │   │   └── AndroidManifest.xml
+│   │   └── test/  # 56 files
+│   │       └── java/  # 56 files
+│   │           ├── android/  # 1 files
+│   │           │   └── os/  # 1 files
+│   │           │       └── Trace.kt
+│   │           └── tv/       # 55 files
+│   │               └── mellifera/  # 55 files
+│   │                   ├── browse/          # 16 files
+│   │                   │   ├── fixtures/                # 1 files
+│   │                   │   │   └── Fixtures.kt
+│   │                   │   ├── ArtworkUrlTest.kt
+│   │                   │   ├── BodyBackTest.kt
+│   │                   │   ├── BodyEpochTest.kt
+│   │                   │   ├── CollectionsTest.kt
+│   │                   │   ├── EpisodesTest.kt
+│   │                   │   ├── FallbackArtworkTest.kt
+│   │                   │   ├── FallbackGradientTest.kt
+│   │                   │   ├── ItemCardsTest.kt
+│   │                   │   ├── ItemsBodyTest.kt
+│   │                   │   ├── LayoutParityTest.kt
+│   │                   │   ├── PhotoFlowTest.kt
+│   │                   │   ├── RailLawTest.kt
+│   │                   │   ├── RefreshTest.kt
+│   │                   │   ├── SeriesGridTest.kt
+│   │                   │   └── SeriesHeroTest.kt
+│   │                   ├── diag/            # 5 files
+│   │                   │   ├── CapabilitySnapshotTest.kt
+│   │                   │   ├── DiagnosticsFormatTest.kt
+│   │                   │   ├── SenderTest.kt
+│   │                   │   ├── TelemetryGateTest.kt
+│   │                   │   └── TracerTest.kt
+│   │                   ├── dpad/            # 2 files
+│   │                   │   ├── FocusLawTest.kt
+│   │                   │   └── KeyRoutingTest.kt
+│   │                   ├── home/            # 2 files
+│   │                   │   ├── HomeCardsTest.kt
+│   │                   │   └── HomeFlowTest.kt
+│   │                   ├── joint/           # 6 files
+│   │                   │   ├── CollectionsWireJointTest.kt
+│   │                   │   ├── DebugEventsWireJointTest.kt
+│   │                   │   ├── PairingWireJointTest.kt
+│   │                   │   ├── PlaybackWireJointTest.kt
+│   │                   │   ├── ProgressWireJointTest.kt
+│   │                   │   └── WireFixtures.kt
+│   │                   ├── nav/             # 1 files
+│   │                   │   └── BackRestorationTest.kt
+│   │                   ├── net/             # 2 files
+│   │                   │   ├── ApiContractTest.kt
+│   │                   │   └── FacetsTest.kt
+│   │                   ├── pairing/         # 4 files
+│   │                   │   ├── AddressEntryTest.kt
+│   │                   │   ├── PairingFlowTest.kt
+│   │                   │   ├── PollClassifierTest.kt
+│   │                   │   └── SessionStoreTest.kt
+│   │                   ├── playback/        # 8 files
+│   │                   │   ├── BeaconWorkerTest.kt
+│   │                   │   ├── ControlsHideTest.kt
+│   │                   │   ├── Media3ControllerTest.kt
+│   │                   │   ├── NextUpTest.kt
+│   │                   │   ├── PlayerInfoTest.kt
+│   │                   │   ├── PlayerOrchestrationTest.kt
+│   │                   │   ├── SkipSectionsTest.kt
+│   │                   │   └── VoiceoverSelectionTest.kt
+│   │                   ├── state/           # 2 files
+│   │                   │   ├── PlaybackReduceTest.kt
+│   │                   │   └── RenditionPlanTest.kt
+│   │                   ├── ui/              # 5 files
+│   │                   │   ├── AppThemeTest.kt
+│   │                   │   ├── FocusRingTest.kt
+│   │                   │   ├── LayoutParityTest.kt
+│   │                   │   ├── SettingsOverlayTest.kt
+│   │                   │   └── TypeScaleTest.kt
+│   │                   ├── AppSmokeTest.kt
+│   │                   └── TestSupport.kt
+│   ├── .gitignore
+│   ├── build.gradle.kts
+│   ├── gradle.properties
+│   ├── gradlew
+│   ├── gradlew.bat
+│   └── settings.gradle.kts
+├── cmd/                 # 38 files
+│   └── mellifera/  # 38 files
+│       ├── browse_wiring.go
+│       ├── browse_wiring_test.go
+│       ├── chain_mute_test.go
+│       ├── config_test.go
+│       ├── decision_log.go
+│       ├── decision_log_test.go
+│       ├── demotion_test.go
+│       ├── descriptor_missing_test.go
+│       ├── httplog.go
+│       ├── janitor.go
+│       ├── janitor_test.go
+│       ├── main.go
+│       ├── main_test.go
+│       ├── optional_load_test.go
+│       ├── pack_gate_log_test.go
+│       ├── playback.go
+│       ├── playback_gate_test.go
+│       ├── plugin_configs_closure_test.go
+│       ├── recs_backfill.go
+│       ├── recs_backfill_test.go
+│       ├── recs_janitor.go
+│       ├── recs_janitor_test.go
+│       ├── recs_probes_test.go
+│       ├── relay_test.go
+│       ├── retention_test.go
+│       ├── scanflight.go
+│       ├── scanflight_test.go
+│       ├── served.go
+│       ├── served_test.go
+│       ├── suppression_test.go
+│       ├── thumb.go
+│       ├── thumb_test.go
+│       ├── urgent_lane_test.go
+│       ├── watch_defaults_test.go
+│       ├── watch_detect.go
+│       ├── watch_detect_test.go
+│       ├── watched.go
+│       └── watched_test.go
+├── docs/                # 12 files
+│   ├── .docs_state.json
+│   ├── .project_context.json
+│   ├── ai-architecture.md
+│   ├── api-reference.md
+│   ├── architecture.md
+│   ├── backlog.md
+│   ├── open-questions.md
+│   ├── operator-runbook.md
+│   ├── playback-postmortem-2026-10-31.md
+│   ├── prior-art.md
+│   ├── project_structure.md
+│   └── ui-roadmap.md
+├── internal/            # 356 files
+│   ├── access/        # 5 files
+│   │   ├── context.go
+│   │   ├── context_test.go
+│   │   ├── doc.go
+│   │   ├── viewer.go
+│   │   └── viewer_test.go
+│   ├── api/           # 91 files
+│   │   ├── testdata/                     # 3 files
+│   │   │   └── golden/  # 3 files
+│   │   │       ├── missing_art.json
+│   │   │       ├── title_vectors.json
+│   │   │       └── watch_defaults.json
+│   │   ├── admin_groups.go
+│   │   ├── admin_groups_test.go
+│   │   ├── admin_scoping.go
+│   │   ├── admin_scoping_test.go
+│   │   ├── admin_status_test.go
+│   │   ├── admin_users.go
+│   │   ├── admin_users_test.go
+│   │   ├── art.go
+│   │   ├── art_test.go
+│   │   ├── auth.go
+│   │   ├── auth_chain_test.go
+│   │   ├── auth_login_test.go
+│   │   ├── browse_scale_joint_test.go
+│   │   ├── debug_events.go
+│   │   ├── debug_events_test.go
+│   │   ├── device_debug_test.go
+│   │   ├── display.go
+│   │   ├── display_patch_test.go
+│   │   ├── display_test.go
+│   │   ├── display_wire_test.go
+│   │   ├── doc.go
+│   │   ├── enrich_admin.go
+│   │   ├── enrich_admin_test.go
+│   │   ├── facets.go
+│   │   ├── facets_test.go
+│   │   ├── golden_title_vectors_test.go
+│   │   ├── handlers.go
+│   │   ├── handlers_viewer_test.go
+│   │   ├── home.go
+│   │   ├── home_test.go
+│   │   ├── identify.go
+│   │   ├── identify_test.go
+│   │   ├── item_identify_test.go
+│   │   ├── item_media_test.go
+│   │   ├── item_parsers_test.go
+│   │   ├── item_state_test.go
+│   │   ├── libraries_test.go
+│   │   ├── metadata_test.go
+│   │   ├── middleware.go
+│   │   ├── middleware_test.go
+│   │   ├── pairing.go
+│   │   ├── pairing_test.go
+│   │   ├── parsers.go
+│   │   ├── parsers_changed_test.go
+│   │   ├── playback.go
+│   │   ├── playback_events.go
+│   │   ├── playback_events_test.go
+│   │   ├── playback_precheck_test.go
+│   │   ├── playback_test.go
+│   │   ├── plugin_admin.go
+│   │   ├── plugin_admin_secrets_test.go
+│   │   ├── plugin_admin_test.go
+│   │   ├── profile.go
+│   │   ├── profile_test.go
+│   │   ├── progress_recs_test.go
+│   │   ├── progress_test.go
+│   │   ├── qa_roles_test.go
+│   │   ├── recs_golden_test.go
+│   │   ├── recs_ordering.go
+│   │   ├── recs_ordering_test.go
+│   │   ├── relay.go
+│   │   ├── relay_test.go
+│   │   ├── role_gating_test.go
+│   │   ├── roles_test.go
+│   │   ├── router.go
+│   │   ├── router_test.go
+│   │   ├── scan_inline_test.go
+│   │   ├── search.go
+│   │   ├── search_test.go
+│   │   ├── series_test.go
+│   │   ├── source_admin.go
+│   │   ├── source_admin_library_test.go
+│   │   ├── source_admin_options_test.go
+│   │   ├── source_admin_patch_test.go
+│   │   ├── source_admin_preview_test.go
+│   │   ├── source_admin_test.go
+│   │   ├── source_chain_test.go
+│   │   ├── title_change_poke_test.go
+│   │   ├── titles.go
+│   │   ├── titles_test.go
+│   │   ├── tombstone_serve_test.go
+│   │   ├── unconfigured_test.go
+│   │   ├── viewer.go
+│   │   ├── viewer_test.go
+│   │   ├── watch_defaults.go
+│   │   ├── watch_defaults_test.go
+│   │   ├── watchdefaults_golden_test.go
+│   │   └── watched_stamp_test.go
+│   ├── art/           # 13 files
+│   │   ├── testdata/                # 1 files
+│   │   │   └── golden/  # 1 files
+│   │   │       └── poster_repair.json
+│   │   ├── doc.go
+│   │   ├── image.go
+│   │   ├── image_test.go
+│   │   ├── ingest.go
+│   │   ├── ingest_test.go
+│   │   ├── serve.go
+│   │   ├── serve_test.go
+│   │   ├── service.go
+│   │   ├── service_test.go
+│   │   ├── settle.go
+│   │   ├── settle_test.go
+│   │   └── tombstone_serve_test.go
+│   ├── browse/        # 7 files
+│   │   ├── doc.go
+│   │   ├── facets.go
+│   │   ├── facets_test.go
+│   │   ├── search.go
+│   │   ├── search_test.go
+│   │   ├── service.go
+│   │   └── service_test.go
+│   ├── enrich/        # 43 files
+│   │   ├── adopt_guard_test.go
+│   │   ├── anchor_test.go
+│   │   ├── chain.go
+│   │   ├── chain_test.go
+│   │   ├── doc.go
+│   │   ├── enrich.go
+│   │   ├── enrich_test.go
+│   │   ├── episode_titles.go
+│   │   ├── episode_titles_test.go
+│   │   ├── extras_test.go
+│   │   ├── fetch.go
+│   │   ├── fetch_test.go
+│   │   ├── gate_derivation_test.go
+│   │   ├── gates.go
+│   │   ├── gates_test.go
+│   │   ├── genres.go
+│   │   ├── genres_test.go
+│   │   ├── identify_item_test.go
+│   │   ├── lease.go
+│   │   ├── lease_test.go
+│   │   ├── provenance.go
+│   │   ├── qa_c01_stages_roundtrip_test.go
+│   │   ├── queue.go
+│   │   ├── queue_test.go
+│   │   ├── reenrich.go
+│   │   ├── reenrich_test.go
+│   │   ├── relay.go
+│   │   ├── relay_test.go
+│   │   ├── request_plan_test.go
+│   │   ├── retry.go
+│   │   ├── retry_test.go
+│   │   ├── search.go
+│   │   ├── search_test.go
+│   │   ├── seed_bindings_test.go
+│   │   ├── series_queue_test.go
+│   │   ├── server_auth_test.go
+│   │   ├── settle_gate_parity_test.go
+│   │   ├── state.go
+│   │   ├── streams.go
+│   │   ├── streams_test.go
+│   │   ├── unconfigured_test.go
+│   │   ├── worker.go
+│   │   └── worker_test.go
+│   ├── identity/      # 13 files
+│   │   ├── doc.go
+│   │   ├── group.go
+│   │   ├── groups_test.go
+│   │   ├── password.go
+│   │   ├── resolve.go
+│   │   ├── resolve_test.go
+│   │   ├── service.go
+│   │   ├── session.go
+│   │   ├── sessions_test.go
+│   │   ├── state.go
+│   │   ├── state_test.go
+│   │   ├── user.go
+│   │   └── users_test.go
+│   ├── itest/         # 57 files
+│   │   ├── javstubbin/                             # 3 files
+│   │   │   ├── main.go
+│   │   │   ├── pluginsvc.go
+│   │   │   └── source.go
+│   │   ├── testdata/                               # 1 files
+│   │   │   └── element-parser/  # 1 files
+│   │   │       └── main.go
+│   │   ├── accounts_ac_matrix_test.go
+│   │   ├── accounts_joint_test.go
+│   │   ├── element_hermetic_e2e_test.go
+│   │   ├── element_parsers_test.go
+│   │   ├── eviction_joint_test.go
+│   │   ├── eviction_shell_test.go
+│   │   ├── integration_async_test.go
+│   │   ├── integration_image_test.go
+│   │   ├── integration_media_test.go
+│   │   ├── integration_test.go
+│   │   ├── integration_web_items_test.go
+│   │   ├── integration_web_test.go
+│   │   ├── optional_plugin_joint_test.go
+│   │   ├── pack_manifest_audio_joint_test.go
+│   │   ├── playback_capability_gate_joint_test.go
+│   │   ├── playback_unblock_joint_test.go
+│   │   ├── qa_acceptance_test.go
+│   │   ├── qa_artwork_joint_test.go
+│   │   ├── qa_async_acceptance_test.go
+│   │   ├── qa_auth_test.go
+│   │   ├── qa_broken_build_sweep_test.go
+│   │   ├── qa_display_naming_joint_test.go
+│   │   ├── qa_embed_buildgate_test.go
+│   │   ├── qa_endpoints_test.go
+│   │   ├── qa_episode_titles_joint_test.go
+│   │   ├── qa_film_joint_test.go
+│   │   ├── qa_identify_joint_test.go
+│   │   ├── qa_image_e2e_test.go
+│   │   ├── qa_image_fixtures_test.go
+│   │   ├── qa_image_regression_test.go
+│   │   ├── qa_item_state_joint_test.go
+│   │   ├── qa_media_data_joint_test.go
+│   │   ├── qa_pairing_joint_test.go
+│   │   ├── qa_pipeline_regression_test.go
+│   │   ├── qa_playback_harness_test.go
+│   │   ├── qa_playback_roundtrip_test.go
+│   │   ├── qa_plugin_logs_joint_test.go
+│   │   ├── qa_recs_roundtrip_test.go
+│   │   ├── qa_relay_joint_test.go
+│   │   ├── qa_rescan_preservation_test.go
+│   │   ├── qa_resilience_test.go
+│   │   ├── qa_serial_e2e_test.go
+│   │   ├── qa_serial_watch_flow_test.go
+│   │   ├── qa_shikimori_joint_test.go
+│   │   ├── qa_source_gate_joint_test.go
+│   │   ├── qa_streams_joint_test.go
+│   │   ├── qa_tombstone_adoption_joint_test.go
+│   │   ├── qa_two_viewers_joint_test.go
+│   │   ├── qa_video_item_pages_test.go
+│   │   ├── qa_watch_scan_joint_test.go
+│   │   ├── reheal_eviction_joint_test.go
+│   │   ├── tmdb_joint_test.go
+│   │   └── tv_unblock_joint_test.go
+│   ├── module/        # 6 files
+│   │   ├── doc.go
+│   │   ├── parse_test.go
+│   │   ├── registry.go
+│   │   ├── registry_serial_v2_test.go
+│   │   ├── registry_setoptions_test.go
+│   │   └── registry_test.go
+│   ├── naming/        # 6 files
+│   │   ├── binding.go
+│   │   ├── display.go
+│   │   ├── display_test.go
+│   │   ├── metadata.go
+│   │   ├── metadata_test.go
+│   │   └── tags.go
+│   ├── orchestrator/  # 5 files
+│   │   ├── budget.go
+│   │   ├── budget_test.go
+│   │   ├── doc.go
+│   │   ├── frontier.go
+│   │   └── frontier_test.go
+│   ├── pack/          # 2 files
+│   │   ├── doc.go
+│   │   └── pack.go
+│   ├── pairing/       # 3 files
+│   │   ├── doc.go
+│   │   ├── service.go
+│   │   └── service_test.go
+│   ├── plugin/        # 7 files
+│   │   ├── testdata/        # 1 files
+│   │   │   └── fakeplugin/  # 1 files
+│   │   │       └── main.go
+│   │   ├── doc.go
+│   │   ├── lifecycle.go
+│   │   ├── logring.go
+│   │   ├── logring_test.go
+│   │   ├── manager.go
+│   │   └── manager_test.go
+│   ├── recs/          # 3 files
+│   │   ├── doc.go
+│   │   ├── recs.go
+│   │   └── recs_test.go
+│   ├── refusal/       # 1 files
+│   │   └── refusal.go
+│   ├── relay/         # 1 files
+│   │   └── relay.go
+│   ├── scan/          # 11 files
+│   │   ├── adopt.go
+│   │   ├── adopt_test.go
+│   │   ├── carry_test.go
+│   │   ├── doc.go
+│   │   ├── joint_truncated_grpc_test.go
+│   │   ├── parsed_abs_test.go
+│   │   ├── run.go
+│   │   ├── run_test.go
+│   │   ├── series_test.go
+│   │   ├── sweep_items_test.go
+│   │   └── sweep_truncated_stream_test.go
+│   ├── sourcestate/   # 1 files
+│   │   └── sourcestate.go
+│   ├── store/         # 35 files
+│   │   ├── accounts_test.go
+│   │   ├── adopt.go
+│   │   ├── adopt_test.go
+│   │   ├── art.go
+│   │   ├── art_test.go
+│   │   ├── device_debug_test.go
+│   │   ├── doc.go
+│   │   ├── item_parsers.go
+│   │   ├── item_parsers_test.go
+│   │   ├── items.go
+│   │   ├── ledger.go
+│   │   ├── ledger_reads_test.go
+│   │   ├── ledger_rebuild_test.go
+│   │   ├── ledger_test.go
+│   │   ├── ledger_writes_test.go
+│   │   ├── libraries.go
+│   │   ├── libraries_test.go
+│   │   ├── metadata_source_prefs.go
+│   │   ├── metadata_source_prefs_test.go
+│   │   ├── open.go
+│   │   ├── pairing.go
+│   │   ├── pairing_test.go
+│   │   ├── progress.go
+│   │   ├── progress_test.go
+│   │   ├── recs.go
+│   │   ├── recs_test.go
+│   │   ├── relayjobs.go
+│   │   ├── relayjobs_test.go
+│   │   ├── series.go
+│   │   ├── series_test.go
+│   │   ├── store_test.go
+│   │   ├── tombstone_serve_test.go
+│   │   ├── viewer.go
+│   │   ├── viewer_reads_test.go
+│   │   └── viewer_test.go
+│   ├── stream/        # 28 files
+│   │   ├── testdata/                       # 1 files
+│   │   │   └── golden/  # 1 files
+│   │   │       └── sections_chapters.json
+│   │   ├── classification.go
+│   │   ├── classification_test.go
+│   │   ├── codecs.go
+│   │   ├── codecs_test.go
+│   │   ├── describe.go
+│   │   ├── describe_codecs_test.go
+│   │   ├── describe_honesty_test.go
+│   │   ├── describe_layout_test.go
+│   │   ├── doc.go
+│   │   ├── fixture_test.go
+│   │   ├── master.go
+│   │   ├── master_test.go
+│   │   ├── media_test.go
+│   │   ├── pack.go
+│   │   ├── pack_flow_log_test.go
+│   │   ├── pack_multi_audio_test.go
+│   │   ├── pack_repro_tail_window_test.go
+│   │   ├── pack_test.go
+│   │   ├── packgate_test.go
+│   │   ├── playlist.go
+│   │   ├── playlist_test.go
+│   │   ├── rendition_test.go
+│   │   ├── sections_golden_test.go
+│   │   ├── serve.go
+│   │   ├── service.go
+│   │   ├── token.go
+│   │   └── validate.go
+│   ├── watch/         # 6 files
+│   │   ├── doc.go
+│   │   ├── engine.go
+│   │   ├── engine_test.go
+│   │   ├── fsnotify.go
+│   │   ├── watch.go
+│   │   └── watch_test.go
+│   └── web/           # 12 files
+│       ├── api/                # 2 files
+│       │   ├── openapi.json
+│       │   └── openapi.yaml
+│       ├── dist/               # 3 files
+│       │   ├── assets/     # 2 files
+│       │   │   ├── index-NNOIqz9c.css
+│       │   │   └── index-iZhmwizc.js
+│       │   └── index.html
+│       ├── apk.go
+│       ├── apk_test.go
+│       ├── doc.go
+│       ├── qa_swagger_test.go
+│       ├── swagger.go
+│       ├── web.go
+│       └── web_test.go
+├── openspec/            # 734 files
+│   ├── changes/     # 699 files
+│   │   ├── 2026-10-30-frontier-pinned-eviction/  # 4 files
+│   │   │   ├── specs/          # 1 files
+│   │   │   │   └── packaged-playback/  # 1 files
+│   │   │   │       └── spec.md
+│   │   │   ├── .openspec.yaml
+│   │   │   ├── proposal.md
+│   │   │   └── tasks.md
+│   │   ├── android-tv-app/                       # 18 files
+│   │   │   ├── contracts/      # 1 files
+│   │   │   │   └── 7.1-wire-joints.md
+│   │   │   ├── handoffs/       # 2 files
+│   │   │   │   ├── session.md
+│   │   │   │   └── wf-surveyor.md
+│   │   │   ├── specs/          # 4 files
+│   │   │   │   ├── android-app-delivery/  # 1 files
+│   │   │   │   │   └── spec.md
+│   │   │   │   ├── android-tv-client/     # 1 files
+│   │   │   │   │   └── spec.md
+│   │   │   │   ├── device-pairing/        # 1 files
+│   │   │   │   │   └── spec.md
+│   │   │   │   └── device-telemetry/      # 1 files
+│   │   │   │       └── spec.md
+│   │   │   ├── tasks/          # 5 files
+│   │   │   │   ├── 1.2.md
+│   │   │   │   ├── 1.3.md
+│   │   │   │   ├── 5.1.md
+│   │   │   │   ├── 5.11.md
+│   │   │   │   └── 5.5.md
+│   │   │   ├── .openspec.yaml
+│   │   │   ├── README.md
+│   │   │   ├── design.md
+│   │   │   ├── integration.md
+│   │   │   ├── proposal.md
+│   │   │   └── tasks.md
+│   │   ├── archive/                              # 653 files
+│   │   │   ├── 2026-10-06-web-ui-phase-2/                          # 7 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── web-ui/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-08-serials-library/                         # 7 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── serial-library/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-08-web-ui-phase-3/                          # 10 files
+│   │   │   │   ├── specs/              # 3 files
+│   │   │   │   │   ├── playback-progress/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── scan-library/       # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/             # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design-mockup.html
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-09-media-preview/                           # 8 files
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── media-serving/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/         # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-09-packaged-playback/                       # 10 files
+│   │   │   │   ├── specs/          # 4 files
+│   │   │   │   │   ├── async-enrichment/   # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── media-serving/      # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── packaged-playback/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/             # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-10-element-pages/                           # 9 files
+│   │   │   │   ├── handoffs/       # 1 files
+│   │   │   │   │   └── wf-coder.json
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── parser-display/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/          # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-11-fix-episode-playback/                    # 12 files
+│   │   │   │   ├── handoffs/       # 4 files
+│   │   │   │   │   ├── qa.json
+│   │   │   │   │   ├── wf-coder.json
+│   │   │   │   │   ├── wf-debugger.json
+│   │   │   │   │   └── wf-reviewer.json
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── packaged-playback/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/             # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-11-serial-watch-flow/                       # 12 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── coder.json
+│   │   │   │   │   └── qa.json
+│   │   │   │   ├── specs/          # 4 files
+│   │   │   │   │   ├── media-serving/      # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── packaged-playback/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── serial-library/     # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/             # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-11-video-item-pages/                        # 10 files
+│   │   │   │   ├── handoffs/       # 3 files
+│   │   │   │   │   ├── coder.json
+│   │   │   │   │   ├── wf-coder.json
+│   │   │   │   │   └── wf-qa.json
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── web-ui/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-12-film-name-parsing/                       # 10 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── wf-coder.json
+│   │   │   │   │   └── wf-qa.json
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── release-name-parsing/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── serial-library/        # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-12-serial/                                  # 9 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── wf-coder.json
+│   │   │   │   │   └── wf-qa.json
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── serial-library/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-12-serial-followups/                        # 8 files
+│   │   │   │   ├── handoffs/       # 1 files
+│   │   │   │   │   └── wf-coder.json
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── serial-library/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-12-unified-parser/                          # 13 files
+│   │   │   │   ├── handoffs/       # 4 files
+│   │   │   │   │   ├── wf-coder.json
+│   │   │   │   │   ├── wf-planner.json
+│   │   │   │   │   ├── wf-qa.json
+│   │   │   │   │   └── wf-reviewer.json
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── parser-display/        # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── release-name-parsing/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── serial-library/        # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-13-continue-nextup-media/                   # 13 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── session.json
+│   │   │   │   │   └── wf-coder.json
+│   │   │   │   ├── specs/          # 5 files
+│   │   │   │   │   ├── media-serving/      # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── playback-progress/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── scan-library/       # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── serial-library/     # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/             # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-13-enrichment/                              # 11 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── wf-coder.json
+│   │   │   │   │   └── wf-qa.json
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── async-enrichment/      # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── plugin-pipeline/       # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── shikimori-enrichment/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-13-fix-truncated-scan-sweep/                # 11 files
+│   │   │   │   ├── handoffs/       # 3 files
+│   │   │   │   │   ├── wf-coder.json
+│   │   │   │   │   ├── wf-debugger.json
+│   │   │   │   │   └── wf-qa.json
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── scan-library/    # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── serial-library/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-14-display-naming/                          # 11 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── wf-coder.json
+│   │   │   │   │   └── wf-qa.json
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── display-naming/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── parser-display/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/          # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-14-preserve-enrichment-rescan/              # 9 files
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── async-enrichment/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── scan-library/      # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── serial-library/    # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-16-design/                                  # 7 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── web-ui/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-20-plugin-admin-surfaces/                   # 8 files
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── plugin-admin/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/        # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-20-plugin-title-enrichment/                 # 11 files
+│   │   │   │   ├── specs/          # 5 files
+│   │   │   │   │   ├── async-enrichment/       # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── display-naming/         # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── metadata-source-admin/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── shikimori-enrichment/   # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/                 # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-22-media-data-convention/                   # 9 files
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── media-data-convention/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── plugin-pipeline/        # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── shikimori-enrichment/   # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-23-device-pairing/                          # 9 files
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── device-pairing/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/          # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── plan.yaml
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-23-episode-titles/                          # 10 files
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── async-enrichment/      # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── plugin-pipeline/       # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── shikimori-enrichment/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── plan.yaml
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-23-fix-episode-playback-start/              # 6 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── wf-coder.json
+│   │   │   │   │   └── wf-debugger.json
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-23-identify-match-override/                 # 11 files
+│   │   │   │   ├── specs/          # 4 files
+│   │   │   │   │   ├── async-enrichment/       # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── metadata-source-admin/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── plugin-pipeline/        # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/                 # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── plan.yaml
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-24-artwork/                                 # 11 files
+│   │   │   │   ├── specs/          # 4 files
+│   │   │   │   │   ├── artwork/               # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── media-serving/         # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── shikimori-enrichment/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/                # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── plan.yaml
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-26-density-contract/                        # 11 files
+│   │   │   │   ├── contracts/      # 3 files
+│   │   │   │   │   ├── 1.1-density-core.md
+│   │   │   │   │   ├── 2.1-poster-row-clamp.md
+│   │   │   │   │   └── 3.1-photo-stage-cap.md
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── web-ui/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── closeout.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-26-watch-flow-polish/                       # 14 files
+│   │   │   │   ├── contracts/      # 6 files
+│   │   │   │   │   ├── 2.1-nextup-move.md
+│   │   │   │   │   ├── 3.1-skip-chip.md
+│   │   │   │   │   ├── 3.2-info-column.md
+│   │   │   │   │   ├── 3.3-auto-next.md
+│   │   │   │   │   ├── 3.4-keyboard.md
+│   │   │   │   │   └── 4.1-golden-joints.md
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── web-ui/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── closeout.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-27-client-relayed-fetch/                    # 22 files
+│   │   │   │   ├── contracts/      # 11 files
+│   │   │   │   │   ├── 1.1-relay-store.md
+│   │   │   │   │   ├── 2.1-relay-enqueue.md
+│   │   │   │   │   ├── 2.2-relay-mechanics.md
+│   │   │   │   │   ├── 3.2-deferred-handoff.md
+│   │   │   │   │   ├── 4.1-claim-route.md
+│   │   │   │   │   ├── 4.2-result-route.md
+│   │   │   │   │   ├── 5.1-search-relay.md
+│   │   │   │   │   ├── 6.1-relay-lib.md
+│   │   │   │   │   ├── 6.2-relay-worker.md
+│   │   │   │   │   ├── 6.4-plugin-failures-page.md
+│   │   │   │   │   └── 7.1-relay-joint.md
+│   │   │   │   ├── handoffs/       # 1 files
+│   │   │   │   │   └── session.md
+│   │   │   │   ├── specs/          # 4 files
+│   │   │   │   │   ├── async-enrichment/      # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── client-relayed-fetch/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── plugin-admin/          # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/                # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-27-fix-poster-legacy-placeholder-backfill/  # 13 files
+│   │   │   │   ├── contracts/      # 4 files
+│   │   │   │   │   ├── 1.1-settle-repair.md
+│   │   │   │   │   ├── 2.1-posters-reason.md
+│   │   │   │   │   ├── 2.2-series-fallback.md
+│   │   │   │   │   └── 3.1-art-401.md
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── artwork/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/   # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── closeout.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-31-playback-capability-gate/                # 13 files
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── packaged-playback/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/             # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── tasks/          # 4 files
+│   │   │   │   │   ├── 1.2.md
+│   │   │   │   │   ├── 1.3.md
+│   │   │   │   │   ├── 2.1.md
+│   │   │   │   │   └── 5.1.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-31-playlist-token-propagation/              # 4 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── packaged-playback/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── proposal.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-10-31-tv-playback-unblock/                     # 13 files
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── packaged-playback/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/             # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── tasks/          # 4 files
+│   │   │   │   │   ├── 1.1.md
+│   │   │   │   │   ├── 3.1.md
+│   │   │   │   │   ├── 4.2.md
+│   │   │   │   │   └── 5.1.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-01-fix-hls-light-audio/                     # 6 files
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-01-fix-reheal-eviction/                     # 12 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── packaged-playback/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── tasks/          # 4 files
+│   │   │   │   │   ├── 1.1.md
+│   │   │   │   │   ├── 1.2.md
+│   │   │   │   │   ├── 2.1.md
+│   │   │   │   │   └── 2.2.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-01-fix-tv-unblock-2/                        # 14 files
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── packaged-playback/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/             # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── tasks/          # 6 files
+│   │   │   │   │   ├── 1.1.md
+│   │   │   │   │   ├── 1.2.md
+│   │   │   │   │   ├── 1.3.md
+│   │   │   │   │   ├── 2.1.md
+│   │   │   │   │   ├── 2.2.md
+│   │   │   │   │   └── 3.1.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-01-pack-manifest-audio/                     # 13 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── packaged-playback/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── tasks/          # 5 files
+│   │   │   │   │   ├── 1.1.md
+│   │   │   │   │   ├── 1.2.md
+│   │   │   │   │   ├── 3.1.md
+│   │   │   │   │   ├── 4.2.md
+│   │   │   │   │   └── 5.1.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-01-repack-descriptor-trigger/               # 3 files
+│   │   │   │   ├── specs/        # 1 files
+│   │   │   │   │   └── packaged-playback/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-02-fix-autodetect/                          # 9 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── session.md
+│   │   │   │   │   └── wf-debugger.md
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── tv-mode/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-02-fix-tv-server-ua/                        # 8 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── session.md
+│   │   │   │   │   └── wf-debugger.md
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── tv-mode/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-02-tv-dpr-scaling/                          # 9 files
+│   │   │   │   ├── handoffs/       # 1 files
+│   │   │   │   │   └── session.md
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── tv-mode/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-02-tv-mode/                                 # 9 files
+│   │   │   │   ├── handoffs/       # 1 files
+│   │   │   │   │   └── session.md
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── tv-mode/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-03-recommendation-sorting/                  # 10 files
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── playback-progress/       # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── recommendation-sorting/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/                  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-03-watched-states/                          # 9 files
+│   │   │   │   ├── specs/          # 2 files
+│   │   │   │   │   ├── recommendation-sorting/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/                  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-04-collections-ux/                          # 11 files
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── playback-progress/       # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── recommendation-sorting/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/                  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-04-watched-toggle-label/                    # 7 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── web-ui/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-05-l6-accounts-access/                      # 20 files
+│   │   │   │   ├── contracts/      # 1 files
+│   │   │   │   │   └── 4.5-system-sweep.md
+│   │   │   │   ├── specs/          # 11 files
+│   │   │   │   │   ├── accounts/                # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── artwork/                 # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── client-relayed-fetch/    # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── device-pairing/          # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── media-serving/           # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── metadata-source-admin/   # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── playback-progress/       # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── recommendation-sorting/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── scan-library/            # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── serial-library/          # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/                  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-05-watched-signal-refinement/               # 9 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── web-ui/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-08-browse-scale/                            # 14 files
+│   │   │   │   ├── contracts/      # 1 files
+│   │   │   │   │   └── 4.1-joint-itest.md
+│   │   │   │   ├── specs/          # 5 files
+│   │   │   │   │   ├── global-search/           # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── home-continue/           # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── library-facets/          # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── recommendation-sorting/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/                  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-08-eviction/                                # 12 files
+│   │   │   │   ├── contracts/      # 1 files
+│   │   │   │   │   └── 5.1-joint-suppression-play.md
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── async-enrichment/   # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── packaged-playback/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/             # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-09-home-rail/                               # 14 files
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── home-continue/           # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── recommendation-sorting/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/                  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── tasks/          # 3 files
+│   │   │   │   │   ├── 1.1.md
+│   │   │   │   │   ├── 1.2.md
+│   │   │   │   │   └── 2.1.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-09-tombstone-lifecycle/                     # 18 files
+│   │   │   │   ├── contracts/      # 6 files
+│   │   │   │   │   ├── 2.2-item-sweep.md
+│   │   │   │   │   ├── 2.3-identity-adoption.md
+│   │   │   │   │   ├── 2.5-identity-amendment.md
+│   │   │   │   │   ├── 2.6-adoption-safety.md
+│   │   │   │   │   ├── 3.1-descriptor-missing.md
+│   │   │   │   │   └── 3.2-serve-law.md
+│   │   │   │   ├── specs/          # 4 files
+│   │   │   │   │   ├── packaged-playback/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── playback-progress/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── scan-library/       # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── web-ui/             # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-10-fix-trash-rerename/                      # 7 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── packaged-playback/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-10-plugin-options-ui/                       # 9 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── web-ui/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-10-tmdb-enrichment/                         # 11 files
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── async-enrichment/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── plugin-admin/      # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── tmdb-enrichment/   # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-11-cleanup/                                 # 11 files
+│   │   │   │   ├── tasks/          # 3 files
+│   │   │   │   │   ├── 3.1.md
+│   │   │   │   │   ├── 4.1.md
+│   │   │   │   │   └── 5.1.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-11-watch-scan/                              # 9 files
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── watch-scan/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-17-android-tv-layout-parity/                # 18 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── session.md
+│   │   │   │   │   └── surveyor.md
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── android-tv-client/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── tasks/          # 7 files
+│   │   │   │   │   ├── 10.1.md
+│   │   │   │   │   ├── 14.1.md
+│   │   │   │   │   ├── 15.1.md
+│   │   │   │   │   ├── 15.2.md
+│   │   │   │   │   ├── 15.4.md
+│   │   │   │   │   ├── 6.1.md
+│   │   │   │   │   └── 9.2.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-20-tv-style-parity/                         # 14 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── session.md
+│   │   │   │   │   └── wf-surveyor.md
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── android-tv-client/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── tasks/          # 3 files
+│   │   │   │   │   ├── 1.1.md
+│   │   │   │   │   ├── 1.2.md
+│   │   │   │   │   └── 1.3.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-26-tv-style-parity/                         # 14 files
+│   │   │   │   ├── handoffs/       # 3 files
+│   │   │   │   │   ├── session.md
+│   │   │   │   │   ├── wf-qa.md
+│   │   │   │   │   └── wf-reviewer.md
+│   │   │   │   ├── specs/          # 1 files
+│   │   │   │   │   └── android-tv-client/  # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── tasks/          # 2 files
+│   │   │   │   │   ├── 17.1.md
+│   │   │   │   │   └── 19.1.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
+│   │   │   └── .gitkeep
+│   │   ├── external-jav-plugins/                 # 12 files
+│   │   │   ├── handoffs/       # 2 files
+│   │   │   │   ├── session.md
+│   │   │   │   └── wf-reviewer.md
+│   │   │   ├── specs/          # 3 files
+│   │   │   │   ├── async-enrichment/      # 1 files
+│   │   │   │   │   └── spec.md
+│   │   │   │   ├── client-relayed-fetch/  # 1 files
+│   │   │   │   │   └── spec.md
+│   │   │   │   └── plugin-pipeline/       # 1 files
+│   │   │   │       └── spec.md
+│   │   │   ├── .openspec.yaml
+│   │   │   ├── README.md
+│   │   │   ├── design.md
+│   │   │   ├── integration.md
+│   │   │   ├── proposal.md
+│   │   │   ├── review.md
+│   │   │   └── tasks.md
+│   │   ├── transcode-lane/                       # 10 files
+│   │   │   ├── specs/          # 1 files
+│   │   │   │   └── packaged-playback/  # 1 files
+│   │   │   │       └── spec.md
+│   │   │   ├── tasks/          # 5 files
+│   │   │   │   ├── 1.1.md
+│   │   │   │   ├── 1.2.md
+│   │   │   │   ├── 2.2.md
+│   │   │   │   ├── 3.1.md
+│   │   │   │   └── 4.1.md
+│   │   │   ├── .openspec.yaml
+│   │   │   ├── design.md
+│   │   │   ├── proposal.md
+│   │   │   └── tasks.md
+│   │   └── tv-debug-overlay/                     # 2 files
+│   │       ├── close-out.md
+│   │       └── tasks.md
+│   ├── schemas/     # 5 files
+│   │   └── lite/  # 5 files
+│   │       ├── templates/   # 4 files
+│   │       │   ├── design.md
+│   │       │   ├── proposal.md
+│   │       │   ├── spec.md
+│   │       │   └── tasks.md
+│   │       └── schema.yaml
+│   ├── specs/       # 29 files
+│   │   ├── accounts/                # 1 files
+│   │   │   └── spec.md
+│   │   ├── android-tv-client/       # 1 files
+│   │   │   └── spec.md
+│   │   ├── artwork/                 # 1 files
+│   │   │   └── spec.md
+│   │   ├── async-enrichment/        # 1 files
+│   │   │   └── spec.md
+│   │   ├── client-relayed-fetch/    # 1 files
+│   │   │   └── spec.md
+│   │   ├── device-pairing/          # 1 files
+│   │   │   └── spec.md
+│   │   ├── display-naming/          # 1 files
+│   │   │   └── spec.md
+│   │   ├── global-search/           # 1 files
+│   │   │   └── spec.md
+│   │   ├── home-continue/           # 1 files
+│   │   │   └── spec.md
+│   │   ├── image-enrichment/        # 1 files
+│   │   │   └── spec.md
+│   │   ├── library-facets/          # 1 files
+│   │   │   └── spec.md
+│   │   ├── media-data-convention/   # 1 files
+│   │   │   └── spec.md
+│   │   ├── media-serving/           # 1 files
+│   │   │   └── spec.md
+│   │   ├── metadata-source-admin/   # 1 files
+│   │   │   └── spec.md
+│   │   ├── packaged-playback/       # 1 files
+│   │   │   └── spec.md
+│   │   ├── parser-display/          # 1 files
+│   │   │   └── spec.md
+│   │   ├── playback-progress/       # 1 files
+│   │   │   └── spec.md
+│   │   ├── plugin-admin/            # 1 files
+│   │   │   └── spec.md
+│   │   ├── plugin-pipeline/         # 1 files
+│   │   │   └── spec.md
+│   │   ├── recommendation-sorting/  # 1 files
+│   │   │   └── spec.md
+│   │   ├── release-name-parsing/    # 1 files
+│   │   │   └── spec.md
+│   │   ├── scan-library/            # 1 files
+│   │   │   └── spec.md
+│   │   ├── serial-library/          # 1 files
+│   │   │   └── spec.md
+│   │   ├── shikimori-enrichment/    # 1 files
+│   │   │   └── spec.md
+│   │   ├── tmdb-enrichment/         # 1 files
+│   │   │   └── spec.md
+│   │   ├── tv-mode/                 # 1 files
+│   │   │   └── spec.md
+│   │   ├── watch-scan/              # 1 files
+│   │   │   └── spec.md
+│   │   ├── web-ui/                  # 1 files
+│   │   │   └── spec.md
+│   │   └── .gitkeep
+│   └── config.yaml
+├── pkg/                 # 9 files
+│   ├── releasename/  # 3 files
+│   │   ├── parse.go
+│   │   ├── parse_test.go
+│   │   └── tags.go
+│   └── sdk/          # 6 files
+│       ├── doc.go
+│       ├── metadata.go
+│       ├── metadata_test.go
+│       ├── scanner.go
+│       ├── sdk_test.go
+│       └── serve.go
+├── plugins/             # 73 files
+│   ├── base-scanner/    # 15 files
+│   │   ├── doc.go
+│   │   ├── ffprobe.go
+│   │   ├── ffprobe_test.go
+│   │   ├── helpers_test.go
+│   │   ├── image.go
+│   │   ├── image_test.go
+│   │   ├── main.go
+│   │   ├── pathguard.go
+│   │   ├── pathguard_test.go
+│   │   ├── pluginsvc.go
+│   │   ├── qa_injection_test.go
+│   │   ├── scanner.go
+│   │   ├── scanner_test.go
+│   │   ├── smoke_test.go
+│   │   └── walk.go
+│   ├── frame-grabber/   # 5 files
+│   │   ├── ffmpeg.go
+│   │   ├── grabber.go
+│   │   ├── grabber_test.go
+│   │   ├── main.go
+│   │   └── pluginsvc.go
+│   ├── image-enricher/  # 7 files
+│   │   ├── doc.go
+│   │   ├── enricher.go
+│   │   ├── enricher_test.go
+│   │   ├── exiftool.go
+│   │   ├── exiftool_test.go
+│   │   ├── main.go
+│   │   └── pluginsvc.go
+│   ├── serial-parser/   # 6 files
+│   │   ├── main.go
+│   │   ├── parser.go
+│   │   ├── parser_test.go
+│   │   ├── pluginsvc.go
+│   │   ├── releasetags.go
+│   │   └── serialparse.go
+│   ├── serial-scanner/  # 10 files
+│   │   ├── doc.go
+│   │   ├── ffprobe.go
+│   │   ├── helpers_test.go
+│   │   ├── main.go
+│   │   ├── pathguard.go
+│   │   ├── pluginsvc.go
+│   │   ├── scanner.go
+│   │   ├── serial_test.go
+│   │   ├── sidecar.go
+│   │   └── walk.go
+│   ├── shikimori/       # 13 files
+│   │   ├── buildrequest_test.go
+│   │   ├── convert.go
+│   │   ├── convert_test.go
+│   │   ├── doc.go
+│   │   ├── main.go
+│   │   ├── match_test.go
+│   │   ├── pluginsvc.go
+│   │   ├── search.go
+│   │   ├── search_test.go
+│   │   ├── seriesname.go
+│   │   ├── seriesname_test.go
+│   │   ├── source.go
+│   │   └── upstream_test.go
+│   ├── tmdb/            # 11 files
+│   │   ├── buildrequest_test.go
+│   │   ├── convert.go
+│   │   ├── convert_test.go
+│   │   ├── doc.go
+│   │   ├── main.go
+│   │   ├── match_test.go
+│   │   ├── pluginsvc.go
+│   │   ├── pluginsvc_test.go
+│   │   ├── search.go
+│   │   ├── search_test.go
+│   │   └── source.go
+│   └── tv-parser/       # 6 files
+│       ├── doc.go
+│       ├── main.go
+│       ├── parser.go
+│       ├── parser_test.go
+│       ├── pluginsvc.go
+│       └── tvparse.go
+├── proto/               # 13 files
+│   └── mellifera/  # 13 files
+│       ├── common/    # 2 files
+│       │   └── v1/  # 2 files
+│       │       ├── common.pb.go
+│       │       └── common.proto
+│       ├── metadata/  # 5 files
+│       │   └── v1/  # 5 files
+│       │       ├── metadata.pb.go
+│       │       ├── metadata.proto
+│       │       ├── metadata_grpc.pb.go
+│       │       ├── request_spec.pb.go
+│       │       └── request_spec.proto
+│       ├── plugin/    # 3 files
+│       │   └── v1/  # 3 files
+│       │       ├── plugin.pb.go
+│       │       ├── plugin.proto
+│       │       └── plugin_grpc.pb.go
+│       └── scanner/   # 3 files
+│           └── v1/  # 3 files
+│               ├── scanner.pb.go
+│               ├── scanner.proto
+│               └── scanner_grpc.pb.go
+├── scripts/             # 2 files
+│   ├── dev.sh
+│   └── tv_layout_probe.py
+├── web/                 # 138 files
+│   ├── src/                # 126 files
+│   │   ├── components/  # 62 files
+│   │   │   ├── admin/                   # 2 files
+│   │   │   │   ├── BindingOptionsEditor.test.tsx
+│   │   │   │   └── BindingOptionsEditor.tsx
+│   │   │   ├── manage/                  # 5 files
+│   │   │   │   ├── IdentifySeries.test.tsx
+│   │   │   │   ├── IdentifySeries.tsx
+│   │   │   │   ├── ManageActions.tsx
+│   │   │   │   ├── PosterOverlay.test.tsx
+│   │   │   │   └── PosterOverlay.tsx
+│   │   │   ├── metadata/                # 9 files
+│   │   │   │   ├── JsonValue.tsx
+│   │   │   │   ├── ParserFooter.tsx
+│   │   │   │   ├── ProvenanceBadge.tsx
+│   │   │   │   ├── SourceCard.tsx
+│   │   │   │   ├── StagesProgress.tsx
+│   │   │   │   ├── Synopsis.test.tsx
+│   │   │   │   ├── Synopsis.tsx
+│   │   │   │   ├── ViewFields.tsx
+│   │   │   │   └── metadata.test.tsx
+│   │   │   ├── playback/                # 11 files
+│   │   │   │   ├── AutoNext.test.tsx
+│   │   │   │   ├── AutoNext.tsx
+│   │   │   │   ├── Player.test.tsx
+│   │   │   │   ├── Player.tsx
+│   │   │   │   ├── PlayerHlsBuild.test.tsx
+│   │   │   │   ├── PlayerLegend.test.tsx
+│   │   │   │   ├── PlayerLegend.tsx
+│   │   │   │   ├── SkipChip.test.tsx
+│   │   │   │   ├── SkipChip.tsx
+│   │   │   │   ├── autoNextPrefs.test.tsx
+│   │   │   │   └── completedWrite.test.tsx
+│   │   │   ├── ui/                      # 8 files
+│   │   │   │   ├── alert.tsx
+│   │   │   │   ├── badge.tsx
+│   │   │   │   ├── button.tsx
+│   │   │   │   ├── card.tsx
+│   │   │   │   ├── input.tsx
+│   │   │   │   ├── label.tsx
+│   │   │   │   ├── select.tsx
+│   │   │   │   └── table.tsx
+│   │   │   ├── watch/                   # 2 files
+│   │   │   │   ├── InfoColumn.test.tsx
+│   │   │   │   └── InfoColumn.tsx
+│   │   │   ├── ApkDownload.test.tsx
+│   │   │   ├── ApkDownload.tsx
+│   │   │   ├── Artwork.test.tsx
+│   │   │   ├── Artwork.tsx
+│   │   │   ├── DialogShell.test.tsx
+│   │   │   ├── DialogShell.tsx
+│   │   │   ├── FacetChips.test.tsx
+│   │   │   ├── FacetChips.tsx
+│   │   │   ├── Profile.test.tsx
+│   │   │   ├── Profile.tsx
+│   │   │   ├── RequireAuth.tsx
+│   │   │   ├── SearchPalette.test.tsx
+│   │   │   ├── SearchPalette.tsx
+│   │   │   ├── Sidebar.test.tsx
+│   │   │   ├── Sidebar.tsx
+│   │   │   ├── ThemeToggle.tsx
+│   │   │   ├── TvDebugOverlay.test.tsx
+│   │   │   ├── TvDebugOverlay.tsx
+│   │   │   ├── TvFocusRoot.test.tsx
+│   │   │   ├── TvFocusRoot.tsx
+│   │   │   ├── TvModeToggle.test.tsx
+│   │   │   ├── TvModeToggle.tsx
+│   │   │   ├── WatchedStates.test.tsx
+│   │   │   ├── WatchedStates.tsx
+│   │   │   └── states.tsx
+│   │   ├── lib/         # 34 files
+│   │   │   ├── api.test.ts
+│   │   │   ├── api.ts
+│   │   │   ├── artwork.test.ts
+│   │   │   ├── auth.ts
+│   │   │   ├── clampCssContract.test.ts
+│   │   │   ├── density.test.ts
+│   │   │   ├── density.ts
+│   │   │   ├── document.test.ts
+│   │   │   ├── document.ts
+│   │   │   ├── focusWalker.test.ts
+│   │   │   ├── focusWalker.ts
+│   │   │   ├── naming.test.ts
+│   │   │   ├── naming.ts
+│   │   │   ├── nextup.test.ts
+│   │   │   ├── nextup.ts
+│   │   │   ├── overlayContract.test.ts
+│   │   │   ├── playerShortcuts.test.ts
+│   │   │   ├── playerShortcuts.ts
+│   │   │   ├── queries.test.tsx
+│   │   │   ├── queries.ts
+│   │   │   ├── relay.test.ts
+│   │   │   ├── relay.ts
+│   │   │   ├── relayWorker.test.tsx
+│   │   │   ├── relayWorker.ts
+│   │   │   ├── skipSections.test.ts
+│   │   │   ├── skipSections.ts
+│   │   │   ├── subtitles.test.ts
+│   │   │   ├── subtitles.ts
+│   │   │   ├── tvCssContract.test.ts
+│   │   │   ├── tvmode.test.ts
+│   │   │   ├── tvmode.ts
+│   │   │   ├── utils.ts
+│   │   │   ├── watchedRows.test.ts
+│   │   │   └── watchedRows.ts
+│   │   ├── pages/       # 26 files
+│   │   │   ├── admin/          # 16 files
+│   │   │   │   ├── accounts/                # 3 files
+│   │   │   │   │   ├── ExplainViewer.tsx
+│   │   │   │   │   ├── GroupsPanel.tsx
+│   │   │   │   │   └── UsersPanel.tsx
+│   │   │   │   ├── Accounts.test.tsx
+│   │   │   │   ├── Accounts.tsx
+│   │   │   │   ├── AdminTabs.tsx
+│   │   │   │   ├── Collections.test.tsx
+│   │   │   │   ├── Collections.tsx
+│   │   │   │   ├── Pairing.test.tsx
+│   │   │   │   ├── Pairing.tsx
+│   │   │   │   ├── PluginFailures.test.tsx
+│   │   │   │   ├── PluginFailures.tsx
+│   │   │   │   ├── Plugins.test.tsx
+│   │   │   │   ├── Plugins.tsx
+│   │   │   │   ├── Sources.test.tsx
+│   │   │   │   └── Sources.tsx
+│   │   │   ├── browse/         # 2 files
+│   │   │   │   ├── ItemDetail.test.tsx
+│   │   │   │   └── ItemDetail.tsx
+│   │   │   ├── collections/    # 2 files
+│   │   │   │   ├── Collection.test.tsx
+│   │   │   │   └── Collection.tsx
+│   │   │   ├── home/           # 2 files
+│   │   │   │   ├── Home.test.tsx
+│   │   │   │   └── Home.tsx
+│   │   │   ├── pair/           # 2 files
+│   │   │   │   ├── PairingEntry.test.tsx
+│   │   │   │   └── PairingEntry.tsx
+│   │   │   ├── Login.test.tsx
+│   │   │   └── Login.tsx
+│   │   ├── styles/      # 1 files
+│   │   │   └── index.css
+│   │   ├── types/       # 1 files
+│   │   │   └── hls-light.d.ts
+│   │   ├── App.tsx
+│   │   └── main.tsx
+│   ├── .gitignore
+│   ├── README.md
+│   ├── devproxy.test.ts
+│   ├── eslint.config.js
+│   ├── index.html
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── postcss.config.js
+│   ├── tailwind.config.ts
+│   ├── tsconfig.json
+│   ├── tsconfig.node.json
+│   └── vite.config.ts
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── .golangci.yml
+├── .license-header.txt
+├── Dockerfile
+├── GLOSSARY.md
+├── LICENSE
+├── Makefile
+├── NOTICE
+├── README.md
+├── buf.gen.yaml
+├── buf.yaml
+├── compose.yaml
+├── go.mod
+└── go.sum
+```
+
+## Agents
+
+0 agent bodies in core/agents/ (frontmatter composed per platform):
+
+## Skills
+
+0 SKILL.md modules in core/skills/:
+
+## Generated artifacts
+
+- `.tmp/.source_map.json` — source map (files=720; auto-built on miss/stale by `wf index` consumers)
+- `.tmp/.project_context.json` — ABSENT (placeholder; context-derived fields unset — run /analyze)
+
+## File Counts
+
+| directory | tracked files |
+| --- | --- |
+| .claude/ | 7 |
+| .claude/skills/ | 7 |
+| .claude/skills/mellifera-build/ | 6 |
+| .claude/skills/mellifera-build/module-template/ | 4 |
+| .claude/skills/mellifera-build/scripts/ | 1 |
+| .claude/skills/mellifera-ui/ | 1 |
+| .github/ | 1 |
+| .github/workflows/ | 1 |
+| android/ | 119 |
+| android/apk/ | 1 |
+| android/gradle/ | 2 |
+| android/gradle/wrapper/ | 2 |
+| android/src/ | 110 |
+| android/src/main/ | 54 |
+| android/src/main/java/ | 51 |
+| android/src/main/java/tv/ | 51 |
+| android/src/main/java/tv/mellifera/ | 51 |
+| android/src/main/java/tv/mellifera/browse/ | 12 |
+| android/src/main/java/tv/mellifera/diag/ | 7 |
+| android/src/main/java/tv/mellifera/dpad/ | 2 |
+| android/src/main/java/tv/mellifera/home/ | 2 |
+| android/src/main/java/tv/mellifera/nav/ | 1 |
+| android/src/main/java/tv/mellifera/net/ | 2 |
+| android/src/main/java/tv/mellifera/pairing/ | 4 |
+| android/src/main/java/tv/mellifera/playback/ | 7 |
+| android/src/main/java/tv/mellifera/player/ | 3 |
+| android/src/main/java/tv/mellifera/state/ | 1 |
+| android/src/main/java/tv/mellifera/ui/ | 8 |
+| android/src/main/res/ | 2 |
+| android/src/main/res/values/ | 2 |
+| android/src/test/ | 56 |
+| android/src/test/java/ | 56 |
+| android/src/test/java/android/ | 1 |
+| android/src/test/java/android/os/ | 1 |
+| android/src/test/java/tv/ | 55 |
+| android/src/test/java/tv/mellifera/ | 55 |
+| android/src/test/java/tv/mellifera/browse/ | 16 |
+| android/src/test/java/tv/mellifera/browse/fixtures/ | 1 |
+| android/src/test/java/tv/mellifera/diag/ | 5 |
+| android/src/test/java/tv/mellifera/dpad/ | 2 |
+| android/src/test/java/tv/mellifera/home/ | 2 |
+| android/src/test/java/tv/mellifera/joint/ | 6 |
+| android/src/test/java/tv/mellifera/nav/ | 1 |
+| android/src/test/java/tv/mellifera/net/ | 2 |
+| android/src/test/java/tv/mellifera/pairing/ | 4 |
+| android/src/test/java/tv/mellifera/playback/ | 8 |
+| android/src/test/java/tv/mellifera/state/ | 2 |
+| android/src/test/java/tv/mellifera/ui/ | 5 |
+| cmd/ | 38 |
+| cmd/mellifera/ | 38 |
+| docs/ | 12 |
+| internal/ | 356 |
+| internal/access/ | 5 |
+| internal/api/ | 91 |
+| internal/api/testdata/ | 3 |
+| internal/api/testdata/golden/ | 3 |
+| internal/art/ | 13 |
+| internal/art/testdata/ | 1 |
+| internal/art/testdata/golden/ | 1 |
+| internal/browse/ | 7 |
+| internal/enrich/ | 43 |
+| internal/identity/ | 13 |
+| internal/itest/ | 57 |
+| internal/itest/javstubbin/ | 3 |
+| internal/itest/testdata/ | 1 |
+| internal/itest/testdata/element-parser/ | 1 |
+| internal/module/ | 6 |
+| internal/naming/ | 6 |
+| internal/orchestrator/ | 5 |
+| internal/pack/ | 2 |
+| internal/pairing/ | 3 |
+| internal/plugin/ | 7 |
+| internal/plugin/testdata/ | 1 |
+| internal/plugin/testdata/fakeplugin/ | 1 |
+| internal/recs/ | 3 |
+| internal/refusal/ | 1 |
+| internal/relay/ | 1 |
+| internal/scan/ | 11 |
+| internal/sourcestate/ | 1 |
+| internal/store/ | 35 |
+| internal/stream/ | 28 |
+| internal/stream/testdata/ | 1 |
+| internal/stream/testdata/golden/ | 1 |
+| internal/watch/ | 6 |
+| internal/web/ | 12 |
+| internal/web/api/ | 2 |
+| internal/web/dist/ | 3 |
+| internal/web/dist/assets/ | 2 |
+| openspec/ | 734 |
+| openspec/changes/ | 699 |
+| openspec/changes/2026-10-30-frontier-pinned-eviction/ | 4 |
+| openspec/changes/2026-10-30-frontier-pinned-eviction/specs/ | 1 |
+| openspec/changes/2026-10-30-frontier-pinned-eviction/specs/packaged-playback/ | 1 |
+| openspec/changes/android-tv-app/ | 18 |
+| openspec/changes/android-tv-app/contracts/ | 1 |
+| openspec/changes/android-tv-app/handoffs/ | 2 |
+| openspec/changes/android-tv-app/specs/ | 4 |
+| openspec/changes/android-tv-app/specs/android-app-delivery/ | 1 |
+| openspec/changes/android-tv-app/specs/android-tv-client/ | 1 |
+| openspec/changes/android-tv-app/specs/device-pairing/ | 1 |
+| openspec/changes/android-tv-app/specs/device-telemetry/ | 1 |
+| openspec/changes/android-tv-app/tasks/ | 5 |
+| openspec/changes/archive/ | 653 |
+| openspec/changes/archive/2026-10-06-web-ui-phase-2/ | 7 |
+| openspec/changes/archive/2026-10-06-web-ui-phase-2/specs/ | 1 |
+| openspec/changes/archive/2026-10-06-web-ui-phase-2/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-08-serials-library/ | 7 |
+| openspec/changes/archive/2026-10-08-serials-library/specs/ | 1 |
+| openspec/changes/archive/2026-10-08-serials-library/specs/serial-library/ | 1 |
+| openspec/changes/archive/2026-10-08-web-ui-phase-3/ | 10 |
+| openspec/changes/archive/2026-10-08-web-ui-phase-3/specs/ | 3 |
+| openspec/changes/archive/2026-10-08-web-ui-phase-3/specs/playback-progress/ | 1 |
+| openspec/changes/archive/2026-10-08-web-ui-phase-3/specs/scan-library/ | 1 |
+| openspec/changes/archive/2026-10-08-web-ui-phase-3/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-09-media-preview/ | 8 |
+| openspec/changes/archive/2026-10-09-media-preview/specs/ | 2 |
+| openspec/changes/archive/2026-10-09-media-preview/specs/media-serving/ | 1 |
+| openspec/changes/archive/2026-10-09-media-preview/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-09-packaged-playback/ | 10 |
+| openspec/changes/archive/2026-10-09-packaged-playback/specs/ | 4 |
+| openspec/changes/archive/2026-10-09-packaged-playback/specs/async-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-09-packaged-playback/specs/media-serving/ | 1 |
+| openspec/changes/archive/2026-10-09-packaged-playback/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-10-09-packaged-playback/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-10-element-pages/ | 9 |
+| openspec/changes/archive/2026-10-10-element-pages/handoffs/ | 1 |
+| openspec/changes/archive/2026-10-10-element-pages/specs/ | 2 |
+| openspec/changes/archive/2026-10-10-element-pages/specs/parser-display/ | 1 |
+| openspec/changes/archive/2026-10-10-element-pages/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-11-fix-episode-playback/ | 12 |
+| openspec/changes/archive/2026-10-11-fix-episode-playback/handoffs/ | 4 |
+| openspec/changes/archive/2026-10-11-fix-episode-playback/specs/ | 2 |
+| openspec/changes/archive/2026-10-11-fix-episode-playback/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-10-11-fix-episode-playback/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-11-serial-watch-flow/ | 12 |
+| openspec/changes/archive/2026-10-11-serial-watch-flow/handoffs/ | 2 |
+| openspec/changes/archive/2026-10-11-serial-watch-flow/specs/ | 4 |
+| openspec/changes/archive/2026-10-11-serial-watch-flow/specs/media-serving/ | 1 |
+| openspec/changes/archive/2026-10-11-serial-watch-flow/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-10-11-serial-watch-flow/specs/serial-library/ | 1 |
+| openspec/changes/archive/2026-10-11-serial-watch-flow/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-11-video-item-pages/ | 10 |
+| openspec/changes/archive/2026-10-11-video-item-pages/handoffs/ | 3 |
+| openspec/changes/archive/2026-10-11-video-item-pages/specs/ | 1 |
+| openspec/changes/archive/2026-10-11-video-item-pages/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-12-film-name-parsing/ | 10 |
+| openspec/changes/archive/2026-10-12-film-name-parsing/handoffs/ | 2 |
+| openspec/changes/archive/2026-10-12-film-name-parsing/specs/ | 2 |
+| openspec/changes/archive/2026-10-12-film-name-parsing/specs/release-name-parsing/ | 1 |
+| openspec/changes/archive/2026-10-12-film-name-parsing/specs/serial-library/ | 1 |
+| openspec/changes/archive/2026-10-12-serial/ | 9 |
+| openspec/changes/archive/2026-10-12-serial-followups/ | 8 |
+| openspec/changes/archive/2026-10-12-serial-followups/handoffs/ | 1 |
+| openspec/changes/archive/2026-10-12-serial-followups/specs/ | 1 |
+| openspec/changes/archive/2026-10-12-serial-followups/specs/serial-library/ | 1 |
+| openspec/changes/archive/2026-10-12-serial/handoffs/ | 2 |
+| openspec/changes/archive/2026-10-12-serial/specs/ | 1 |
+| openspec/changes/archive/2026-10-12-serial/specs/serial-library/ | 1 |
+| openspec/changes/archive/2026-10-12-unified-parser/ | 13 |
+| openspec/changes/archive/2026-10-12-unified-parser/handoffs/ | 4 |
+| openspec/changes/archive/2026-10-12-unified-parser/specs/ | 3 |
+| openspec/changes/archive/2026-10-12-unified-parser/specs/parser-display/ | 1 |
+| openspec/changes/archive/2026-10-12-unified-parser/specs/release-name-parsing/ | 1 |
+| openspec/changes/archive/2026-10-12-unified-parser/specs/serial-library/ | 1 |
+| openspec/changes/archive/2026-10-13-continue-nextup-media/ | 13 |
+| openspec/changes/archive/2026-10-13-continue-nextup-media/handoffs/ | 2 |
+| openspec/changes/archive/2026-10-13-continue-nextup-media/specs/ | 5 |
+| openspec/changes/archive/2026-10-13-continue-nextup-media/specs/media-serving/ | 1 |
+| openspec/changes/archive/2026-10-13-continue-nextup-media/specs/playback-progress/ | 1 |
+| openspec/changes/archive/2026-10-13-continue-nextup-media/specs/scan-library/ | 1 |
+| openspec/changes/archive/2026-10-13-continue-nextup-media/specs/serial-library/ | 1 |
+| openspec/changes/archive/2026-10-13-continue-nextup-media/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-13-enrichment/ | 11 |
+| openspec/changes/archive/2026-10-13-enrichment/handoffs/ | 2 |
+| openspec/changes/archive/2026-10-13-enrichment/specs/ | 3 |
+| openspec/changes/archive/2026-10-13-enrichment/specs/async-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-13-enrichment/specs/plugin-pipeline/ | 1 |
+| openspec/changes/archive/2026-10-13-enrichment/specs/shikimori-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-13-fix-truncated-scan-sweep/ | 11 |
+| openspec/changes/archive/2026-10-13-fix-truncated-scan-sweep/handoffs/ | 3 |
+| openspec/changes/archive/2026-10-13-fix-truncated-scan-sweep/specs/ | 2 |
+| openspec/changes/archive/2026-10-13-fix-truncated-scan-sweep/specs/scan-library/ | 1 |
+| openspec/changes/archive/2026-10-13-fix-truncated-scan-sweep/specs/serial-library/ | 1 |
+| openspec/changes/archive/2026-10-14-display-naming/ | 11 |
+| openspec/changes/archive/2026-10-14-display-naming/handoffs/ | 2 |
+| openspec/changes/archive/2026-10-14-display-naming/specs/ | 3 |
+| openspec/changes/archive/2026-10-14-display-naming/specs/display-naming/ | 1 |
+| openspec/changes/archive/2026-10-14-display-naming/specs/parser-display/ | 1 |
+| openspec/changes/archive/2026-10-14-display-naming/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-14-preserve-enrichment-rescan/ | 9 |
+| openspec/changes/archive/2026-10-14-preserve-enrichment-rescan/specs/ | 3 |
+| openspec/changes/archive/2026-10-14-preserve-enrichment-rescan/specs/async-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-14-preserve-enrichment-rescan/specs/scan-library/ | 1 |
+| openspec/changes/archive/2026-10-14-preserve-enrichment-rescan/specs/serial-library/ | 1 |
+| openspec/changes/archive/2026-10-16-design/ | 7 |
+| openspec/changes/archive/2026-10-16-design/specs/ | 1 |
+| openspec/changes/archive/2026-10-16-design/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-20-plugin-admin-surfaces/ | 8 |
+| openspec/changes/archive/2026-10-20-plugin-admin-surfaces/specs/ | 2 |
+| openspec/changes/archive/2026-10-20-plugin-admin-surfaces/specs/plugin-admin/ | 1 |
+| openspec/changes/archive/2026-10-20-plugin-admin-surfaces/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-20-plugin-title-enrichment/ | 11 |
+| openspec/changes/archive/2026-10-20-plugin-title-enrichment/specs/ | 5 |
+| openspec/changes/archive/2026-10-20-plugin-title-enrichment/specs/async-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-20-plugin-title-enrichment/specs/display-naming/ | 1 |
+| openspec/changes/archive/2026-10-20-plugin-title-enrichment/specs/metadata-source-admin/ | 1 |
+| openspec/changes/archive/2026-10-20-plugin-title-enrichment/specs/shikimori-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-20-plugin-title-enrichment/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-22-media-data-convention/ | 9 |
+| openspec/changes/archive/2026-10-22-media-data-convention/specs/ | 3 |
+| openspec/changes/archive/2026-10-22-media-data-convention/specs/media-data-convention/ | 1 |
+| openspec/changes/archive/2026-10-22-media-data-convention/specs/plugin-pipeline/ | 1 |
+| openspec/changes/archive/2026-10-22-media-data-convention/specs/shikimori-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-23-device-pairing/ | 9 |
+| openspec/changes/archive/2026-10-23-device-pairing/specs/ | 2 |
+| openspec/changes/archive/2026-10-23-device-pairing/specs/device-pairing/ | 1 |
+| openspec/changes/archive/2026-10-23-device-pairing/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-23-episode-titles/ | 10 |
+| openspec/changes/archive/2026-10-23-episode-titles/specs/ | 3 |
+| openspec/changes/archive/2026-10-23-episode-titles/specs/async-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-23-episode-titles/specs/plugin-pipeline/ | 1 |
+| openspec/changes/archive/2026-10-23-episode-titles/specs/shikimori-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-23-fix-episode-playback-start/ | 6 |
+| openspec/changes/archive/2026-10-23-fix-episode-playback-start/handoffs/ | 2 |
+| openspec/changes/archive/2026-10-23-identify-match-override/ | 11 |
+| openspec/changes/archive/2026-10-23-identify-match-override/specs/ | 4 |
+| openspec/changes/archive/2026-10-23-identify-match-override/specs/async-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-23-identify-match-override/specs/metadata-source-admin/ | 1 |
+| openspec/changes/archive/2026-10-23-identify-match-override/specs/plugin-pipeline/ | 1 |
+| openspec/changes/archive/2026-10-23-identify-match-override/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-24-artwork/ | 11 |
+| openspec/changes/archive/2026-10-24-artwork/specs/ | 4 |
+| openspec/changes/archive/2026-10-24-artwork/specs/artwork/ | 1 |
+| openspec/changes/archive/2026-10-24-artwork/specs/media-serving/ | 1 |
+| openspec/changes/archive/2026-10-24-artwork/specs/shikimori-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-24-artwork/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-26-density-contract/ | 11 |
+| openspec/changes/archive/2026-10-26-density-contract/contracts/ | 3 |
+| openspec/changes/archive/2026-10-26-density-contract/specs/ | 1 |
+| openspec/changes/archive/2026-10-26-density-contract/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-26-watch-flow-polish/ | 14 |
+| openspec/changes/archive/2026-10-26-watch-flow-polish/contracts/ | 6 |
+| openspec/changes/archive/2026-10-26-watch-flow-polish/specs/ | 1 |
+| openspec/changes/archive/2026-10-26-watch-flow-polish/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-27-client-relayed-fetch/ | 22 |
+| openspec/changes/archive/2026-10-27-client-relayed-fetch/contracts/ | 11 |
+| openspec/changes/archive/2026-10-27-client-relayed-fetch/handoffs/ | 1 |
+| openspec/changes/archive/2026-10-27-client-relayed-fetch/specs/ | 4 |
+| openspec/changes/archive/2026-10-27-client-relayed-fetch/specs/async-enrichment/ | 1 |
+| openspec/changes/archive/2026-10-27-client-relayed-fetch/specs/client-relayed-fetch/ | 1 |
+| openspec/changes/archive/2026-10-27-client-relayed-fetch/specs/plugin-admin/ | 1 |
+| openspec/changes/archive/2026-10-27-client-relayed-fetch/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-27-fix-poster-legacy-placeholder-backfill/ | 13 |
+| openspec/changes/archive/2026-10-27-fix-poster-legacy-placeholder-backfill/contracts/ | 4 |
+| openspec/changes/archive/2026-10-27-fix-poster-legacy-placeholder-backfill/specs/ | 2 |
+| openspec/changes/archive/2026-10-27-fix-poster-legacy-placeholder-backfill/specs/artwork/ | 1 |
+| openspec/changes/archive/2026-10-27-fix-poster-legacy-placeholder-backfill/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-31-playback-capability-gate/ | 13 |
+| openspec/changes/archive/2026-10-31-playback-capability-gate/specs/ | 2 |
+| openspec/changes/archive/2026-10-31-playback-capability-gate/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-10-31-playback-capability-gate/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-31-playback-capability-gate/tasks/ | 4 |
+| openspec/changes/archive/2026-10-31-playlist-token-propagation/ | 4 |
+| openspec/changes/archive/2026-10-31-playlist-token-propagation/specs/ | 1 |
+| openspec/changes/archive/2026-10-31-playlist-token-propagation/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-10-31-tv-playback-unblock/ | 13 |
+| openspec/changes/archive/2026-10-31-tv-playback-unblock/specs/ | 2 |
+| openspec/changes/archive/2026-10-31-tv-playback-unblock/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-10-31-tv-playback-unblock/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-10-31-tv-playback-unblock/tasks/ | 4 |
+| openspec/changes/archive/2026-11-01-fix-hls-light-audio/ | 6 |
+| openspec/changes/archive/2026-11-01-fix-reheal-eviction/ | 12 |
+| openspec/changes/archive/2026-11-01-fix-reheal-eviction/specs/ | 1 |
+| openspec/changes/archive/2026-11-01-fix-reheal-eviction/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-11-01-fix-reheal-eviction/tasks/ | 4 |
+| openspec/changes/archive/2026-11-01-fix-tv-unblock-2/ | 14 |
+| openspec/changes/archive/2026-11-01-fix-tv-unblock-2/specs/ | 2 |
+| openspec/changes/archive/2026-11-01-fix-tv-unblock-2/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-11-01-fix-tv-unblock-2/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-01-fix-tv-unblock-2/tasks/ | 6 |
+| openspec/changes/archive/2026-11-01-pack-manifest-audio/ | 13 |
+| openspec/changes/archive/2026-11-01-pack-manifest-audio/specs/ | 1 |
+| openspec/changes/archive/2026-11-01-pack-manifest-audio/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-11-01-pack-manifest-audio/tasks/ | 5 |
+| openspec/changes/archive/2026-11-01-repack-descriptor-trigger/ | 3 |
+| openspec/changes/archive/2026-11-01-repack-descriptor-trigger/specs/ | 1 |
+| openspec/changes/archive/2026-11-01-repack-descriptor-trigger/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-11-02-fix-autodetect/ | 9 |
+| openspec/changes/archive/2026-11-02-fix-autodetect/handoffs/ | 2 |
+| openspec/changes/archive/2026-11-02-fix-autodetect/specs/ | 1 |
+| openspec/changes/archive/2026-11-02-fix-autodetect/specs/tv-mode/ | 1 |
+| openspec/changes/archive/2026-11-02-fix-tv-server-ua/ | 8 |
+| openspec/changes/archive/2026-11-02-fix-tv-server-ua/handoffs/ | 2 |
+| openspec/changes/archive/2026-11-02-fix-tv-server-ua/specs/ | 1 |
+| openspec/changes/archive/2026-11-02-fix-tv-server-ua/specs/tv-mode/ | 1 |
+| openspec/changes/archive/2026-11-02-tv-dpr-scaling/ | 9 |
+| openspec/changes/archive/2026-11-02-tv-dpr-scaling/handoffs/ | 1 |
+| openspec/changes/archive/2026-11-02-tv-dpr-scaling/specs/ | 1 |
+| openspec/changes/archive/2026-11-02-tv-dpr-scaling/specs/tv-mode/ | 1 |
+| openspec/changes/archive/2026-11-02-tv-mode/ | 9 |
+| openspec/changes/archive/2026-11-02-tv-mode/handoffs/ | 1 |
+| openspec/changes/archive/2026-11-02-tv-mode/specs/ | 1 |
+| openspec/changes/archive/2026-11-02-tv-mode/specs/tv-mode/ | 1 |
+| openspec/changes/archive/2026-11-03-recommendation-sorting/ | 10 |
+| openspec/changes/archive/2026-11-03-recommendation-sorting/specs/ | 3 |
+| openspec/changes/archive/2026-11-03-recommendation-sorting/specs/playback-progress/ | 1 |
+| openspec/changes/archive/2026-11-03-recommendation-sorting/specs/recommendation-sorting/ | 1 |
+| openspec/changes/archive/2026-11-03-recommendation-sorting/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-03-watched-states/ | 9 |
+| openspec/changes/archive/2026-11-03-watched-states/specs/ | 2 |
+| openspec/changes/archive/2026-11-03-watched-states/specs/recommendation-sorting/ | 1 |
+| openspec/changes/archive/2026-11-03-watched-states/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-04-collections-ux/ | 11 |
+| openspec/changes/archive/2026-11-04-collections-ux/specs/ | 3 |
+| openspec/changes/archive/2026-11-04-collections-ux/specs/playback-progress/ | 1 |
+| openspec/changes/archive/2026-11-04-collections-ux/specs/recommendation-sorting/ | 1 |
+| openspec/changes/archive/2026-11-04-collections-ux/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-04-watched-toggle-label/ | 7 |
+| openspec/changes/archive/2026-11-04-watched-toggle-label/specs/ | 1 |
+| openspec/changes/archive/2026-11-04-watched-toggle-label/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/ | 20 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/contracts/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/ | 11 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/accounts/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/artwork/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/client-relayed-fetch/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/device-pairing/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/media-serving/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/metadata-source-admin/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/playback-progress/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/recommendation-sorting/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/scan-library/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/serial-library/ | 1 |
+| openspec/changes/archive/2026-11-05-l6-accounts-access/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-05-watched-signal-refinement/ | 9 |
+| openspec/changes/archive/2026-11-05-watched-signal-refinement/specs/ | 1 |
+| openspec/changes/archive/2026-11-05-watched-signal-refinement/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-08-browse-scale/ | 14 |
+| openspec/changes/archive/2026-11-08-browse-scale/contracts/ | 1 |
+| openspec/changes/archive/2026-11-08-browse-scale/specs/ | 5 |
+| openspec/changes/archive/2026-11-08-browse-scale/specs/global-search/ | 1 |
+| openspec/changes/archive/2026-11-08-browse-scale/specs/home-continue/ | 1 |
+| openspec/changes/archive/2026-11-08-browse-scale/specs/library-facets/ | 1 |
+| openspec/changes/archive/2026-11-08-browse-scale/specs/recommendation-sorting/ | 1 |
+| openspec/changes/archive/2026-11-08-browse-scale/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-08-eviction/ | 12 |
+| openspec/changes/archive/2026-11-08-eviction/contracts/ | 1 |
+| openspec/changes/archive/2026-11-08-eviction/specs/ | 3 |
+| openspec/changes/archive/2026-11-08-eviction/specs/async-enrichment/ | 1 |
+| openspec/changes/archive/2026-11-08-eviction/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-11-08-eviction/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-09-home-rail/ | 14 |
+| openspec/changes/archive/2026-11-09-home-rail/specs/ | 3 |
+| openspec/changes/archive/2026-11-09-home-rail/specs/home-continue/ | 1 |
+| openspec/changes/archive/2026-11-09-home-rail/specs/recommendation-sorting/ | 1 |
+| openspec/changes/archive/2026-11-09-home-rail/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-09-home-rail/tasks/ | 3 |
+| openspec/changes/archive/2026-11-09-tombstone-lifecycle/ | 18 |
+| openspec/changes/archive/2026-11-09-tombstone-lifecycle/contracts/ | 6 |
+| openspec/changes/archive/2026-11-09-tombstone-lifecycle/specs/ | 4 |
+| openspec/changes/archive/2026-11-09-tombstone-lifecycle/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-11-09-tombstone-lifecycle/specs/playback-progress/ | 1 |
+| openspec/changes/archive/2026-11-09-tombstone-lifecycle/specs/scan-library/ | 1 |
+| openspec/changes/archive/2026-11-09-tombstone-lifecycle/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-10-fix-trash-rerename/ | 7 |
+| openspec/changes/archive/2026-11-10-fix-trash-rerename/specs/ | 1 |
+| openspec/changes/archive/2026-11-10-fix-trash-rerename/specs/packaged-playback/ | 1 |
+| openspec/changes/archive/2026-11-10-plugin-options-ui/ | 9 |
+| openspec/changes/archive/2026-11-10-plugin-options-ui/specs/ | 1 |
+| openspec/changes/archive/2026-11-10-plugin-options-ui/specs/web-ui/ | 1 |
+| openspec/changes/archive/2026-11-10-tmdb-enrichment/ | 11 |
+| openspec/changes/archive/2026-11-10-tmdb-enrichment/specs/ | 3 |
+| openspec/changes/archive/2026-11-10-tmdb-enrichment/specs/async-enrichment/ | 1 |
+| openspec/changes/archive/2026-11-10-tmdb-enrichment/specs/plugin-admin/ | 1 |
+| openspec/changes/archive/2026-11-10-tmdb-enrichment/specs/tmdb-enrichment/ | 1 |
+| openspec/changes/archive/2026-11-11-cleanup/ | 11 |
+| openspec/changes/archive/2026-11-11-cleanup/tasks/ | 3 |
+| openspec/changes/archive/2026-11-11-watch-scan/ | 9 |
+| openspec/changes/archive/2026-11-11-watch-scan/specs/ | 1 |
+| openspec/changes/archive/2026-11-11-watch-scan/specs/watch-scan/ | 1 |
+| openspec/changes/archive/2026-11-17-android-tv-layout-parity/ | 18 |
+| openspec/changes/archive/2026-11-17-android-tv-layout-parity/handoffs/ | 2 |
+| openspec/changes/archive/2026-11-17-android-tv-layout-parity/specs/ | 1 |
+| openspec/changes/archive/2026-11-17-android-tv-layout-parity/specs/android-tv-client/ | 1 |
+| openspec/changes/archive/2026-11-17-android-tv-layout-parity/tasks/ | 7 |
+| openspec/changes/archive/2026-11-20-tv-style-parity/ | 14 |
+| openspec/changes/archive/2026-11-20-tv-style-parity/handoffs/ | 2 |
+| openspec/changes/archive/2026-11-20-tv-style-parity/specs/ | 1 |
+| openspec/changes/archive/2026-11-20-tv-style-parity/specs/android-tv-client/ | 1 |
+| openspec/changes/archive/2026-11-20-tv-style-parity/tasks/ | 3 |
+| openspec/changes/archive/2026-11-26-tv-style-parity/ | 14 |
+| openspec/changes/archive/2026-11-26-tv-style-parity/handoffs/ | 3 |
+| openspec/changes/archive/2026-11-26-tv-style-parity/specs/ | 1 |
+| openspec/changes/archive/2026-11-26-tv-style-parity/specs/android-tv-client/ | 1 |
+| openspec/changes/archive/2026-11-26-tv-style-parity/tasks/ | 2 |
+| openspec/changes/external-jav-plugins/ | 12 |
+| openspec/changes/external-jav-plugins/handoffs/ | 2 |
+| openspec/changes/external-jav-plugins/specs/ | 3 |
+| openspec/changes/external-jav-plugins/specs/async-enrichment/ | 1 |
+| openspec/changes/external-jav-plugins/specs/client-relayed-fetch/ | 1 |
+| openspec/changes/external-jav-plugins/specs/plugin-pipeline/ | 1 |
+| openspec/changes/transcode-lane/ | 10 |
+| openspec/changes/transcode-lane/specs/ | 1 |
+| openspec/changes/transcode-lane/specs/packaged-playback/ | 1 |
+| openspec/changes/transcode-lane/tasks/ | 5 |
+| openspec/changes/tv-debug-overlay/ | 2 |
+| openspec/schemas/ | 5 |
+| openspec/schemas/lite/ | 5 |
+| openspec/schemas/lite/templates/ | 4 |
+| openspec/specs/ | 29 |
+| openspec/specs/accounts/ | 1 |
+| openspec/specs/android-tv-client/ | 1 |
+| openspec/specs/artwork/ | 1 |
+| openspec/specs/async-enrichment/ | 1 |
+| openspec/specs/client-relayed-fetch/ | 1 |
+| openspec/specs/device-pairing/ | 1 |
+| openspec/specs/display-naming/ | 1 |
+| openspec/specs/global-search/ | 1 |
+| openspec/specs/home-continue/ | 1 |
+| openspec/specs/image-enrichment/ | 1 |
+| openspec/specs/library-facets/ | 1 |
+| openspec/specs/media-data-convention/ | 1 |
+| openspec/specs/media-serving/ | 1 |
+| openspec/specs/metadata-source-admin/ | 1 |
+| openspec/specs/packaged-playback/ | 1 |
+| openspec/specs/parser-display/ | 1 |
+| openspec/specs/playback-progress/ | 1 |
+| openspec/specs/plugin-admin/ | 1 |
+| openspec/specs/plugin-pipeline/ | 1 |
+| openspec/specs/recommendation-sorting/ | 1 |
+| openspec/specs/release-name-parsing/ | 1 |
+| openspec/specs/scan-library/ | 1 |
+| openspec/specs/serial-library/ | 1 |
+| openspec/specs/shikimori-enrichment/ | 1 |
+| openspec/specs/tmdb-enrichment/ | 1 |
+| openspec/specs/tv-mode/ | 1 |
+| openspec/specs/watch-scan/ | 1 |
+| openspec/specs/web-ui/ | 1 |
+| pkg/ | 9 |
+| pkg/releasename/ | 3 |
+| pkg/sdk/ | 6 |
+| plugins/ | 73 |
+| plugins/base-scanner/ | 15 |
+| plugins/frame-grabber/ | 5 |
+| plugins/image-enricher/ | 7 |
+| plugins/serial-parser/ | 6 |
+| plugins/serial-scanner/ | 10 |
+| plugins/shikimori/ | 13 |
+| plugins/tmdb/ | 11 |
+| plugins/tv-parser/ | 6 |
+| proto/ | 13 |
+| proto/mellifera/ | 13 |
+| proto/mellifera/common/ | 2 |
+| proto/mellifera/common/v1/ | 2 |
+| proto/mellifera/metadata/ | 5 |
+| proto/mellifera/metadata/v1/ | 5 |
+| proto/mellifera/plugin/ | 3 |
+| proto/mellifera/plugin/v1/ | 3 |
+| proto/mellifera/scanner/ | 3 |
+| proto/mellifera/scanner/v1/ | 3 |
+| scripts/ | 2 |
+| web/ | 138 |
+| web/src/ | 126 |
+| web/src/components/ | 62 |
+| web/src/components/admin/ | 2 |
+| web/src/components/manage/ | 5 |
+| web/src/components/metadata/ | 9 |
+| web/src/components/playback/ | 11 |
+| web/src/components/ui/ | 8 |
+| web/src/components/watch/ | 2 |
+| web/src/lib/ | 34 |
+| web/src/pages/ | 26 |
+| web/src/pages/admin/ | 16 |
+| web/src/pages/admin/accounts/ | 3 |
+| web/src/pages/browse/ | 2 |
+| web/src/pages/collections/ | 2 |
+| web/src/pages/home/ | 2 |
+| web/src/pages/pair/ | 2 |
+| web/src/styles/ | 1 |
+| web/src/types/ | 1 |
