@@ -24,17 +24,17 @@ import (
 // restate independently.
 const (
 	codeKey        = "code"
-	anchorKey      = "javinizer_id"
+	anchorKey      = "ext-source-a_id"
 	resolvedIDsKey = "resolved_ids"
 	stubCode       = "QA-777"
 )
 
 // stubSource is the server-side MetadataSource capability: stateless between
 // RPCs (every output a pure function of the request — arch §0.2). Match
-// applies on tv rows that carry no javinizer anchor yet; BuildRequest shapes
-// the fetch whose upstream origin rides the base_url option through the
-// core-side substitution seam; Convert maps a row whose code matches to the
-// namespace plus the resolved anchor; Merge writes ONLY
+// applies on tv rows that carry no ext-source-a anchor yet; BuildRequest
+// shapes the fetch whose upstream origin rides the base_url option through
+// the core-side substitution seam; Convert maps a row whose code matches to
+// the namespace plus the resolved anchor; Merge writes ONLY
 // sources.<plugin_id> (arch §3.3). Search is contract-present via the SDK's
 // unsupported base — the joint never drives it.
 type stubSource struct {
@@ -45,13 +45,13 @@ type stubSource struct {
 // core's MetadataSourcePlugin client dispenses against.
 var _ sdk.MetadataSource = (*stubSource)(nil)
 
-// Match: applies=true for a tv row without an existing javinizer anchor (the
-// derivation predicate already guarantees the namespace is absent; the
+// Match: applies=true for a tv row without an existing ext-source-a anchor
+// (the derivation predicate already guarantees the namespace is absent; the
 // anchor check is the stub's own idempotence half). The query carries the
 // stub's fixed code — the canned upstream row is keyed on it.
 func (stubSource) Match(_ context.Context, req *metadatav1.MatchRequest) (*metadatav1.MatchResult, error) {
 	if _, anchored := req.GetExistingIds().GetFields()[anchorKey]; anchored {
-		return &metadatav1.MatchResult{Applies: false, Reason: "javinizer anchor already present"}, nil
+		return &metadatav1.MatchResult{Applies: false, Reason: "ext-source-a anchor already present"}, nil
 	}
 	if req.GetModuleType() != "tv" {
 		return &metadatav1.MatchResult{Applies: false, Reason: "stub serves tv rows only"}, nil
@@ -83,13 +83,13 @@ func (stubSource) BuildRequest(context.Context, *metadatav1.BuildRequestRequest)
 				codeKey:        {Kind: &metadatav1.VariableValue_StringValue{StringValue: stubCode}},
 			},
 			TimeoutSeconds: 10,
-			// MinIntervalMs zero — the LAN shape the real javinizer pins.
+			// MinIntervalMs zero — the loopback fixture upstream needs no pacing.
 		},
 	}, nil
 }
 
 // stubEnvelope is the canned video-list envelope the stub upstream serves —
-// the javinizer REST shape this fixture speaks.
+// the list shape this fixture speaks.
 type stubEnvelope struct {
 	Videos []stubVideo `json:"videos"`
 }

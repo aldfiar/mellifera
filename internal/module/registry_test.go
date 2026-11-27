@@ -4,6 +4,7 @@
 package module
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,16 +33,15 @@ func openRegistry(t *testing.T) (*Registry, *store.Store) {
 	return r, s
 }
 
-// tvSeedChainLen is the v3 seed's metadata_sources length: the four v2 chain
-// entries plus the two promoted bindings.
-const tvSeedChainLen = 6
+// tvSeedChainLen is the v3 seed's metadata_sources length: the four built-in
+// chain entries.
+const tvSeedChainLen = 4
 
 // v1TvConfigJSON derives the pre-D-7 (v1) tv seed: the current config with
-// every binding after tmdb removed (frame-grabber, then the two promoted ones)
-// and schema_version rolled back to 1. Decoded and re-encoded rather than
-// string-spliced so it cannot drift with the seed text (a splice that silently
-// misses leaves bindings in the "v1" row and the migration assertions pass
-// vacuously).
+// every binding after tmdb removed and schema_version rolled back to 1.
+// Decoded and re-encoded rather than string-spliced so it cannot drift with
+// the seed text (a splice that silently misses leaves bindings in the "v1"
+// row and the migration assertions pass vacuously).
 func v1TvConfigJSON(t *testing.T) []byte {
 	t.Helper()
 	var cfg map[string]any
@@ -62,9 +62,8 @@ func v1TvConfigJSON(t *testing.T) []byte {
 }
 
 // v2TvConfigJSON derives the pre-promotion (v2) tv seed: the current config
-// truncated after frame-grabber with schema_version rolled back to 2 — the
-// shape a pre-v3 store's tv row holds. Same decode/re-encode discipline as
-// v1TvConfigJSON.
+// with schema_version rolled back to 2 — the shape a pre-v3 store's tv row
+// holds. Same decode/re-encode discipline as v1TvConfigJSON.
 func v2TvConfigJSON(t *testing.T) []byte {
 	t.Helper()
 	var cfg map[string]any
@@ -79,7 +78,6 @@ func v2TvConfigJSON(t *testing.T) []byte {
 	if last, _ := sources[3].(map[string]any); last["plugin_id"] != "frame-grabber" {
 		t.Fatalf("metadata_source[3] = %#v, want frame-grabber", last)
 	}
-	cfg["metadata_sources"] = sources[:4]
 	out, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatalf("re-encode v2 config: %v", err)
@@ -89,8 +87,7 @@ func v2TvConfigJSON(t *testing.T) []byte {
 
 // TestOpen_TVSeeded covers B1 (Open loads enabled modules) + B2/B4 (Get("tv")
 // returns the §2.4.1 scanner binding with verbatim options) + the ordered
-// chain through the v3 seed (frame-grabber after the unloaded slots, then the
-// two promoted optional sources).
+// four-entry chain through the v3 seed.
 func TestOpen_TVSeeded(t *testing.T) {
 	r, _ := openRegistry(t)
 
@@ -112,8 +109,6 @@ func TestOpen_TVSeeded(t *testing.T) {
 		{"kinopoisk", 2},
 		{"tmdb", 3},
 		{"frame-grabber", 4},
-		{"jav-parser", 5},
-		{PluginIDJavinizer, 6},
 	}
 	if len(m.MetadataSources) != len(want) {
 		t.Fatalf("MetadataSources len = %d, want %d: %+v", len(m.MetadataSources), len(want), m.MetadataSources)
@@ -175,10 +170,9 @@ func TestOpen_TVSeedUpgradesV1Row(t *testing.T) {
 }
 
 // TestTVSeedV3FreshInstall: a fresh store seeds the tv row directly at v3 —
-// the ordered chain already carrying the two promoted bindings after
-// frame-grabber, the persisted blob byte-identical to tvConfigJSON (so the
-// guarded UPDATE finds nothing to do on the next Open), and the frame-grabber
-// footer declaration intact through the accessor.
+// the ordered four-entry built-in chain, the persisted blob byte-identical to
+// tvConfigJSON (so the guarded UPDATE finds nothing to do on the next Open),
+// and the frame-grabber footer declaration intact through the accessor.
 func TestTVSeedV3FreshInstall(t *testing.T) {
 	r, s := openRegistry(t)
 
@@ -220,9 +214,9 @@ func TestTVSeedV3FreshInstall(t *testing.T) {
 
 // TestTVSeedV3PromotionIdempotent: a store pre-seeded with the v2 tv row is
 // promoted to v3 on Open — the guarded UPDATE (not the INSERT OR IGNORE,
-// which never rewrites an existing row) is the actual migration — and a
-// second Open changes nothing: the tv blob stays byte-identical at v3 and no
-// other module row is touched.
+// which never rewrites an existing row) is the actual migration, rewriting the
+// chain to the four built-in bindings — and a second Open changes nothing: the
+// tv blob stays byte-identical at v3 and no other module row is touched.
 func TestTVSeedV3PromotionIdempotent(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
@@ -247,9 +241,19 @@ func TestTVSeedV3PromotionIdempotent(t *testing.T) {
 	if m.SchemaVersion != 3 || len(m.MetadataSources) != tvSeedChainLen {
 		t.Fatalf("after promotion: schema=%d chain len=%d, want v3 with %d entries", m.SchemaVersion, len(m.MetadataSources), tvSeedChainLen)
 	}
-	if p5, p6 := m.MetadataSources[4], m.MetadataSources[5]; p5.PluginID != "jav-parser" || p5.Priority != 5 ||
-		p6.PluginID != PluginIDJavinizer || p6.Priority != 6 {
-		t.Fatalf("promoted tail = %+v, %+v; want jav-parser@5 then %s@6 after frame-grabber", p5, p6, PluginIDJavinizer)
+	want := []struct {
+		plugin   string
+		priority int
+	}{
+		{"tv-parser", 1},
+		{"kinopoisk", 2},
+		{"tmdb", 3},
+		{"frame-grabber", 4},
+	}
+	for i, w := range want {
+		if got := m.MetadataSources[i]; got.PluginID != w.plugin || got.Priority != w.priority {
+			t.Fatalf("promoted MetadataSources[%d] = %+v, want %s@%d", i, got, w.plugin, w.priority)
+		}
 	}
 
 	var gotCfg string
@@ -289,12 +293,11 @@ func TestTVSeedV3PromotionIdempotent(t *testing.T) {
 	}
 }
 
-// TestTVSeedV3CarriesTraitAndAuth: both promoted bindings are enabled and
-// carry the no-relay trait; the priority-5 source is local (no auth_mode) and
-// the priority-6 SERVER source is seeded dormant — its options carry no value
-// for the plugin's declared required option, so derivation resolves nothing
-// until the operator configures it.
-func TestTVSeedV3CarriesTraitAndAuth(t *testing.T) {
+// TestTVSeedV3FourBuiltInBindings: the four built-in sources carry their
+// shipped posture through the v3 seed — priorities 1-4 in order, each enabled;
+// tv-parser and frame-grabber are LOCAL (empty auth_mode), kinopoisk CLIENT,
+// tmdb SERVER.
+func TestTVSeedV3FourBuiltInBindings(t *testing.T) {
 	r, _ := openRegistry(t)
 
 	m, err := r.Get("tv")
@@ -304,25 +307,19 @@ func TestTVSeedV3CarriesTraitAndAuth(t *testing.T) {
 	if len(m.MetadataSources) != tvSeedChainLen {
 		t.Fatalf("MetadataSources len = %d, want %d", len(m.MetadataSources), tvSeedChainLen)
 	}
-	local, server := m.MetadataSources[4], m.MetadataSources[5]
-	if local.PluginID != "jav-parser" || local.Priority != 5 || !local.Enabled ||
-		!local.NoRelay || local.AuthMode != "" {
-		t.Errorf("priority-5 binding = %+v, want jav-parser@5 enabled no_relay with empty auth_mode", local)
+	want := []struct {
+		plugin string
+		auth   string
+	}{
+		{"tv-parser", ""},
+		{"kinopoisk", "CLIENT"},
+		{"tmdb", "SERVER"},
+		{"frame-grabber", ""},
 	}
-	if server.PluginID != PluginIDJavinizer || server.Priority != 6 || !server.Enabled ||
-		!server.NoRelay || server.AuthMode != "SERVER" {
-		t.Errorf("priority-6 binding = %+v, want %s@6 enabled no_relay SERVER", server, PluginIDJavinizer)
-	}
-	// Dormancy precondition: the options JSON declares no value for the
-	// plugin's required option key (the handshake declares the name; the seed
-	// leaves it unresolved), mirroring the tmdb SERVER binding's shape.
-	var opts map[string]any
-	if err := json.Unmarshal(server.Options, &opts); err != nil {
-		t.Fatalf("parse priority-6 options %s: %v", server.Options, err)
-	}
-	for key, value := range opts {
-		if value != nil && value != "" {
-			t.Errorf("priority-6 options[%q] = %v pre-configured; the SERVER seed must leave its declared option unresolved (dormant)", key, value)
+	for i, w := range want {
+		got := m.MetadataSources[i]
+		if got.PluginID != w.plugin || got.Priority != i+1 || !got.Enabled || got.AuthMode != w.auth {
+			t.Errorf("binding[%d] = %+v, want %s@%d enabled auth_mode=%q", i, got, w.plugin, i+1, w.auth)
 		}
 	}
 }
@@ -752,5 +749,381 @@ func TestParseModuleNoRelayTrue(t *testing.T) {
 	}
 	if !m.MetadataSources[0].NoRelay {
 		t.Error("NoRelay = false, want true (no_relay:true)")
+	}
+}
+
+// TestEnsureModuleBindingsInsertsAfterChainMax: two unbound plugins appended
+// in slice order after the chain's current max priority (+1 per binding) —
+// every pre-existing binding byte-identical, the cache reading through, and a
+// re-Open (which re-runs the schema-guarded upgrades) finding the insertions
+// persisted with their assigned priorities. A second call mixes one present
+// binding (reconciled) with one new insert to prove the per-binding dispatch
+// numbers against the chain AS THE PREVIOUS CALL LEFT IT.
+func TestEnsureModuleBindingsInsertsAfterChainMax(t *testing.T) {
+	ctx := context.Background()
+	r, s := openRegistry(t)
+
+	before := rowConfig(t, r, "tv")
+	beforeChain := rawSourceChain(t, before)
+
+	first := []MetadataSourceBinding{
+		{
+			PluginID:     "stash",
+			CapabilityID: "default",
+			Enabled:      true,
+			AuthMode:     "SERVER",
+			NoRelay:      true,
+			Options:      json.RawMessage(`{"endpoint":"http://lan:9999"}`),
+		},
+		{PluginID: "whisparr", CapabilityID: "default", Enabled: false},
+	}
+	if err := r.EnsureModuleBindings("tv", first); err != nil {
+		t.Fatalf("EnsureModuleBindings(insert x2): %v", err)
+	}
+
+	after := rowConfig(t, r, "tv")
+	afterChain := rawSourceChain(t, after)
+	if len(afterChain) != len(beforeChain)+2 {
+		t.Fatalf("metadata_sources len = %d, want %d (seed + 2 inserts)", len(afterChain), len(beforeChain)+2)
+	}
+	for i := range beforeChain {
+		if !bytes.Equal(beforeChain[i], afterChain[i]) {
+			t.Errorf("sibling binding %d rewritten by the insert:\nbefore %s\nafter  %s", i, beforeChain[i], afterChain[i])
+		}
+	}
+	var stash, whisparr map[string]json.RawMessage
+	if err := json.Unmarshal(afterChain[len(beforeChain)], &stash); err != nil {
+		t.Fatalf("parse stash element: %v", err)
+	}
+	if err := json.Unmarshal(afterChain[len(beforeChain)+1], &whisparr); err != nil {
+		t.Fatalf("parse whisparr element: %v", err)
+	}
+	assertRawString(t, stash, "plugin_id", "stash")
+	assertRawString(t, stash, "auth_mode", "SERVER")
+	assertRawString(t, stash, "capability_id", "default")
+	assertRawInt(t, stash, "priority", tvSeedChainLen+1)
+	assertRawBool(t, stash, "enabled", true)
+	assertRawBool(t, stash, "no_relay", true)
+	var stashOpts struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := json.Unmarshal(stash["options"], &stashOpts); err != nil {
+		t.Fatalf("parse stash options: %v", err)
+	}
+	if stashOpts.Endpoint != "http://lan:9999" {
+		t.Errorf("stash options = %s, want the verbatim endpoint", stash["options"])
+	}
+	assertRawString(t, whisparr, "plugin_id", "whisparr")
+	assertRawInt(t, whisparr, "priority", tvSeedChainLen+2)
+	assertRawBool(t, whisparr, "enabled", false)
+	if _, ok := whisparr["auth_mode"]; ok {
+		t.Errorf("whisparr carries auth_mode %s, want the key omitted (empty AuthMode)", whisparr["auth_mode"])
+	}
+
+	// Read-through: the cache serves the extended chain immediately.
+	m, err := r.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv) after insert: %v", err)
+	}
+	if len(m.MetadataSources) != tvSeedChainLen+2 {
+		t.Fatalf("cached chain len = %d, want %d", len(m.MetadataSources), tvSeedChainLen+2)
+	}
+	if last := m.MetadataSources[tvSeedChainLen+1]; last.PluginID != "whisparr" || last.Priority != tvSeedChainLen+2 {
+		t.Errorf("cached last binding = %+v, want whisparr@%d", last, tvSeedChainLen+2)
+	}
+
+	// Second call: one present binding (reconciled in place) + one insert, the
+	// numbering continuing from the chain as the first call left it.
+	if err := r.EnsureModuleBindings("tv", []MetadataSourceBinding{
+		{PluginID: "tmdb", Enabled: false, AuthMode: "CLIENT", NoRelay: true},
+		{PluginID: "peeper", CapabilityID: "default", Enabled: true},
+	}); err != nil {
+		t.Fatalf("EnsureModuleBindings(mixed): %v", err)
+	}
+	m, err = r.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv) after mixed call: %v", err)
+	}
+	if len(m.MetadataSources) != tvSeedChainLen+3 {
+		t.Fatalf("cached chain len = %d, want %d", len(m.MetadataSources), tvSeedChainLen+3)
+	}
+	if last := m.MetadataSources[tvSeedChainLen+2]; last.PluginID != "peeper" || last.Priority != tvSeedChainLen+3 {
+		t.Errorf("cached insert = %+v, want peeper@%d", last, tvSeedChainLen+3)
+	}
+
+	// Roundtrip: a fresh Registry (whose Open re-runs the guarded schema
+	// upgrades) reads the insertions and their priorities back.
+	r2, err := Open(ctx, s)
+	if err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+	m2, err := r2.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv) after re-Open: %v", err)
+	}
+	var stashSeen bool
+	for _, src := range m2.MetadataSources {
+		if src.PluginID == "stash" {
+			stashSeen = true
+			if src.Priority != tvSeedChainLen+1 || !src.NoRelay || src.AuthMode != "SERVER" {
+				t.Errorf("re-opened stash binding = %+v, want priority %d NoRelay SERVER", src, tvSeedChainLen+1)
+			}
+		}
+	}
+	if !stashSeen {
+		t.Error("stash binding lost across re-Open")
+	}
+}
+
+// TestEnsureModuleBindingsReconcileDerivedPosture: a binding already on the
+// chain gets ONLY its derived posture rewritten — AuthMode, NoRelay and
+// Enabled land on the passed values; Priority, Options and DisplayFields stay
+// exactly as the seed declared them; sibling bindings are byte-identical.
+func TestEnsureModuleBindingsReconcileDerivedPosture(t *testing.T) {
+	r, _ := openRegistry(t)
+
+	before := rowConfig(t, r, "tv")
+	beforeChain := rawSourceChain(t, before)
+	const targetIdx = 2 // the tv seed's tmdb slot: mid-chain, auth_mode present, no no_relay key
+
+	if err := r.EnsureModuleBindings("tv", []MetadataSourceBinding{{
+		PluginID:      "tmdb",
+		CapabilityID:  "must-not-land",
+		Priority:      99,
+		Enabled:       false,
+		AuthMode:      "CLIENT",
+		NoRelay:       true,
+		DisplayFields: []string{"junk"},
+		Options:       json.RawMessage(`{"api_key":"caller-garbage"}`),
+	}}); err != nil {
+		t.Fatalf("EnsureModuleBindings(reconcile tmdb): %v", err)
+	}
+
+	after := rowConfig(t, r, "tv")
+	afterChain := rawSourceChain(t, after)
+	if len(afterChain) != len(beforeChain) {
+		t.Fatalf("metadata_sources len = %d, want %d (reconcile never adds or drops)", len(afterChain), len(beforeChain))
+	}
+	for i, beforeElem := range beforeChain {
+		var b, a map[string]json.RawMessage
+		if err := json.Unmarshal(beforeElem, &b); err != nil {
+			t.Fatalf("parse before element %d: %v", i, err)
+		}
+		if err := json.Unmarshal(afterChain[i], &a); err != nil {
+			t.Fatalf("parse after element %d: %v", i, err)
+		}
+		if i != targetIdx {
+			if !bytes.Equal(beforeElem, afterChain[i]) {
+				t.Errorf("sibling binding %d rewritten:\nbefore %s\nafter  %s", i, beforeElem, afterChain[i])
+			}
+			continue
+		}
+		assertRawBool(t, a, "enabled", false)
+		assertRawString(t, a, "auth_mode", "CLIENT")
+		assertRawBool(t, a, "no_relay", true) // the key the seed omits, appended by the reconcile
+		for _, key := range []string{"priority", "capability_id", "options"} {
+			if !bytes.Equal(b[key], a[key]) {
+				t.Errorf("tmdb.%s changed: before %s after %s", key, b[key], a[key])
+			}
+		}
+		if _, ok := a["display_fields"]; ok {
+			t.Errorf("tmdb.display_fields = %s, want the key absent (the seed declares none)", a["display_fields"])
+		}
+	}
+
+	// Read-through: the cache serves the new posture with the rest untouched.
+	m, err := r.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv) after reconcile: %v", err)
+	}
+	src := m.MetadataSources[targetIdx]
+	if src.Enabled || src.AuthMode != "CLIENT" || !src.NoRelay || src.Priority != 3 {
+		t.Errorf("cached tmdb binding = %+v, want disabled CLIENT NoRelay priority 3", src)
+	}
+}
+
+// TestEnsureModuleBindingsOptionsUntouched: operator secrets survive a posture
+// reconcile byte-for-byte — the target binding's options and display_fields
+// values, and every untouched config region (schema, display block, scanner),
+// are identical raw bytes after the write.
+func TestEnsureModuleBindingsOptionsUntouched(t *testing.T) {
+	r, _ := openRegistry(t)
+
+	const moduleID = "tv" // kinopoisk: seeded options {"language":"ru"} + display_fields
+	before := rowConfig(t, r, moduleID)
+	beforeTop := rawTopLevel(t, before)
+	beforeChain := rawSourceChain(t, before)
+
+	if err := r.EnsureModuleBindings(moduleID, []MetadataSourceBinding{{
+		PluginID:      "kinopoisk",
+		Enabled:       false,
+		AuthMode:      "CLIENT",
+		NoRelay:       true,
+		Options:       json.RawMessage(`{"language":"hacked"}`),
+		DisplayFields: []string{"hacked"},
+	}}); err != nil {
+		t.Fatalf("EnsureModuleBindings(reconcile kinopoisk): %v", err)
+	}
+
+	after := rowConfig(t, r, moduleID)
+	afterTop := rawTopLevel(t, after)
+	for _, key := range []string{"schema_version", "display", "scanner", "identity_fields"} {
+		if !bytes.Equal(beforeTop[key], afterTop[key]) {
+			t.Errorf("config %s region changed: before %s after %s", key, beforeTop[key], afterTop[key])
+		}
+	}
+	afterChain := rawSourceChain(t, after)
+	if len(afterChain) != len(beforeChain) {
+		t.Fatalf("metadata_sources len = %d, want %d", len(afterChain), len(beforeChain))
+	}
+	for i := range beforeChain {
+		var b, a map[string]json.RawMessage
+		if err := json.Unmarshal(beforeChain[i], &b); err != nil {
+			t.Fatalf("parse before element %d: %v", i, err)
+		}
+		if err := json.Unmarshal(afterChain[i], &a); err != nil {
+			t.Fatalf("parse after element %d: %v", i, err)
+		}
+		var plugin string
+		if err := json.Unmarshal(b["plugin_id"], &plugin); err != nil {
+			t.Fatalf("parse element %d plugin_id: %v", i, err)
+		}
+		if plugin != "kinopoisk" {
+			if !bytes.Equal(beforeChain[i], afterChain[i]) {
+				t.Errorf("sibling %s rewritten:\nbefore %s\nafter  %s", plugin, beforeChain[i], afterChain[i])
+			}
+			continue
+		}
+		for _, key := range []string{"options", "display_fields", "priority"} {
+			if !bytes.Equal(b[key], a[key]) {
+				t.Errorf("kinopoisk.%s changed: before %s after %s", key, b[key], a[key])
+			}
+		}
+	}
+}
+
+// TestEnsureModuleBindingsSchemaVersionUnchanged: a promoted binding is runtime
+// config, never a schema step — schema_version is byte-identical after the
+// write, the cache keeps it, and a re-Open (whose guarded upgrades fire only on
+// schema_version < N) neither rewrites the row nor drops the promotion.
+func TestEnsureModuleBindingsSchemaVersionUnchanged(t *testing.T) {
+	ctx := context.Background()
+	r, s := openRegistry(t)
+
+	beforeTop := rawTopLevel(t, rowConfig(t, r, "tv"))
+	if err := r.EnsureModuleBindings("tv", []MetadataSourceBinding{
+		{PluginID: "tmdb", Enabled: false},
+		{PluginID: "newcomer", CapabilityID: "default", Enabled: true},
+	}); err != nil {
+		t.Fatalf("EnsureModuleBindings: %v", err)
+	}
+	afterTop := rawTopLevel(t, rowConfig(t, r, "tv"))
+	if !bytes.Equal(beforeTop["schema_version"], afterTop["schema_version"]) {
+		t.Errorf("schema_version changed: before %s after %s", beforeTop["schema_version"], afterTop["schema_version"])
+	}
+	m, err := r.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv): %v", err)
+	}
+	if m.SchemaVersion != 3 {
+		t.Errorf("cached SchemaVersion = %d, want 3", m.SchemaVersion)
+	}
+
+	r2, err := Open(ctx, s)
+	if err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+	m2, err := r2.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv) after re-Open: %v", err)
+	}
+	if m2.SchemaVersion != 3 {
+		t.Errorf("re-opened SchemaVersion = %d, want 3", m2.SchemaVersion)
+	}
+	var newcomerSeen bool
+	for _, src := range m2.MetadataSources {
+		if src.PluginID == "newcomer" {
+			newcomerSeen = true
+			if src.Priority != tvSeedChainLen+1 {
+				t.Errorf("re-opened newcomer priority = %d, want %d", src.Priority, tvSeedChainLen+1)
+			}
+		}
+		if src.PluginID == "tmdb" && src.Enabled {
+			t.Error("re-Open resurrected tmdb enabled=true — the reconcile did not persist")
+		}
+	}
+	if !newcomerSeen {
+		t.Error("newcomer binding lost across re-Open")
+	}
+}
+
+// TestEnsureModuleBindingsUnknownModule: the refusal family — an unknown
+// module id wraps errNotFound, invalid binding options are refused before any
+// write, and an empty slice is a full no-op. Every refusal leaves the row
+// byte-untouched.
+func TestEnsureModuleBindingsUnknownModule(t *testing.T) {
+	r, _ := openRegistry(t)
+
+	if err := r.EnsureModuleBindings("does-not-exist", []MetadataSourceBinding{
+		{PluginID: "x", CapabilityID: "default", Enabled: true},
+	}); !errors.Is(err, errNotFound) {
+		t.Errorf("unknown module err = %v, want errNotFound", err)
+	}
+	if err := r.EnsureModuleBindings("tv", []MetadataSourceBinding{
+		{PluginID: "x", Options: json.RawMessage(`{oops`)},
+	}); err == nil {
+		t.Error("invalid options accepted, want an error")
+	}
+	if err := r.EnsureModuleBindings("tv", []MetadataSourceBinding{
+		{PluginID: "", Enabled: true},
+	}); err == nil {
+		t.Error("empty plugin_id accepted, want an error")
+	}
+
+	before := rowConfig(t, r, "tv")
+	if err := r.EnsureModuleBindings("tv", nil); err != nil {
+		t.Errorf("nil bindings err = %v, want a no-op nil", err)
+	}
+	if err := r.EnsureModuleBindings("tv", []MetadataSourceBinding{}); err != nil {
+		t.Errorf("empty bindings err = %v, want a no-op nil", err)
+	}
+	if got := rowConfig(t, r, "tv"); got != before {
+		t.Errorf("tv row changed after refusals/no-ops (%d vs %d bytes)", len(got), len(before))
+	}
+}
+
+// assertRawString / assertRawInt / assertRawBool decode one key off a raw
+// binding element and compare it — the element's raw bytes stay available for
+// byte-identity assertions the same test makes elsewhere.
+func assertRawString(t *testing.T, elem map[string]json.RawMessage, key, want string) {
+	t.Helper()
+	var got string
+	if err := json.Unmarshal(elem[key], &got); err != nil {
+		t.Fatalf("parse %s (%s): %v", key, elem[key], err)
+	}
+	if got != want {
+		t.Errorf("%s = %q, want %q", key, got, want)
+	}
+}
+
+func assertRawInt(t *testing.T, elem map[string]json.RawMessage, key string, want int) {
+	t.Helper()
+	var got int
+	if err := json.Unmarshal(elem[key], &got); err != nil {
+		t.Fatalf("parse %s (%s): %v", key, elem[key], err)
+	}
+	if got != want {
+		t.Errorf("%s = %d, want %d", key, got, want)
+	}
+}
+
+func assertRawBool(t *testing.T, elem map[string]json.RawMessage, key string, want bool) {
+	t.Helper()
+	var got bool
+	if err := json.Unmarshal(elem[key], &got); err != nil {
+		t.Fatalf("parse %s (%s): %v", key, elem[key], err)
+	}
+	if got != want {
+		t.Errorf("%s = %v, want %v", key, got, want)
 	}
 }

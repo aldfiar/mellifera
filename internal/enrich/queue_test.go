@@ -615,6 +615,9 @@ func TestDerivationChainPriority(t *testing.T) {
 		t.Fatalf("CreateLibrary: %v", err)
 	}
 	putItem(t, s, "i_chain", libID, statusPending, baseDoc("Show/S01E09.mkv"))
+	// the generic external pair rides the chain tail exactly as the promotion
+	// pass leaves it (priorities 5/6 behind the built-ins).
+	promoteGenericPair(t, reg)
 	q := NewQueue(Deps{Store: s, Modules: reg}, QueueConfig{})
 
 	rowTasks := func(t *testing.T) string {
@@ -633,24 +636,23 @@ func TestDerivationChainPriority(t *testing.T) {
 	}
 
 	// Absent chain: config order (tv-parser, kinopoisk, tmdb, frame-grabber,
-	// jav-parser, javinizer) with the D-Q1 CLIENT exclusion -> [tv-parser tmdb
-	// frame-grabber jav-parser javinizer] (the v2 tv seed adds frame-grabber at
-	// priority 4; the v3 seed adds the two optional sources at priorities 5/6 —
-	// these fixtures run without a RequiredSecrets closure, so the SERVER
-	// javinizer slot is queueable here too).
-	if got := rowTasks(t); got != "tv-parser,tmdb,frame-grabber,jav-parser,javinizer" {
-		t.Fatalf("absent-chain derivation = %q, want %q (config order)", got, "tv-parser,tmdb,frame-grabber,jav-parser,javinizer")
+	// ext-source-a, ext-source-b) with the D-Q1 CLIENT exclusion -> [tv-parser
+	// tmdb frame-grabber ext-source-a ext-source-b] (the built-in seed puts
+	// frame-grabber at priority 4; the promoted pair lands at 5/6 — these
+	// fixtures run without a RequiredSecrets closure, so the SERVER ext-source-b
+	// slot is queueable here too).
+	if got := rowTasks(t); got != "tv-parser,tmdb,frame-grabber,ext-source-a,ext-source-b" {
+		t.Fatalf("absent-chain derivation = %q, want %q (config order)", got, "tv-parser,tmdb,frame-grabber,ext-source-a,ext-source-b")
 	}
 
 	// Reorder the stored chain: derivation priority follows it.
 	if err := s.SetLibraryChain(ctx, libID, []string{"tmdb", "tv-parser"}); err != nil {
 		t.Fatalf("SetLibraryChain: %v", err)
 	}
-	// frame-grabber stays in config position after the reordered pair (the v2
-	// tv seed adds it at priority 4; SetLibraryChain reorders the named two),
-	// and the v3 seed's two optional sources keep their config positions 5/6
-	// behind it.
-	if got := rowTasks(t); got != "tmdb,tv-parser,frame-grabber,jav-parser,javinizer" {
-		t.Fatalf("chain-ordered derivation = %q, want %q (chain order)", got, "tmdb,tv-parser,frame-grabber,jav-parser,javinizer")
+	// frame-grabber stays in config position after the reordered pair
+	// (SetLibraryChain reorders only the named two), and the promoted pair
+	// keeps its config positions 5/6 behind it.
+	if got := rowTasks(t); got != "tmdb,tv-parser,frame-grabber,ext-source-a,ext-source-b" {
+		t.Fatalf("chain-ordered derivation = %q, want %q (chain order)", got, "tmdb,tv-parser,frame-grabber,ext-source-a,ext-source-b")
 	}
 }

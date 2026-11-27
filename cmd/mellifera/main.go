@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -82,8 +83,61 @@ var sourceCatalog = []catalogEntry{
 	{"frame-grabber", "Frame Grabber", "ffmpeg thumbnail and frame metadata for serial episodes.", false},
 	{"shikimori", "Shikimori", "External Shikimori metadata enrichment for serials.", false},
 	{module.PluginIDTmdb, "TMDB", "External TMDB metadata enrichment for tv and serial libraries.", false},
-	{"jav-parser", "Release Code Parser", "Local release-code extraction for tv libraries.", true},
-	{module.PluginIDJavinizer, "Javinizer", "External Javinizer metadata enrichment for tv libraries.", true},
+}
+
+// externalPlugin is one operator-declared external plugin: the ordered
+// id/path pair MELLIFERA_EXTRA_PLUGINS parses into.
+type extraPlugin struct {
+	id, path string
+}
+
+const externalPluginDescription = "External plugin."
+
+// parseExtraPlugins parses a MELLIFERA_EXTRA_PLUGINS value into ordered
+// id/path pairs: a comma list of id=path entries, each split on the FIRST '='
+// and trimmed. A malformed entry (no separator, or an empty side) is one warn
+// log + skip; a duplicate id is first-wins + warn. An absent or empty value
+// yields no externals — the operator's declaration is the dormancy switch,
+// never a default path.
+func parseExtraPlugins(raw string) []extraPlugin {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []extraPlugin
+	seen := make(map[string]bool)
+	for _, entry := range strings.Split(raw, ",") {
+		id, path, found := strings.Cut(strings.TrimSpace(entry), "=")
+		id, path = strings.TrimSpace(id), strings.TrimSpace(path)
+		if !found || id == "" || path == "" {
+			slog.Warn("external plugins: malformed entry — skipped", "entry", entry)
+			continue
+		}
+		if seen[id] {
+			slog.Warn("external plugins: duplicate id — first declaration wins", "id", id)
+			continue
+		}
+		seen[id] = true
+		out = append(out, extraPlugin{id: id, path: path})
+	}
+	return out
+}
+
+// appendExternalRows appends one generic optional catalog row per declared
+// external plugin — name is the id itself, the description constant, optional
+// true. It must run BEFORE the pluginIDs derivation so every catalog consumer
+// (pluginHealths, the admin name/description maps, catalogKnown, PluginConfigs)
+// takes external ids through the unchanged aggregate law: config-less rows for
+// catalog-known ids outside loadedCaps.
+func appendExternalRows(catalog []catalogEntry, extras []extraPlugin) []catalogEntry {
+	for _, p := range extras {
+		catalog = append(catalog, catalogEntry{
+			id:          p.id,
+			name:        p.id,
+			description: externalPluginDescription,
+			optional:    true,
+		})
+	}
+	return catalog
 }
 
 // loadOptionalPlugin is the optional-plugin load site — the skip-and-report
@@ -127,6 +181,34 @@ func loadOptionalPlugin(ctx context.Context, mgr *plugin.Manager, pluginID, bina
 		types = append(types, c.Type)
 	}
 	loadedCaps[pluginID] = types
+}
+
+// promoteExternalBindings joins every env-declared external onto the tv
+// enrichment chain as one binding per declared id, in declaration order. The
+// posture is re-derived on every boot from live plugin state — SERVER only
+// when the binary actually loaded AND declared secrets in its handshake — so
+// a binary re-appearing engages SERVER without operator action, and
+// operator-set option values are never touched (EnsureModuleBindings rewrites
+// only the derived posture of an already-bound id). A declared-but-absent id
+// still gets its row and stays dormant via the unavailable law. A failed
+// promotion is one warn log; the remaining declared ids still promote.
+func promoteExternalBindings(reg *module.Registry, extras []extraPlugin, loadedCaps map[string][]string, requiredSecrets func(pluginID string) []string) {
+	for _, p := range extras {
+		authMode := ""
+		if _, loaded := loadedCaps[p.id]; loaded && len(requiredSecrets(p.id)) > 0 {
+			authMode = "SERVER"
+		}
+		binding := module.MetadataSourceBinding{
+			PluginID:     p.id,
+			CapabilityID: "default",
+			Enabled:      true,
+			AuthMode:     authMode,
+			NoRelay:      true,
+		}
+		if err := reg.EnsureModuleBindings(module.ModuleIDTV, []module.MetadataSourceBinding{binding}); err != nil {
+			slog.Warn("external plugin: chain promotion failed — skipped", "plugin", p.id, "error", err)
+		}
+	}
 }
 
 // pluginHealths assembles the per-plugin liveness rows the Deps.Status
@@ -194,6 +276,9 @@ func main() {
 		MagicCookieValue: magicCookieValue,
 		CoreVersion:      coreVersion,
 	})
+	// Operator-declared externals join the catalog before any derivation off
+	// it, so the whole downstream aggregate walks one inventory.
+	sourceCatalog = appendExternalRows(sourceCatalog, cfg.extraPlugins)
 	// pluginIDs derives from sourceCatalog so the load sites, the status
 	// closure, and the admin-sources inventory cannot diverge.
 	pluginIDs := make([]string, len(sourceCatalog))
@@ -273,16 +358,21 @@ func main() {
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
 	})
 
-	// jav-parser + Javinizer are the catalog's OPTIONAL rows (external
-	// deployments: the resolved paths are the dormancy switch — cfg's env
-	// knobs). Their absence or breakage degrades to a synthesized status row;
-	// the eight in-repo sites above keep the fatal pair.
-	loadPluginOptional("jav-parser", cfg.javParserPath, []sdk.Capability{
-		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
-	})
-	loadPluginOptional(module.PluginIDJavinizer, cfg.javinizerPath, []sdk.Capability{
-		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
-	})
+	// The optional site is ONE generic loop over the parsed env list: the
+	// declaration itself is the dormancy switch (absent/empty = no externals),
+	// and an entry's absence or breakage degrades to a synthesized status row.
+	// The eight in-repo sites above keep the fatal pair.
+	for _, p := range cfg.extraPlugins {
+		loadPluginOptional(p.id, p.path, []sdk.Capability{
+			{Type: "metadata_source", ID: "default", ProtoService: metadataService},
+		})
+	}
+
+	// Promotion runs AFTER the load loop so the posture derives from the live
+	// load outcome, never the declaration alone; the queueable gate reads the
+	// persisted AuthMode before resolving the declared option, so SERVER
+	// dormancy stays emergent from the option value.
+	promoteExternalBindings(reg, cfg.extraPlugins, loadedCaps, mgr.RequiredSecrets)
 
 	scanDeps := scan.Deps{
 		Store:   st,
@@ -718,8 +808,7 @@ type config struct {
 	frameGrabberPath  string
 	shikimoriPath     string
 	tmdbPath          string
-	javParserPath     string
-	javinizerPath     string
+	extraPlugins      []extraPlugin
 	listenAddr        string
 	webDev            bool
 	enrich            enrich.QueueConfig
@@ -766,11 +855,10 @@ func loadConfig() config {
 		frameGrabberPath:  envOr("MELLIFERA_FRAME_GRABBER", "bin/frame-grabber"),
 		shikimoriPath:     envOr("MELLIFERA_SHIKIMORI", "bin/shikimori"),
 		tmdbPath:          envOr("MELLIFERA_TMDB", "bin/tmdb"),
-		// Optional external plugins: the resolved path is the dormancy switch
-		// (the optional load sites consult it; an absent binary stays boot-green).
-		javParserPath: envOr("MELLIFERA_JAV_PARSER", "bin/jav-parser"),
-		javinizerPath: envOr("MELLIFERA_JAVINIZER", "bin/javinizer"),
-		listenAddr:    envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
+		// External plugins: one env var, ordered id=path pairs; an absent or
+		// empty value declares no externals (the dormancy switch).
+		extraPlugins: parseExtraPlugins(os.Getenv("MELLIFERA_EXTRA_PLUGINS")),
+		listenAddr:   envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
 		// webDev=true loosens the SPA cache headers so the Vite dev proxy can
 		// hot-reload; default false (production: immutable /assets/*).
 		webDev: envBool("MELLIFERA_WEB_DEV", false),

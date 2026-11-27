@@ -1,6 +1,6 @@
 # Project Structure
 
-<!-- wf:regen:stamp emitter=2 map_fp=composite:7848f7f91173359f2e9595d1f42c72148cba567b793501864cba13ccc29a910a -->
+<!-- wf:regen:stamp emitter=2 map_fp=composite:5043953ecdab7566093b5ac3e06f76909b83aa11676c68ac450dd65dca5f7c94 -->
 
 <!-- wf:regen:annotations -->
 # Mellifera — Project Structure
@@ -1762,7 +1762,7 @@ external-jav-plugins/
 │   │   ├── user.go
 │   │   └── users_test.go
 │   ├── itest/         # 57 files
-│   │   ├── javstubbin/                             # 3 files
+│   │   ├── externalstubbin/                        # 3 files
 │   │   │   ├── main.go
 │   │   │   ├── pluginsvc.go
 │   │   │   └── source.go
@@ -1971,8 +1971,8 @@ external-jav-plugins/
 │       ├── swagger.go
 │       ├── web.go
 │       └── web_test.go
-├── openspec/            # 734 files
-│   ├── changes/     # 699 files
+├── openspec/            # 735 files
+│   ├── changes/     # 700 files
 │   │   ├── 2026-10-30-frontier-pinned-eviction/  # 4 files
 │   │   │   ├── specs/          # 1 files
 │   │   │   │   └── packaged-playback/  # 1 files
@@ -2007,7 +2007,7 @@ external-jav-plugins/
 │   │   │   ├── integration.md
 │   │   │   ├── proposal.md
 │   │   │   └── tasks.md
-│   │   ├── archive/                              # 653 files
+│   │   ├── archive/                              # 666 files
 │   │   │   ├── 2026-10-06-web-ui-phase-2/                          # 7 files
 │   │   │   │   ├── specs/          # 1 files
 │   │   │   │   │   └── web-ui/  # 1 files
@@ -2952,25 +2952,26 @@ external-jav-plugins/
 │   │   │   │   ├── proposal.md
 │   │   │   │   ├── review.md
 │   │   │   │   └── tasks.md
+│   │   │   ├── 2026-11-27-external-jav-plugins/                    # 13 files
+│   │   │   │   ├── handoffs/       # 2 files
+│   │   │   │   │   ├── session.md
+│   │   │   │   │   └── wf-reviewer.md
+│   │   │   │   ├── specs/          # 3 files
+│   │   │   │   │   ├── async-enrichment/      # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   ├── client-relayed-fetch/  # 1 files
+│   │   │   │   │   │   └── spec.md
+│   │   │   │   │   └── plugin-pipeline/       # 1 files
+│   │   │   │   │       └── spec.md
+│   │   │   │   ├── .openspec.yaml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── close-out.md
+│   │   │   │   ├── design.md
+│   │   │   │   ├── integration.md
+│   │   │   │   ├── proposal.md
+│   │   │   │   ├── review.md
+│   │   │   │   └── tasks.md
 │   │   │   └── .gitkeep
-│   │   ├── external-jav-plugins/                 # 12 files
-│   │   │   ├── handoffs/       # 2 files
-│   │   │   │   ├── session.md
-│   │   │   │   └── wf-reviewer.md
-│   │   │   ├── specs/          # 3 files
-│   │   │   │   ├── async-enrichment/      # 1 files
-│   │   │   │   │   └── spec.md
-│   │   │   │   ├── client-relayed-fetch/  # 1 files
-│   │   │   │   │   └── spec.md
-│   │   │   │   └── plugin-pipeline/       # 1 files
-│   │   │   │       └── spec.md
-│   │   │   ├── .openspec.yaml
-│   │   │   ├── README.md
-│   │   │   ├── design.md
-│   │   │   ├── integration.md
-│   │   │   ├── proposal.md
-│   │   │   ├── review.md
-│   │   │   └── tasks.md
 │   │   ├── transcode-lane/                       # 10 files
 │   │   │   ├── specs/          # 1 files
 │   │   │   │   └── packaged-playback/  # 1 files
@@ -3430,7 +3431,7 @@ external-jav-plugins/
 | internal/enrich/ | 43 |
 | internal/identity/ | 13 |
 | internal/itest/ | 57 |
-| internal/itest/javstubbin/ | 3 |
+| internal/itest/externalstubbin/ | 3 |
 | internal/itest/testdata/ | 1 |
 | internal/itest/testdata/element-parser/ | 1 |
 | internal/module/ | 6 |
@@ -3455,8 +3456,8 @@ external-jav-plugins/
 | internal/web/api/ | 2 |
 | internal/web/dist/ | 3 |
 | internal/web/dist/assets/ | 2 |
-| openspec/ | 734 |
-| openspec/changes/ | 699 |
+| openspec/ | 735 |
+| openspec/changes/ | 700 |
 | openspec/changes/2026-10-30-frontier-pinned-eviction/ | 4 |
 | openspec/changes/2026-10-30-frontier-pinned-eviction/specs/ | 1 |
 | openspec/changes/2026-10-30-frontier-pinned-eviction/specs/packaged-playback/ | 1 |
@@ -3469,7 +3470,7 @@ external-jav-plugins/
 | openspec/changes/android-tv-app/specs/device-pairing/ | 1 |
 | openspec/changes/android-tv-app/specs/device-telemetry/ | 1 |
 | openspec/changes/android-tv-app/tasks/ | 5 |
-| openspec/changes/archive/ | 653 |
+| openspec/changes/archive/ | 666 |
 | openspec/changes/archive/2026-10-06-web-ui-phase-2/ | 7 |
 | openspec/changes/archive/2026-10-06-web-ui-phase-2/specs/ | 1 |
 | openspec/changes/archive/2026-10-06-web-ui-phase-2/specs/web-ui/ | 1 |
@@ -3762,12 +3763,12 @@ external-jav-plugins/
 | openspec/changes/archive/2026-11-26-tv-style-parity/specs/ | 1 |
 | openspec/changes/archive/2026-11-26-tv-style-parity/specs/android-tv-client/ | 1 |
 | openspec/changes/archive/2026-11-26-tv-style-parity/tasks/ | 2 |
-| openspec/changes/external-jav-plugins/ | 12 |
-| openspec/changes/external-jav-plugins/handoffs/ | 2 |
-| openspec/changes/external-jav-plugins/specs/ | 3 |
-| openspec/changes/external-jav-plugins/specs/async-enrichment/ | 1 |
-| openspec/changes/external-jav-plugins/specs/client-relayed-fetch/ | 1 |
-| openspec/changes/external-jav-plugins/specs/plugin-pipeline/ | 1 |
+| openspec/changes/archive/2026-11-27-external-jav-plugins/ | 13 |
+| openspec/changes/archive/2026-11-27-external-jav-plugins/handoffs/ | 2 |
+| openspec/changes/archive/2026-11-27-external-jav-plugins/specs/ | 3 |
+| openspec/changes/archive/2026-11-27-external-jav-plugins/specs/async-enrichment/ | 1 |
+| openspec/changes/archive/2026-11-27-external-jav-plugins/specs/client-relayed-fetch/ | 1 |
+| openspec/changes/archive/2026-11-27-external-jav-plugins/specs/plugin-pipeline/ | 1 |
 | openspec/changes/transcode-lane/ | 10 |
 | openspec/changes/transcode-lane/specs/ | 1 |
 | openspec/changes/transcode-lane/specs/packaged-playback/ | 1 |

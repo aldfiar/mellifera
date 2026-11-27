@@ -929,10 +929,11 @@ func TestSearchSourceRedactedRefAnswersUnconfigured(t *testing.T) {
 
 // noRelayStore seeds a FOURTH module row alongside the built-ins (id
 // "mediabox", its own media_type — the unique key accepts any distinct value)
-// whose bindings carry the trait fixture: javinizer bound WITH no_relay:true,
-// tmdb bound alongside WITHOUT it (the sibling control). module.Open loads the
-// row through the same parseModule walk the registry's parse tests pin, so the
-// registry's cache carries the trait exactly as a real seed would.
+// whose bindings carry the trait fixture: ext-source-b bound WITH
+// no_relay:true, tmdb bound alongside WITHOUT it (the sibling control).
+// module.Open loads the row through the same parseModule walk the registry's
+// parse tests pin, so the registry's cache carries the trait exactly as a real
+// seed would.
 func noRelayStore(t *testing.T) (*store.Store, *module.Registry) {
 	t.Helper()
 	ctx := context.Background()
@@ -942,7 +943,7 @@ func noRelayStore(t *testing.T) (*store.Store, *module.Registry) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	cfg := `{"metadata_sources":[` +
-		`{"plugin_id":"javinizer","priority":5,"enabled":true,"no_relay":true},` +
+		`{"plugin_id":"ext-source-b","priority":5,"enabled":true,"no_relay":true},` +
 		`{"plugin_id":"tmdb","priority":6,"enabled":true}]}`
 	if _, err := s.DB().ExecContext(ctx, `INSERT OR IGNORE INTO modules
   (id, media_type, config_json, schema_version, enabled, created_at, updated_at)
@@ -969,7 +970,7 @@ func TestRelayExemptWalksBindings(t *testing.T) {
 		pluginID string
 		want     bool
 	}{
-		{"trait_carrying_binding", "javinizer", true},
+		{"trait_carrying_binding", "ext-source-b", true},
 		{"traitless_sibling_same_module", "tmdb", false},
 		{"traitless_binding_other_module", "kinopoisk", false},
 		{"plugin_no_module_binds", "nosuchplugin", false},
@@ -985,7 +986,7 @@ func TestRelayExemptWalksBindings(t *testing.T) {
 
 	t.Run("nil_modules_answers_false", func(t *testing.T) {
 		q := NewQueue(Deps{Store: s}, QueueConfig{})
-		if q.relayExempt("javinizer") {
+		if q.relayExempt("ext-source-b") {
 			t.Fatal("relayExempt with nil Deps.Modules = true, want false (the vacuous pre-trait shape)")
 		}
 	})
@@ -1006,8 +1007,8 @@ func TestSearchNoRelaySkipsEnqueue(t *testing.T) {
 	// fetch (the byte-for-byte baseline TestSearchRelayExpiresToUpstreamError
 	// pins). Computed before the fake clock installs — the failing dial reads
 	// no clock.
-	qBase, _ := searchQueue(t, map[string]sdk.MetadataSource{"javinizer": deadSearchSrc()}, nil)
-	_, wantErr := qBase.SearchSource(ctx, "javinizer", "code", "")
+	qBase, _ := searchQueue(t, map[string]sdk.MetadataSource{"ext-source-b": deadSearchSrc()}, nil)
+	_, wantErr := qBase.SearchSource(ctx, "ext-source-b", "code", "")
 	if wantErr == nil || !strings.HasPrefix(wantErr.Error(), "enrich: search fetch: ") {
 		t.Fatalf("baseline immediate answer = %v", wantErr)
 	}
@@ -1020,10 +1021,10 @@ func TestSearchNoRelaySkipsEnqueue(t *testing.T) {
 	t.Run("trait_carrying_source_answers_immediately", func(t *testing.T) {
 		s, reg := noRelayStore(t)
 		q := NewQueue(Deps{Store: s, Modules: reg}, QueueConfig{})
-		q.resolve = mapResolver{"javinizer": deadSearchSrc()}.resolver()
+		q.resolve = mapResolver{"ext-source-b": deadSearchSrc()}.resolver()
 		q.deps.Relay = &Relay{Store: s} // live: the trait must ignore it
 
-		_, err := q.SearchSource(ctx, "javinizer", "code", "")
+		_, err := q.SearchSource(ctx, "ext-source-b", "code", "")
 		if err == nil || err.Error() != wantErr.Error() {
 			t.Fatalf("answer = %v, want byte-identical immediate %v", err, wantErr)
 		}

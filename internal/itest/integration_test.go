@@ -540,7 +540,7 @@ func checkParsed(t *testing.T, want expectedItem, doc itemDoc) {
 		t.Errorf("%q: module_type = %q, want tv", want.rel, doc.ModuleType)
 	}
 	// Documents copy the module row's schema_version — the tv seed moved to
-	// v3 (javinizer binding), so tv items stamp 3.
+	// v3 (the 4-binding chain), so tv items stamp 3.
 	if doc.SchemaVersion != 3 {
 		t.Errorf("%q: schema_version = %d, want 3", want.rel, doc.SchemaVersion)
 	}

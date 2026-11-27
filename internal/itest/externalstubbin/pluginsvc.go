@@ -13,12 +13,12 @@ import (
 	pluginv1 "github.com/mellifera/mellifera/proto/mellifera/plugin/v1"
 )
 
-// The identity the domain Handshake advertises — javinizer-shaped, with the
-// ONE required option the seed's SERVER binding stays dormant on until the
-// operator configures it. metadataProtoFQN names the capability service the
-// core binds by its fully-qualified name.
+// The identity the domain Handshake advertises, with the ONE required option
+// the promoted SERVER binding stays dormant on until the operator configures
+// it. metadataProtoFQN names the capability service the core binds by its
+// fully-qualified name.
 const (
-	pluginID         = "javinizer"
+	pluginID         = "ext-source-a"
 	pluginVersion    = "0.1.0"
 	sdkVersion       = "v1"
 	minCoreVersion   = "0.1.0"
@@ -43,12 +43,12 @@ func (*pluginSvcPlugin) GRPCServer(_ *goplugin.GRPCBroker, s *grpc.Server) error
 // GRPCClient is server-only: the stub never acts as a core-side client —
 // a misuse fails loudly.
 func (*pluginSvcPlugin) GRPCClient(context.Context, *goplugin.GRPCBroker, *grpc.ClientConn) (interface{}, error) {
-	return nil, errors.New("javstubbin is a server-only plugin")
+	return nil, errors.New("externalstubbin is a server-only plugin")
 }
 
 // pluginServiceImpl is the domain Plugin service stub: the Handshake declares
 // the metadata_source capability with required_secrets [base_url] — the
-// declaration the core's RequiredSecrets closure serves and the seeded
+// declaration the core's RequiredSecrets closure serves and the promoted
 // SERVER binding resolves its dormancy verdict against.
 type pluginServiceImpl struct {
 	pluginv1.UnimplementedPluginServer

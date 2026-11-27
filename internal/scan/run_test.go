@@ -302,10 +302,10 @@ func TestRunScan_Orchestration(t *testing.T) {
 						t.Errorf("f1 module_type = %q, want tv", d1.ModuleType)
 					}
 					// Documents copy the module row's schema_version — the tv
-					// seed moved to v2 (frame-grabber binding), so tv items
-					// stamp 2.
-					if d1.SchemaVersion != 2 {
-						t.Errorf("f1 schema_version = %d, want 2", d1.SchemaVersion)
+					// seed moved to v3 (the four built-in bindings), so tv
+					// items stamp 3.
+					if d1.SchemaVersion != 3 {
+						t.Errorf("f1 schema_version = %d, want 3", d1.SchemaVersion)
 					}
 					if d1.FileID != "f1" {
 						t.Errorf("f1 file_id = %q, want f1", d1.FileID)

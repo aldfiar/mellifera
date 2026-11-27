@@ -215,12 +215,12 @@ describe("BindingOptionsEditor (plugin-options-ui 2.2)", () => {
   });
 });
 
-// The javinizer-shaped binding — a SERVER-mode binding whose declared
+// The server-auth-shaped binding — a SERVER-mode binding whose declared
 // required option is base_url and whose served options omit the key. The
 // editor knows no plugin semantics: the verdict map alone drives the
 // write-only input, and the empty-submit omission is what returns the
 // binding to dormant server-side.
-describe("BindingOptionsEditor javinizer-shaped binding", () => {
+describe("BindingOptionsEditor server-auth-shaped binding", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     localStorage.setItem(TOKEN_KEY, "tok-opts");
@@ -230,7 +230,7 @@ describe("BindingOptionsEditor javinizer-shaped binding", () => {
     localStorage.removeItem(TOKEN_KEY);
   });
 
-  function javinizerBinding(): PluginAdminBinding {
+  function serverAuthBinding(): PluginAdminBinding {
     return metadataBinding({
       auth_mode: "SERVER",
       options: {},
@@ -239,7 +239,7 @@ describe("BindingOptionsEditor javinizer-shaped binding", () => {
   }
 
   it("renders-the-write-only-base-url-input-with-its-not-provided-verdict", () => {
-    renderEditor(freshClient(), javinizerBinding());
+    renderEditor(freshClient(), serverAuthBinding());
 
     const input = screen.getByLabelText("base_url") as HTMLInputElement;
     expect(input.type).toBe("password");
@@ -255,23 +255,23 @@ describe("BindingOptionsEditor javinizer-shaped binding", () => {
     const putSpy = vi
       .spyOn(apiModule, "putAdminModuleSourceOptions")
       .mockResolvedValue(undefined);
-    renderEditor(freshClient(), javinizerBinding());
+    renderEditor(freshClient(), serverAuthBinding());
 
     fireEvent.change(screen.getByLabelText("base_url"), {
-      target: { value: "https://jav.example" },
+      target: { value: "https://upstream.example" },
     });
     fireEvent.click(screen.getByText("Сохранить"));
 
     await waitFor(() => expect(putSpy).toHaveBeenCalledTimes(1));
     const [, , body] = putSpy.mock.calls[0];
-    expect(body).toEqual({ base_url: "https://jav.example" });
+    expect(body).toEqual({ base_url: "https://upstream.example" });
   });
 
   it("submitting-an-empty-value-omits-the-key", async () => {
     const putSpy = vi
       .spyOn(apiModule, "putAdminModuleSourceOptions")
       .mockResolvedValue(undefined);
-    renderEditor(freshClient(), javinizerBinding());
+    renderEditor(freshClient(), serverAuthBinding());
 
     fireEvent.click(screen.getByText("Сохранить"));
 

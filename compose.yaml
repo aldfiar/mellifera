@@ -24,10 +24,9 @@ services:
       # secret (in-flight playback breaks on every restart), so set it.
       # Generate with: openssl rand -hex 32
       MELLIFERA_MEDIA_SECRET: ${MELLIFERA_MEDIA_SECRET:-}
-      # optional external binaries, read-only mount below; a missing or
+      # optional extra plugin binaries, read-only mount below; a missing or
       # dangling `current` symlink only fails the calls that need them
-      MELLIFERA_JAV_PARSER: /app/bin-extra/current/jav-parser
-      MELLIFERA_JAVINIZER: /app/bin-extra/current/javinizer
+      MELLIFERA_EXTRA_PLUGINS: ${MELLIFERA_EXTRA_PLUGINS:-}
     volumes:
       # server state: SQLite DB (WAL), thumbnails, packaged HLS artifacts
       - ./data:/app/data

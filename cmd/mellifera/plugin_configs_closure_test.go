@@ -6,31 +6,34 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/mellifera/mellifera/internal/api"
-	"github.com/mellifera/mellifera/internal/module"
 )
 
 // TestPluginConfigsClosureUnloaded splits the closure's two un-loaded
 // branches: a catalog-known id is dormancy (config-less row, nil error — the
-// admin aggregate walks the whole inventory, so the absent-binary default
-// boot must not fail-fast), while an id outside the catalog stays unknown
+// admin aggregate walks the whole inventory, so an absent external stays
+// boot-green), while an id outside the catalog stays unknown
 // (api.ErrUnknownPlugin). Both branches return before the registry read, so
 // reg stays nil.
 func TestPluginConfigsClosureUnloaded(t *testing.T) {
 	closure := newPluginConfigsClosure(nil, map[string][]string{"base-scanner": {"scanner"}})
 
 	t.Run("catalog-known absent id renders config-less", func(t *testing.T) {
-		for _, id := range []string{"jav-parser", module.PluginIDJavinizer} {
-			mods, kinds, priorities, enabled, authModes, displayFields, options, err := closure(context.Background(), id)
-			if err != nil {
-				t.Fatalf("closure(%q): unexpected error %v", id, err)
-			}
-			if mods != nil || kinds != nil || priorities != nil || enabled != nil ||
-				authModes != nil || displayFields != nil || options != nil {
-				t.Errorf("closure(%q): config-less id returned non-nil rows", id)
-			}
+		t.Setenv("MELLIFERA_EXTRA_PLUGINS", "ext-absent=bin/ext-absent")
+		base := sourceCatalog
+		sourceCatalog = appendExternalRows(sourceCatalog, parseExtraPlugins(os.Getenv("MELLIFERA_EXTRA_PLUGINS")))
+		t.Cleanup(func() { sourceCatalog = base })
+
+		mods, kinds, priorities, enabled, authModes, displayFields, options, err := closure(context.Background(), "ext-absent")
+		if err != nil {
+			t.Fatalf("closure(ext-absent): unexpected error %v", err)
+		}
+		if mods != nil || kinds != nil || priorities != nil || enabled != nil ||
+			authModes != nil || displayFields != nil || options != nil {
+			t.Error("closure(ext-absent): config-less id returned non-nil rows")
 		}
 	})
 

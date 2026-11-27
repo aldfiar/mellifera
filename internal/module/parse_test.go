@@ -12,11 +12,10 @@ import (
 // metadata_sources config slot (scan-library previously DROPPED it). It is a
 // pure function, so a single-module table test is the preferred form. Cases:
 // (a) the seeded TV config yields the full ordered chain (tv-parser ->
-// kinopoisk -> tmdb -> frame-grabber -> the two promoted bindings), each
-// enabled; (b) a config with no metadata_sources yields an empty slice
-// without error; (c) a source's opaque options round-trip verbatim as
-// json.RawMessage. A parseModule that still DROPPED the slot fails case (a)
-// at len mismatch (BUG CATCH).
+// kinopoisk -> tmdb -> frame-grabber), each enabled; (b) a config with no
+// metadata_sources yields an empty slice without error; (c) a source's opaque
+// options round-trip verbatim as json.RawMessage. A parseModule that still
+// DROPPED the slot fails case (a) at len mismatch (BUG CATCH).
 func TestParseModule_MetadataSources(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -27,8 +26,8 @@ func TestParseModule_MetadataSources(t *testing.T) {
 			name:   "seeded_tv_chain_tv_parser_first",
 			config: tvConfigJSON,
 			check: func(t *testing.T, m Module) {
-				if len(m.MetadataSources) != 6 {
-					t.Fatalf("MetadataSources len = %d, want 6: %+v", len(m.MetadataSources), m.MetadataSources)
+				if len(m.MetadataSources) != 4 {
+					t.Fatalf("MetadataSources len = %d, want 4: %+v", len(m.MetadataSources), m.MetadataSources)
 				}
 				want := []struct {
 					plugin   string
@@ -39,8 +38,6 @@ func TestParseModule_MetadataSources(t *testing.T) {
 					{"kinopoisk", 2, "CLIENT"},
 					{"tmdb", 3, "SERVER"},
 					{"frame-grabber", 4, ""},
-					{"jav-parser", 5, ""},
-					{PluginIDJavinizer, 6, "SERVER"},
 				}
 				for i, w := range want {
 					got := m.MetadataSources[i]

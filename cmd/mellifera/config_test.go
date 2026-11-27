@@ -4,6 +4,8 @@
 package main
 
 import (
+	"os"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -37,29 +39,57 @@ func TestEnvInt(t *testing.T) {
 	}
 }
 
-// TestOptionalPluginPathOverrides pins the two optional external-plugin path
-// resolutions: an unset/empty MELLIFERA_JAV_PARSER / MELLIFERA_JAVINIZER falls
-// back to the bin/ default, a set value overrides (the same envOr law as the
-// eight built-in override sites).
-func TestOptionalPluginPathOverrides(t *testing.T) {
+// TestParseExtraPluginsAbsentNone pins the dormancy law: an absent or empty
+// MELLIFERA_EXTRA_PLUGINS declares NO externals — no default paths are
+// synthesized, the operator's declaration is the only source.
+func TestParseExtraPluginsAbsentNone(t *testing.T) {
+	t.Setenv("MELLIFERA_TEST_EXTRA_PLUGINS", "")
+	if got := parseExtraPlugins(os.Getenv("MELLIFERA_TEST_EXTRA_PLUGINS")); got != nil {
+		t.Errorf("parseExtraPlugins(empty) = %v, want nil", got)
+	}
+	if got := parseExtraPlugins("   "); got != nil {
+		t.Errorf("parseExtraPlugins(whitespace) = %v, want nil", got)
+	}
+	if got := parseExtraPlugins(os.Getenv("MELLIFERA_TEST_UNSET_KEY")); got != nil {
+		t.Errorf("parseExtraPlugins(absent) = %v, want nil", got)
+	}
+}
+
+// TestParseExtraPluginsMalformedSkips pins the malformed-entry law: an entry
+// with no '=' separator (or an empty id/path side) is one warn log + skip —
+// the well-formed siblings still parse, declaration order is preserved, and
+// id/path are split on the FIRST '=' (a path may carry '=') and trimmed.
+func TestParseExtraPluginsMalformedSkips(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		key  string
-		def  string
-		val  string
-		want string
+		raw  string
+		want []extraPlugin
 	}{
-		{"jav_parser_empty_uses_default", "MELLIFERA_JAV_PARSER", "bin/jav-parser", "", "bin/jav-parser"},
-		{"jav_parser_env_overrides", "MELLIFERA_JAV_PARSER", "bin/jav-parser", "/opt/plugins/jav-parser", "/opt/plugins/jav-parser"},
-		{"javinizer_empty_uses_default", "MELLIFERA_JAVINIZER", "bin/javinizer", "", "bin/javinizer"},
-		{"javinizer_env_overrides", "MELLIFERA_JAVINIZER", "bin/javinizer", "/opt/plugins/javinizer", "/opt/plugins/javinizer"},
+		{"no_separator_skipped", "ext-a=bin/a, broken-entry, ext-b=bin/b",
+			[]extraPlugin{{"ext-a", "bin/a"}, {"ext-b", "bin/b"}}},
+		{"empty_id_skipped", "=bin/orphan", nil},
+		{"empty_path_skipped", "ext-a=,", nil},
+		{"whitespace_trimmed", "  ext-a = /opt/x/a , ext-b=bin/b",
+			[]extraPlugin{{"ext-a", "/opt/x/a"}, {"ext-b", "bin/b"}}},
+		{"first_equals_wins", "ext-a=bin/a=with=signs",
+			[]extraPlugin{{"ext-a", "bin/a=with=signs"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(tc.key, tc.val)
-			if got := envOr(tc.key, tc.def); got != tc.want {
-				t.Errorf("envOr(%q=%q, def=%q) = %q, want %q", tc.key, tc.val, tc.def, got, tc.want)
+			got := parseExtraPlugins(tc.raw)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("parseExtraPlugins(%q) = %v, want %v", tc.raw, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestParseExtraPluginsDuplicateFirstWins pins the duplicate law: a repeated
+// id keeps its FIRST declaration (ordered pairs), later ones warn + skip.
+func TestParseExtraPluginsDuplicateFirstWins(t *testing.T) {
+	got := parseExtraPlugins("ext-a=bin/first, ext-b=bin/b, ext-a=bin/second")
+	want := []extraPlugin{{"ext-a", "bin/first"}, {"ext-b", "bin/b"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseExtraPlugins = %v, want %v", got, want)
 	}
 }
 

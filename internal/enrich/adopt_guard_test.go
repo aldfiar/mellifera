@@ -24,22 +24,23 @@ import (
 func TestWorkItemSkipsAdoptForDeletedRow(t *testing.T) {
 	ctx := context.Background()
 	s, reg := queueTestStore(t)
+	promoteGenericPair(t, reg)
 	libID, err := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
 	if err != nil {
 		t.Fatalf("CreateLibrary: %v", err)
 	}
 
 	// Both docs carry every queueable namespace (tv-parser, tmdb,
-	// frame-grabber, plus the two promoted optional sources — the tv chain's
-	// queueable set; kinopoisk is CLIENT), so a workItem pass drives no source
-	// — the pass is settle-only, isolating the Adopt fire decision.
+	// frame-grabber, plus the promoted generic pair — the tv chain's queueable
+	// set; kinopoisk is CLIENT), so a workItem pass drives no source — the pass
+	// is settle-only, isolating the Adopt fire decision.
 	settled := baseDoc("Show/S01E01.mkv")
 	settled["sources"] = map[string]any{
 		"tv-parser":     map[string]any{"title": "done"},
 		"tmdb":          map[string]any{"title": "done"},
 		"frame-grabber": map[string]any{"title": "done"},
-		"jav-parser":    map[string]any{"title": "done"},
-		"javinizer":     map[string]any{"title": "done"},
+		"ext-source-a":  map[string]any{"title": "done"},
+		"ext-source-b":  map[string]any{"title": "done"},
 	}
 	putItem(t, s, "itm_adopt_dead", libID, statusDeleted, settled)
 	putItem(t, s, "itm_adopt_live", libID, statusEnriched, settled)

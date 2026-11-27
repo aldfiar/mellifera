@@ -69,6 +69,7 @@ func TestGateDerivation(t *testing.T) {
 	// ordinary drain/settle advancement was introduced.
 	t.Run("enable_pref_wakes_derivation", func(t *testing.T) {
 		s, reg := queueTestStore(t)
+		promoteGenericPair(t, reg)
 		libID, err := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
 		if err != nil {
 			t.Fatalf("CreateLibrary: %v", err)
@@ -77,13 +78,13 @@ func TestGateDerivation(t *testing.T) {
 		doc["sources"] = map[string]any{
 			"tv-parser":     map[string]any{"title": "parsed"},
 			"frame-grabber": map[string]any{"grabbed": true},
-			// the v3 seed's sources carried done too: without a RequiredSecrets
-			// closure the SERVER javinizer slot is queueable here, and any
+			// the promoted pair carried done too: without a RequiredSecrets
+			// closure the SERVER ext-source-b slot is queueable here, and any
 			// unsettled chain source would keep a pre-enable pass in flight
 			// across the gate flip — that pass holds the row lease, swallows
 			// the wake dispatch, and settles the row with the pre-flip gates.
-			"jav-parser": map[string]any{"title": "parsed"},
-			"javinizer":  map[string]any{"title": "enriched"},
+			"ext-source-a": map[string]any{"title": "parsed"},
+			"ext-source-b": map[string]any{"title": "enriched"},
 		}
 		putItem(t, s, "i_wake", libID, statusEnriched, doc)
 		parser := &succeedSrc{id: "tv-parser"}
@@ -148,6 +149,7 @@ func TestGateDerivation(t *testing.T) {
 	// row is never dispatched (no task, no Match, status untouched).
 	t.Run("carried_namespace_derives_nothing_on_wake", func(t *testing.T) {
 		s, reg := queueTestStore(t)
+		promoteGenericPair(t, reg)
 		libID, err := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
 		if err != nil {
 			t.Fatalf("CreateLibrary: %v", err)
@@ -157,11 +159,11 @@ func TestGateDerivation(t *testing.T) {
 			"tv-parser":     map[string]any{"title": "parsed"},
 			"tmdb":          map[string]any{"title": "enriched"},
 			"frame-grabber": map[string]any{"grabbed": true},
-			// the tv seed's v3 sources carried done too — without a
-			// RequiredSecrets closure the SERVER javinizer slot is queueable
-			// here, and its absence would resurrect the row as pending.
-			"jav-parser": map[string]any{"title": "parsed"},
-			"javinizer":  map[string]any{"title": "enriched"},
+			// the promoted pair carried done too — without a RequiredSecrets
+			// closure the SERVER ext-source-b slot is queueable here, and its
+			// absence would resurrect the row as pending.
+			"ext-source-a": map[string]any{"title": "parsed"},
+			"ext-source-b": map[string]any{"title": "enriched"},
 		}
 		putItem(t, s, "i_done", libID, statusEnriched, doc)
 		parser := &succeedSrc{id: "tv-parser"}

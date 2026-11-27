@@ -100,6 +100,7 @@ func TestQA_C01_StagesRoundTrip(t *testing.T) {
 		// (unavailable) and appendStage APPENDS — the tv-parser:ok history must survive.
 		ctx := context.Background()
 		s, reg := queueTestStore(t)
+		promoteGenericPair(t, reg)
 		libID, err := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
 		if err != nil {
 			t.Fatalf("CreateLibrary: %v", err)
@@ -130,8 +131,8 @@ func TestQA_C01_StagesRoundTrip(t *testing.T) {
 			t.Fatalf("C-01: tmdb:unavailable stage absent after re-derive; stages=%v", after["_stages"])
 		}
 		// total stage count: 2 prior (tv-parser:ok, tmdb:unavailable) preserved + 4 fresh
-		// appends (tmdb retry + the v2 chain's frame-grabber + the v3 seed's jav-parser
-		// and javinizer, both absent from the resolver -> unavailable) = 6. The doc is
+		// appends (tmdb retry + the chain's frame-grabber + the promoted ext-source-a
+		// and ext-source-b, both absent from the resolver -> unavailable) = 6. The doc is
 		// round-tripped again after persist, so count tolerantly across both forms
 		// (decodeDoc now normalizes to []map[string]any either way).
 		if n := c01StageCount(after); n != 6 {

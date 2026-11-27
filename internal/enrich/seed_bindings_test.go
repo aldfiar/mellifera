@@ -11,16 +11,33 @@ import (
 	"time"
 
 	"github.com/mellifera/mellifera/internal/access"
+	"github.com/mellifera/mellifera/internal/module"
 )
 
-// requiredJavinizer is the Deps.RequiredSecrets closure standing in for the
-// Javinizer handshake's declared required option (base_url); every other
+// requiredExternal is the Deps.RequiredSecrets closure standing in for the
+// ext-source-b handshake's declared required option (base_url); every other
 // plugin's declared set is empty.
-func requiredJavinizer(pluginID string) []string {
-	if pluginID == "javinizer" {
+func requiredExternal(pluginID string) []string {
+	if pluginID == "ext-source-b" {
 		return []string{"base_url"}
 	}
 	return nil
+}
+
+// promoteGenericPair promotes the generic external pair onto the tv chain
+// exactly as the cmd promotion pass would — same posture per row (capability
+// "default", enabled, relay-exempt, AuthMode "" for the LOCAL ext-source-a and
+// "SERVER" for the loaded-with-declared-option ext-source-b, options nil).
+func promoteGenericPair(t *testing.T, reg *module.Registry) {
+	t.Helper()
+	for _, b := range []module.MetadataSourceBinding{
+		{PluginID: "ext-source-a", CapabilityID: "default", Enabled: true, NoRelay: true},
+		{PluginID: "ext-source-b", CapabilityID: "default", Enabled: true, NoRelay: true, AuthMode: "SERVER"},
+	} {
+		if err := reg.EnsureModuleBindings("tv", []module.MetadataSourceBinding{b}); err != nil {
+			t.Fatalf("EnsureModuleBindings %s: %v", b.PluginID, err)
+		}
+	}
 }
 
 // stageCount counts plugin's entries in doc._stages (decodeDoc-normalized).
@@ -46,8 +63,8 @@ func lastStage(doc map[string]any, plugin string) map[string]any {
 	return nil
 }
 
-// TestPromotedServerBindingDormantUntilOption pins the tv seed v3's SERVER
-// javinizer binding in its stock state (options {} — the declared base_url
+// TestPromotedServerBindingDormantUntilOption pins the promoted SERVER
+// ext-source-b binding in its stock state (options {} — the declared base_url
 // unresolved): dormant at derivation (queueable false — no task, no stage, no
 // ledger row, no retry churn) without stalling the row's settle, and the
 // operator's options PUT flips it to derivable.
@@ -56,19 +73,20 @@ func TestPromotedServerBindingDormantUntilOption(t *testing.T) {
 
 	t.Run("unresolved_option_derives_nothing", func(t *testing.T) {
 		s, reg := queueTestStore(t)
+		promoteGenericPair(t, reg)
 		libID, err := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
 		if err != nil {
 			t.Fatalf("CreateLibrary: %v", err)
 		}
 		putItem(t, s, "i_dormant", libID, statusPending, baseDoc("Show/S01E01.mkv"))
-		q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredJavinizer}, QueueConfig{Backoff: time.Millisecond})
-		// the javinizer plugin is not loaded — irrelevant, dormancy must keep
+		q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredExternal}, QueueConfig{Backoff: time.Millisecond})
+		// the ext-source-b plugin is not loaded — irrelevant, dormancy must keep
 		// the queue from ever reaching for it
 		q.resolve = mapResolver{
 			"tv-parser":     &succeedSrc{id: "tv-parser"},
 			"tmdb":          &succeedSrc{id: "tmdb"},
 			"frame-grabber": &succeedSrc{id: "frame-grabber"},
-			"jav-parser":    &succeedSrc{id: "jav-parser"},
+			"ext-source-a":  &succeedSrc{id: "ext-source-a"},
 		}.resolver()
 
 		if err := q.Start(ctx); err != nil {
@@ -79,43 +97,44 @@ func TestPromotedServerBindingDormantUntilOption(t *testing.T) {
 		it := waitForStatus(t, s, "i_dormant", statusReady, 2*time.Second)
 
 		doc := decodeDoc(it.Document)
-		if hasNamespace(doc, "javinizer") {
+		if hasNamespace(doc, "ext-source-b") {
 			t.Fatalf("unresolved SERVER binding wrote a namespace: %v", doc["sources"])
 		}
-		if n := stageCount(doc, "javinizer"); n != 0 {
-			t.Fatalf("dormant javinizer produced %d _stages entries, want 0 (queueable false keeps the drive away)", n)
+		if n := stageCount(doc, "ext-source-b"); n != 0 {
+			t.Fatalf("dormant ext-source-b produced %d _stages entries, want 0 (queueable false keeps the drive away)", n)
 		}
 		rows, err := s.ListFailures(ctx)
 		if err != nil {
 			t.Fatalf("ListFailures: %v", err)
 		}
 		if len(rows) != 0 {
-			t.Fatalf("dormant javinizer left ledger rows (retry churn): %v", rows)
+			t.Fatalf("dormant ext-source-b left ledger rows (retry churn): %v", rows)
 		}
 	})
 
 	t.Run("resolved_option_derives", func(t *testing.T) {
 		s, reg := queueTestStore(t)
+		promoteGenericPair(t, reg)
 		libID, err := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
 		if err != nil {
 			t.Fatalf("CreateLibrary: %v", err)
 		}
 		putItem(t, s, "i_opt", libID, statusPending, baseDoc("Show/S01E02.mkv"))
-		if err := reg.SetBindingOptions(ctx, "tv", "javinizer", json.RawMessage(`{"base_url":"http://javinizer.lan"}`)); err != nil {
+		if err := reg.SetBindingOptions(ctx, "tv", "ext-source-b", json.RawMessage(`{"base_url":"http://ext-source-b.lan"}`)); err != nil {
 			t.Fatalf("SetBindingOptions: %v", err)
 		}
-		q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredJavinizer}, QueueConfig{})
+		q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredExternal}, QueueConfig{})
 		tasks, err := q.deriveLibrary(ctx, libID)
 		if err != nil {
 			t.Fatalf("deriveLibrary: %v", err)
 		}
-		if !pluginIDs(tasks)["javinizer"] {
-			t.Fatalf("resolved javinizer derived %v, want a task (the options PUT ends dormancy)", pluginIDs(tasks))
+		if !pluginIDs(tasks)["ext-source-b"] {
+			t.Fatalf("resolved ext-source-b derived %v, want a task (the options PUT ends dormancy)", pluginIDs(tasks))
 		}
 	})
 }
 
-// TestPromotedLocalSourceAbsentSettlesReady pins the tv seed v3's jav-parser
+// TestPromotedLocalSourceAbsentSettlesReady pins the promoted ext-source-a
 // binding while its binary is absent: the enabled LOCAL source derives each
 // pass, records exactly ONE unavailable stage per pass, leaves no ledger row,
 // and the attemptedNoWork terminal-at-settle law lands the row ready instead
@@ -125,13 +144,14 @@ func TestPromotedServerBindingDormantUntilOption(t *testing.T) {
 func TestPromotedLocalSourceAbsentSettlesReady(t *testing.T) {
 	ctx := context.Background()
 	s, reg := queueTestStore(t)
+	promoteGenericPair(t, reg)
 	libID, err := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
 	if err != nil {
 		t.Fatalf("CreateLibrary: %v", err)
 	}
 	putItem(t, s, "i_absent", libID, statusPending, baseDoc("Show/S01E01.mkv"))
-	q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredJavinizer}, QueueConfig{})
-	// jav-parser deliberately NOT in the resolver: the binary is absent
+	q := NewQueue(Deps{Store: s, Modules: reg, RequiredSecrets: requiredExternal}, QueueConfig{})
+	// ext-source-a deliberately NOT in the resolver: the binary is absent
 	q.resolve = mapResolver{
 		"tv-parser":     &succeedSrc{id: "tv-parser"},
 		"tmdb":          &succeedSrc{id: "tmdb"},
@@ -145,11 +165,11 @@ func TestPromotedLocalSourceAbsentSettlesReady(t *testing.T) {
 		t.Fatalf("deriveLibrary: %v", err)
 	}
 	got := pluginIDs(tasks)
-	if !got["jav-parser"] {
-		t.Fatalf("absent-binary jav-parser not derived: %v", got)
+	if !got["ext-source-a"] {
+		t.Fatalf("absent-binary ext-source-a not derived: %v", got)
 	}
-	if got["javinizer"] {
-		t.Fatalf("dormant javinizer derived alongside: %v", got)
+	if got["ext-source-b"] {
+		t.Fatalf("dormant ext-source-b derived alongside: %v", got)
 	}
 
 	// Pass 1: exactly one unavailable stage, no ledger row, and the
@@ -163,18 +183,18 @@ func TestPromotedLocalSourceAbsentSettlesReady(t *testing.T) {
 		t.Fatalf("status = %v after pass 1, want ready (absent-binary terminal-at-settle)", it.Status)
 	}
 	doc := decodeDoc(it.Document)
-	if n := stageCount(doc, "jav-parser"); n != 1 {
-		t.Fatalf("pass 1 recorded %d jav-parser stages, want exactly 1; stages=%v", n, doc["_stages"])
+	if n := stageCount(doc, "ext-source-a"); n != 1 {
+		t.Fatalf("pass 1 recorded %d ext-source-a stages, want exactly 1; stages=%v", n, doc["_stages"])
 	}
-	if st := lastStage(doc, "jav-parser"); st["status"] != "unavailable" {
-		t.Fatalf("jav-parser stage status = %v, want unavailable", st["status"])
+	if st := lastStage(doc, "ext-source-a"); st["status"] != "unavailable" {
+		t.Fatalf("ext-source-a stage status = %v, want unavailable", st["status"])
 	}
 	rows, err := s.ListFailures(ctx)
 	if err != nil {
 		t.Fatalf("ListFailures: %v", err)
 	}
 	if len(rows) != 0 {
-		t.Fatalf("absent-binary jav-parser left ledger rows: %v", rows)
+		t.Fatalf("absent-binary ext-source-a left ledger rows: %v", rows)
 	}
 
 	// Pass 2: it derives again (namespace absent, not in cooldown) and appends
@@ -188,11 +208,11 @@ func TestPromotedLocalSourceAbsentSettlesReady(t *testing.T) {
 		t.Fatalf("status = %v after pass 2, want still ready", it2.Status)
 	}
 	doc2 := decodeDoc(it2.Document)
-	if n := stageCount(doc2, "jav-parser"); n != 2 {
-		t.Fatalf("pass 2 recorded %d jav-parser stages total, want exactly 2 (one per pass); stages=%v", n, doc2["_stages"])
+	if n := stageCount(doc2, "ext-source-a"); n != 2 {
+		t.Fatalf("pass 2 recorded %d ext-source-a stages total, want exactly 2 (one per pass); stages=%v", n, doc2["_stages"])
 	}
-	if st := lastStage(doc2, "jav-parser"); st["status"] != "unavailable" {
-		t.Fatalf("second jav-parser stage status = %v, want unavailable", st["status"])
+	if st := lastStage(doc2, "ext-source-a"); st["status"] != "unavailable" {
+		t.Fatalf("second ext-source-a stage status = %v, want unavailable", st["status"])
 	}
 	rows, err = s.ListFailures(ctx)
 	if err != nil {

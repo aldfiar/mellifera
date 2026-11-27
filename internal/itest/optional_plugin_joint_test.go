@@ -4,27 +4,31 @@
 // QA joint for the optional metadata_source sites: the REAL composed graph
 // runs as subprocesses — the server binary
 // with its composition-root optional load sites, the contract-conformant
-// stub plugin binary (internal/itest/javstubbin, a real go-plugin child
+// stub plugin binary (internal/itest/externalstubbin, a real go-plugin child
 // whose Handshake declares the required option), the real registry → queue →
-// chain → relay, and exactly one stubbed origin: the javinizer-shaped
-// upstream, an httptest server whose URL the test feeds in through the REAL
-// admin options write (the operator-paste equivalent). Three legs:
+// chain → relay, and exactly one stubbed origin: an httptest server whose URL
+// the test feeds in through the REAL admin options write (the
+// operator-paste equivalent). The stub arrives through the generic external
+// inventory (MELLIFERA_EXTRA_PLUGINS=ext-source-a=<stub binary>), and its tv
+// binding arrives through the boot promotion pass: the stub declares
+// base_url in its handshake, so the promotion derives SERVER and the binding
+// stays dormant until the options PUT. Three legs:
 //
 //	TestOptionalPluginJoint — a present stub loads green on first boot; the
-//	    seeded SERVER javinizer binding derives nothing while the declared
-//	    option is unset (dormancy is absence); the options PUT flips the
-//	    verdict; the re-derived run enriches and the namespace plus the
-//	    identifier anchor land.
+//	    promoted SERVER binding derives nothing while the declared option is
+//	    unset (dormancy is absence); the options PUT flips the verdict; the
+//	    re-derived run enriches and the namespace plus the identifier anchor
+//	    land.
 //	TestOptionalPluginJoint_MismatchLeg — a stub serving the WRONG magic
 //	    cookie loads to a synthesized failed row; the boot stays green and
 //	    the in-repo pair never regresses.
-//	TestOptionalPluginJoint_NoRelayNeverRelays — the trait at the seam: with
-//	    the relay live and the stub upstream unreachable, the trait-carrying
-//	    binding's network-class failure lands NO row in relay_jobs (never
-//	    handed off — the ledger row reads "failed", never "relayed" — and
-//	    the claim pool reads empty).
+//	TestOptionalPluginJoint_NoRelayNeverRelays — the promotion's trait at the
+//	    seam: with the relay live and the stub upstream unreachable, the
+//	    trait-carrying binding's network-class failure lands NO row in
+//	    relay_jobs (never handed off — the ledger row reads "failed", never
+//	    "relayed" — and the claim pool reads empty).
 //
-// Every helper is javStub-prefixed to stay collision-free in package
+// Every helper is extStub-prefixed to stay collision-free in package
 // mellifera_test; the shared harness (buildBinary/doRequest/scanLibrary/…)
 // and the qa serial/tmdb helpers are reused as-is. The fixture values are
 // independent of every other suite's (no-coincidence discipline).
@@ -45,7 +49,7 @@ import (
 	"time"
 )
 
-// Fixture identity + transport constants. javStubCode restates the stub
+// Fixture identity + transport constants. extStubCode restates the stub
 // binary's canned code (a package-main literal — unimportable, so the
 // expectations pin it independently). The dead upstream is the CLOSED
 // loopback port 9 (the qa relay joint's precedent): dial refused instantly,
@@ -53,28 +57,28 @@ import (
 // origin — the core's substitute law QueryEscapes every value, and only
 // digits survive byte-identical (the stub's BuildRequest documents the law).
 const (
-	javStubToken       = "qa-javstub-admin-token"
-	javStubCode        = "QA-777"
+	extStubToken = "qa-extstub-admin-token"
+	extStubCode  = "QA-777"
 	// The anchor the stub resolves: its canned row's id IS the code (the
 	// match key doubles as the upstream id), so the resolved anchor carries
 	// the code verbatim.
-	javStubAnchor      = "QA-777"
-	javStubTitle       = "QA Stub Enrichment"
-	javStubDesc        = "qa stub synopsis — выросший в крещенскую ночь лёд."
-	javStubDate        = "2024-02-01"
-	javStubRel         = "Stub Signal 2024.mkv"
-	javStubRelayRel    = "Stub Relay 2025.mkv"
-	javStubDeadPort    = "9"
-	javStubMismatchEnv = "MELLIFERA_JAVSTUB_COOKIE_MISMATCH"
+	extStubAnchor      = "QA-777"
+	extStubTitle       = "QA Stub Enrichment"
+	extStubDesc        = "qa stub synopsis — выросший в крещенскую ночь лёд."
+	extStubDate        = "2024-02-01"
+	extStubRel         = "Stub Signal 2024.mkv"
+	extStubRelayRel    = "Stub Relay 2025.mkv"
+	extStubDeadPort    = "9"
+	extStubMismatchEnv = "MELLIFERA_EXTSTUB_COOKIE_MISMATCH"
 	// The async waits (the namespace landing, the ledger row landing): each
 	// is a sub-second round trip in practice; 30s is generous and bounded
 	// (INV-poll-bounded).
-	javStubWaitTimeout = 30 * time.Second
+	extStubWaitTimeout = 30 * time.Second
 )
 
-// javStubGuards skips under -short and without the media toolchain (the
+// extStubGuards skips under -short and without the media toolchain (the
 // fixture needs ffmpeg for generation and ffprobe for the scan probe — INV4).
-func javStubGuards(t *testing.T) {
+func extStubGuards(t *testing.T) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("QA optional-plugin joint: skips under -short (builds binaries + subprocesses)")
@@ -87,34 +91,34 @@ func javStubGuards(t *testing.T) {
 	}
 }
 
-// --- the stub upstream (the test process's fake Javinizer origin) ---
+// --- the stub upstream (the test process's fake enrichment origin) ---
 
-// javStubUpstream is the fake javinizer origin the core fetches after the
+// extStubUpstream is the fake upstream origin the core fetches after the
 // options PUT resolves the base_url variable to its port. Every request
 // records first — the recording doubles as the substitution proof (the only
 // way a request lands here is through the core-side resolveVariables seam)
 // and as the no-other-fetch evidence.
-type javStubUpstream struct {
+type extStubUpstream struct {
 	srv  *httptest.Server
 	port string
 	mu   sync.Mutex
 	seen []string
 }
 
-// javStubStartUpstream serves the one canned list response the stub's spec
+// extStubStartUpstream serves the one canned list response the stub's spec
 // asks for; unknown query values 404 (a wrong substituted code must fail
 // loudly, not feed a lucky row).
-func javStubStartUpstream(t *testing.T) *javStubUpstream {
+func extStubStartUpstream(t *testing.T) *extStubUpstream {
 	t.Helper()
-	s := &javStubUpstream{}
+	s := &extStubUpstream{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/list", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("code") != javStubCode {
+		if r.URL.Query().Get("code") != extStubCode {
 			http.NotFound(w, r)
 			return
 		}
 		qaTmdbWriteJSON(t, w, map[string]any{"videos": []any{map[string]any{
-			"id": javStubCode, "title": javStubTitle, "description": javStubDesc, "date": javStubDate,
+			"id": extStubCode, "title": extStubTitle, "description": extStubDesc, "date": extStubDate,
 		}}})
 	})
 	record := func(next http.Handler) http.Handler {
@@ -122,7 +126,7 @@ func javStubStartUpstream(t *testing.T) *javStubUpstream {
 			s.mu.Lock()
 			s.seen = append(s.seen, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
 			s.mu.Unlock()
-			t.Logf("javstub upstream hit: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+			t.Logf("extstub upstream hit: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -137,42 +141,42 @@ func javStubStartUpstream(t *testing.T) *javStubUpstream {
 }
 
 // hits snapshots the recording.
-func (s *javStubUpstream) hits() []string {
+func (s *extStubUpstream) hits() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.seen...)
 }
 
 // recording renders the journal compactly for failure messages.
-func (s *javStubUpstream) recording() string {
+func (s *extStubUpstream) recording() string {
 	return strings.Join(s.hits(), " | ")
 }
 
 // --- harness glue ---
 
-// javStubStartServer mirrors the qa serial harness's hermetic start with the
-// two OPTIONAL path pins the joint is about: jav-parser pointed at a path
-// that never exists (hermetic absence — the synthesized not_serving row) and
-// javinizer at the stub binary. extraEnv rides along (the mismatch knob's
-// delivery path — the go-plugin child inherits the server's environment).
-func javStubStartServer(t *testing.T, tmp, token, javinizerBin string, extraEnv ...string) string {
+// extStubStartServer mirrors the qa serial harness's hermetic start with the
+// generic external pin the joint is about: ext-source-a pointed at the stub
+// binary through MELLIFERA_EXTRA_PLUGINS (the declaration loads it AND the
+// boot promotion binds it onto the tv chain). extraEnv rides along (the
+// mismatch knob's delivery path — the go-plugin child inherits the server's
+// environment).
+func extStubStartServer(t *testing.T, tmp, token, stubBin string, extraEnv ...string) string {
 	t.Helper()
 	addr := net.JoinHostPort("127.0.0.1", freePort(t))
-	srv := exec.Command(buildBinary(t, tmp, "javjoint-server", "./cmd/mellifera"))
+	srv := exec.Command(buildBinary(t, tmp, "extjoint-server", "./cmd/mellifera"))
 	srv.Env = append(os.Environ(),
 		"MELLIFERA_DATA_DIR="+filepath.Join(tmp, "data"),
 		"MELLIFERA_ADMIN_TOKEN="+token,
-		"MELLIFERA_BASE_SCANNER="+buildBinary(t, tmp, "javjoint-basescanner", "./plugins/base-scanner"),
-		"MELLIFERA_TV_PARSER="+buildBinary(t, tmp, "javjoint-tvparser", "./plugins/tv-parser"),
-		"MELLIFERA_IMAGE_ENRICHER="+buildBinary(t, tmp, "javjoint-imageenricher", "./plugins/image-enricher"),
-		"MELLIFERA_SERIAL_SCANNER="+buildBinary(t, tmp, "javjoint-serialscanner", "./plugins/serial-scanner"),
-		"MELLIFERA_SERIAL_PARSER="+buildBinary(t, tmp, "javjoint-serialparser", "./plugins/serial-parser"),
-		"MELLIFERA_FRAME_GRABBER="+buildBinary(t, tmp, "javjoint-framegrabber", "./plugins/frame-grabber"),
+		"MELLIFERA_BASE_SCANNER="+buildBinary(t, tmp, "extjoint-basescanner", "./plugins/base-scanner"),
+		"MELLIFERA_TV_PARSER="+buildBinary(t, tmp, "extjoint-tvparser", "./plugins/tv-parser"),
+		"MELLIFERA_IMAGE_ENRICHER="+buildBinary(t, tmp, "extjoint-imageenricher", "./plugins/image-enricher"),
+		"MELLIFERA_SERIAL_SCANNER="+buildBinary(t, tmp, "extjoint-serialscanner", "./plugins/serial-scanner"),
+		"MELLIFERA_SERIAL_PARSER="+buildBinary(t, tmp, "extjoint-serialparser", "./plugins/serial-parser"),
+		"MELLIFERA_FRAME_GRABBER="+buildBinary(t, tmp, "extjoint-framegrabber", "./plugins/frame-grabber"),
 		"MELLIFERA_SHIKIMORI="+shikimoriBin(t, tmp),
 		"MELLIFERA_SHIKIMORI_UPSTREAM="+qaTmdbDeadUpstream,
 		"MELLIFERA_TMDB="+tmdbBin(t, tmp),
-		"MELLIFERA_JAV_PARSER="+filepath.Join(tmp, "jav-parser-absent"), // never built: hermetic absence
-		"MELLIFERA_JAVINIZER="+javinizerBin,
+		"MELLIFERA_EXTRA_PLUGINS=ext-source-a="+stubBin,
 		"MELLIFERA_LISTEN="+addr,
 	)
 	srv.Env = append(srv.Env, extraEnv...)
@@ -190,39 +194,39 @@ func javStubStartServer(t *testing.T, tmp, token, javinizerBin string, extraEnv 
 	return baseURL
 }
 
-// javStubWriteLibrary writes one film file into a fresh library root.
-func javStubWriteLibrary(t *testing.T, rel string) string {
+// extStubWriteLibrary writes one film file into a fresh library root.
+func extStubWriteLibrary(t *testing.T, rel string) string {
 	t.Helper()
 	root := t.TempDir()
 	qaSerialMedia(t, filepath.Join(root, rel))
 	return root
 }
 
-func javStubCreateTvLibrary(t *testing.T, c *http.Client, baseURL, root, name string) int64 {
+func extStubCreateTvLibrary(t *testing.T, c *http.Client, baseURL, root, name string) int64 {
 	t.Helper()
 	body := createLibraryRequest{ModuleID: "tv", RootPath: root, DisplayName: name}
 	var resp libraryResponse
-	if status := doRequest(t, c, http.MethodPost, baseURL+"/api/v1/libraries", javStubToken, body, &resp); status != http.StatusCreated {
+	if status := doRequest(t, c, http.MethodPost, baseURL+"/api/v1/libraries", extStubToken, body, &resp); status != http.StatusCreated {
 		t.Fatalf("create tv library: HTTP %d, want 201", status)
 	}
 	return resp.ID
 }
 
-func javStubListItems(t *testing.T, c *http.Client, baseURL string, libID int64) []qaTmdbItemDTO {
+func extStubListItems(t *testing.T, c *http.Client, baseURL string, libID int64) []qaTmdbItemDTO {
 	t.Helper()
 	var resp struct {
 		Items []qaTmdbItemDTO `json:"items"`
 	}
 	u := baseURL + "/api/v1/items?library=" + strconv.FormatInt(libID, 10) + "&limit=200"
-	if status := doRequest(t, c, http.MethodGet, u, javStubToken, nil, &resp); status != http.StatusOK {
+	if status := doRequest(t, c, http.MethodGet, u, extStubToken, nil, &resp); status != http.StatusOK {
 		t.Fatalf("list items lib %d: HTTP %d, want 200", libID, status)
 	}
 	return resp.Items
 }
 
-func javStubItemByRel(t *testing.T, c *http.Client, baseURL string, libID int64, rel string) qaTmdbItemDTO {
+func extStubItemByRel(t *testing.T, c *http.Client, baseURL string, libID int64, rel string) qaTmdbItemDTO {
 	t.Helper()
-	for _, it := range javStubListItems(t, c, baseURL, libID) {
+	for _, it := range extStubListItems(t, c, baseURL, libID) {
 		if it.RelativePath == rel {
 			return it
 		}
@@ -231,21 +235,21 @@ func javStubItemByRel(t *testing.T, c *http.Client, baseURL string, libID int64,
 	return qaTmdbItemDTO{}
 }
 
-// javStubPutOptions writes the binding options through the REAL admin write:
-// PUT /admin/modules/{module}/sources/javinizer/options — whole-replacement
+// extStubPutOptions writes the binding options through the REAL admin write:
+// PUT /admin/modules/{module}/sources/ext-source-a/options — whole-replacement
 // JSON, the value the core resolves the server-ref variable from.
-func javStubPutOptions(t *testing.T, c *http.Client, baseURL, moduleID, upstreamPort string) {
+func extStubPutOptions(t *testing.T, c *http.Client, baseURL, moduleID, upstreamPort string) {
 	t.Helper()
 	body := map[string]any{"options": map[string]any{"base_url": upstreamPort}}
 	var ignored map[string]any
-	if status := doRequest(t, c, http.MethodPut, baseURL+"/api/v1/admin/modules/"+moduleID+"/sources/javinizer/options", javStubToken, body, &ignored); status != http.StatusNoContent {
-		t.Fatalf("PUT javinizer options (%s): HTTP %d, want 204", moduleID, status)
+	if status := doRequest(t, c, http.MethodPut, baseURL+"/api/v1/admin/modules/"+moduleID+"/sources/ext-source-a/options", extStubToken, body, &ignored); status != http.StatusNoContent {
+		t.Fatalf("PUT ext-source-a options (%s): HTTP %d, want 204", moduleID, status)
 	}
 }
 
-// javStubPluginState reads ONE plugin row off GET /admin/status (the
+// extStubPluginState reads ONE plugin row off GET /admin/status (the
 // synthesized optional rows ride ahead of the manager path there).
-func javStubPluginState(t *testing.T, c *http.Client, baseURL, token, id string) (state, message string, restarts int) {
+func extStubPluginState(t *testing.T, c *http.Client, baseURL, token, id string) (state, message string, restarts int) {
 	t.Helper()
 	var resp struct {
 		Plugins []struct {
@@ -267,9 +271,9 @@ func javStubPluginState(t *testing.T, c *http.Client, baseURL, token, id string)
 	return "", "", 0
 }
 
-// javStubBindingFor reads the javinizer binding row for a module off the
-// /admin/plugins aggregate (the qaTmdbBinding wire shape, javinizer-filtered).
-func javStubBindingFor(t *testing.T, c *http.Client, baseURL, moduleID string) qaTmdbBinding {
+// extStubBindingFor reads the ext-source-a binding row for a module off the
+// /admin/plugins aggregate (the qaTmdbBinding wire shape, ext-source-a-filtered).
+func extStubBindingFor(t *testing.T, c *http.Client, baseURL, moduleID string) qaTmdbBinding {
 	t.Helper()
 	var resp struct {
 		Plugins []struct {
@@ -277,11 +281,11 @@ func javStubBindingFor(t *testing.T, c *http.Client, baseURL, moduleID string) q
 			Config   []qaTmdbBinding `json:"config"`
 		} `json:"plugins"`
 	}
-	if status := doRequest(t, c, http.MethodGet, baseURL+"/api/v1/admin/plugins", javStubToken, nil, &resp); status != http.StatusOK {
+	if status := doRequest(t, c, http.MethodGet, baseURL+"/api/v1/admin/plugins", extStubToken, nil, &resp); status != http.StatusOK {
 		t.Fatalf("GET /admin/plugins: HTTP %d, want 200", status)
 	}
 	for _, p := range resp.Plugins {
-		if p.PluginID != "javinizer" {
+		if p.PluginID != "ext-source-a" {
 			continue
 		}
 		for _, b := range p.Config {
@@ -290,31 +294,31 @@ func javStubBindingFor(t *testing.T, c *http.Client, baseURL, moduleID string) q
 			}
 		}
 	}
-	t.Fatalf("aggregate carries no javinizer metadata binding for module %q (plugins: %+v)", moduleID, resp.Plugins)
+	t.Fatalf("aggregate carries no ext-source-a metadata binding for module %q (plugins: %+v)", moduleID, resp.Plugins)
 	return qaTmdbBinding{}
 }
 
-// javStubAssertNoLedgerRow reads the failures ledger once and fails when a
-// javinizer row exists for rowID.
-func javStubAssertNoLedgerRow(t *testing.T, c *http.Client, baseURL, token, rowID string) {
+// extStubAssertNoLedgerRow reads the failures ledger once and fails when an
+// ext-source-a row exists for rowID.
+func extStubAssertNoLedgerRow(t *testing.T, c *http.Client, baseURL, token, rowID string) {
 	t.Helper()
 	var resp qaRelayFailures
 	if status := doRequest(t, c, http.MethodGet, baseURL+"/api/v1/enrich/failures", token, nil, &resp); status != http.StatusOK {
 		t.Fatalf("GET /enrich/failures: HTTP %d, want 200", status)
 	}
 	for _, f := range resp.Failures {
-		if f.PluginID == "javinizer" && f.RowID == rowID {
+		if f.PluginID == "ext-source-a" && f.RowID == rowID {
 			t.Fatalf("dormant binding left a ledger row: %+v (dormant is not a failure)", f)
 		}
 	}
 }
 
-// javStubWaitFailure polls the ledger listing until the (row, javinizer) row
-// is PRESENT (want=true) or ABSENT (want=false) — bounded; the present-poll
-// returns the row.
-func javStubWaitFailure(t *testing.T, c *http.Client, baseURL, token, rowID string, want bool) qaRelayFailureRow {
+// extStubWaitFailure polls the ledger listing until the (row, ext-source-a)
+// row is PRESENT (want=true) or ABSENT (want=false) — bounded; the
+// present-poll returns the row.
+func extStubWaitFailure(t *testing.T, c *http.Client, baseURL, token, rowID string, want bool) qaRelayFailureRow {
 	t.Helper()
-	deadline := time.Now().Add(javStubWaitTimeout)
+	deadline := time.Now().Add(extStubWaitTimeout)
 	var found qaRelayFailureRow
 	for time.Now().Before(deadline) {
 		var resp qaRelayFailures
@@ -323,7 +327,7 @@ func javStubWaitFailure(t *testing.T, c *http.Client, baseURL, token, rowID stri
 		}
 		found = qaRelayFailureRow{}
 		for _, f := range resp.Failures {
-			if f.RowID == rowID && f.PluginID == "javinizer" {
+			if f.RowID == rowID && f.PluginID == "ext-source-a" {
 				found = f
 				break
 			}
@@ -335,38 +339,38 @@ func javStubWaitFailure(t *testing.T, c *http.Client, baseURL, token, rowID stri
 	}
 	var resp qaRelayFailures
 	_ = doRequest(t, c, http.MethodGet, baseURL+"/api/v1/enrich/failures", token, nil, &resp)
-	t.Fatalf("javinizer ledger row for %s never reached present=%v within %s (failures: %+v)", rowID, want, javStubWaitTimeout, resp.Failures)
+	t.Fatalf("ext-source-a ledger row for %s never reached present=%v within %s (failures: %+v)", rowID, want, extStubWaitTimeout, resp.Failures)
 	return qaRelayFailureRow{}
 }
 
-// javStubWaitNamespace polls the item document until sources.javinizer lands
-// (bounded — an enrich run that soft-failed would settle with NO namespace
-// and must fail this wait, never bless it). The upstream recording rides the
-// fatal (the plan-discrimination evidence next to the timeout).
-func javStubWaitNamespace(t *testing.T, c *http.Client, baseURL string, libID int64, rel string, up *javStubUpstream) qaTmdbItemDTO {
+// extStubWaitNamespace polls the item document until sources.ext-source-a
+// lands (bounded — an enrich run that soft-failed would settle with NO
+// namespace and must fail this wait, never bless it). The upstream recording
+// rides the fatal (the plan-discrimination evidence next to the timeout).
+func extStubWaitNamespace(t *testing.T, c *http.Client, baseURL string, libID int64, rel string, up *extStubUpstream) qaTmdbItemDTO {
 	t.Helper()
-	deadline := time.Now().Add(javStubWaitTimeout)
+	deadline := time.Now().Add(extStubWaitTimeout)
 	var last qaTmdbItemDTO
 	for time.Now().Before(deadline) {
-		for _, it := range javStubListItems(t, c, baseURL, libID) {
+		for _, it := range extStubListItems(t, c, baseURL, libID) {
 			if it.RelativePath != rel {
 				continue
 			}
 			last = it
-			if doc := parseAsyncDoc(t, it.Document); doc.Sources["javinizer"] != nil {
+			if doc := parseAsyncDoc(t, it.Document); doc.Sources["ext-source-a"] != nil {
 				return it
 			}
 		}
 		time.Sleep(probeInterval)
 	}
-	t.Fatalf("item %q never grew sources.javinizer within %s (upstream recording: %s) (last doc: %s)",
-		rel, javStubWaitTimeout, up.recording(), last.Document)
+	t.Fatalf("item %q never grew sources.ext-source-a within %s (upstream recording: %s) (last doc: %s)",
+		rel, extStubWaitTimeout, up.recording(), last.Document)
 	return qaTmdbItemDTO{}
 }
 
-// javStubStage returns the LAST _stages entry for plugin with the given
+// extStubStage returns the LAST _stages entry for plugin with the given
 // status (the append-only log keeps every entry), or nil when none carries it.
-func javStubStage(stages []map[string]any, plugin, status string) map[string]any {
+func extStubStage(stages []map[string]any, plugin, status string) map[string]any {
 	var found map[string]any
 	for _, s := range stages {
 		if asyncStr(s, "plugin_id") == plugin && asyncStr(s, "status") == status {
@@ -376,8 +380,8 @@ func javStubStage(stages []map[string]any, plugin, status string) map[string]any
 	return found
 }
 
-// javStubStageCount counts plugin's _stages entries (dormancy is absence).
-func javStubStageCount(stages []map[string]any, plugin string) int {
+// extStubStageCount counts plugin's _stages entries (dormancy is absence).
+func extStubStageCount(stages []map[string]any, plugin string) int {
 	n := 0
 	for _, s := range stages {
 		if asyncStr(s, "plugin_id") == plugin {
@@ -387,65 +391,60 @@ func javStubStageCount(stages []map[string]any, plugin string) int {
 	return n
 }
 
-// --- leg (a): load → dormant → PUT → verdict flip → enrich ---
+// --- leg (a): load → promote SERVER → dormant → PUT → verdict flip → enrich ---
 
 // TestOptionalPluginJoint is the enrich leg: the present stub loads green on
-// first boot, the seeded SERVER binding stays dormant until the options PUT,
-// and the re-derived run enriches through the stub upstream.
+// first boot, the promoted SERVER binding stays dormant until the options
+// PUT, and the re-derived run enriches through the stub upstream.
 func TestOptionalPluginJoint(t *testing.T) {
-	javStubGuards(t)
+	extStubGuards(t)
 	tmp := t.TempDir()
-	up := javStubStartUpstream(t)
-	stubBin := buildBinary(t, tmp, "javstub-conformant", "./internal/itest/javstubbin")
-	baseURL := javStubStartServer(t, tmp, javStubToken, stubBin)
+	up := extStubStartUpstream(t)
+	stubBin := buildBinary(t, tmp, "extstub-conformant", "./internal/itest/externalstubbin")
+	baseURL := extStubStartServer(t, tmp, extStubToken, stubBin)
 	client := &http.Client{Timeout: httpTimeout}
 
-	// Optional load green on first boot: the present stub SERVES (the
-	// manager path — no synthesized row), the absent jav-parser keeps its
-	// synthesized dormancy row naming the path.
-	state, _, _ := javStubPluginState(t, client, baseURL, javStubToken, "javinizer")
+	// Optional load green on first boot: the declared stub SERVES (the
+	// manager path — no synthesized row).
+	state, _, _ := extStubPluginState(t, client, baseURL, extStubToken, "ext-source-a")
 	if state != "serving" {
 		t.Fatalf("present stub state = %q, want serving (the optional site loaded + started it)", state)
 	}
-	state, msg, _ := javStubPluginState(t, client, baseURL, javStubToken, "jav-parser")
-	if state != "not_serving" || !strings.Contains(msg, "binary not deployed") {
-		t.Fatalf("absent jav-parser row = (%q, %q), want (not_serving, \"binary not deployed …\")", state, msg)
-	}
 
-	// The seeded SERVER binding derives nothing while the declared option is
-	// unset: the row settles ready with NO javinizer namespace, NO stage at
-	// all (the queueability conjunct removes the source before any attempt
-	// — dormancy is absence), and NO ledger row.
-	libID := javStubCreateTvLibrary(t, client, baseURL, javStubWriteLibrary(t, javStubRel), "QA Javstub Joint")
-	res := scanLibrary(t, client, baseURL, javStubToken, libID)
+	// The promoted SERVER binding derives nothing while the declared option
+	// is unset: the row settles ready with NO ext-source-a namespace, NO
+	// stage at all (the queueability conjunct removes the source before any
+	// attempt — dormancy is absence), and NO ledger row.
+	libID := extStubCreateTvLibrary(t, client, baseURL, extStubWriteLibrary(t, extStubRel), "QA ExtStub Joint")
+	res := scanLibrary(t, client, baseURL, extStubToken, libID)
 	if res.Discovered != 1 || res.Persisted != 1 {
 		t.Fatalf("dormant scan discovered=%d persisted=%d, want 1/1", res.Discovered, res.Persisted)
 	}
-	qaSerialWaitSettled(t, client, baseURL, javStubToken, libID)
-	it := javStubItemByRel(t, client, baseURL, libID, javStubRel)
+	qaSerialWaitSettled(t, client, baseURL, extStubToken, libID)
+	it := extStubItemByRel(t, client, baseURL, libID, extStubRel)
 	if it.Status != "ready" {
 		t.Errorf("dormant item status = %q, want ready (dormancy never stalls the row)", it.Status)
 	}
 	doc := parseAsyncDoc(t, it.Document)
-	if _, present := doc.Sources["javinizer"]; present {
-		t.Errorf("dormant item carries sources.javinizer = %v, want none", doc.Sources["javinizer"])
+	if _, present := doc.Sources["ext-source-a"]; present {
+		t.Errorf("dormant item carries sources.ext-source-a = %v, want none", doc.Sources["ext-source-a"])
 	}
-	if n := javStubStageCount(doc.Stages, "javinizer"); n != 0 {
-		t.Errorf("dormant item recorded %d javinizer stages: %v (the chain must never reach for it)", n, doc.Stages)
+	if n := extStubStageCount(doc.Stages, "ext-source-a"); n != 0 {
+		t.Errorf("dormant item recorded %d ext-source-a stages: %v (the chain must never reach for it)", n, doc.Stages)
 	}
-	javStubAssertNoLedgerRow(t, client, baseURL, javStubToken, it.ID)
-	binding := javStubBindingFor(t, client, baseURL, "tv")
-	if binding.AuthMode != "SERVER" || binding.Priority == nil || *binding.Priority != 6 {
-		t.Errorf("seeded binding = (auth %q priority %v), want SERVER/6 (seed v3's slot)", binding.AuthMode, binding.Priority)
+	extStubAssertNoLedgerRow(t, client, baseURL, extStubToken, it.ID)
+	binding := extStubBindingFor(t, client, baseURL, "tv")
+	if binding.AuthMode != "SERVER" || binding.Priority == nil || *binding.Priority != 5 {
+		t.Errorf("promoted binding = (auth %q priority %v), want SERVER/5 (promotion inserts after the chain's max priority)", binding.AuthMode, binding.Priority)
 	}
 	if v, ok := binding.RequiredSecrets["base_url"]; !ok || v {
 		t.Errorf("dormant verdict base_url = %v (present %v), want provided:false", v, ok)
 	}
 
 	// The options PUT sets it and the verdict flips — the aggregate re-reads
-	// per-binding, provided:true on the SAME seed slot.
-	javStubPutOptions(t, client, baseURL, "tv", up.port)
-	binding = javStubBindingFor(t, client, baseURL, "tv")
+	// per-binding, provided:true on the SAME promoted slot.
+	extStubPutOptions(t, client, baseURL, "tv", up.port)
+	binding = extStubBindingFor(t, client, baseURL, "tv")
 	if v, ok := binding.RequiredSecrets["base_url"]; !ok || !v {
 		t.Errorf("verdict after PUT base_url = %v (present %v), want provided:true", v, ok)
 	}
@@ -454,35 +453,36 @@ func TestOptionalPluginJoint(t *testing.T) {
 	// ready row (namespace absent, no cooldown), the run resolves the
 	// server-ref variable core-side, fetches the stub upstream, and lands
 	// the namespace plus the identifier anchor.
-	scanLibrary(t, client, baseURL, javStubToken, libID)
-	it2 := javStubWaitNamespace(t, client, baseURL, libID, javStubRel, up)
+	scanLibrary(t, client, baseURL, extStubToken, libID)
+	it2 := extStubWaitNamespace(t, client, baseURL, libID, extStubRel, up)
 	if it2.Status != "ready" {
 		t.Errorf("enriched item status = %q, want ready", it2.Status)
 	}
 	doc2 := parseAsyncDoc(t, it2.Document)
-	ns := doc2.Sources["javinizer"]
-	if asyncStr(ns, "title") != javStubTitle || asyncStr(ns, "description") != javStubDesc || asyncStr(ns, "date") != javStubDate {
-		t.Errorf("sources.javinizer = %v, want the stub upstream's mapped fields", ns)
+	ns := doc2.Sources["ext-source-a"]
+	if asyncStr(ns, "title") != extStubTitle || asyncStr(ns, "description") != extStubDesc || asyncStr(ns, "date") != extStubDate {
+		t.Errorf("sources.ext-source-a = %v, want the stub upstream's mapped fields", ns)
 	}
 	ids, err := decodeMap(it2.Document, "identifiers")
 	if err != nil {
 		t.Fatalf("decode identifiers: %v", err)
 	}
-	if got := asyncStr(ids, "javinizer_id"); got != javStubAnchor {
-		t.Errorf("identifiers.javinizer_id = %v, want %q (the Convert resolved_ids anchor)", ids["javinizer_id"], javStubAnchor)
+	if got := asyncStr(ids, "ext-source-a_id"); got != extStubAnchor {
+		t.Errorf("identifiers.ext-source-a_id = %v, want %q (the Convert resolved_ids anchor)", ids["ext-source-a_id"], extStubAnchor)
 	}
-	if javStubStage(doc2.Stages, "javinizer", "ok") == nil {
-		t.Errorf("no ok javinizer stage in _stages %v (the run must have succeeded)", doc2.Stages)
+	if extStubStage(doc2.Stages, "ext-source-a", "ok") == nil {
+		t.Errorf("no ok ext-source-a stage in _stages %v (the run must have succeeded)", doc2.Stages)
 	}
-	if javStubStage(doc2.Stages, "javinizer", "failed") != nil || javStubStage(doc2.Stages, "javinizer", "deferred") != nil {
-		t.Errorf("javinizer stages carry a failed/deferred entry after success: %v", doc2.Stages)
+	if extStubStage(doc2.Stages, "ext-source-a", "failed") != nil || extStubStage(doc2.Stages, "ext-source-a", "deferred") != nil {
+		t.Errorf("ext-source-a stages carry a failed/deferred entry after success: %v", doc2.Stages)
 	}
 	// The substitution proof: exactly ONE upstream call, its origin resolved
 	// from the option value and its query substituted — never a placeholder,
-	// never a relay handoff (the trait also carries on this binding).
+	// never a relay handoff (the promotion's trait also carries on this
+	// binding).
 	hits := up.hits()
-	if len(hits) != 1 || !strings.HasPrefix(hits[0], "GET /api/v1/list?code="+javStubCode) {
-		t.Fatalf("upstream recording = %v, want exactly one GET /api/v1/list?code=%s (the option-resolved origin + the substituted query)", hits, javStubCode)
+	if len(hits) != 1 || !strings.HasPrefix(hits[0], "GET /api/v1/list?code="+extStubCode) {
+		t.Fatalf("upstream recording = %v, want exactly one GET /api/v1/list?code=%s (the option-resolved origin + the substituted query)", hits, extStubCode)
 	}
 }
 
@@ -494,17 +494,17 @@ func TestOptionalPluginJoint(t *testing.T) {
 // optional site records a failed row carrying the error — while the boot
 // stays green and the in-repo pair never regresses.
 func TestOptionalPluginJoint_MismatchLeg(t *testing.T) {
-	javStubGuards(t)
+	extStubGuards(t)
 	tmp := t.TempDir()
-	mismatchBin := buildBinary(t, tmp, "javstub-mismatch", "./internal/itest/javstubbin")
-	baseURL := javStubStartServer(t, tmp, javStubToken, mismatchBin,
-		javStubMismatchEnv+"=mellifera-plugin-wrong-v9")
+	mismatchBin := buildBinary(t, tmp, "extstub-mismatch", "./internal/itest/externalstubbin")
+	baseURL := extStubStartServer(t, tmp, extStubToken, mismatchBin,
+		extStubMismatchEnv+"=mellifera-plugin-wrong-v9")
 	client := &http.Client{Timeout: httpTimeout}
 
 	// Boot green: the harness's readiness probe already answered — the
 	// failed load never escalated. The failed row carries the launch error
 	// and never entered a restart loop (the plugin never served).
-	state, msg, restarts := javStubPluginState(t, client, baseURL, javStubToken, "javinizer")
+	state, msg, restarts := extStubPluginState(t, client, baseURL, extStubToken, "ext-source-a")
 	if state != "failed" {
 		t.Fatalf("mismatched-handshake stub state = %q, want failed (the skip-and-report row)", state)
 	}
@@ -516,19 +516,18 @@ func TestOptionalPluginJoint_MismatchLeg(t *testing.T) {
 	}
 
 	// The boot never regressed anywhere else: the in-repo metadata pair
-	// serves, the absent optional sibling keeps its synthesized dormancy row
-	// (the mismatch never bled across load sites).
-	state, _, _ = javStubPluginState(t, client, baseURL, javStubToken, "tv-parser")
+	// serves (the mismatch never bled across load sites).
+	state, _, _ = extStubPluginState(t, client, baseURL, extStubToken, "tv-parser")
 	if state != "serving" {
 		t.Errorf("tv-parser state = %q after the failed optional load, want serving", state)
 	}
-	state, _, _ = javStubPluginState(t, client, baseURL, javStubToken, "jav-parser")
-	if state != "not_serving" {
-		t.Errorf("jav-parser state = %q, want not_serving (the sibling's dormancy row is untouched)", state)
+	state, _, _ = extStubPluginState(t, client, baseURL, extStubToken, "tmdb")
+	if state != "serving" {
+		t.Errorf("tmdb state = %q after the failed optional load, want serving", state)
 	}
 }
 
-// --- leg (c): the no-relay trait at the seam ---
+// --- leg (c): the promotion's no-relay trait at the seam ---
 
 // TestOptionalPluginJoint_NoRelayNeverRelays proves the trait where it acts:
 // with the relay live and the stub upstream unreachable, the trait-carrying
@@ -537,26 +536,26 @@ func TestOptionalPluginJoint_MismatchLeg(t *testing.T) {
 // handoff's "relayed"), the relay pool reads EMPTY (never handed off, never
 // claimable), and the audit carries no deferred state.
 func TestOptionalPluginJoint_NoRelayNeverRelays(t *testing.T) {
-	javStubGuards(t)
+	extStubGuards(t)
 	tmp := t.TempDir()
-	stubBin := buildBinary(t, tmp, "javstub-norelay", "./internal/itest/javstubbin")
+	stubBin := buildBinary(t, tmp, "extstub-norelay", "./internal/itest/externalstubbin")
 	// The relay rides live on every real boot (the composition root wires it
 	// unconditionally) — no knob needed; the trait is the only guard here.
-	baseURL := javStubStartServer(t, tmp, javStubToken, stubBin)
+	baseURL := extStubStartServer(t, tmp, extStubToken, stubBin)
 	client := &http.Client{Timeout: httpTimeout}
 
-	libID := javStubCreateTvLibrary(t, client, baseURL, javStubWriteLibrary(t, javStubRelayRel), "QA Javstub NoRelay")
-	res := scanLibrary(t, client, baseURL, javStubToken, libID)
+	libID := extStubCreateTvLibrary(t, client, baseURL, extStubWriteLibrary(t, extStubRelayRel), "QA ExtStub NoRelay")
+	res := scanLibrary(t, client, baseURL, extStubToken, libID)
 	if res.Discovered != 1 || res.Persisted != 1 {
 		t.Fatalf("relay-leg scan discovered=%d persisted=%d, want 1/1", res.Discovered, res.Persisted)
 	}
-	qaSerialWaitSettled(t, client, baseURL, javStubToken, libID)
-	it := javStubItemByRel(t, client, baseURL, libID, javStubRelayRel)
+	qaSerialWaitSettled(t, client, baseURL, extStubToken, libID)
+	it := extStubItemByRel(t, client, baseURL, libID, extStubRelayRel)
 
 	// The trait-carrying binding configured against the unreachable upstream
 	// (verdict flipped — the leg is live, the failure is the point).
-	javStubPutOptions(t, client, baseURL, "tv", javStubDeadPort)
-	if binding := javStubBindingFor(t, client, baseURL, "tv"); !binding.RequiredSecrets["base_url"] {
+	extStubPutOptions(t, client, baseURL, "tv", extStubDeadPort)
+	if binding := extStubBindingFor(t, client, baseURL, "tv"); !binding.RequiredSecrets["base_url"] {
 		t.Fatalf("verdict after PUT base_url = %v, want provided:true (the leg must be live before the run)", binding.RequiredSecrets)
 	}
 
@@ -565,8 +564,8 @@ func TestOptionalPluginJoint_NoRelayNeverRelays(t *testing.T) {
 	// "exhausted" (runSourceRetryable's B4 after MaxAttempts rounds against a
 	// dead port) — never the handoff's "relayed": a relayed row here would
 	// mean the trait failed to guard the seam.
-	scanLibrary(t, client, baseURL, javStubToken, libID)
-	row := javStubWaitFailure(t, client, baseURL, javStubToken, it.ID, true)
+	scanLibrary(t, client, baseURL, extStubToken, libID)
+	row := extStubWaitFailure(t, client, baseURL, extStubToken, it.ID, true)
 	if row.Status != "exhausted" {
 		t.Errorf("network-class row status = %q, want exhausted (the plain path's terminal vocabulary)", row.Status)
 	}
@@ -576,25 +575,25 @@ func TestOptionalPluginJoint_NoRelayNeverRelays(t *testing.T) {
 
 	// Never claimable: the relay pool reads EMPTY — the guard sat before any
 	// enqueue, so zero relay_jobs rows exist for the (or any) principal.
-	claimStatus := doRequest(t, client, http.MethodPost, baseURL+"/api/v1/relay/claim", javStubToken, nil, nil)
+	claimStatus := doRequest(t, client, http.MethodPost, baseURL+"/api/v1/relay/claim", extStubToken, nil, nil)
 	if claimStatus != http.StatusNoContent {
 		t.Errorf("POST /relay/claim: HTTP %d, want 204 (nothing claimable — a trait-carrying failure never handed off)", claimStatus)
 	}
 
 	// The audit agrees: no deferred state, the failed stage carries the
 	// machine class, and no namespace ever landed against a dead upstream.
-	doc := parseAsyncDoc(t, javStubItemByRel(t, client, baseURL, libID, javStubRelayRel).Document)
-	if javStubStage(doc.Stages, "javinizer", "deferred") != nil {
-		t.Errorf("javinizer stages carry a deferred entry: %v (the handoff must have refused before any deferred state)", doc.Stages)
+	doc := parseAsyncDoc(t, extStubItemByRel(t, client, baseURL, libID, extStubRelayRel).Document)
+	if extStubStage(doc.Stages, "ext-source-a", "deferred") != nil {
+		t.Errorf("ext-source-a stages carry a deferred entry: %v (the handoff must have refused before any deferred state)", doc.Stages)
 	}
-	failed := javStubStage(doc.Stages, "javinizer", "failed")
+	failed := extStubStage(doc.Stages, "ext-source-a", "failed")
 	if failed == nil {
-		t.Fatalf("no failed javinizer stage in _stages %v (the fetch must have failed in the plain path)", doc.Stages)
+		t.Fatalf("no failed ext-source-a stage in _stages %v (the fetch must have failed in the plain path)", doc.Stages)
 	}
 	if got := asyncStr(failed, "class"); got != "network" {
 		t.Errorf("failed stage class = %q, want network (the machine class of the dial refusal)", got)
 	}
-	if _, present := doc.Sources["javinizer"]; present {
-		t.Errorf("sources.javinizer = %v landed — impossible against a dead upstream", doc.Sources["javinizer"])
+	if _, present := doc.Sources["ext-source-a"]; present {
+		t.Errorf("sources.ext-source-a = %v landed — impossible against a dead upstream", doc.Sources["ext-source-a"])
 	}
 }
