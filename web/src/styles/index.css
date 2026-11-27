@@ -3,53 +3,59 @@
 @tailwind components;
 @tailwind utilities;
 
-/* shadcn/ui theme tokens (light + dark). The Tailwind config maps these CSS
-   custom properties to utility classes via hsl(var(--*)). Dark mode toggles
-   via the `.dark` class on the root element. */
+/* Theme tokens (light + dark) — the mockup family's softened pastel base
+   (v5.1 + the surviving .tmp mockups incl. mockup-tv.html), ported over the
+   original plain shadcn slate. The Tailwind config maps these CSS custom
+   properties to utility classes via hsl(var(--*)). Dark mode toggles via the
+   `.dark` class on the root element.
+   Light = the mockups' :root verbatim: bg #f6f6f4 / card #ffffff /
+   line #e6e4e0 / ink #27272a / mut #71717a. Dark = the family's lifted-ink
+   base: bg #10121d / card #171a29 / border #2a2e45 (pure white page fields
+   and near-black canvases are rejected by the locked v5.1 decision). */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --background: 60 10% 96.1%; /* #f6f6f4 */
+    --foreground: 240 3.7% 15.9%; /* #27272a */
+    --card: 0 0% 100%; /* #ffffff */
+    --card-foreground: 240 3.7% 15.9%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --popover-foreground: 240 3.7% 15.9%;
+    --primary: 240 3.7% 15.9%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 40 9.7% 93.9%; /* #f1f0ee */
+    --secondary-foreground: 240 3.7% 15.9%;
+    --muted: 40 9.7% 93.9%;
+    --muted-foreground: 240 3.8% 46.1%; /* #71717a */
+    --accent: 40 9.7% 93.9%;
+    --accent-foreground: 240 3.7% 15.9%;
+    --destructive: 0 72.2% 50.6%; /* #dc2626 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 40 10.7% 89%; /* #e6e4e0 */
+    --input: 40 10.7% 89%;
+    --ring: 240 3.7% 15.9%;
     --radius: 0.5rem;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --background: 230.8 28.9% 8.8%; /* #10121d */
+    --foreground: 230 31.6% 92.5%; /* #e6e8f2 */
+    --card: 230 28.1% 12.5%; /* #171a29 */
+    --card-foreground: 230 31.6% 92.5%;
+    --popover: 230 28.1% 12.5%;
+    --popover-foreground: 230 31.6% 92.5%;
+    --primary: 230 31.6% 92.5%;
+    --primary-foreground: 230.8 28.9% 8.8%;
+    --secondary: 229.1 23.9% 18%; /* #232739 */
+    --secondary-foreground: 230 31.6% 92.5%;
+    --muted: 229.1 23.9% 18%;
+    --muted-foreground: 222.2 15.1% 64.9%; /* #98a0b3 */
+    --accent: 229.1 23.9% 18%;
+    --accent-foreground: 230 31.6% 92.5%;
     --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --destructive-foreground: 230 31.6% 92.5%;
+    --border: 231.1 24.3% 21.8%; /* #2a2e45 */
+    --input: 231.1 24.3% 21.8%;
+    --ring: 227.4 21.3% 82.5%; /* #c9cddc */
   }
 
   @layer base {
@@ -263,16 +269,16 @@ body.side-open .app-content {
   background: hsl(var(--muted-foreground));
 }
 .dot-serial {
-  background: #b7a6f4;
+  background: #d8cef2;
 }
 .dot-tv {
-  background: #f6c3a4;
+  background: #f6d3b8;
 }
 .dot-image {
-  background: #a4e3c3;
+  background: #cdebd7;
 }
 .dot-audio {
-  background: #a4c8f4;
+  background: #cfe4f6;
 }
 
 /* Watched element states (watched-states 2.3): the ✓ is a color-change mark
@@ -284,9 +290,14 @@ body.side-open .app-content {
    unchanged. */
 .watched-mark {
   flex: none;
-  color: #a4c8f4;
+  color: #cfe4f6;
   font-size: 0.85em;
   line-height: 1;
+}
+/* The in-progress bar's fill — the mockup family's progress green
+   (mockup-tv.html --ok, the .pbar i fill); track stays the muted token. */
+.pbar-fill {
+  background: #059669;
 }
 .watched-dim {
   opacity: 0.55;
@@ -687,7 +698,7 @@ body.side-open .app-content {
 }
 
 .wtoggle--watched {
-  color: #a4c8f4;
+  color: #cfe4f6;
 }
 .wtoggle--unwatched {
   color: hsl(var(--muted-foreground));
@@ -695,7 +706,7 @@ body.side-open .app-content {
 
 .wtoggle--watched:hover {
   background: transparent;
-  color: #a4c8f4;
+  color: #cfe4f6;
 }
 .wtoggle--unwatched:hover {
   background: transparent;
@@ -756,16 +767,16 @@ html.tv .card-meta-row .cardact-trigger.wtoggle--unwatched {
   color: hsl(var(--foreground));
 }
 .badge-serial {
-  background: #b7a6f4;
+  background: #d8cef2;
 }
 .badge-tv {
-  background: #f6c3a4;
+  background: #f6d3b8;
 }
 .badge-image {
-  background: #a4e3c3;
+  background: #cdebd7;
 }
 .badge-other {
-  background: #a4c8f4;
+  background: #cfe4f6;
 }
 
 /* Edit overlay: full-viewport dim behind a centered card (mechanics only —

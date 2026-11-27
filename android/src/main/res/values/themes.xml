@@ -2,7 +2,7 @@
 <resources>
     <style name="Theme.Mellifera" parent="android:Theme.Material.NoActionBar">
         <!-- The canvas law (design §D): the window paints the web's
-             #020617 — the color lives in values/colors.xml as app_canvas,
+             #10121d — the color lives in values/colors.xml as app_canvas,
              which mirrors ui/App.kt's AppCanvas (the scheme supplies it;
              the only Compose paint is the rail panel). The window surface
              is already an opaque full-screen paint, so punch-through

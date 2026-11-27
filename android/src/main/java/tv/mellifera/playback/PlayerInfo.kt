@@ -67,6 +67,20 @@ fun playerInfo(item: ItemDto, series: SeriesDto?): PlayerInfoBlocks? {
     return PlayerInfoBlocks(eyebrow, heading, description, cast, about)
 }
 
+/**
+ * The controls' top title bar label, over the SAME served projection the
+ * info column reads: the SxxEyy eyebrow and the served heading joined « · »
+ * — a film carries no eyebrow, so it floors to its served display name
+ * alone. Field-driven (L1): no blocks at all, or nothing to show on them →
+ * null, and the overlay renders NO bar — never a placeholder.
+ */
+internal fun controlsTitle(info: PlayerInfoBlocks?): String? =
+    info?.let {
+        listOfNotNull(it.eyebrow, it.heading)
+            .joinToString(" · ")
+            .takeIf { label -> label.isNotEmpty() }
+    }
+
 /** A non-empty served string, else null — "" is absence (InfoColumn's presentText). */
 private fun presentText(value: String?): String? = value?.takeIf { it.isNotEmpty() }
 

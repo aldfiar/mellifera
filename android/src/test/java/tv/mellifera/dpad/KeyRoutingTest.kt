@@ -122,4 +122,25 @@ class KeyRoutingTest {
         assertEquals(2, moveInRow(9, 3, DpadKey.Up))
         assertEquals(1, moveInRow(-1, 3, DpadKey.Right))
     }
+
+    @Test
+    fun episode_grid_walks_the_poster_law_at_the_episode_shape() {
+        // The series page's episode grid rides the SAME moveInGrid
+        // law the poster grids use — dpad untouched; these pins cover the
+        // counts the episode plan actually serves (Авто = 3 columns; 7 episodes
+        // — the last row holds one).
+        // Within the rows: Right steps to the last episode; the last row's
+        // column-0 Left and the count-clamped Right stay put (the wiring
+        // reads both clamps as "not consumed").
+        assertEquals(5, moveInGrid(4, columns = 3, count = 7, key = DpadKey.Right))
+        assertEquals(6, moveInGrid(6, columns = 3, count = 7, key = DpadKey.Left))
+        assertEquals(6, moveInGrid(6, columns = 3, count = 7, key = DpadKey.Right))
+        // Across rows: Down jumps a full row, Up back — new indices clamp
+        // WITHIN the episode count.
+        assertEquals(6, moveInGrid(3, columns = 3, count = 7, key = DpadKey.Down))
+        assertEquals(6, moveInGrid(4, columns = 3, count = 7, key = DpadKey.Down))
+        assertEquals(3, moveInGrid(6, columns = 3, count = 7, key = DpadKey.Up))
+        // The grid's bottom edge stays put — the unconsumed clamp.
+        assertEquals(6, moveInGrid(6, columns = 3, count = 7, key = DpadKey.Down))
+    }
 }

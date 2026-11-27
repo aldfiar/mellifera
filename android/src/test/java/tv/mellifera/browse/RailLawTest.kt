@@ -1,5 +1,6 @@
 package tv.mellifera.browse
 
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -24,8 +25,12 @@ import tv.mellifera.browse.fixtures.photoLibrariesBody
 import tv.mellifera.browse.fixtures.seriesBody
 import tv.mellifera.browse.fixtures.tvItemsBody
 import tv.mellifera.browse.fixtures.tvLibrariesBody
+import tv.mellifera.dpad.DpadKey
+import tv.mellifera.dpad.moveInList
 import tv.mellifera.net.Api
 import tv.mellifera.takeRequestOrFail
+import tv.mellifera.ui.UiScaleMode
+import tv.mellifera.ui.railPanelWidth
 
 /**
  * The collections rail law (5.15 — the SPA sidebar as remote-native
@@ -34,7 +39,9 @@ import tv.mellifera.takeRequestOrFail
  * Back — one flow entry) keeps the grid's parked cursor, and selecting a
  * row (OK — the activation law, task 4.3) swaps the grid to a fresh
  * cursor-0 surface with the rail closed; a body that cannot open keeps the
- * rail open with its focus (the keep-focus law).
+ * rail open with its focus (the keep-focus law). The rail-open offset law
+ * rides here too: while the panel is open the content column offsets by the
+ * panel's width so the first card's left edge clears it.
  */
 class RailLawTest {
     private lateinit var server: MockWebServer
@@ -149,12 +156,74 @@ class RailLawTest {
         // aim outside the SERVED rows — past the last row clamps to it,
         // before the first clamps to row 0 (the same live-rows clamp as the
         // grid cursor), so UP/DOWN walking the open rail is a pure
-        // cursor-in-state movement over exactly the rendered rows.
+        // cursor-in-state movement over exactly the rendered rows. The
+        // rendered row space includes the fixed settings row — the
+        // walker's count is libraries.size + 1 and the clamp lands on the
+        // settings index (libraries.size = 2), the walk's last row.
         flow.onRailFocusMoved(99)
-        assertEquals(1, flow.state.value.railFocus)
+        assertEquals(2, flow.state.value.railFocus)
         flow.onRailFocusMoved(-3)
         assertEquals(0, flow.state.value.railFocus)
         server.assertDrained("RailLawTest.rail_walk_lands_clamped_inside_the_served_rows", 3)
+    }
+
+    @Test
+    fun rail_walks_into_the_settings_row_and_ok_there_is_a_no_op() = runBlocking {
+        // The fixed settings row: the rail walk's +1 row. The walker
+        // (the pure moveInList law, dpad/KeyRouting.kt) and the flow's
+        // landing clamp ride the SAME count — libraries.size + 1 — so DOWN
+        // from the last library lands the settings index and the walk
+        // clamps INSIDE it. The row is NOT a library: OK there is a no-op —
+        // no body fetch, no rail close, the focus kept (the flow's
+        // getOrNull guard refuses the virtual index; the overlay opens at
+        // the composition site instead).
+        server.enqueue(json(librariesBody()))
+        flow.enter()
+        server.takeRequestOrFail("RailLawTest.rail_walks_into_the_settings_row_and_ok_there_is_a_no_op") // /libraries
+
+        server.enqueue(json(summaryBody(libraryId = 1, items = 7)))
+        server.enqueue(json(summaryBody(libraryId = 2, items = 42)))
+        flow.openRail()
+        server.takeRequestOrFail("RailLawTest.rail_walks_into_the_settings_row_and_ok_there_is_a_no_op")
+        server.takeRequestOrFail("RailLawTest.rail_walks_into_the_settings_row_and_ok_there_is_a_no_op")
+
+        // DOWN from the last library row lands the settings index; DOWN at
+        // the settings row clamps inside it; UP walks back to the
+        // libraries. The screen composes exactly these steps (the walker's
+        // landing rides onRailFocusMoved), so the joint law is pinned over
+        // the REAL moveInList + the REAL flow — no mocks between them; the
+        // walker's count is the SERVED size + 1, read live off the flow.
+        val walkerCount = flow.state.value.libraries.size + 1
+        assertEquals(3, walkerCount)
+        assertEquals(2, moveInList(1, walkerCount, DpadKey.Down))
+        flow.onRailFocusMoved(moveInList(1, 3, DpadKey.Down))
+        assertEquals(2, flow.state.value.railFocus)
+        assertEquals(2, moveInList(2, 3, DpadKey.Down))
+        assertEquals(1, moveInList(2, 3, DpadKey.Up))
+        flow.onRailFocusMoved(2)
+        assertEquals(2, flow.state.value.railFocus)
+
+        // OK on the settings index: refused, silently — no request rides
+        // the act, the rail stays open on the settings row, the served
+        // state (libraryId, summaries) is exactly what the walk left.
+        assertFalse(flow.activateRailRow())
+        val state = flow.state.value
+        assertTrue(state.isRailOpen)
+        assertEquals(2, state.railFocus)
+        // The served entry default (enter pins the first library) stands —
+        // the settings OK swaps nothing.
+        assertEquals(1L, state.libraryId)
+        assertNull(state.error)
+        assertEquals(42L, state.summaries[2L]?.items)
+        server.assertDrained("RailLawTest.rail_walks_into_the_settings_row_and_ok_there_is_a_no_op", 3)
+
+        // The settings focus survives a plain re-report: the composition's
+        // restore law re-lands the row by railFocus — the state half is
+        // that the index still holds after the walk-away-and-back.
+        flow.onRailFocusMoved(0)
+        flow.onRailFocusMoved(2)
+        assertEquals(2, flow.state.value.railFocus)
+        server.assertDrained("RailLawTest.rail_walks_into_the_settings_row_and_ok_there_is_a_no_op", 3)
     }
 
     @Test
@@ -442,5 +511,33 @@ class RailLawTest {
         collector.cancel()
         // enter's one + the openRail's summaries (2) + the fetch.
         server.assertDrained("RailLawTest.body_swap_emits_survive_a_busy_collector", 4)
+    }
+
+    @Test
+    fun rail_open_offsets_the_content_column_clear_of_the_panel() {
+        // The rail-open offset law at the box's 2.0 density (960dp panel =
+        // 1920px): the column narrows to the reduced fraction
+        // ([railOpenColumnWidth]) and re-centers in the reduced area
+        // ([railOpenColumnLeft]), so the FIRST CARD's left edge clears the
+        // open panel — the acceptance is ≥ the panel's own 192px at
+        // Обычный. A closed rail (offset 0) leaves the parity column
+        // untouched: the SPA 92vw proportion, left margin 38.4dp = 76.8px.
+        val screen = 960.dp
+        assertEquals(883.2f, railOpenColumnWidth(screen, 0.dp).value, 1e-4f)
+        assertEquals(38.4f, railOpenColumnLeft(screen, 0.dp).value, 1e-4f)
+
+        // Компактный and Обычный share the 96dp panel: the column plans
+        // (gridPlan's W) against exactly the width that renders — 794.88dp
+        // — and lands at 130.56dp = 261.12px, clear of the panel.
+        assertEquals(96f, railPanelWidth(UiScaleMode.REGULAR).value, 1e-6f)
+        assertEquals(794.88f, railOpenColumnWidth(screen, railPanelWidth(UiScaleMode.REGULAR)).value, 1e-4f)
+        assertEquals(130.56f, railOpenColumnLeft(screen, railPanelWidth(UiScaleMode.REGULAR)).value, 1e-4f)
+        assertTrue(railOpenColumnLeft(screen, railPanelWidth(UiScaleMode.REGULAR)).value * 2 >= 192f)
+        assertEquals(794.88f, railOpenColumnWidth(screen, railPanelWidth(UiScaleMode.COMPACT)).value, 1e-4f)
+
+        // Крупный widens the panel to 112dp — the column clears it by a
+        // wider margin (145.92dp = 291.84px).
+        assertEquals(780.16f, railOpenColumnWidth(screen, railPanelWidth(UiScaleMode.LARGE)).value, 1e-4f)
+        assertTrue(railOpenColumnLeft(screen, railPanelWidth(UiScaleMode.LARGE)).value * 2 >= 192f)
     }
 }

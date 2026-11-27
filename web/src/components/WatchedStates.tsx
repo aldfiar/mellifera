@@ -51,9 +51,9 @@ export function WatchedMark(props: { className?: string }): ReactElement {
 }
 
 // InProgressBar — the in-progress element's bar, today's Continue-card
-// markup verbatim (the h-1.5 muted track with the primary fill, announced as
-// "<n>% watched"). Watched elements never render it — D5's "NO progress
-// bar".
+// markup verbatim (the h-1.5 muted track with the mockup's progress-green
+// fill, announced as "<n>% watched"). Watched elements never render it —
+// D5's "NO progress bar".
 export function InProgressBar(props: { percent: number }): ReactElement {
   return (
     <span
@@ -62,7 +62,7 @@ export function InProgressBar(props: { percent: number }): ReactElement {
       aria-label={`${String(props.percent)}% watched`}
     >
       <span
-        className="block h-full bg-primary"
+        className="pbar-fill block h-full"
         style={{ width: `${String(props.percent)}%` }}
       />
     </span>

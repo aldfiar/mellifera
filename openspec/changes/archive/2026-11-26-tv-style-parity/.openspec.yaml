@@ -1,0 +1,4 @@
+schema: lite
+created: 2026-11-26
+goal: Close the ruled TV↔SPA parity gaps as groups 16–23 in the Android TV app
+  (geometry + scale only; zero server delta)

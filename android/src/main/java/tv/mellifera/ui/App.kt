@@ -4,7 +4,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.graphics.Color
 import androidx.tv.material3.ColorScheme
 import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.MaterialTheme
@@ -14,18 +13,6 @@ import tv.mellifera.Screen
 import tv.mellifera.browse.BrowseScreen
 import tv.mellifera.pairing.PairingScreen
 import tv.mellifera.playback.PlayerOverlay
-
-/**
- * The web canvas color: the SPA dark token `--background: hsl(222.2 84%
- * 4.9%)` (web/src/styles/index.css) ≈ #020617 — the near-black canvas the
- * web renders, visibly darker than darkColorScheme()'s default background
- * (≈ #1C1B1F gray) the app showed before (D13 visual parity scale).
- *
- * The XML `app_canvas` resource (values/colors.xml, painted by the window
- * via themes.xml) mirrors this value — the only Compose paint is the rail
- * panel; everything else shows the window's color.
- */
-val AppCanvas = Color(0xFF020617)
 
 /**
  * The app-wide scheme (D9 + D13): the dark defaults with background and
@@ -57,6 +44,12 @@ val MelliferaDarkScheme: ColorScheme = darkColorScheme(
 @Composable
 fun App(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsState()
+    // The persisted scale/columns ride the same root provider — every
+    // surface re-reads them per emission (the settings overlay's LIVE
+    // cycling re-tiles grids while it is open).
+    val uiScale by viewModel.uiPrefs.uiScale.collectAsState()
+    val gridColumns by viewModel.uiPrefs.gridColumns.collectAsState()
+    val episodeColumns by viewModel.uiPrefs.episodeColumns.collectAsState()
     MaterialTheme(colorScheme = MelliferaDarkScheme) {
         // The invisible-titles fix (task 8.12, ledger #15 — walk61d's pixel
         // proof + the operator's live report «episode number and title is
@@ -71,8 +64,15 @@ fun App(viewModel: AppViewModel) {
         // citation was wrong) is the readable default the D9/D13 law always
         // intended — provided here at the root, once, so every screen
         // inherits it. Walk62's pixel grade confirmed the paint source:
-        // glyphs render at exactly this value.
-        CompositionLocalProvider(LocalContentColor provides MelliferaDarkScheme.onBackground) {
+        // glyphs render at exactly this value. The default is now the SPA
+        // foreground token [tvForeground] (#F8FAFC, --foreground in
+        // styles/index.css .dark) — the web's own text color — replacing
+        // the scheme's onBackground.
+        CompositionLocalProvider(
+            LocalContentColor provides tvForeground,
+            LocalUiScale provides uiScale,
+            LocalGridPrefs provides GridPrefs(gridColumns, episodeColumns),
+        ) {
             when (state.screen) {
                 Screen.Pairing -> PairingScreen(viewModel.pairing)
                 Screen.Browse -> BrowseScreen(viewModel)

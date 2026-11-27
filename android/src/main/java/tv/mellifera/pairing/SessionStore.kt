@@ -3,6 +3,7 @@ package tv.mellifera.pairing
 import android.content.Context
 import java.net.URI
 import java.net.URISyntaxException
+import tv.mellifera.ui.UiScaleMode
 
 /**
  * The session's two persisted facts (5.4): the server base address and the
@@ -22,9 +23,42 @@ class SessionStore(private val backing: SessionBacking) {
 
     fun writeServerAddress(address: String) = backing.put(KEY_ADDRESS, address)
 
+    /**
+     * The display-settings keys: typed decodes of the settings
+     * strings. Null means the key is absent (first run — no setup needed)
+     * or unreadable, and the caller applies its default; an unreadable
+     * stored value degrades to that same null rather than crashing the
+     * shell.
+     */
+    fun readUiScale(): UiScaleMode? =
+        backing.get(KEY_UI_SCALE)?.let { raw ->
+            UiScaleMode.entries.firstOrNull { it.name.lowercase() == raw }
+        }
+
+    fun writeUiScale(mode: UiScaleMode) = backing.put(KEY_UI_SCALE, mode.name.lowercase())
+
+    fun readGridColumns(): Int? =
+        backing.get(KEY_GRID_COLUMNS)?.takeIf { it != "auto" }?.toIntOrNull()
+
+    fun writeGridColumns(columns: Int?) =
+        backing.put(KEY_GRID_COLUMNS, columns?.toString() ?: "auto")
+
+    fun readEpisodeColumns(): Int? =
+        backing.get(KEY_EPISODE_COLUMNS)?.takeIf { it != "auto" }?.toIntOrNull()
+
+    fun writeEpisodeColumns(columns: Int?) =
+        backing.put(KEY_EPISODE_COLUMNS, columns?.toString() ?: "auto")
+
     private companion object {
         const val KEY_TOKEN = "device_token"
         const val KEY_ADDRESS = "server_address"
+
+        // «ui_scale» = compact|regular|large, «grid_columns» = auto|4|5|6|7,
+        // «episode_columns» = auto|2|3|4 — private: callers read the typed
+        // accessors, never raw keys.
+        const val KEY_UI_SCALE = "ui_scale"
+        const val KEY_GRID_COLUMNS = "grid_columns"
+        const val KEY_EPISODE_COLUMNS = "episode_columns"
     }
 }
 
