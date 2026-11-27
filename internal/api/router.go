@@ -259,6 +259,11 @@ func mountV1Routes(r chi.Router, h *app) {
 		// failure telemetry — a viewer action; top-level because the item_id
 		// is unvalidated data, not a route parameter.
 		r.Post("/playback-events", h.playbackEvent)
+		// Debug-events ingest (device-telemetry D8): fire-and-forget device
+		// diagnostics beside the beacon, sharing its per-IP budget (both
+		// bound the same log); top-level for the same reason — the item_id
+		// is unvalidated data, not a route parameter.
+		r.Post("/debug-events", h.debugEvent)
 		// Relay claim (client-relayed-fetch D7): the oldest claimable job for
 		// ANY authenticated principal — viewer-side transport. 200 descriptor /
 		// 204 nothing claimable.
@@ -362,6 +367,10 @@ func mountV1Routes(r chi.Router, h *app) {
 		// binds/unbinds the device credential — the next request rides the
 		// bound user's resolved Viewer (the 7.1 chain).
 		r.Put("/admin/devices/{id}/user", h.adminDeviceBind)
+		// Device debug flag (android-tv-app 3.1): PUT {"debug": bool} flips
+		// the device credential's telemetry gate — the paired client gates
+		// its debug beacons on the flag its /profile answer carries.
+		r.Put("/admin/devices/{id}/debug", h.adminDeviceDebug)
 		// User accounts admin surface (l6-accounts 9.1): users CRUD — first-
 		// user one-way-door, hashes never served, session-cascading password
 		// reset, last-user guard. Pure delegation to identity.

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { ReactElement } from "react";
 
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+
 import type { AdminDevice, AdminPairing, AdminUser, ApiError } from "@/lib/api";
+import { setDeviceDebug } from "@/lib/api";
 import {
   useApprovePairing,
   useBindAdminDeviceUser,
@@ -32,7 +35,8 @@ import {
 //      with one-tap Approve / Deny;
 //  (b) DEVICES — the paired-device registry: device id, approval code, bind
 //      posture (l6-accounts 9.4 — the row's user_id: the bound user, or
-//      unbound = the legacy see-all viewer), created stamp, the bind
+//      unbound = the legacy see-all viewer), the debug telemetry flag and
+//      its toggle (android-tv-app 6.1), created stamp, the bind
 //      affordance (a user select; unbind rides null), and a Revoke action.
 //
 // Every write is an adjudication/revoke mutation (retry:0 — INV-no-mutation-
@@ -174,7 +178,8 @@ function PairingRow(props: { pairing: AdminPairing }): ReactElement {
 
 // DevicesTable — the paired-device registry; empty state for the zero-device
 // server. The bound-user column rides the served user_id posture (9.3's
-// deviceDTO field).
+// deviceDTO field); the debug column the served deviceDTO.debug flag
+// (android-tv-app 6.1).
 function DevicesTable(props: {
   devices: AdminDevice[];
   users: AdminUser[];
@@ -186,6 +191,7 @@ function DevicesTable(props: {
           <TableHead>Device</TableHead>
           <TableHead>Approval code</TableHead>
           <TableHead>Bound user</TableHead>
+          <TableHead>Debug</TableHead>
           <TableHead>Paired</TableHead>
           <TableHead className="w-32">Actions</TableHead>
         </TableRow>
@@ -193,7 +199,7 @@ function DevicesTable(props: {
       <TableBody>
         {props.devices.length === 0 ? (
           <TableRow>
-            <TableCell colSpan={5} className="text-muted-foreground">
+            <TableCell colSpan={6} className="text-muted-foreground">
               No paired devices
             </TableCell>
           </TableRow>
@@ -271,6 +277,9 @@ function DeviceRow(props: { device: AdminDevice; users: AdminUser[] }): ReactEle
           <span className="text-xs text-muted-foreground">{boundUser.username}</span>
         ) : null}
       </TableCell>
+      <TableCell>
+        <DebugToggle device={props.device} />
+      </TableCell>
       <TableCell className="text-xs text-muted-foreground">
         {props.device.created_at}
       </TableCell>
@@ -291,5 +300,57 @@ function DeviceRow(props: { device: AdminDevice; users: AdminUser[] }): ReactEle
         ) : null}
       </TableCell>
     </TableRow>
+  );
+}
+
+// DebugToggle — one device's debug telemetry flag and its toggle
+// (android-tv-app 6.1, the Sources.tsx GateToggle idiom): the served
+// deviceDTO.debug renders as on/off, the button PUTs the flipped boolean as
+// the WHOLE body (admin_scoping.go adminDeviceDebug — whole-replacement
+// semantics; the device reads the flag back through its own /profile).
+// Success invalidates ["admin-devices"] so the state re-reads from the
+// server; errors surface inline, retry:0 — no auto-retry.
+function DebugToggle(props: { device: AdminDevice }): ReactElement {
+  const qc = useQueryClient();
+  const debug = useMutation<void, ApiError, boolean>({
+    mutationFn: (next: boolean) => setDeviceDebug(props.device.device_id, next),
+    retry: 0,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin-devices"] });
+    },
+  });
+  const err: ApiError | null =
+    debug.error instanceof Error ? (debug.error as ApiError) : null;
+
+  return (
+    <div
+      className="flex flex-col gap-1"
+      data-testid={`device-debug-${props.device.device_id}`}
+    >
+      <div className="flex items-center gap-2">
+        <span
+          className={`text-xs ${
+            props.device.debug ? "text-foreground" : "text-muted-foreground"
+          }`}
+        >
+          {props.device.debug ? "on" : "off"}
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          aria-label={`Debug for device ${props.device.device_id}`}
+          disabled={debug.isPending}
+          onClick={() => debug.mutate(!props.device.debug)}
+        >
+          {props.device.debug ? "Disable" : "Enable"}
+        </Button>
+      </div>
+      {err ? (
+        <Alert variant="destructive" className="py-2">
+          <AlertTitle>{err.code}</AlertTitle>
+          <AlertDescription>{err.message}</AlertDescription>
+        </Alert>
+      ) : null}
+    </div>
   );
 }

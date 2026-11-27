@@ -7,6 +7,7 @@ import { ApiError, login } from "@/lib/api";
 import { useToken } from "@/lib/auth";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import ApkDownload from "@/components/ApkDownload";
 import {
   Card,
   CardContent,
@@ -189,6 +190,12 @@ export default function Login(): ReactElement {
           >
             Pair this device (TV)
           </Link>
+
+          {/* android-tv-app 6.2: the login-footer placement — ungated, the
+              probe renders nothing on an APK-less build. */}
+          <div className="border-t pt-3">
+            <ApkDownload />
+          </div>
         </CardContent>
       </Card>
     </div>

@@ -1,0 +1,5 @@
+schema: lite
+created: 2026-11-12
+goal: Dissolve the four proven TV webview failure classes (HEVC remux fatal, MKV
+  originals, split HTTP stacks, viewport fights) with a native client shipped
+  alongside the server

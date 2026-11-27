@@ -106,6 +106,8 @@ Install exiftool with `brew install exiftool` (macOS) or
 
 **Development only:** `node`/`npm` (SPA build), `swag` (OpenAPI regen),
 `golangci-lint`, `protoc`/`buf` (proto regen) — none are Go module deps.
+The Android TV client (`android/`) additionally needs JDK 17 + the Android
+SDK — its own Gradle toolchain, likewise never a Go module dep.
 
 ## Quickstart (from source)
 
@@ -211,6 +213,16 @@ make build-plugin   # the seven plugin binaries into bin/
 make web-build      # DEV/CI ONLY — regenerate the embedded SPA + OpenAPI artifacts
 make dev            # dev mode: Go server + Vite dev server with proxy
 make proto          # regenerate gRPC bindings (generated *.pb.go are committed)
+```
+
+The Android TV client (`android/`, Kotlin + Jetpack Compose) builds and tests
+outside Make, with its own toolchain (JDK 17 + Android SDK):
+
+```bash
+ANDROID_HOME="$HOME/Library/Android/sdk" android/gradlew -p android testDebugUnitTest
+                    # the TV app's JVM test suite (no emulator needed)
+android/gradlew -p android assembleRelease -PversionName=X.Y.Z -PversionCode=N
+                    # signed TV APK mellifera-tv-<version>.apk — requires android/keystore.properties
 ```
 
 The web artifacts are **committed inputs**, like generated proto code: the

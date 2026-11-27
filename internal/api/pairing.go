@@ -61,11 +61,15 @@ type pairingActionResponse struct {
 // posture (accounts 9.3): the bound user's id, 0 when the row is unbound
 // (user_id NULL — the legacy see-all viewer) — the device-pairing spec's
 // "both states visible on the device list" fact the bind affordance renders.
+// Debug is the per-device telemetry gate (android-tv-app 3.1), always
+// present on the wire (no omitempty): the admin toggle's read-back state,
+// false for every fresh or migrated device.
 type deviceDTO struct {
 	DeviceID  string    `json:"device_id"`
 	Code      string    `json:"code"`
 	UserID    int64     `json:"user_id"`
 	CreatedAt time.Time `json:"created_at"`
+	Debug     bool      `json:"debug"`
 }
 
 // devicesResponse is the body of GET /api/v1/admin/devices.
@@ -268,7 +272,7 @@ func (a *app) listDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	devs := make([]deviceDTO, 0, len(toks))
 	for _, tok := range toks {
-		devs = append(devs, deviceDTO{DeviceID: tok.ID, Code: tok.Code, UserID: tok.UserID, CreatedAt: tok.CreatedAt})
+		devs = append(devs, deviceDTO{DeviceID: tok.ID, Code: tok.Code, UserID: tok.UserID, CreatedAt: tok.CreatedAt, Debug: tok.Debug})
 	}
 	writeJSON(w, http.StatusOK, devicesResponse{Devices: devs})
 }

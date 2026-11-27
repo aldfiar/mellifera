@@ -61,6 +61,7 @@ var accountsSchema = map[string]map[string]schemaCol{
 		"label":      {ctype: "TEXT", notnull: true, dflt: sql.NullString{String: "''", Valid: true}},
 		"created_at": {ctype: "TEXT", notnull: true},
 		"expires_at": {ctype: "TEXT"}, // NULL allowed: non-expiring credentials
+		"debug":      {ctype: "INTEGER", notnull: true, dflt: sql.NullString{String: "0", Valid: true}}, // android-tv-app 3.1: telemetry gate
 	},
 }
 

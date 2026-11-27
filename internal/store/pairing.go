@@ -33,13 +33,16 @@ type PairingRequest struct {
 // retired minted-hex device id). UserID is the bound user (l6-accounts 7.1):
 // the credentials row's user_id, 0 when the row is unbound (NULL) — the auth
 // chain carries it on the device principal so viewerFor can resolve the
-// bound user's scope.
+// bound user's scope. Debug is the per-device telemetry gate (android-tv-app
+// 3.1): the admin flip route writes it, the registry list and the device's
+// own /profile answer read it; fresh and migrated rows default false.
 type DeviceToken struct {
 	ID        string
 	TokenHash string
 	Code      string
 	UserID    int64
 	CreatedAt time.Time
+	Debug     bool
 }
 
 // CreatePairingRequest inserts a new pairing request, status 'pending' (the
@@ -154,14 +157,16 @@ func (s *Store) LookupDeviceCredentialByHash(ctx context.Context, tokenHash stri
 	var id int64
 	var createdAt string
 	var userID sql.NullInt64
+	var debug int
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, token_hash, label, user_id, created_at
+SELECT id, token_hash, label, user_id, created_at, debug
 FROM credentials
 WHERE kind = 'device' AND token_hash = ?`, tokenHash)
-	if err := row.Scan(&id, &tok.TokenHash, &tok.Code, &userID, &createdAt); err != nil {
+	if err := row.Scan(&id, &tok.TokenHash, &tok.Code, &userID, &createdAt, &debug); err != nil {
 		return DeviceToken{}, fmt.Errorf("store: lookup device credential by hash: %w", err)
 	}
 	tok.UserID = userID.Int64
+	tok.Debug = debug != 0
 	t, err := parseTime(createdAt)
 	if err != nil {
 		return DeviceToken{}, fmt.Errorf("store: lookup device credential by hash (created_at): %w", err)
@@ -177,7 +182,7 @@ WHERE kind = 'device' AND token_hash = ?`, tokenHash)
 // credentials kind='device'.
 func (s *Store) ListDevices(ctx context.Context) ([]DeviceToken, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, token_hash, label, user_id, created_at
+SELECT id, token_hash, label, user_id, created_at, debug
 FROM credentials
 WHERE kind = 'device'
 ORDER BY created_at, id`)
@@ -191,10 +196,12 @@ ORDER BY created_at, id`)
 		var id int64
 		var createdAt string
 		var userID sql.NullInt64
-		if err := rows.Scan(&id, &tok.TokenHash, &tok.Code, &userID, &createdAt); err != nil {
+		var debug int
+		if err := rows.Scan(&id, &tok.TokenHash, &tok.Code, &userID, &createdAt, &debug); err != nil {
 			return nil, fmt.Errorf("store: list devices scan: %w", err)
 		}
 		tok.UserID = userID.Int64
+		tok.Debug = debug != 0
 		t, err := parseTime(createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("store: list devices (created_at): %w", err)
@@ -256,6 +263,27 @@ func (s *Store) SetDeviceUser(ctx context.Context, rowID int64, userID *int64) e
 		return fmt.Errorf("store: set device user %d (affected): %w", rowID, err)
 	} else if n == 0 {
 		return fmt.Errorf("store: set device user %d: %w", rowID, sql.ErrNoRows)
+	}
+	return nil
+}
+
+// SetDeviceDebug flips one device credential's debug flag (android-tv-app
+// 3.1): the admin flip route's backing write, debug=true switching the
+// paired client's debug telemetry gate on. The kind='device' guard in the
+// WHERE is the same domain law SetDeviceUser carries: a session credential
+// addressed by its rowid (or any non-device row) reads as an unknown device,
+// and an unknown rowid surfaces as the wrapped sql.ErrNoRows (the api layer
+// maps it to 404). The dormant device_tokens table is untouched.
+func (s *Store) SetDeviceDebug(ctx context.Context, rowID int64, debug bool) error {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE credentials SET debug = ? WHERE kind = 'device' AND id = ?", debug, rowID)
+	if err != nil {
+		return fmt.Errorf("store: set device debug %d: %w", rowID, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("store: set device debug %d (affected): %w", rowID, err)
+	} else if n == 0 {
+		return fmt.Errorf("store: set device debug %d: %w", rowID, sql.ErrNoRows)
 	}
 	return nil
 }
