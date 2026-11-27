@@ -62,6 +62,119 @@ const (
 	shutdownTimeout   = 15 * time.Second
 )
 
+// catalogEntry is one row of the boot-literal plugin inventory. optional
+// marks a plugin whose binary may be absent on a deployment; its load site
+// degrades to a synthesized status row instead of failing the boot.
+type catalogEntry struct {
+	id, name, description string
+	optional              bool
+}
+
+// sourceCatalog is the boot-literal plugin inventory: the single source for
+// both the pluginIDs set and the Deps.SourceInventory closure, so the load
+// sites, the status closure, and the admin-sources inventory cannot diverge.
+var sourceCatalog = []catalogEntry{
+	{"base-scanner", "Base Scanner", "Directory scanner for tv and image libraries.", false},
+	{"serial-scanner", "Serial Scanner", "Structure-aware directory scanner for serial libraries.", false},
+	{"tv-parser", "TV Parser", "Local filename parser for tv episodes.", false},
+	{"image-enricher", "Image Enricher", "Local EXIF metadata enrichment for images.", false},
+	{"serial-parser", "Serial Parser", "Local directory-facts parser for serials.", false},
+	{"frame-grabber", "Frame Grabber", "ffmpeg thumbnail and frame metadata for serial episodes.", false},
+	{"shikimori", "Shikimori", "External Shikimori metadata enrichment for serials.", false},
+	{module.PluginIDTmdb, "TMDB", "External TMDB metadata enrichment for tv and serial libraries.", false},
+	{"jav-parser", "Release Code Parser", "Local release-code extraction for tv libraries.", true},
+	{module.PluginIDJavinizer, "Javinizer", "External Javinizer metadata enrichment for tv libraries.", true},
+}
+
+// loadOptionalPlugin is the optional-plugin load site — the skip-and-report
+// counterpart of the composition root's fatal pair. An absent binary is
+// dormancy, never a boot failure: one info log, a synthesized not_serving row
+// naming the absence, and Load/Start never run. A present binary runs
+// Load+Start, and either error is one warn log plus a synthesized failed row
+// carrying the error message. Both synthesized rows come out of the manager's
+// closed health vocabulary; a present-and-started plugin leaves no
+// synthesized row (the manager serves its status like any in-repo plugin).
+func loadOptionalPlugin(ctx context.Context, mgr *plugin.Manager, pluginID, binaryPath string, caps []sdk.Capability, optionalState map[string]api.PluginHealth, loadedCaps map[string][]string) {
+	if _, err := os.Stat(binaryPath); err != nil {
+		slog.Info("optional plugin: binary absent — dormant, not loaded", "plugin", pluginID, "path", binaryPath)
+		optionalState[pluginID] = api.PluginHealth{
+			ID:        pluginID,
+			State:     "not_serving",
+			Message:   "binary not deployed at " + binaryPath,
+			CheckedAt: time.Now().Format(time.RFC3339),
+		}
+		return
+	}
+	synthFailed := func(stage string, err error) {
+		slog.Warn("optional plugin: "+stage+" failed — skipped", "plugin", pluginID, "path", binaryPath, "error", err)
+		optionalState[pluginID] = api.PluginHealth{
+			ID:        pluginID,
+			State:     "failed",
+			Message:   err.Error(),
+			CheckedAt: time.Now().Format(time.RFC3339),
+		}
+	}
+	if err := mgr.Load(pluginID, binaryPath, caps); err != nil {
+		synthFailed("load", err)
+		return
+	}
+	if err := mgr.Start(ctx, pluginID); err != nil {
+		synthFailed("start", err)
+		return
+	}
+	types := make([]string, 0, len(caps))
+	for _, c := range caps {
+		types = append(types, c.Type)
+	}
+	loadedCaps[pluginID] = types
+}
+
+// pluginHealths assembles the per-plugin liveness rows the Deps.Status
+// closure serves. A synthesized optionalState row is consulted FIRST — the
+// manager answers notLoadedErr for a never-loaded id, and manager-first would
+// drop the row the operator needs. The manager path keeps today's
+// drop-the-row discipline for a per-plugin error (never a 500 over one bad
+// plugin).
+func pluginHealths(pluginIDs []string, optionalState map[string]api.PluginHealth, mgr *plugin.Manager) []api.PluginHealth {
+	plugins := make([]api.PluginHealth, 0, len(pluginIDs))
+	for _, id := range pluginIDs {
+		if h, ok := optionalState[id]; ok {
+			plugins = append(plugins, h)
+			continue
+		}
+		h, err := mgr.Status(id)
+		if err != nil {
+			slog.Warn("admin status: plugin status unavailable", "plugin", id, "error", err)
+			continue
+		}
+		checkedAt := ""
+		if !h.LastCheckedAt.IsZero() {
+			checkedAt = h.LastCheckedAt.Format(time.RFC3339)
+		}
+		plugins = append(plugins, api.PluginHealth{
+			ID:        id,
+			State:     h.State,
+			Message:   h.Message,
+			Restarts:  h.Restarts,
+			CheckedAt: checkedAt,
+		})
+	}
+	return plugins
+}
+
+// stoppableIDs filters the boot catalog to the ids that actually loaded:
+// a never-loaded optional id has no subprocess to stop, and Stop on it would
+// only log notLoadedErr noise.
+func stoppableIDs(pluginIDs []string, loadedCaps map[string][]string) []string {
+	ids := make([]string, 0, len(pluginIDs))
+	for _, id := range pluginIDs {
+		if _, ok := loadedCaps[id]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func main() {
 	cfg := loadConfig()
 
@@ -81,22 +194,6 @@ func main() {
 		MagicCookieValue: magicCookieValue,
 		CoreVersion:      coreVersion,
 	})
-	// sourceCatalog is the boot-literal plugin inventory (plugin-title-
-	// enrichment D6): the single source for BOTH the pluginIDs set and the
-	// Deps.SourceInventory closure.
-	type catalogEntry struct {
-		id, name, description string
-	}
-	sourceCatalog := []catalogEntry{
-		{"base-scanner", "Base Scanner", "Directory scanner for tv and image libraries."},
-		{"serial-scanner", "Serial Scanner", "Structure-aware directory scanner for serial libraries."},
-		{"tv-parser", "TV Parser", "Local filename parser for tv episodes."},
-		{"image-enricher", "Image Enricher", "Local EXIF metadata enrichment for images."},
-		{"serial-parser", "Serial Parser", "Local directory-facts parser for serials."},
-		{"frame-grabber", "Frame Grabber", "ffmpeg thumbnail and frame metadata for serial episodes."},
-		{"shikimori", "Shikimori", "External Shikimori metadata enrichment for serials."},
-		{module.PluginIDTmdb, "TMDB", "External TMDB metadata enrichment for tv and serial libraries."}, // {"tmdb", "TMDB" — 6.2 receipt anchor (design flag 8)
-	}
 	// pluginIDs derives from sourceCatalog so the load sites, the status
 	// closure, and the admin-sources inventory cannot diverge.
 	pluginIDs := make([]string, len(sourceCatalog))
@@ -117,6 +214,17 @@ func main() {
 			types = append(types, c.Type)
 		}
 		loadedCaps[pluginID] = types
+	}
+	// optionalState is the synthesized health rows for the OPTIONAL plugins —
+	// absent or broken ones only (a present-and-started one rides the manager
+	// path). Boot-time writes only, status-closure reads for the process's
+	// life; the map is the composition root's own bookkeeping, zero
+	// internal/plugin surface added.
+	optionalState := make(map[string]api.PluginHealth, 2)
+	// loadPluginOptional is the fatal pair's optional counterpart: the same
+	// call shape, skip-and-report discipline (see loadOptionalPlugin).
+	loadPluginOptional := func(pluginID, binaryPath string, caps []sdk.Capability) {
+		loadOptionalPlugin(ctx, mgr, pluginID, binaryPath, caps, optionalState, loadedCaps)
 	}
 
 	// base-scanner is the tv/image scanner plugin.
@@ -162,6 +270,17 @@ func main() {
 	// chain priority-3, serial seed v4 priority-4); its SERVER-mode api key
 	// arrives through the binding's options JSON (D2), never an env var.
 	loadPlugin(module.PluginIDTmdb, cfg.tmdbPath, []sdk.Capability{ // loadPlugin("tmdb" — 2.4 receipt anchor (design flag 8)
+		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
+	})
+
+	// jav-parser + Javinizer are the catalog's OPTIONAL rows (external
+	// deployments: the resolved paths are the dormancy switch — cfg's env
+	// knobs). Their absence or breakage degrades to a synthesized status row;
+	// the eight in-repo sites above keep the fatal pair.
+	loadPluginOptional("jav-parser", cfg.javParserPath, []sdk.Capability{
+		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
+	})
+	loadPluginOptional(module.PluginIDJavinizer, cfg.javinizerPath, []sdk.Capability{
 		{Type: "metadata_source", ID: "default", ProtoService: metadataService},
 	})
 
@@ -259,25 +378,10 @@ func main() {
 	// api.PluginHealth, enrichQueue.Stats() → api.EnrichStats. A per-plugin
 	// error omits that entry — never a 500 over one bad plugin.
 	statusClosure := func(ctx context.Context) (api.AdminStatus, error) {
-		plugins := make([]api.PluginHealth, 0, len(pluginIDs))
-		for _, id := range pluginIDs {
-			h, err := mgr.Status(id)
-			if err != nil {
-				slog.Warn("admin status: plugin status unavailable", "plugin", id, "error", err)
-				continue
-			}
-			checkedAt := ""
-			if !h.LastCheckedAt.IsZero() {
-				checkedAt = h.LastCheckedAt.Format(time.RFC3339)
-			}
-			plugins = append(plugins, api.PluginHealth{
-				ID:        id,
-				State:     h.State,
-				Message:   h.Message,
-				Restarts:  h.Restarts,
-				CheckedAt: checkedAt,
-			})
-		}
+		// The synthesized optionalState rows ride along ahead of the manager
+		// path (see pluginHealths) — /admin/status and /admin/plugins render
+		// them exactly like manager-served rows, zero api change.
+		plugins := pluginHealths(pluginIDs, optionalState, mgr)
 		es := enrichQueue.Stats()
 		return api.AdminStatus{
 			Plugins: plugins,
@@ -590,7 +694,7 @@ func main() {
 	// plugin subprocesses — in-flight RPCs drain against still-live
 	// subprocesses (best-effort within shutdownTimeout).
 	enrichQueue.Stop()
-	for _, id := range pluginIDs {
+	for _, id := range stoppableIDs(pluginIDs, loadedCaps) {
 		logErr(mgr.Stop(shutdownCtx, id), "stop "+id)
 	}
 	// store.Close runs via the deferred st.Close() in main.
@@ -614,6 +718,8 @@ type config struct {
 	frameGrabberPath  string
 	shikimoriPath     string
 	tmdbPath          string
+	javParserPath     string
+	javinizerPath     string
 	listenAddr        string
 	webDev            bool
 	enrich            enrich.QueueConfig
@@ -660,7 +766,11 @@ func loadConfig() config {
 		frameGrabberPath:  envOr("MELLIFERA_FRAME_GRABBER", "bin/frame-grabber"),
 		shikimoriPath:     envOr("MELLIFERA_SHIKIMORI", "bin/shikimori"),
 		tmdbPath:          envOr("MELLIFERA_TMDB", "bin/tmdb"),
-		listenAddr:        envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
+		// Optional external plugins: the resolved path is the dormancy switch
+		// (the optional load sites consult it; an absent binary stays boot-green).
+		javParserPath: envOr("MELLIFERA_JAV_PARSER", "bin/jav-parser"),
+		javinizerPath: envOr("MELLIFERA_JAVINIZER", "bin/javinizer"),
+		listenAddr:    envOr("MELLIFERA_LISTEN", "127.0.0.1:8080"),
 		// webDev=true loosens the SPA cache headers so the Vite dev proxy can
 		// hot-reload; default false (production: immutable /assets/*).
 		webDev: envBool("MELLIFERA_WEB_DEV", false),
@@ -1168,12 +1278,29 @@ func (r *pluginConfigRows) add(moduleID, kind string, priority int, enabled bool
 	r.options = append(r.options, options)
 }
 
+// catalogKnown reports whether the id is a boot-catalog row — the inventory
+// every admin surface renders unconditionally, loaded or not.
+func catalogKnown(pluginID string) bool {
+	for _, p := range sourceCatalog {
+		if p.id == pluginID {
+			return true
+		}
+	}
+	return false
+}
+
 // newPluginConfigsClosure builds the api Deps.PluginConfigs seam
 // (plugin-admin-surfaces D4): one row per module binding; options ride as RAW
-// JSON (INV4). An id outside loadedPlugins is unknown.
+// JSON (INV4). A catalog-known id outside loadedPlugins is dormancy, not
+// unknown — it renders config-less (the admin aggregate walks the whole
+// inventory, so the absent-binary default boot must not fail-fast). Only an
+// id outside the catalog is unknown.
 func newPluginConfigsClosure(reg *module.Registry, loadedPlugins map[string][]string) func(context.Context, string) ([]string, []string, []int, []bool, []string, []string, []string, error) {
 	return func(_ context.Context, pluginID string) ([]string, []string, []int, []bool, []string, []string, []string, error) {
 		if _, loaded := loadedPlugins[pluginID]; !loaded {
+			if catalogKnown(pluginID) {
+				return nil, nil, nil, nil, nil, nil, nil, nil
+			}
 			return nil, nil, nil, nil, nil, nil, nil,
 				fmt.Errorf("plugin configs %q: %w", pluginID, api.ErrUnknownPlugin)
 		}

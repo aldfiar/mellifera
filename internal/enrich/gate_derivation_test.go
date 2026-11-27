@@ -74,7 +74,17 @@ func TestGateDerivation(t *testing.T) {
 			t.Fatalf("CreateLibrary: %v", err)
 		}
 		doc := baseDoc("Show/S01E01.mkv")
-		doc["sources"] = map[string]any{"tv-parser": map[string]any{"title": "parsed"}}
+		doc["sources"] = map[string]any{
+			"tv-parser":     map[string]any{"title": "parsed"},
+			"frame-grabber": map[string]any{"grabbed": true},
+			// the v3 seed's sources carried done too: without a RequiredSecrets
+			// closure the SERVER javinizer slot is queueable here, and any
+			// unsettled chain source would keep a pre-enable pass in flight
+			// across the gate flip — that pass holds the row lease, swallows
+			// the wake dispatch, and settles the row with the pre-flip gates.
+			"jav-parser": map[string]any{"title": "parsed"},
+			"javinizer":  map[string]any{"title": "enriched"},
+		}
 		putItem(t, s, "i_wake", libID, statusEnriched, doc)
 		parser := &succeedSrc{id: "tv-parser"}
 		tmdb := &succeedSrc{id: "tmdb"}
@@ -147,6 +157,11 @@ func TestGateDerivation(t *testing.T) {
 			"tv-parser":     map[string]any{"title": "parsed"},
 			"tmdb":          map[string]any{"title": "enriched"},
 			"frame-grabber": map[string]any{"grabbed": true},
+			// the tv seed's v3 sources carried done too — without a
+			// RequiredSecrets closure the SERVER javinizer slot is queueable
+			// here, and its absence would resurrect the row as pending.
+			"jav-parser": map[string]any{"title": "parsed"},
+			"javinizer":  map[string]any{"title": "enriched"},
 		}
 		putItem(t, s, "i_done", libID, statusEnriched, doc)
 		parser := &succeedSrc{id: "tv-parser"}

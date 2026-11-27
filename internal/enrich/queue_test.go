@@ -632,11 +632,14 @@ func TestDerivationChainPriority(t *testing.T) {
 		return strings.Join(ids, ",")
 	}
 
-	// Absent chain: config order (tv-parser, kinopoisk, tmdb,
-	// frame-grabber) with the D-Q1 CLIENT exclusion -> [tv-parser tmdb
-	// frame-grabber] (the v2 tv seed adds frame-grabber at priority 4).
-	if got := rowTasks(t); got != "tv-parser,tmdb,frame-grabber" {
-		t.Fatalf("absent-chain derivation = %q, want %q (config order)", got, "tv-parser,tmdb,frame-grabber")
+	// Absent chain: config order (tv-parser, kinopoisk, tmdb, frame-grabber,
+	// jav-parser, javinizer) with the D-Q1 CLIENT exclusion -> [tv-parser tmdb
+	// frame-grabber jav-parser javinizer] (the v2 tv seed adds frame-grabber at
+	// priority 4; the v3 seed adds the two optional sources at priorities 5/6 —
+	// these fixtures run without a RequiredSecrets closure, so the SERVER
+	// javinizer slot is queueable here too).
+	if got := rowTasks(t); got != "tv-parser,tmdb,frame-grabber,jav-parser,javinizer" {
+		t.Fatalf("absent-chain derivation = %q, want %q (config order)", got, "tv-parser,tmdb,frame-grabber,jav-parser,javinizer")
 	}
 
 	// Reorder the stored chain: derivation priority follows it.
@@ -644,8 +647,10 @@ func TestDerivationChainPriority(t *testing.T) {
 		t.Fatalf("SetLibraryChain: %v", err)
 	}
 	// frame-grabber stays in config position after the reordered pair (the v2
-	// tv seed adds it at priority 4; SetLibraryChain reorders the named two).
-	if got := rowTasks(t); got != "tmdb,tv-parser,frame-grabber" {
-		t.Fatalf("chain-ordered derivation = %q, want %q (chain order)", got, "tmdb,tv-parser,frame-grabber")
+	// tv seed adds it at priority 4; SetLibraryChain reorders the named two),
+	// and the v3 seed's two optional sources keep their config positions 5/6
+	// behind it.
+	if got := rowTasks(t); got != "tmdb,tv-parser,frame-grabber,jav-parser,javinizer" {
+		t.Fatalf("chain-ordered derivation = %q, want %q (chain order)", got, "tmdb,tv-parser,frame-grabber,jav-parser,javinizer")
 	}
 }

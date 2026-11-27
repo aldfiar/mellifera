@@ -563,6 +563,8 @@ func settledPackItem(t *testing.T, s *store.Store, libID int64, id string) {
 	}
 	srcs["tmdb"] = map[string]any{"title": "done"}
 	srcs["frame-grabber"] = map[string]any{"title": "done"} // the tv seed's 4th queueable source (registry.go)
+	srcs["jav-parser"] = map[string]any{"title": "done"}    // the v3 seed's 5th (local parser)
+	srcs["javinizer"] = map[string]any{"title": "done"}     // the v3 seed's 6th — queueable here (no RequiredSecrets closure)
 	b, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal %s document: %v", id, err)

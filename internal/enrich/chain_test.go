@@ -382,3 +382,110 @@ func TestDeferredConsultFeedsConvert(t *testing.T) {
 		}
 	})
 }
+
+// TestHandOffNoRelaySkipsEnqueue is the no-relay handoff guard: a
+// trait-carrying source never reaches the deferred path — the guard sits
+// before Enqueue, so a live relay scope and a real plan still write nothing
+// durable and the network failure falls through to the plain fetch-failure
+// path (retry loop runs, exhausted row, no relay job, no relayed state).
+func TestHandOffNoRelaySkipsEnqueue(t *testing.T) {
+	ctx := context.Background()
+	s := relayTestStore(t)
+	r := &Relay{Store: s}
+	live := httptest.NewServer(&fetchRecorder{})
+	defer live.Close()
+	dead := deadUpstream(t) // after the live bind: the OS cannot rebind the dead port
+
+	noRelay := binding("plan", 1, true)
+	noRelay.NoRelay = true
+	mod := module.Module{ID: "serial", MediaType: "serial", MetadataSources: []module.MetadataSourceBinding{noRelay}}
+	src := &planSource{primary: dead}
+
+	sr, ledgerStatus, attempts := runSourceRetryable(ctx, resolverOf(src, nil), noRelay, mod, &scannerv1.IdentifyResult{}, map[string]any{}, nil,
+		&relayScope{relay: r, rowID: "itm_nr1", libraryID: 7}, nil, 3, time.Millisecond)
+
+	if sr.kind != outcomeFailed {
+		t.Fatalf("kind = %v (err %q), want failed (the plain fetch-failure path — never deferred)", sr.kind, sr.errMsg)
+	}
+	if ledgerStatus != ledgerExhausted || attempts != 3 {
+		t.Fatalf("ledgerStatus/attempts = %q/%d, want exhausted/3 (the normal retry loop ran)", ledgerStatus, attempts)
+	}
+	if src.converted {
+		t.Fatal("Convert ran after a failed primary")
+	}
+	if _, found := relayClaim(t, s); found {
+		t.Fatal("a relay job was enqueued for a trait-carrying source")
+	}
+	// No relayed state anywhere: runSourceRetryable is a pure transform (the
+	// exhausted ledger row is the dispatch's write), so the store must carry
+	// no row at all — no relayed row, no deferred state.
+	if rows, err := s.ListFailures(ctx); err != nil || len(rows) != 0 {
+		t.Fatalf("ledger rows = %d (err %v), want 0 (no relayed state)", len(rows), err)
+	}
+
+	// The guard at the seam itself: a live scope and a non-nil plan still
+	// answer not-handed-off (proves the trait check, not a plan==nil shadow).
+	sr2, handed := (&relayScope{relay: r, rowID: "itm_nr1", libraryID: 7}).handOff(
+		ctx, noRelay, "t", "dial tcp: refused", fetchClassNetwork,
+		[]relay.PlanSpec{{Method: "GET", URL: dead.GetUrlTemplate()}})
+	if handed || sr2.kind != 0 {
+		t.Fatalf("handOff = %v/%v, want not-handed-off for a no-relay source", sr2, handed)
+	}
+	if _, found := relayClaim(t, s); found {
+		t.Fatal("the direct handOff enqueued for a trait-carrying source")
+	}
+}
+
+// TestConsultSkipsNoRelaySource is the no-relay consult guard: the
+// consult-before-fetch branch excludes trait-carrying sources — with a done,
+// unconsumed, plan-MATCHED job sitting in the queue, the run still fetches
+// server-side (executor empty) and the stored job stays unconsumed.
+func TestConsultSkipsNoRelaySource(t *testing.T) {
+	// See-all viewer on the carrier (the 4.5 fixture convention): the seed
+	// Ingest below completes a library-backed job — a bare context fails closed.
+	ctx := access.WithViewer(context.Background(), access.System())
+	s := relayTestStore(t)
+	r := &Relay{Store: s}
+	rec := &fetchRecorder{}
+	live := httptest.NewServer(rec)
+	defer live.Close()
+	primary := &metadatav1.RequestSpec{Method: "GET", UrlTemplate: live.URL + "?which=norelay"}
+	var gotConv *metadatav1.ConvertRequest
+	src := &planSource{primary: primary, onConvert: func(cr *metadatav1.ConvertRequest) { gotConv = cr }}
+
+	// Seed a done, unconsumed, plan-MATCHED job for the pair: were the run
+	// to consult, this stored body would feed Convert instead of the fetch.
+	plan := buildPlan(primary, nil)
+	if err := r.Enqueue(ctx, plan, relayPurposeEnrich, "itm_nr2", 3, "plan", fetchClassNetwork, "dial tcp: refused"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	job, found := relayClaim(t, s)
+	if !found {
+		t.Fatal("seed handoff produced no claimable job")
+	}
+	stored := relay.RelayResult{HTTPStatus: 200, Body: []byte(`{"id":1,"stored-by-client":true}`)}
+	if err := r.Ingest(ctx, job.ID, "test-principal", stored); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	noRelay := binding("plan", 1, true)
+	noRelay.NoRelay = true
+	sr := runSource(ctx, resolverOf(src, nil), noRelay, module.Module{ID: "serial", MediaType: "serial"}, &scannerv1.IdentifyResult{}, map[string]any{}, nil,
+		&relayScope{relay: r, rowID: "itm_nr2", libraryID: 3}, nil)
+
+	if sr.kind != outcomeSucceeded {
+		t.Fatalf("kind = %v (err %q), want succeeded via the normal server fetch", sr.kind, sr.errMsg)
+	}
+	if n := rec.count(); n != 1 {
+		t.Fatalf("upstream saw %d requests, want 1 (the server fetch always ran)", n)
+	}
+	if string(gotConv.GetRawResponse()) != `{"id":1,"n":1}` {
+		t.Fatalf("raw_response = %q, want the LIVE body (never the stored one)", gotConv.GetRawResponse())
+	}
+	if sr.executor != "" {
+		t.Fatalf("sr.executor = %q, want empty (a server fetch)", sr.executor)
+	}
+	if relayConsumed(t, s, job.ID) {
+		t.Fatal("the stored job was consumed by a no-relay consult")
+	}
+}

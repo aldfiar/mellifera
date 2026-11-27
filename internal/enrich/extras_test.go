@@ -16,13 +16,18 @@ import (
 
 // chainDoneDoc is a document whose chain sources have all written their
 // namespaces (done): the chain derivation contributes nothing, so any derived
-// task for the row must come from the element-attachment input (D-4).
+// task for the row must come from the element-attachment input (D-4). The tv
+// seed's v3 sources ride along done — these fixtures run without a
+// RequiredSecrets closure, so the SERVER javinizer slot is queueable here and
+// must not resurrect the chain as pending.
 func chainDoneDoc(relPath string) map[string]any {
 	doc := baseDoc(relPath)
 	doc["sources"] = map[string]any{
 		"tv-parser":     map[string]any{"title": "done"},
 		"tmdb":          map[string]any{"title": "done"},
 		"frame-grabber": map[string]any{"thumbnail": "done"},
+		"jav-parser":    map[string]any{"title": "done"},
+		"javinizer":     map[string]any{"title": "done"},
 	}
 	return doc
 }

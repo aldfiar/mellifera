@@ -37,6 +37,32 @@ func TestEnvInt(t *testing.T) {
 	}
 }
 
+// TestOptionalPluginPathOverrides pins the two optional external-plugin path
+// resolutions: an unset/empty MELLIFERA_JAV_PARSER / MELLIFERA_JAVINIZER falls
+// back to the bin/ default, a set value overrides (the same envOr law as the
+// eight built-in override sites).
+func TestOptionalPluginPathOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+		def  string
+		val  string
+		want string
+	}{
+		{"jav_parser_empty_uses_default", "MELLIFERA_JAV_PARSER", "bin/jav-parser", "", "bin/jav-parser"},
+		{"jav_parser_env_overrides", "MELLIFERA_JAV_PARSER", "bin/jav-parser", "/opt/plugins/jav-parser", "/opt/plugins/jav-parser"},
+		{"javinizer_empty_uses_default", "MELLIFERA_JAVINIZER", "bin/javinizer", "", "bin/javinizer"},
+		{"javinizer_env_overrides", "MELLIFERA_JAVINIZER", "bin/javinizer", "/opt/plugins/javinizer", "/opt/plugins/javinizer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.key, tc.val)
+			if got := envOr(tc.key, tc.def); got != tc.want {
+				t.Errorf("envOr(%q=%q, def=%q) = %q, want %q", tc.key, tc.val, tc.def, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestEnvDuration covers the B5 duration-env-parsing logic over the time units the
 // §4.4 knobs use (seconds/minutes/hours/days), plus the empty + malformed
 // fallbacks (INV-env-defaults).

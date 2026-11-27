@@ -63,9 +63,12 @@ func (sc *relayScope) enabled() bool {
 // condition that never relays), a non-network class, a dying context (the
 // queue's hard-abort owns teardown; a cancelled ctx must not write durable
 // relay state), or an enqueue error keeps today's failure behavior
-// bit-identical: the caller falls through to the plain failure path.
+// bit-identical: the caller falls through to the plain failure path. A
+// trait-carrying (no_relay) source never hands off either — its network
+// failure stays a plain chain failure (no relay row, no deferred state); the
+// guard sits before Enqueue so no durable write can precede the refusal.
 func (sc *relayScope) handOff(ctx context.Context, src module.MetadataSourceBinding, start, errText, class string, plan []relay.PlanSpec) (sourceResult, bool) {
-	if !sc.enabled() || plan == nil || class != fetchClassNetwork || ctx.Err() != nil {
+	if !sc.enabled() || src.NoRelay || plan == nil || class != fetchClassNetwork || ctx.Err() != nil {
 		return sourceResult{}, false
 	}
 	if err := sc.relay.Enqueue(ctx, plan, relayPurposeEnrich, sc.rowID, sc.libraryID, src.PluginID, class, errText); err != nil {
@@ -165,7 +168,9 @@ type sourceResult struct {
 // scope (nil = relay disabled) is the deferred-handoff scope — the call site
 // owns the relay policy (client-relayed-fetch D4): consult before fetching,
 // and a network-class failure (primary OR extra) hands the whole plan to the
-// relay and ends the run deferred. requiredSecrets (nil-safe) drives
+// relay and ends the run deferred. A no_relay binding is exempt at both
+// seams: it never consults (always a server fetch) and never hands off (its
+// network failure stays a plain chain failure). requiredSecrets (nil-safe) drives
 // serverAuth: a fully resolved SERVER binding runs the mode-only SERVER
 // AuthContext (tmdb-enrichment D4 — values never ride to the plugin,
 // substitution stays core-side), otherwise the empty AuthContext and any
@@ -204,7 +209,11 @@ func runSource(ctx context.Context, resolve metadataResolver, src module.Metadat
 	executor := ""                                                              // executorClient once the primary came from the relay cache
 	var plan []relay.PlanSpec                                                   // the whole request plan, held while the relay can act on it
 	if spec := buildRes.GetSpec(); spec != nil && spec.GetUrlTemplate() != "" { // no url template: local source, nothing to fetch
-		if scope.enabled() { // D4: the call site owns the relay policy — fetchSource stays a pure executor
+		// D4: the call site owns the relay policy — fetchSource stays a pure
+		// executor. A trait-carrying (no_relay) source is excluded entirely:
+		// it never consults the cache (always a server fetch, any stored job
+		// stays unconsumed) and never builds a plan to hand off.
+		if scope.enabled() && !src.NoRelay {
 			plan = buildPlan(spec, buildRes.GetExtraSpecs(), secrets)
 			if plan != nil { // a spec-validation failure skips the relay path entirely
 				// Consult BEFORE fetching (D4): a done, unconsumed,

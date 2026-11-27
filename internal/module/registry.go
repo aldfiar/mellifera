@@ -45,6 +45,17 @@ const upgradeTVConfigSQL = `UPDATE modules
   SET config_json = ?, schema_version = 2, updated_at = ?
   WHERE id = 'tv' AND schema_version < 2`
 
+// upgradeTVConfigV3SQL promotes an existing tv row from config v2 to v3: the
+// two optional metadata sources ride behind optional binaries, so their
+// bindings ship the same way frame-grabber did — a schema-guarded UPDATE that
+// INSERT OR IGNORE never reaches on existing stores. Idempotent (a no-op on
+// re-runs and on fresh v3 inserts); the SERVER binding's declared option is
+// unresolved in the seed, so the source stays dormant until the operator
+// configures it.
+const upgradeTVConfigV3SQL = `UPDATE modules
+  SET config_json = ?, schema_version = 3, updated_at = ?
+  WHERE id = 'tv' AND schema_version < 3`
+
 // upgradeSerialConfigSQL promotes an existing serial row from config v1 to v2
 // (enrichment D-7): the tv upgrade's guarded-UPDATE pattern, scoped to the
 // serial row alone.
@@ -90,15 +101,19 @@ const setBindingOptionsSQL = `UPDATE modules SET config_json = ? WHERE id = ?`
 // (priority 1) is the local Phase A parser; kinopoisk (2) and tmdb (3) are the
 // designed external enrichers, soft-failed in Phase A while their plugins are
 // unloaded (AC-6); schema v2 (continue-nextup-media D-7) binds frame-grabber
-// (4) after the unloaded slots. document_schema is omitted (validation is a
-// deferred feature; module does not read it); the scanner binding is what
-// scan resolves via Get("tv"). display_name carries Russian first-class
-// (arch §1.2); presentation declarations are CONFIG, not code (element-pages
-// D-1, AC-4) — kinopoisk/tmdb declare none: seeded-but-unloaded slot groups
-// render their pill only.
+// (4) after the unloaded slots; schema v3 binds the two optional metadata
+// sources after frame-grabber — both LAN-local (no_relay: their fetches must
+// never hand off to a remote viewer), the SERVER one dormant in the seed (its
+// declared option carries no value until the operator configures it). The ids
+// are opaque plugin ids; the SERVER one is referenced by PluginIDJavinizer in
+// tests. document_schema is omitted (validation is a deferred feature; module
+// does not read it); the scanner binding is what scan resolves via Get("tv").
+// display_name carries Russian first-class (arch §1.2); presentation
+// declarations are CONFIG, not code (element-pages D-1, AC-4) — the unloaded
+// slot groups render their pill only.
 const tvConfigJSON = `{
   "id": "tv",
-  "schema_version": 2,
+  "schema_version": 3,
   "display_name": {"ru": "Сериалы", "en": "TV Series"},
   "media_type": "tv",
   "identity_fields": ["title", "year"],
@@ -133,6 +148,16 @@ const tvConfigJSON = `{
       "plugin_id": "frame-grabber", "capability_id": "default",
       "priority": 4, "enabled": true,
       "display_fields": ["thumbnail", "grabbed_at"],
+      "options": {}
+    },
+    {
+      "plugin_id": "jav-parser", "capability_id": "default",
+      "priority": 5, "enabled": true, "no_relay": true,
+      "options": {}
+    },
+    {
+      "plugin_id": "javinizer", "capability_id": "default",
+      "priority": 6, "enabled": true, "auth_mode": "SERVER", "no_relay": true,
       "options": {}
     }
   ],
@@ -184,6 +209,11 @@ const imageConfigJSON = `{
 // carrying the quoted literal — the AC-4 config-driven-core probe forbids
 // media literals outside internal/module (tmdb-enrichment 7.2).
 const PluginIDTmdb = "tmdb"
+
+// PluginIDJavinizer is the canonical plugin id of the Javinizer metadata_source,
+// declared in the config home so seed bindings and orchestrator code reference
+// the id by symbol instead of carrying the quoted literal.
+const PluginIDJavinizer = "javinizer"
 
 // serialConfigJSON is the serials-library module config, as JSON — a CONFIG
 // ENTITY (INV1/INV2) mirroring the tv seed shape. It binds serial-scanner
@@ -293,15 +323,17 @@ type ScannerBinding struct {
 // capability serves it, its chain priority (lower runs first), whether it is
 // active, its auth mode (opaque config string; Phase B interprets SERVER /
 // CLIENT), the ordered display_fields declaration (footer render order —
-// element-pages D-1), and the opaque options forwarded to its RPCs. Core
-// selection reads this slice from config and never branches on media type
-// (AC-4).
+// element-pages D-1), the opaque options forwarded to its RPCs, and whether it
+// is exempt from client-relayed fetches (no_relay — LAN-local sources must
+// never hand work to remote viewers). Core selection reads this slice from
+// config and never branches on media type (AC-4).
 type MetadataSourceBinding struct {
 	PluginID      string
 	CapabilityID  string
 	Priority      int
 	Enabled       bool
 	AuthMode      string
+	NoRelay       bool // config no_relay; absent decodes false
 	DisplayFields []string
 	Options       json.RawMessage
 }
@@ -312,7 +344,7 @@ type MetadataSourceBinding struct {
 func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	db := s.DB()
 	if _, err := db.ExecContext(ctx, seedModulesSQL,
-		"tv", "tv", tvConfigJSON, 2, 1, seedCreatedAt, seedCreatedAt,
+		"tv", "tv", tvConfigJSON, 3, 1, seedCreatedAt, seedCreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("module: seed: %w", err)
 	}
@@ -352,6 +384,12 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	// promotion.
 	if _, err := db.ExecContext(ctx, upgradeSerialConfigV4SQL, serialConfigJSON, seedCreatedAt); err != nil {
 		return nil, fmt.Errorf("module: upgrade serial v4: %w", err)
+	}
+	// v2→v3 tv promotion — the two optional metadata sources, the same
+	// guarded-UPDATE mechanism as every promotion above: fresh installs already
+	// carry v3 from the INSERT, so this only rewrites pre-v3 rows.
+	if _, err := db.ExecContext(ctx, upgradeTVConfigV3SQL, tvConfigJSON, seedCreatedAt); err != nil {
+		return nil, fmt.Errorf("module: upgrade tv v3: %w", err)
 	}
 	rows, err := db.QueryContext(ctx, listModulesSQL)
 	if err != nil {
@@ -679,6 +717,7 @@ func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (M
 			Priority      int             `json:"priority"`
 			Enabled       bool            `json:"enabled"`
 			AuthMode      string          `json:"auth_mode"`
+			NoRelay       bool            `json:"no_relay"`
 			DisplayFields []string        `json:"display_fields"`
 			Options       json.RawMessage `json:"options"`
 		} `json:"metadata_sources"`
@@ -709,6 +748,7 @@ func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (M
 			Priority:      src.Priority,
 			Enabled:       src.Enabled,
 			AuthMode:      src.AuthMode,
+			NoRelay:       src.NoRelay,
 			DisplayFields: src.DisplayFields,
 			Options:       src.Options,
 		}

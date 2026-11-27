@@ -32,11 +32,16 @@ func openRegistry(t *testing.T) (*Registry, *store.Store) {
 	return r, s
 }
 
-// v1TvConfigJSON derives the pre-D-7 (v1) tv seed: the current config with the
-// frame-grabber binding removed and schema_version rolled back to 1. Decoded
-// and re-encoded rather than string-spliced so it cannot drift with the seed
-// text (a splice that silently misses leaves frame-grabber in the "v1" row and
-// the migration assertions pass vacuously).
+// tvSeedChainLen is the v3 seed's metadata_sources length: the four v2 chain
+// entries plus the two promoted bindings.
+const tvSeedChainLen = 6
+
+// v1TvConfigJSON derives the pre-D-7 (v1) tv seed: the current config with
+// every binding after tmdb removed (frame-grabber, then the two promoted ones)
+// and schema_version rolled back to 1. Decoded and re-encoded rather than
+// string-spliced so it cannot drift with the seed text (a splice that silently
+// misses leaves bindings in the "v1" row and the migration assertions pass
+// vacuously).
 func v1TvConfigJSON(t *testing.T) []byte {
 	t.Helper()
 	var cfg map[string]any
@@ -45,13 +50,10 @@ func v1TvConfigJSON(t *testing.T) []byte {
 	}
 	cfg["schema_version"] = 1
 	sources, ok := cfg["metadata_sources"].([]any)
-	if !ok || len(sources) == 0 {
-		t.Fatalf("tvConfigJSON metadata_sources = %#v, want a non-empty chain", cfg["metadata_sources"])
+	if !ok || len(sources) != tvSeedChainLen {
+		t.Fatalf("tvConfigJSON metadata_sources = %#v, want %d entries", cfg["metadata_sources"], tvSeedChainLen)
 	}
-	if last, _ := sources[len(sources)-1].(map[string]any); last["plugin_id"] != "frame-grabber" {
-		t.Fatalf("last metadata_source = %#v, want frame-grabber", last)
-	}
-	cfg["metadata_sources"] = sources[:len(sources)-1]
+	cfg["metadata_sources"] = sources[:3]
 	out, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatalf("re-encode v1 config: %v", err)
@@ -59,9 +61,36 @@ func v1TvConfigJSON(t *testing.T) []byte {
 	return out
 }
 
+// v2TvConfigJSON derives the pre-promotion (v2) tv seed: the current config
+// truncated after frame-grabber with schema_version rolled back to 2 — the
+// shape a pre-v3 store's tv row holds. Same decode/re-encode discipline as
+// v1TvConfigJSON.
+func v2TvConfigJSON(t *testing.T) []byte {
+	t.Helper()
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(tvConfigJSON), &cfg); err != nil {
+		t.Fatalf("parse tvConfigJSON: %v", err)
+	}
+	cfg["schema_version"] = 2
+	sources, ok := cfg["metadata_sources"].([]any)
+	if !ok || len(sources) != tvSeedChainLen {
+		t.Fatalf("tvConfigJSON metadata_sources = %#v, want %d entries", cfg["metadata_sources"], tvSeedChainLen)
+	}
+	if last, _ := sources[3].(map[string]any); last["plugin_id"] != "frame-grabber" {
+		t.Fatalf("metadata_source[3] = %#v, want frame-grabber", last)
+	}
+	cfg["metadata_sources"] = sources[:4]
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("re-encode v2 config: %v", err)
+	}
+	return out
+}
+
 // TestOpen_TVSeeded covers B1 (Open loads enabled modules) + B2/B4 (Get("tv")
-// returns the §2.4.1 scanner binding with verbatim options) + the v2 chain
-// (continue-nextup-media D-7: frame-grabber bound after the unloaded slots).
+// returns the §2.4.1 scanner binding with verbatim options) + the ordered
+// chain through the v3 seed (frame-grabber after the unloaded slots, then the
+// two promoted optional sources).
 func TestOpen_TVSeeded(t *testing.T) {
 	r, _ := openRegistry(t)
 
@@ -69,8 +98,8 @@ func TestOpen_TVSeeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(tv): %v", err)
 	}
-	if m.ID != "tv" || m.MediaType != "tv" || m.SchemaVersion != 2 {
-		t.Fatalf("Get(tv) = %+v, want id=tv media_type=tv schema_version=2", m)
+	if m.ID != "tv" || m.MediaType != "tv" || m.SchemaVersion != 3 {
+		t.Fatalf("Get(tv) = %+v, want id=tv media_type=tv schema_version=3", m)
 	}
 	if m.Scanner.PluginID != "base-scanner" || m.Scanner.CapabilityID != "default" {
 		t.Fatalf("scanner binding = %+v, want base-scanner/default", m.Scanner)
@@ -83,6 +112,8 @@ func TestOpen_TVSeeded(t *testing.T) {
 		{"kinopoisk", 2},
 		{"tmdb", 3},
 		{"frame-grabber", 4},
+		{"jav-parser", 5},
+		{PluginIDJavinizer, 6},
 	}
 	if len(m.MetadataSources) != len(want) {
 		t.Fatalf("MetadataSources len = %d, want %d: %+v", len(m.MetadataSources), len(want), m.MetadataSources)
@@ -129,136 +160,171 @@ func TestOpen_TVSeedUpgradesV1Row(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(tv): %v", err)
 	}
-	if m.SchemaVersion != 2 || len(m.MetadataSources) != 4 ||
+	if m.SchemaVersion != 3 || len(m.MetadataSources) != tvSeedChainLen ||
 		m.MetadataSources[3].PluginID != "frame-grabber" {
-		t.Fatalf("after upgrade: schema=%d chain=%+v, want v2 with frame-grabber last", m.SchemaVersion, m.MetadataSources)
+		t.Fatalf("after upgrade: schema=%d chain=%+v, want v3 with the full %d-entry chain", m.SchemaVersion, m.MetadataSources, tvSeedChainLen)
 	}
-	// The row itself must be v2 on disk (a re-Open reads it back unchanged).
+	// The row itself must be v3 on disk (the promotion chain runs to the top).
 	var ver int
-	if err := s.DB().QueryRowContext(ctx, `SELECT schema_version FROM modules WHERE id = 'tv'`).Scan(&ver); err != nil || ver != 2 {
-		t.Fatalf("stored schema_version = %d (err=%v), want 2", ver, err)
+	if err := s.DB().QueryRowContext(ctx, `SELECT schema_version FROM modules WHERE id = 'tv'`).Scan(&ver); err != nil || ver != 3 {
+		t.Fatalf("stored schema_version = %d (err=%v), want 3", ver, err)
 	}
 	if _, err := Open(ctx, s); err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
 }
 
-// TestTvModuleSeedV2 covers box 2.1 (continue-nextup-media D-7): the tv seed
-// carries the frame-grabber binding as schema_version 2 — asserted both on a
-// fresh open and on a store pre-seeded with the v1 row, where the guarded
-// UPDATE (not the INSERT OR IGNORE, which never rewrites an existing row) is
-// the actual migration.
-func TestTvModuleSeedV2(t *testing.T) {
-	assertV2Chain := func(t *testing.T, r *Registry, m Module) {
-		t.Helper()
-		if m.ID != "tv" || m.MediaType != "tv" || m.SchemaVersion != 2 {
-			t.Fatalf("Get(tv) = %+v, want id=tv media_type=tv schema_version=2", m)
-		}
-		want := []struct {
-			plugin   string
-			priority int
-		}{
-			{"tv-parser", 1},
-			{"kinopoisk", 2},
-			{"tmdb", 3},
-			{"frame-grabber", 4},
-		}
-		if len(m.MetadataSources) != len(want) {
-			t.Fatalf("MetadataSources len = %d, want %d: %+v", len(m.MetadataSources), len(want), m.MetadataSources)
-		}
-		for i, w := range want {
-			src := m.MetadataSources[i]
-			if src.PluginID != w.plugin || src.Priority != w.priority || !src.Enabled {
-				t.Fatalf("MetadataSources[%d] = %+v, want %s@%d enabled", i, src, w.plugin, w.priority)
-			}
-		}
-		fg := m.MetadataSources[3]
-		if fg.AuthMode != "" {
-			t.Errorf("frame-grabber auth_mode = %q, want empty (local plugin, queueable per D-Q1)", fg.AuthMode)
-		}
-		// The box's declared footer order, resolved through the accessor.
-		fields, err := r.DisplayFields("tv", "frame-grabber")
-		if err != nil {
-			t.Fatalf("DisplayFields(tv, frame-grabber): %v", err)
-		}
-		if wantFields := []string{"thumbnail", "grabbed_at"}; !reflect.DeepEqual(fields, wantFields) {
-			t.Errorf("frame-grabber display_fields = %v, want %v", fields, wantFields)
-		}
+// TestTVSeedV3FreshInstall: a fresh store seeds the tv row directly at v3 —
+// the ordered chain already carrying the two promoted bindings after
+// frame-grabber, the persisted blob byte-identical to tvConfigJSON (so the
+// guarded UPDATE finds nothing to do on the next Open), and the frame-grabber
+// footer declaration intact through the accessor.
+func TestTVSeedV3FreshInstall(t *testing.T) {
+	r, s := openRegistry(t)
+
+	m, err := r.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv): %v", err)
+	}
+	if m.ID != "tv" || m.MediaType != "tv" || m.SchemaVersion != 3 {
+		t.Fatalf("Get(tv) = %+v, want id=tv media_type=tv schema_version=3", m)
+	}
+	if len(m.MetadataSources) != tvSeedChainLen {
+		t.Fatalf("MetadataSources len = %d, want %d: %+v", len(m.MetadataSources), tvSeedChainLen, m.MetadataSources)
+	}
+	if fg := m.MetadataSources[3]; fg.PluginID != "frame-grabber" || fg.AuthMode != "" {
+		t.Errorf("metadata_source[3] = %+v, want frame-grabber with empty auth_mode (local plugin, queueable per D-Q1)", fg)
+	}
+	fields, err := r.DisplayFields("tv", "frame-grabber")
+	if err != nil {
+		t.Fatalf("DisplayFields(tv, frame-grabber): %v", err)
+	}
+	if wantFields := []string{"thumbnail", "grabbed_at"}; !reflect.DeepEqual(fields, wantFields) {
+		t.Errorf("frame-grabber display_fields = %v, want %v", fields, wantFields)
 	}
 
-	t.Run("fresh open seeds the v2 chain", func(t *testing.T) {
-		r, s := openRegistry(t)
+	// The persisted row is v3 with the exact seed blob.
+	var gotCfg string
+	var ver int
+	if err := s.DB().QueryRowContext(context.Background(),
+		`SELECT config_json, schema_version FROM modules WHERE id = 'tv'`).Scan(&gotCfg, &ver); err != nil {
+		t.Fatalf("load tv row: %v", err)
+	}
+	if ver != 3 {
+		t.Errorf("stored schema_version = %d, want 3", ver)
+	}
+	if gotCfg != tvConfigJSON {
+		t.Errorf("stored config_json differs from tvConfigJSON (%d vs %d bytes)", len(gotCfg), len(tvConfigJSON))
+	}
+}
 
-		m, err := r.Get("tv")
-		if err != nil {
-			t.Fatalf("Get(tv): %v", err)
-		}
-		assertV2Chain(t, r, m)
-		// The persisted row is v2 with the exact seed blob, so the guarded
-		// UPDATE finds nothing to do on the next Open.
-		var gotCfg string
-		var ver int
-		if err := s.DB().QueryRowContext(context.Background(),
-			`SELECT config_json, schema_version FROM modules WHERE id = 'tv'`).Scan(&gotCfg, &ver); err != nil {
-			t.Fatalf("load tv row: %v", err)
-		}
-		if ver != 2 {
-			t.Errorf("stored schema_version = %d, want 2", ver)
-		}
-		if gotCfg != tvConfigJSON {
-			t.Errorf("stored config_json differs from tvConfigJSON (%d vs %d bytes)", len(gotCfg), len(tvConfigJSON))
-		}
-	})
+// TestTVSeedV3PromotionIdempotent: a store pre-seeded with the v2 tv row is
+// promoted to v3 on Open — the guarded UPDATE (not the INSERT OR IGNORE,
+// which never rewrites an existing row) is the actual migration — and a
+// second Open changes nothing: the tv blob stays byte-identical at v3 and no
+// other module row is touched.
+func TestTVSeedV3PromotionIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 
-	t.Run("pre-seeded v1 row migrates on Open", func(t *testing.T) {
-		ctx := context.Background()
-		s, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
-		if err != nil {
-			t.Fatalf("store.Open: %v", err)
-		}
-		t.Cleanup(func() { _ = s.Close() })
+	if _, err := s.DB().ExecContext(ctx, seedModulesSQL,
+		"tv", "tv", v2TvConfigJSON(t), 2, 1, seedCreatedAt, seedCreatedAt); err != nil {
+		t.Fatalf("seed v2: %v", err)
+	}
 
-		if _, err := s.DB().ExecContext(ctx, seedModulesSQL,
-			"tv", "tv", v1TvConfigJSON(t), 1, 1, seedCreatedAt, seedCreatedAt); err != nil {
-			t.Fatalf("seed v1: %v", err)
-		}
+	r, err := Open(ctx, s)
+	if err != nil {
+		t.Fatalf("module.Open: %v", err)
+	}
+	m, err := r.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv): %v", err)
+	}
+	if m.SchemaVersion != 3 || len(m.MetadataSources) != tvSeedChainLen {
+		t.Fatalf("after promotion: schema=%d chain len=%d, want v3 with %d entries", m.SchemaVersion, len(m.MetadataSources), tvSeedChainLen)
+	}
+	if p5, p6 := m.MetadataSources[4], m.MetadataSources[5]; p5.PluginID != "jav-parser" || p5.Priority != 5 ||
+		p6.PluginID != PluginIDJavinizer || p6.Priority != 6 {
+		t.Fatalf("promoted tail = %+v, %+v; want jav-parser@5 then %s@6 after frame-grabber", p5, p6, PluginIDJavinizer)
+	}
 
-		r, err := Open(ctx, s)
-		if err != nil {
-			t.Fatalf("module.Open: %v", err)
-		}
-		m, err := r.Get("tv")
-		if err != nil {
-			t.Fatalf("Get(tv): %v", err)
-		}
-		assertV2Chain(t, r, m)
+	var gotCfg string
+	var ver int
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT config_json, schema_version FROM modules WHERE id = 'tv'`).Scan(&gotCfg, &ver); err != nil {
+		t.Fatalf("load tv row: %v", err)
+	}
+	if ver != 3 {
+		t.Fatalf("stored schema_version = %d, want 3 (the UPDATE must promote the row)", ver)
+	}
+	if gotCfg != tvConfigJSON {
+		t.Errorf("stored config_json differs from tvConfigJSON (%d vs %d bytes)", len(gotCfg), len(tvConfigJSON))
+	}
 
-		// The row itself must be promoted on disk: v2 with the exact v2 seed
-		// blob (the guarded UPDATE rewrote it — INSERT OR IGNORE alone would
-		// have left the v1 row untouched).
-		var gotCfg string
-		var ver int
-		if err := s.DB().QueryRowContext(ctx,
-			`SELECT config_json, schema_version FROM modules WHERE id = 'tv'`).Scan(&gotCfg, &ver); err != nil {
-			t.Fatalf("load tv row: %v", err)
-		}
-		if ver != 2 {
-			t.Fatalf("stored schema_version = %d, want 2 (the UPDATE must promote the row)", ver)
-		}
-		if gotCfg != tvConfigJSON {
-			t.Errorf("stored config_json differs from tvConfigJSON (%d vs %d bytes)", len(gotCfg), len(tvConfigJSON))
-		}
+	// Idempotent: a re-Open is error-free, the tv row byte-identical, and no
+	// other module row moved.
+	if _, err := Open(ctx, s); err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	var gotCfg2 string
+	var ver2 int
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT config_json, schema_version FROM modules WHERE id = 'tv'`).Scan(&gotCfg2, &ver2); err != nil {
+		t.Fatalf("reload tv row: %v", err)
+	}
+	if ver2 != 3 || gotCfg2 != gotCfg {
+		t.Fatalf("tv row after re-Open = v%d %d bytes, want v3 byte-identical", ver2, len(gotCfg2))
+	}
+	var serialCfg string
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT config_json FROM modules WHERE id = 'serial'`).Scan(&serialCfg); err != nil {
+		t.Fatalf("load serial row: %v", err)
+	}
+	if serialCfg != serialConfigJSON {
+		t.Errorf("serial config_json mutated by the tv promotion (%d vs %d bytes)", len(serialCfg), len(serialConfigJSON))
+	}
+}
 
-		// Idempotent: a re-Open is error-free and the row stays v2/unchanged.
-		if _, err := Open(ctx, s); err != nil {
-			t.Fatalf("second Open: %v", err)
+// TestTVSeedV3CarriesTraitAndAuth: both promoted bindings are enabled and
+// carry the no-relay trait; the priority-5 source is local (no auth_mode) and
+// the priority-6 SERVER source is seeded dormant — its options carry no value
+// for the plugin's declared required option, so derivation resolves nothing
+// until the operator configures it.
+func TestTVSeedV3CarriesTraitAndAuth(t *testing.T) {
+	r, _ := openRegistry(t)
+
+	m, err := r.Get("tv")
+	if err != nil {
+		t.Fatalf("Get(tv): %v", err)
+	}
+	if len(m.MetadataSources) != tvSeedChainLen {
+		t.Fatalf("MetadataSources len = %d, want %d", len(m.MetadataSources), tvSeedChainLen)
+	}
+	local, server := m.MetadataSources[4], m.MetadataSources[5]
+	if local.PluginID != "jav-parser" || local.Priority != 5 || !local.Enabled ||
+		!local.NoRelay || local.AuthMode != "" {
+		t.Errorf("priority-5 binding = %+v, want jav-parser@5 enabled no_relay with empty auth_mode", local)
+	}
+	if server.PluginID != PluginIDJavinizer || server.Priority != 6 || !server.Enabled ||
+		!server.NoRelay || server.AuthMode != "SERVER" {
+		t.Errorf("priority-6 binding = %+v, want %s@6 enabled no_relay SERVER", server, PluginIDJavinizer)
+	}
+	// Dormancy precondition: the options JSON declares no value for the
+	// plugin's required option key (the handshake declares the name; the seed
+	// leaves it unresolved), mirroring the tmdb SERVER binding's shape.
+	var opts map[string]any
+	if err := json.Unmarshal(server.Options, &opts); err != nil {
+		t.Fatalf("parse priority-6 options %s: %v", server.Options, err)
+	}
+	for key, value := range opts {
+		if value != nil && value != "" {
+			t.Errorf("priority-6 options[%q] = %v pre-configured; the SERVER seed must leave its declared option unresolved (dormant)", key, value)
 		}
-		var ver2 int
-		if err := s.DB().QueryRowContext(ctx,
-			`SELECT schema_version FROM modules WHERE id = 'tv'`).Scan(&ver2); err != nil || ver2 != 2 {
-			t.Fatalf("schema_version after re-Open = %d (err=%v), want 2", ver2, err)
-		}
-	})
+	}
 }
 
 // TestRegistry_Get_NotFound covers B5 (unknown id → clear error, no nil deref).
@@ -635,5 +701,56 @@ func TestPresentationFields(t *testing.T) {
 	}
 	if again[0] != "title" {
 		t.Errorf("DisplayFields aliased registry state: got %v, want title first", again)
+	}
+}
+
+// parseModuleConfig builds a minimal single-source module config whose
+// metadata_sources entry carries the given no_relay JSON text ("", "false", or
+// "true") so the decode tests exercise exactly the trait key.
+func parseModuleConfig(t *testing.T, noRelayKey string) Module {
+	t.Helper()
+	src := `{"plugin_id":"tmdb","priority":0,"enabled":true}`
+	if noRelayKey != "" {
+		src = `{"plugin_id":"tmdb","priority":0,"enabled":true,"no_relay":` + noRelayKey + `}`
+	}
+	cfg := []byte(`{"metadata_sources":[` + src + `]}`)
+	m, err := parseModule("tv", "tv", 3, cfg)
+	if err != nil {
+		t.Fatalf("parseModule: %v", err)
+	}
+	return m
+}
+
+// TestParseModuleNoRelayDefaultFalse: no_relay absent and no_relay:false both
+// decode false — every pre-trait config byte-identical (NoRelay zero value).
+func TestParseModuleNoRelayDefaultFalse(t *testing.T) {
+	tests := []struct {
+		name   string
+		relKey string
+	}{
+		{name: "key absent", relKey: ""},
+		{name: "key false", relKey: "false"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := parseModuleConfig(t, tt.relKey)
+			if len(m.MetadataSources) != 1 {
+				t.Fatalf("len(MetadataSources) = %d, want 1", len(m.MetadataSources))
+			}
+			if m.MetadataSources[0].NoRelay {
+				t.Errorf("NoRelay = true, want false (no_relay %q)", tt.relKey)
+			}
+		})
+	}
+}
+
+// TestParseModuleNoRelayTrue: no_relay:true decodes the trait onto the binding.
+func TestParseModuleNoRelayTrue(t *testing.T) {
+	m := parseModuleConfig(t, "true")
+	if len(m.MetadataSources) != 1 {
+		t.Fatalf("len(MetadataSources) = %d, want 1", len(m.MetadataSources))
+	}
+	if !m.MetadataSources[0].NoRelay {
+		t.Error("NoRelay = false, want true (no_relay:true)")
 	}
 }

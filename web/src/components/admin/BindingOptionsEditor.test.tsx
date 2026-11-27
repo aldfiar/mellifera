@@ -214,3 +214,72 @@ describe("BindingOptionsEditor (plugin-options-ui 2.2)", () => {
     expect(putSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+// The javinizer-shaped binding — a SERVER-mode binding whose declared
+// required option is base_url and whose served options omit the key. The
+// editor knows no plugin semantics: the verdict map alone drives the
+// write-only input, and the empty-submit omission is what returns the
+// binding to dormant server-side.
+describe("BindingOptionsEditor javinizer-shaped binding", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    localStorage.setItem(TOKEN_KEY, "tok-opts");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.removeItem(TOKEN_KEY);
+  });
+
+  function javinizerBinding(): PluginAdminBinding {
+    return metadataBinding({
+      auth_mode: "SERVER",
+      options: {},
+      required_secrets: { base_url: false },
+    });
+  }
+
+  it("renders-the-write-only-base-url-input-with-its-not-provided-verdict", () => {
+    renderEditor(freshClient(), javinizerBinding());
+
+    const input = screen.getByLabelText("base_url") as HTMLInputElement;
+    expect(input.type).toBe("password");
+    expect(input.value).toBe("");
+    const verdict = screen.getByText("Не задан");
+    expect(verdict.className).toContain("text-destructive");
+    expect(
+      screen.getByText("Пустое поле при сохранении удалит сохранённое значение."),
+    ).toBeDefined();
+  });
+
+  it("submitting-a-typed-value-puts-base_url", async () => {
+    const putSpy = vi
+      .spyOn(apiModule, "putAdminModuleSourceOptions")
+      .mockResolvedValue(undefined);
+    renderEditor(freshClient(), javinizerBinding());
+
+    fireEvent.change(screen.getByLabelText("base_url"), {
+      target: { value: "https://jav.example" },
+    });
+    fireEvent.click(screen.getByText("Сохранить"));
+
+    await waitFor(() => expect(putSpy).toHaveBeenCalledTimes(1));
+    const [, , body] = putSpy.mock.calls[0];
+    expect(body).toEqual({ base_url: "https://jav.example" });
+  });
+
+  it("submitting-an-empty-value-omits-the-key", async () => {
+    const putSpy = vi
+      .spyOn(apiModule, "putAdminModuleSourceOptions")
+      .mockResolvedValue(undefined);
+    renderEditor(freshClient(), javinizerBinding());
+
+    fireEvent.click(screen.getByText("Сохранить"));
+
+    await waitFor(() => expect(putSpy).toHaveBeenCalledTimes(1));
+    const [, , body] = putSpy.mock.calls[0];
+    // The composed body carries the key ABSENT — under the endpoint's
+    // whole-replacement contract the stored value clears and the binding
+    // returns to dormant server-side.
+    expect(body).toEqual({});
+  });
+});

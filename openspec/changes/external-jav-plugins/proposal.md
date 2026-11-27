@@ -1,0 +1,46 @@
+# Proposal
+
+## Why
+
+Adult-library enrichment for tv libraries needs two plugins — a local release-code parser and a metadata source over the LAN Javinizer service — that must live OUTSIDE the core repo (content neutrality: nothing adult-specific in core code, specs, or grammar) and load absent-tolerantly (the binaries are optional deploy artifacts; an undeployed host boots exactly as today). Their request descriptors are LAN-bound, so they must never reach the client-relayed fetch pool. The Javinizer service is already deployed on the LAN and collects the data (live-probed: 200 no-auth from alatoic), and the repo's first tag (v0.4.0, 27 Nov) makes published-SDK consumption viable — so the plugins can be built and released from a separate private repo while the core grows only generic, content-neutral mechanisms.
+
+## What Changes
+
+- Core: optional plugin load sites in the composition root (`cmd/mellifera`) — an absent binary skips load with a synthesized `not_serving` health row; present-but-broken skip-and-reports `failed`; in-repo plugins keep the fail-fast discipline byte-identically; the shutdown loop skips never-loaded ids. `/admin/plugins` and `/admin/status` render the synthesized rows with zero api change.
+- Core: a `no_relay` metadata-source binding trait honored at all three relay enqueue seams (enrich handoff, consult-before-fetch, search enqueue) — no fully-substituted descriptor of a trait-carrying binding ever reaches `relay_jobs` or any claimant.
+- Core: tv module seed v3 promotion — two bindings appended after frame-grabber (priorities 5 and 6), both `enabled: true` with `no_relay: true`; the Javinizer binding is SERVER-mode with a declared required option (`base_url`) and stays dormant until the operator sets it. Catalog display strings stay service-name-class neutral ("Release Code Parser", "Javinizer"); plugin ids in seed/config remain opaque strings.
+- New private external repo `mellifera-jav-plugins` (local sibling clone): the `jav-parser` plugin (local release-code grammar → `jav_code` document identifier) and the `javinizer` plugin (REST metadata source over `{server:base_url}`, search-only in v1), released as CGO_ENABLED=0 linux/amd64 binaries with their own CI, suite, and gate. The direct dmm/javlibrary scrapers are a NAMED DEFERRED VARIANT (Javinizer already scrapes both upstreams); their cookie flow needs a header-substitution seam the core does not have yet — also deferred with the variant.
+- Deploy wiring (FRAME-A, prebuilt releases + volume mount): the compose template mounts `plugins-external/` read-only at `/app/bin-extra` and sets the existing per-plugin path env overrides (`MELLIFERA_JAV_PARSER`, `MELLIFERA_JAVINIZER`); `.env.example` gains the commented template; `deploy-plugins.sh` (fetch → checksum verify → symlink flip → restart → health probe) lives in the external repo. Zero Dockerfile change, zero proto change, zero SPA contract change, `pkg/releasename` untouched.
+- v1 convergence contract: a search-miss lands terminal `no_data` with a flat 30-day cooldown that never self-retries; convergence after a Javinizer-side scan is EXPLICIT (operator re-enrich or identify re-search). The scrape-job fallback is a named v1.1 path behind an additive binding-options seam (decoupled future core change).
+- Apply-phase defect fixes (surfaced by the joint-itest round, authored as tasks 4.2 and 4.3): the plugins admin aggregate 500s on absent-optional boots (the DEFAULT boot) — fixed cmd-side with config-less rows for catalog-known unloaded ids — plus a raw substitution mode for server-ref variables (a `!raw` template marker; percent-encoding stays the default) so a declared required option can carry a full origin; and the stale tv `schema_version` golden (2 → 3).
+
+**Operator-gated outward acts** (deliberately NOT loop tasks; GATE 1 approves them): `gh repo create mellifera-jav-plugins --private` + first push; external release publication (tag → CI artifacts); the alatoic server-side layout (`plugins-external/releases/vN` + `current` symlink); the core-first deploy order (seed+mechanisms deploy before binaries); the live end-to-end probes (absent-binary boot, then binaries load, then enrich + picker + no-relay greps). The android-tv precedent applies: operator-gated live probes stay outside the loop's receipts.
+
+## Capabilities
+
+### New Capabilities
+
+(none — the adult plugins' behavior specs live in the external repo; every core delta is a generic mechanism folded into existing capabilities)
+
+### Modified Capabilities
+
+- `plugin-pipeline`: optional load sites (absent/broken skip-and-report semantics, synthesized health rows, the fatal-discipline split, the shutdown guard) + the tv seed v3 promotion with neutral catalog display strings.
+- `async-enrichment`: the `no_relay` binding trait — the config decode law (absent = false, byte-identical decode) and a trait-carrying source's fetch failures staying server-side chain failures (no relay deferral, no cache consult).
+- `client-relayed-fetch`: the trait honored at the enrich-enqueue, consult, and search-enqueue seams — no descriptor of a trait-carrying binding ever reaches the relay claim pool.
+
+## Impact
+
+- Code: `cmd/mellifera/main.go` (catalog + optional loads + statusClosure synthesis + shutdown guard), `internal/module/registry.go` (binding trait + decode, seed v3, `PluginIDJavinizer` const — module exports 6→7, inside the ≤8 budget), `internal/enrich/chain.go` + `search.go` (trait guards; ZERO new enrich exports — stays 12/12), `internal/plugin` untouched (stays 4 exports), `internal/itest` (stub-plugin joint leg over a testdata mini binary), `compose.yaml` + `.env.example`. `web/` is test-pinning only (the shipped options editor already renders declared secret inputs). Dockerfile, proto, `pkg/releasename`: untouched.
+- New system: private external repo at `/Users/aldfiar/projects/go/mellifera-jav-plugins` (GitHub `mellifera-jav-plugins`), consuming the core SDK at published tag `github.com/mellifera/mellifera` v0.4.0 (the INV2 leaf pulls only sdk + proto + grpc) with a gitignored `go.work` replace for dev.
+- Dependencies: the core consumes nothing new. The external repo depends on the published core module; private-module fetch needs `GOPRIVATE` + a git `insteadOf` rewrite (the module path `github.com/mellifera/mellifera` differs from the GitHub remote `aldfiar/mellifera`) — mechanical, encoded in the scaffold task.
+- Deployment: alatoic runs the same image; external binaries land under `/mnt/onlas/mellifera-data/plugins-external/` behind a `current` symlink flip; plugin-only iteration is fetch + flip + restart (~10 s), no image build; rollback is the same two lines at the previous tag.
+- Docs: project `docs/` untouched (structural docs stay structural); the operator runbook is the external repo README.
+- Defect-fix surfaces (tasks 4.2/4.3): `cmd/mellifera/main.go` (newPluginConfigsClosure renders config-less rows for catalog-known unloaded ids), `internal/enrich/fetch.go` (raw-mode substitution via a `!raw` template marker — unexported only, the export budget stays 12/12), `internal/itest/integration_test.go` (stale tv `schema_version` golden 2 → 3).
+
+## Proposal Questions (for GATE 1)
+
+1. **Dependency-surface finding:** `wf index surface` in this environment scanned only Python imports (distributions: pillow; files_parsed: 2) — it lists NO Go dependency. The Go ground truth used instead is `go.mod` @ 47e3fc4 (hashicorp/go-plugin v1.8.0, chi v5.3.1, fsnotify v1.10.1; go 1.25). Recommended default: treat `go.mod` as the authoritative dependency surface for the core tasks; the only NEW dependency relationship in this track is the external repo → published core module v0.4.0.
+2. **External repo identity:** local path `/Users/aldfiar/projects/go/mellifera-jav-plugins`, GitHub `aldfiar/mellifera-jav-plugins` (private), Go module path `github.com/aldfiar/mellifera-jav-plugins` (bakes into every external import). Recommended default: exactly this; the final name is the user's call at repo-creation time (the design is otherwise name-agnostic).
+3. **Private-module consumption mechanics:** the core module path `github.com/mellifera/mellifera` does not match its GitHub remote (`aldfiar/mellifera`), so `go mod download` needs `GOPRIVATE=github.com/mellifera/mellifera` plus a git `insteadOf` rewrite mapping the module path to the remote. Recommended default: the scaffold task encodes both (global git config + `go env -w`, both machine-local and documented in the external README).
+4. **T0 live probe before fixture freeze:** the Javinizer search-match behavior (`?search=<code>` returning rows whose `videoId` normalizes equal to the query code) is probed against the LAN API BEFORE the javinizer plugin's fixtures freeze; the fallback is limit-N pages + plugin-side filter; worst case an upstream Javinizer search fix (same author). Recommended default: the operator runs the one-line probe around the javinizer plugin review; fixtures cite the probe result.
+5. **Operator-gated outward acts:** approve the list under What Changes as human acts outside the loop (repo create/push, release publication, alatoic layout, deploy order, live probes). Recommended default: approved as listed; the loop's receipts cover only the mechanical local prep.
