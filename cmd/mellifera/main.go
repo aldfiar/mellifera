@@ -199,6 +199,10 @@ func main() {
 		Original:    originalResolver(st),
 		OptInCodecs: cfg.optInCodecs, // descriptor honesty shares the pack lane's knob
 	}
+	// serveIdx is retention's third anchor (fix-live-session-eviction): the
+	// /media surface records every served build read here, and the sweep's
+	// passes consult it (see servedIndex).
+	serveIdx := newServedIndex()
 	scanDeps.Enrich.PackItem = func(ctx context.Context, itemID, absPath string, ffprobe map[string]any, voiceovers []string) (pack.PackOutcome, error) {
 		// Job-start gate line (pack-manifest-audio D7): ONE "pack: gate" line
 		// per pack job, before Pack; on a refusal the PolicyRefusal ends the
@@ -488,7 +492,7 @@ func main() {
 	// Packaged-playback orchestrator (D-8/D-9/D4): the watch-driven frontier +
 	// budget eviction + integrity sweep — the janitor's streams task; the
 	// budget knob is GiB (0 = off).
-	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30, cfg.optInCodecs, suppress)
+	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30, cfg.optInCodecs, suppress, serveIdx)
 	// artSettle is the registry's art task: ONE settle+GC pass per tick;
 	// errors logged, never fatal — best-effort background work like the sweep.
 	artSettle := func(ctx context.Context) {
@@ -558,7 +562,7 @@ func main() {
 	// Single top-level http.Handler (INV-single-handler — no second
 	// http.Server): the api router + the token-gated /media surface + the
 	// embedded SPA + Swagger.
-	handler := requestLog(web.Handler(apiHandler, web.Options{DevMode: cfg.webDev, Media: mediaSvc}))
+	handler := requestLog(web.Handler(apiHandler, web.Options{DevMode: cfg.webDev, Media: servedMedia(mediaSvc, serveIdx)}))
 
 	srv := &http.Server{
 		Addr:              cfg.listenAddr,

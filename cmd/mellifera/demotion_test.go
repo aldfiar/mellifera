@@ -187,7 +187,7 @@ func TestSweepDemotion(t *testing.T) {
 		}
 		const budget int64 = 4096
 		sweepDemotion(ctx, st, root, []string{"itm_fw"}, nil)
-		sweepBudget(ctx, st, root, budget, nil, nil)
+		sweepBudget(ctx, st, root, budget, nil, nil, nil)
 		if !gone(root, "itm_fw", "big") {
 			t.Fatal("fully-watched build survived the pass")
 		}
