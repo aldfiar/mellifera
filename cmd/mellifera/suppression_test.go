@@ -137,7 +137,7 @@ func TestEvictionSuppressesRefront(t *testing.T) {
 
 	// The policy eviction: a budget that cannot be met without taking the
 	// document-named build itself (the only directory on disk).
-	sweepBudget(ctx, st, root, dirSize(build)-1, nil, sup)
+	sweepBudget(ctx, st, root, dirSize(build)-1, nil, sup, nil)
 	if _, err := os.Stat(build); !os.IsNotExist(err) {
 		t.Fatalf("document-named build survived the budget eviction (stat err %v)", err)
 	}
@@ -151,7 +151,7 @@ func TestEvictionSuppressesRefront(t *testing.T) {
 	// The control: with NO suppression set, the same fixture fronts — the
 	// pilot job for the one episode, enqueued through the seam and pinned.
 	enqueueCtl, ctl := supRecorder()
-	frontedCtl, _ := sweepFrontier(ctx, st, root, enqueueCtl, 1024, false, nil)
+	frontedCtl, _ := sweepFrontier(ctx, st, root, enqueueCtl, 1024, false, nil, nil)
 	if len(*ctl) != 1 || (*ctl)[0] != "itm_front" {
 		t.Fatalf("control enqueued = %v, want exactly itm_front — the fixture must front un-suppressed", *ctl)
 	}
@@ -161,7 +161,7 @@ func TestEvictionSuppressesRefront(t *testing.T) {
 
 	// Suppressed: the same sweep sees no job, no pin, no bytes.
 	enqueueSup, supEnq := supRecorder()
-	frontedSup, _ := sweepFrontier(ctx, st, root, enqueueSup, 1024, false, sup)
+	frontedSup, _ := sweepFrontier(ctx, st, root, enqueueSup, 1024, false, sup, nil)
 	if len(*supEnq) != 0 {
 		t.Fatalf("suppressed enqueued = %v, want nothing — a suppressed position emits no job", *supEnq)
 	}
@@ -273,7 +273,7 @@ func TestPlayClearsSuppression(t *testing.T) {
 	enqueue, seen := supRecorder()
 
 	// The mark holds the frontier: nothing fronts the suppressed item.
-	_, _ = sweepFrontier(ctx, st, root, enqueue, 1024, false, sup)
+	_, _ = sweepFrontier(ctx, st, root, enqueue, 1024, false, sup, nil)
 	if len(*seen) != 0 {
 		t.Fatalf("pre-play enqueued = %v, want nothing — the suppression holds", *seen)
 	}
@@ -319,7 +319,7 @@ func TestPlayClearsSuppression(t *testing.T) {
 
 	// Re-armed: the next sweep fronts the item again.
 	enqueue2, seen2 := supRecorder()
-	fronted, _ := sweepFrontier(ctx, st, root, enqueue2, 1024, false, sup)
+	fronted, _ := sweepFrontier(ctx, st, root, enqueue2, 1024, false, sup, nil)
 	if len(*seen2) != 1 || (*seen2)[0] != "itm_play" {
 		t.Fatalf("post-play enqueued = %v, want exactly itm_play — the re-arm re-fronts", *seen2)
 	}

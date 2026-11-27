@@ -492,7 +492,7 @@ func main() {
 	// Packaged-playback orchestrator (D-8/D-9/D4): the watch-driven frontier +
 	// budget eviction + integrity sweep — the janitor's streams task; the
 	// budget knob is GiB (0 = off).
-	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30, cfg.optInCodecs, suppress)
+	sweep := newSweep(st, cfg.streamsRoot, mediaSvc.ValidateBuild, enrichQueue.EnqueuePack, int64(cfg.orchBudgetGB)<<30, cfg.optInCodecs, suppress, serveIdx)
 	// artSettle is the registry's art task: ONE settle+GC pass per tick;
 	// errors logged, never fatal — best-effort background work like the sweep.
 	artSettle := func(ctx context.Context) {

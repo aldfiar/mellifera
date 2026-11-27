@@ -344,15 +344,16 @@ func (s *suppressionSet) snapshot() map[string]bool {
 
 // newSweep returns the periodic sweep closure: one pass = the frontier →
 // demotion → retention → budget eviction → integrity sweep (each below).
-// sup is the suppression set (eviction D3 — see suppressionSet); validate
-// rides in as stream.Service.ValidateBuild so the sweep stays testable.
-// Never fatal — the next tick retries.
-func newSweep(st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, budgetBytes int64, optInCodecs bool, sup *suppressionSet) func(context.Context) {
+// sup is the suppression set (eviction D3 — see suppressionSet); served is
+// the /media served-read index (fix-live-session-eviction — see
+// servedIndex); validate rides in as stream.Service.ValidateBuild so the
+// sweep stays testable. Never fatal — the next tick retries.
+func newSweep(st *store.Store, root string, validate func(itemID, nonce string) error, enqueue func(string) error, budgetBytes int64, optInCodecs bool, sup *suppressionSet, served *servedIndex) func(context.Context) {
 	return func(ctx context.Context) {
-		fronted, demote := sweepFrontier(ctx, st, root, enqueue, budgetBytes, optInCodecs, sup)
+		fronted, demote := sweepFrontier(ctx, st, root, enqueue, budgetBytes, optInCodecs, sup, served)
 		sweepDemotion(ctx, st, root, demote, sup)
-		sweepRetention(ctx, st, root, retentionGrace)
-		sweepBudget(ctx, st, root, budgetBytes, fronted, sup)
+		sweepRetention(ctx, st, root, retentionGrace, served)
+		sweepBudget(ctx, st, root, budgetBytes, fronted, sup, served)
 		sweepIntegrity(ctx, st, root, validate, enqueue, optInCodecs, sup)
 	}
 }
@@ -363,8 +364,10 @@ func newSweep(st *store.Store, root string, validate func(itemID, nonce string) 
 // queue-full defer is still pinned) — which the budget sweep pins against
 // eviction: the frontier's (re)pack set must not evict itself. Also returns
 // the DEMOTE list (Frontier's judgment) for sweepDemotion; sup = suppression
-// set (eviction D3 — see suppressionSet).
-func sweepFrontier(ctx context.Context, st *store.Store, root string, enqueue func(string) error, budgetBytes int64, optInCodecs bool, sup *suppressionSet) (map[string]bool, []string) {
+// set (eviction D3 — see suppressionSet); served = the served-read index,
+// whose live-session item projection feeds FrontierIn.Playing (zero new
+// store reads — recency is already in hand).
+func sweepFrontier(ctx context.Context, st *store.Store, root string, enqueue func(string) error, budgetBytes int64, optInCodecs bool, sup *suppressionSet, served *servedIndex) (map[string]bool, []string) {
 	libs, err := st.ListLibraries(ctx, access.System())
 	if err != nil {
 		slog.Warn("orchestrator: list libraries failed", "error", err)
@@ -373,13 +376,15 @@ func sweepFrontier(ctx context.Context, st *store.Store, root string, enqueue fu
 	cool := streamCooldowns(ctx, st)
 	positions, recency := watchState(ctx, st)
 	watched := make(map[string]bool)
+	now := time.Now()
 	in := orchestrator.FrontierIn{
 		Watched:     watched,
-		Now:         time.Now(),
+		Now:         now,
 		Recency:     recency,
 		BuildBytes:  buildBytes(root),
 		PinCapBytes: budgetBytes * 3 / 5,
 		Suppressed:  sup.snapshot(),
+		Playing:     playingItems(recency, served, now),
 	}
 	for _, l := range libs {
 		series, err := st.QuerySeries(ctx, l.ID, "", access.System())
@@ -438,8 +443,10 @@ func sweepDemotion(ctx context.Context, st *store.Store, root string, demote []s
 // fronted is pinned against eviction — failing it without evicting pinned
 // builds is the operator signal, logged loudly. Never evict blind on an
 // unreadable store read. sup = suppression set (eviction D3 — see
-// suppressionSet).
-func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes int64, fronted map[string]bool, sup *suppressionSet) {
+// suppressionSet); served = the served-read index — a build fetched within
+// the grace skips eviction with ONE loud WARN (the budget goes unmet: the
+// operator's signal, the fronted-pin warning's twin).
+func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes int64, fronted map[string]bool, sup *suppressionSet, served *servedIndex) {
 	if budgetBytes <= 0 {
 		return // the cap is off — do not even walk the disk
 	}
@@ -487,6 +494,14 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 		owner[d.Path] = d.ItemID
 	}
 	for _, path := range orchestrator.Evictions(dirs, recency, fronted, budgetBytes) {
+		if served.recent(owner[path], filepath.Base(path), retentionGrace) {
+			// Live-session law (fix-live-session-eviction): this build was
+			// fetched within the grace — a client is likely still reading
+			// it. Skipping leaves the budget unmet: the operator's signal,
+			// the fronted-pin warning's twin.
+			slog.Warn("orchestrator: budget unmet — skipping a live-served build", "item", owner[path], "path", path)
+			continue
+		}
 		if id := owner[path]; fronted[id] {
 			// The budget could not be met from non-fronted artifacts alone —
 			// the frontier will repack this and evict it again (the churn
@@ -510,7 +525,10 @@ func sweepBudget(ctx context.Context, st *store.Store, root string, budgetBytes 
 // regardless of the budget cap — the cap's off position must not immortalize
 // stale builds. Stale = any dir the item doc does not name; orphans judge on
 // mtime alone. Rides evictDir only — an unreadable store read skips the item.
-func sweepRetention(ctx context.Context, st *store.Store, root string, grace time.Duration) {
+// served is the third anchor (fix-live-session-eviction): a non-named build
+// a client fetched within the grace skips eviction silently — no per-tick
+// log (a live session would flood it).
+func sweepRetention(ctx context.Context, st *store.Store, root string, grace time.Duration, served *servedIndex) {
 	idDirs, err := os.ReadDir(root)
 	if err != nil {
 		return // no artifact root yet
@@ -544,6 +562,9 @@ func sweepRetention(ctx context.Context, st *store.Store, root string, grace tim
 				continue // vanished mid-pass: the next tick sees the truth
 			}
 			if now.Sub(info.ModTime()) >= grace && (updated.IsZero() || now.Sub(updated) >= grace) {
+				if served.recent(idDir.Name(), name, grace) {
+					continue // the read anchor: a live session fetched this build within the grace
+				}
 				evictDir(p)
 			}
 		}
