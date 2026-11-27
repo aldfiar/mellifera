@@ -17,6 +17,89 @@ import (
 	"github.com/mellifera/mellifera/internal/store"
 )
 
+// retentionSeed seeds one live item per docs key and returns the store,
+// its context, an empty artifact root, and the db file path (for
+// retentionBackdate).
+func retentionSeed(t *testing.T, docs map[string]map[string]any) (*store.Store, context.Context, string, string) {
+	t.Helper()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "retention.db")
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	libID, err := st.CreateLibrary(ctx, "tv", "/media/retention", "TV")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	for id, doc := range docs {
+		raw, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatalf("marshal doc %s: %v", id, err)
+		}
+		if err := st.PutItem(ctx, store.Item{
+			ID: id, ModuleID: "tv", LibraryID: libID, FileID: id,
+			RelativePath: id + ".mkv", MediaType: "tv",
+			Document: raw, SchemaVersion: 1,
+		}); err != nil {
+			t.Fatalf("PutItem %s: %v", id, err)
+		}
+	}
+	return st, ctx, filepath.Join(t.TempDir(), "streams"), dbPath
+}
+
+// retentionBuild lays down one build directory (a segment inside, so the
+// tree is real) and backdates its mtime by age (0 keeps it fresh).
+func retentionBuild(t *testing.T, root, itemID, name string, age time.Duration) string {
+	t.Helper()
+	p := filepath.Join(root, itemID, name)
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", p, err)
+	}
+	if err := os.WriteFile(filepath.Join(p, "seg0.ts"), []byte("segment"), 0o644); err != nil {
+		t.Fatalf("write segment in %s: %v", p, err)
+	}
+	if age > 0 {
+		old := time.Now().Add(-age)
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatalf("chtimes %s: %v", p, err)
+		}
+	}
+	return p
+}
+
+// retentionBackdate rewrites one item row's updated_at age seconds into
+// the past — the row anchor's age (RFC3339Nano, the store's stamp
+// format).
+func retentionBackdate(t *testing.T, dbPath, itemID string, age time.Duration) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db for backdate: %v", err)
+	}
+	defer db.Close()
+	stamp := time.Now().Add(-age).UTC().Format(time.RFC3339Nano)
+	res, err := db.ExecContext(context.Background(),
+		`UPDATE items SET updated_at = ? WHERE id = ?`, stamp, itemID)
+	if err != nil {
+		t.Fatalf("backdate updated_at: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Fatalf("backdate updated_at: %d rows affected, want 1", n)
+	}
+}
+
+// retentionDoc builds an item document whose streams namespace carries
+// the given packaging state and (optional) build nonce.
+func retentionDoc(state, nonce string) map[string]any {
+	streams := map[string]any{"state": state}
+	if nonce != "" {
+		streams["nonce"] = nonce
+	}
+	return map[string]any{"streams": streams}
+}
+
 // TestSweepRetention pins the retention pass end to end (fix-reheal-eviction
 // task 2.1, Interface 2 + D3): the dual anchor is exact — a stale directory
 // reclaims only once it is past the grace on BOTH its own mtime and its item
@@ -31,89 +114,6 @@ import (
 // the store is idle). Every case that turns on grace runs against the real
 // locked retentionGrace — 2h-old anchors are past it, fresh ones are not.
 func TestSweepRetention(t *testing.T) {
-	// retentionSeed seeds one live item per docs key and returns the store,
-	// its context, an empty artifact root, and the db file path (for
-	// retentionBackdate).
-	retentionSeed := func(t *testing.T, docs map[string]map[string]any) (*store.Store, context.Context, string, string) {
-		t.Helper()
-		ctx := context.Background()
-		dbPath := filepath.Join(t.TempDir(), "retention.db")
-		st, err := store.Open(ctx, dbPath)
-		if err != nil {
-			t.Fatalf("store.Open: %v", err)
-		}
-		t.Cleanup(func() { _ = st.Close() })
-		libID, err := st.CreateLibrary(ctx, "tv", "/media/retention", "TV")
-		if err != nil {
-			t.Fatalf("CreateLibrary: %v", err)
-		}
-		for id, doc := range docs {
-			raw, err := json.Marshal(doc)
-			if err != nil {
-				t.Fatalf("marshal doc %s: %v", id, err)
-			}
-			if err := st.PutItem(ctx, store.Item{
-				ID: id, ModuleID: "tv", LibraryID: libID, FileID: id,
-				RelativePath: id + ".mkv", MediaType: "tv",
-				Document: raw, SchemaVersion: 1,
-			}); err != nil {
-				t.Fatalf("PutItem %s: %v", id, err)
-			}
-		}
-		return st, ctx, filepath.Join(t.TempDir(), "streams"), dbPath
-	}
-
-	// retentionBuild lays down one build directory (a segment inside, so the
-	// tree is real) and backdates its mtime by age (0 keeps it fresh).
-	retentionBuild := func(t *testing.T, root, itemID, name string, age time.Duration) string {
-		t.Helper()
-		p := filepath.Join(root, itemID, name)
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", p, err)
-		}
-		if err := os.WriteFile(filepath.Join(p, "seg0.ts"), []byte("segment"), 0o644); err != nil {
-			t.Fatalf("write segment in %s: %v", p, err)
-		}
-		if age > 0 {
-			old := time.Now().Add(-age)
-			if err := os.Chtimes(p, old, old); err != nil {
-				t.Fatalf("chtimes %s: %v", p, err)
-			}
-		}
-		return p
-	}
-
-	// retentionBackdate rewrites one item row's updated_at age seconds into
-	// the past — the row anchor's age (RFC3339Nano, the store's stamp
-	// format).
-	retentionBackdate := func(t *testing.T, dbPath, itemID string, age time.Duration) {
-		t.Helper()
-		db, err := sql.Open("sqlite", dbPath)
-		if err != nil {
-			t.Fatalf("open db for backdate: %v", err)
-		}
-		defer db.Close()
-		stamp := time.Now().Add(-age).UTC().Format(time.RFC3339Nano)
-		res, err := db.ExecContext(context.Background(),
-			`UPDATE items SET updated_at = ? WHERE id = ?`, stamp, itemID)
-		if err != nil {
-			t.Fatalf("backdate updated_at: %v", err)
-		}
-		if n, _ := res.RowsAffected(); n != 1 {
-			t.Fatalf("backdate updated_at: %d rows affected, want 1", n)
-		}
-	}
-
-	// retentionDoc builds an item document whose streams namespace carries
-	// the given packaging state and (optional) build nonce.
-	retentionDoc := func(state, nonce string) map[string]any {
-		streams := map[string]any{"state": state}
-		if nonce != "" {
-			streams["nonce"] = nonce
-		}
-		return map[string]any{"streams": streams}
-	}
-
 	old := 2 * time.Hour // comfortably past the 10-minute grace
 
 	t.Run("just superseded survives one grace", func(t *testing.T) {
@@ -125,7 +125,7 @@ func TestSweepRetention(t *testing.T) {
 		})
 		retentionBuild(t, root, "itm_a", "cur1", 0)
 		retentionBuild(t, root, "itm_a", "old1", old)
-		sweepRetention(ctx, st, root, retentionGrace)
+		sweepRetention(ctx, st, root, retentionGrace, nil)
 		for _, name := range []string{"cur1", "old1"} {
 			if _, err := os.Stat(filepath.Join(root, "itm_a", name)); err != nil {
 				t.Fatalf("superseded build %s was reclaimed before the row anchor aged past the grace: %v", name, err)
@@ -143,7 +143,7 @@ func TestSweepRetention(t *testing.T) {
 		retentionBuild(t, root, "itm_b", "cur1", 0)
 		retentionBuild(t, root, "itm_b", ".tmp-b1", 0)
 		retentionBackdate(t, dbPath, "itm_b", old)
-		sweepRetention(ctx, st, root, retentionGrace)
+		sweepRetention(ctx, st, root, retentionGrace, nil)
 		for _, name := range []string{"cur1", ".tmp-b1"} {
 			if _, err := os.Stat(filepath.Join(root, "itm_b", name)); err != nil {
 				t.Fatalf("in-flight build %s was reclaimed before its mtime aged past the grace: %v", name, err)
@@ -161,7 +161,7 @@ func TestSweepRetention(t *testing.T) {
 		retentionBuild(t, root, "itm_c", "cur1", old)
 		retentionBuild(t, root, "itm_c", "old1", old)
 		retentionBackdate(t, dbPath, "itm_c", old)
-		sweepRetention(ctx, st, root, retentionGrace)
+		sweepRetention(ctx, st, root, retentionGrace, nil)
 		if _, err := os.Stat(filepath.Join(root, "itm_c", "old1")); !os.IsNotExist(err) {
 			t.Fatalf("superseded build past both anchors still exists (stat err %v)", err)
 		}
@@ -190,7 +190,7 @@ func TestSweepRetention(t *testing.T) {
 			retentionBackdate(t, dbPath, item, old)
 		}
 		retentionBackdate(t, dbPath, "itm_c", old)
-		sweepRetention(ctx, st, root, retentionGrace)
+		sweepRetention(ctx, st, root, retentionGrace, nil)
 		if _, err := os.Stat(filepath.Join(root, "itm_c", "cur1")); err != nil {
 			t.Fatalf("document-named build was reclaimed: %v", err)
 		}
@@ -213,7 +213,7 @@ func TestSweepRetention(t *testing.T) {
 		retentionBuild(t, root, "itm_d", ".tmp-b2", old)
 		retentionBuild(t, root, "itm_d", "old1.trash", old)
 		retentionBackdate(t, dbPath, "itm_d", old)
-		sweepRetention(ctx, st, root, retentionGrace)
+		sweepRetention(ctx, st, root, retentionGrace, nil)
 		if _, err := os.Stat(filepath.Join(root, "itm_d", ".tmp-b1")); err != nil {
 			t.Fatalf("fresh staging was reclaimed before its mtime aged past the grace: %v", err)
 		}
@@ -233,7 +233,7 @@ func TestSweepRetention(t *testing.T) {
 		st, ctx, root, _ := retentionSeed(t, map[string]map[string]any{})
 		retentionBuild(t, root, "itm_orph", "stale1", old)
 		retentionBuild(t, root, "itm_orph", "fresh1", 0)
-		sweepRetention(ctx, st, root, retentionGrace)
+		sweepRetention(ctx, st, root, retentionGrace, nil)
 		if _, err := os.Stat(filepath.Join(root, "itm_orph", "stale1")); !os.IsNotExist(err) {
 			t.Fatalf("orphan directory past its mtime grace still exists (stat err %v)", err)
 		}
@@ -255,7 +255,7 @@ func TestSweepRetention(t *testing.T) {
 		if err := st.Close(); err != nil {
 			t.Fatalf("close store: %v", err)
 		}
-		sweepRetention(ctx, st, root, retentionGrace)
+		sweepRetention(ctx, st, root, retentionGrace, nil)
 		for _, name := range []string{"cur1", "old1"} {
 			if _, err := os.Stat(filepath.Join(root, "itm_e", name)); err != nil {
 				t.Fatalf("unreadable-row item was not skipped — %s missing: %v", name, err)
@@ -269,6 +269,60 @@ func TestSweepRetention(t *testing.T) {
 type budgetItem struct {
 	doc    map[string]any
 	status string // "" = the store default
+}
+
+// budgetSeed seeds one live item per item spec and returns the store,
+// its context, and an empty artifact root.
+func budgetSeed(t *testing.T, items map[string]budgetItem) (*store.Store, context.Context, string) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "budget.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	libID, err := st.CreateLibrary(ctx, "tv", "/media/budget", "TV")
+	if err != nil {
+		t.Fatalf("CreateLibrary: %v", err)
+	}
+	for id, it := range items {
+		raw, err := json.Marshal(it.doc)
+		if err != nil {
+			t.Fatalf("marshal doc %s: %v", id, err)
+		}
+		if err := st.PutItem(ctx, store.Item{
+			ID: id, ModuleID: "tv", LibraryID: libID, FileID: id,
+			RelativePath: id + ".mkv", MediaType: "tv",
+			Document: raw, SchemaVersion: 1, Status: it.status,
+		}); err != nil {
+			t.Fatalf("PutItem %s: %v", id, err)
+		}
+	}
+	return st, ctx, filepath.Join(t.TempDir(), "streams")
+}
+
+// budgetBuild lays down one build directory (a segment inside, so its
+// size is real and identical across directories).
+func budgetBuild(t *testing.T, root, itemID, name string) string {
+	t.Helper()
+	p := filepath.Join(root, itemID, name)
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", p, err)
+	}
+	if err := os.WriteFile(filepath.Join(p, "seg0.ts"), []byte("segment"), 0o644); err != nil {
+		t.Fatalf("write segment in %s: %v", p, err)
+	}
+	return p
+}
+
+// budgetDoc builds an item document whose streams namespace carries the
+// given packaging state and (optional) build nonce.
+func budgetDoc(state, nonce string) map[string]any {
+	streams := map[string]any{"state": state}
+	if nonce != "" {
+		streams["nonce"] = nonce
+	}
+	return map[string]any{"streams": streams}
 }
 
 // TestSweepBudget pins the budget sweep's stale-flag computation
@@ -285,60 +339,6 @@ type budgetItem struct {
 // case, whose fresh progress stamp is the discriminator: without the
 // all-stale rule the unwatched current build would sort first on recency.
 func TestSweepBudget(t *testing.T) {
-	// budgetSeed seeds one live item per item spec and returns the store,
-	// its context, and an empty artifact root.
-	budgetSeed := func(t *testing.T, items map[string]budgetItem) (*store.Store, context.Context, string) {
-		t.Helper()
-		ctx := context.Background()
-		st, err := store.Open(ctx, filepath.Join(t.TempDir(), "budget.db"))
-		if err != nil {
-			t.Fatalf("store.Open: %v", err)
-		}
-		t.Cleanup(func() { _ = st.Close() })
-		libID, err := st.CreateLibrary(ctx, "tv", "/media/budget", "TV")
-		if err != nil {
-			t.Fatalf("CreateLibrary: %v", err)
-		}
-		for id, it := range items {
-			raw, err := json.Marshal(it.doc)
-			if err != nil {
-				t.Fatalf("marshal doc %s: %v", id, err)
-			}
-			if err := st.PutItem(ctx, store.Item{
-				ID: id, ModuleID: "tv", LibraryID: libID, FileID: id,
-				RelativePath: id + ".mkv", MediaType: "tv",
-				Document: raw, SchemaVersion: 1, Status: it.status,
-			}); err != nil {
-				t.Fatalf("PutItem %s: %v", id, err)
-			}
-		}
-		return st, ctx, filepath.Join(t.TempDir(), "streams")
-	}
-
-	// budgetBuild lays down one build directory (a segment inside, so its
-	// size is real and identical across directories).
-	budgetBuild := func(t *testing.T, root, itemID, name string) string {
-		t.Helper()
-		p := filepath.Join(root, itemID, name)
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", p, err)
-		}
-		if err := os.WriteFile(filepath.Join(p, "seg0.ts"), []byte("segment"), 0o644); err != nil {
-			t.Fatalf("write segment in %s: %v", p, err)
-		}
-		return p
-	}
-
-	// budgetDoc builds an item document whose streams namespace carries the
-	// given packaging state and (optional) build nonce.
-	budgetDoc := func(state, nonce string) map[string]any {
-		streams := map[string]any{"state": state}
-		if nonce != "" {
-			streams["nonce"] = nonce
-		}
-		return map[string]any{"streams": streams}
-	}
-
 	t.Run("complete doc: stale siblings reclaim before the current build", func(t *testing.T) {
 		// The doc names cur1 — only old1 is stale. The budget is met by
 		// reclaiming exactly one directory: stale-first must pick old1 (the
@@ -348,7 +348,7 @@ func TestSweepBudget(t *testing.T) {
 		})
 		cur := budgetBuild(t, root, "itm_a", "cur1")
 		oldDir := budgetBuild(t, root, "itm_a", "old1")
-		sweepBudget(ctx, st, root, dirSize(cur), nil, nil)
+		sweepBudget(ctx, st, root, dirSize(cur), nil, nil, nil)
 		if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
 			t.Fatalf("stale sibling still exists after the budget was met from it alone (stat err %v)", err)
 		}
@@ -380,7 +380,7 @@ func TestSweepBudget(t *testing.T) {
 		cur := budgetBuild(t, root, "itm_cur", "aaa1")
 		noneDir := budgetBuild(t, root, "itm_none", "zzn1")
 		failDir := budgetBuild(t, root, "itm_fail", "zzf1")
-		sweepBudget(ctx, st, root, dirSize(cur), nil, nil)
+		sweepBudget(ctx, st, root, dirSize(cur), nil, nil, nil)
 		for _, p := range []string{noneDir, failDir} {
 			if _, err := os.Stat(p); !os.IsNotExist(err) {
 				t.Fatalf("nameless-doc directory %s still exists after the budget was met from the stale set (stat err %v)", p, err)
@@ -406,7 +406,7 @@ func TestSweepBudget(t *testing.T) {
 		cur := budgetBuild(t, root, "itm_cur", "aaa1")
 		del1 := budgetBuild(t, root, "itm_del", "zzd1")
 		del2 := budgetBuild(t, root, "itm_del", "zzd2")
-		sweepBudget(ctx, st, root, dirSize(cur), nil, nil)
+		sweepBudget(ctx, st, root, dirSize(cur), nil, nil, nil)
 		for _, p := range []string{del1, del2} {
 			if _, err := os.Stat(p); !os.IsNotExist(err) {
 				t.Fatalf("deleted-row directory %s still exists after the budget was met from the stale set (stat err %v)", p, err)
@@ -427,7 +427,7 @@ func TestSweepBudget(t *testing.T) {
 		cur := budgetBuild(t, root, "itm_cur", "aaa1")
 		orph1 := budgetBuild(t, root, "itm_orph", "zzo1")
 		orph2 := budgetBuild(t, root, "itm_orph", "zzo2")
-		sweepBudget(ctx, st, root, dirSize(cur), nil, nil)
+		sweepBudget(ctx, st, root, dirSize(cur), nil, nil, nil)
 		for _, p := range []string{orph1, orph2} {
 			if _, err := os.Stat(p); !os.IsNotExist(err) {
 				t.Fatalf("orphan directory %s still exists after the budget was met from the orphan set (stat err %v)", p, err)
@@ -579,7 +579,7 @@ func TestSweepRetentionTrashDeleteOnSight(t *testing.T) {
 		// Two passes = two boots. Whatever the removal outcome, the dir's
 		// name may never grow: at most the original single suffix may remain.
 		for pass := 1; pass <= 2; pass++ {
-			sweepRetention(ctx, st, root, retentionGrace)
+			sweepRetention(ctx, st, root, retentionGrace, nil)
 			for _, name := range trashSuffixes(t, root) {
 				if name != "dead1.trash" {
 					t.Fatalf("pass %d: stranded trash was re-renamed instead of deleted on sight — %q exists (the .trash suffix grew)", pass, name)
@@ -594,9 +594,125 @@ func TestSweepRetentionTrashDeleteOnSight(t *testing.T) {
 		st, ctx, root, dbPath := trashSeed(t)
 		trashBuild(t, root, "dead1.trash.trash")
 		trashBackdate(t, dbPath)
-		sweepRetention(ctx, st, root, retentionGrace)
+		sweepRetention(ctx, st, root, retentionGrace, nil)
 		if got := trashSuffixes(t, root); len(got) != 0 {
 			t.Fatalf("stranded deep trash was re-renamed or left residue, want none, got %v", got)
 		}
 	})
+}
+
+// TestSweepRetentionServedAnchor pins the served-read anchor (fix-live-
+// session-eviction): a stale directory past BOTH dual anchors still skips
+// eviction when a client fetched its (item, nonce) within the grace — the
+// read neither anchor can see — while a fetch older than the grace, a
+// never-served build, and a nil index evict byte-identically to before, and
+// an orphaned item's served read anchors its directory too.
+func TestSweepRetentionServedAnchor(t *testing.T) {
+	old := 2 * time.Hour // comfortably past the 10-minute grace
+
+	cases := []struct {
+		name      string
+		seedDocs  map[string]map[string]any
+		buildItem string
+		buildName string // the non-named dir the case judges
+		buildAge  time.Duration
+		backdate  bool // age the row anchor past the grace
+		touchItem string
+		touchName string
+		touchAge  time.Duration // 0 = touched just now
+		nilIndex  bool
+		wantGone  bool
+	}{
+		{
+			name:      "served_within_the_grace_survives",
+			seedDocs:  map[string]map[string]any{"itm_a": retentionDoc("complete", "cur1")},
+			buildItem: "itm_a", buildName: "old1", buildAge: old, backdate: true,
+			touchItem: "itm_a", touchName: "old1",
+			wantGone: false,
+		},
+		{
+			name:      "served_past_the_grace_evicted",
+			seedDocs:  map[string]map[string]any{"itm_b": retentionDoc("complete", "cur1")},
+			buildItem: "itm_b", buildName: "old1", buildAge: old, backdate: true,
+			touchItem: "itm_b", touchName: "old1", touchAge: old + time.Minute,
+			wantGone: true,
+		},
+		{
+			name:      "never_served_evicted",
+			seedDocs:  map[string]map[string]any{"itm_c": retentionDoc("complete", "cur1")},
+			buildItem: "itm_c", buildName: "old1", buildAge: old, backdate: true,
+			wantGone: true,
+		},
+		{
+			name:      "nil_index_evicts_byte_identically",
+			seedDocs:  map[string]map[string]any{"itm_d": retentionDoc("complete", "cur1")},
+			buildItem: "itm_d", buildName: "old1", buildAge: old, backdate: true,
+			nilIndex: true,
+			wantGone: true,
+		},
+		{
+			name:      "orphan_served_survives",
+			seedDocs:  map[string]map[string]any{},
+			buildItem: "itm_orph", buildName: "stale1", buildAge: old,
+			touchItem: "itm_orph", touchName: "stale1",
+			wantGone: false,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			st, ctx, root, dbPath := retentionSeed(t, tc.seedDocs)
+			p := retentionBuild(t, root, tc.buildItem, tc.buildName, tc.buildAge)
+			if tc.backdate {
+				retentionBackdate(t, dbPath, tc.buildItem, old)
+			}
+			var served *servedIndex
+			if !tc.nilIndex {
+				served = newServedIndex()
+				if tc.touchItem != "" {
+					served.touch(tc.touchItem, tc.touchName)
+					if tc.touchAge > 0 {
+						served.mu.Lock()
+						served.hits[servedHit{item: tc.touchItem, nonce: tc.touchName}] = time.Now().Add(-tc.touchAge)
+						served.mu.Unlock()
+					}
+				}
+			}
+			sweepRetention(ctx, st, root, retentionGrace, served)
+			_, err := os.Stat(p)
+			if tc.wantGone && !os.IsNotExist(err) {
+				t.Fatalf("stale dir %s still exists (stat err %v)", p, err)
+			}
+			if !tc.wantGone && err != nil {
+				t.Fatalf("served dir %s was evicted within the grace: %v", p, err)
+			}
+		})
+	}
+}
+
+// TestSweepBudgetServedAnchor pins the budget sweep's served guard (fix-
+// live-session-eviction): an over-budget root whose stale set holds one
+// served and one unserved directory evicts only the unserved one — the
+// served build survives with the loud WARN (the budget goes unmet: the
+// operator's signal, the fronted-pin warning's twin).
+func TestSweepBudgetServedAnchor(t *testing.T) {
+	st, ctx, root := budgetSeed(t, map[string]budgetItem{
+		"itm_x": {doc: budgetDoc("complete", "curx")},
+	})
+	cur := budgetBuild(t, root, "itm_x", "curx")
+	servedDir := budgetBuild(t, root, "itm_x", "sv1")
+	unservedDir := budgetBuild(t, root, "itm_x", "un1")
+	served := newServedIndex()
+	served.touch("itm_x", "sv1")
+
+	sweepBudget(ctx, st, root, dirSize(cur), nil, nil, served)
+	if _, err := os.Stat(servedDir); err != nil {
+		t.Fatalf("the served stale build was evicted under budget pressure: %v", err)
+	}
+	if _, err := os.Stat(unservedDir); !os.IsNotExist(err) {
+		t.Fatalf("the unserved stale build survived beside it (stat err %v)", err)
+	}
+	if _, err := os.Stat(cur); err != nil {
+		t.Fatalf("document-named build was evicted: %v", err)
+	}
 }
