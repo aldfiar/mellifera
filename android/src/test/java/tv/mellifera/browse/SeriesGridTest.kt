@@ -58,6 +58,34 @@ class SeriesGridTest {
     }
 
     @Test
+    fun series_card_score_carrier_law() {
+        // The compact caption's ★ fact rides the served about.score through
+        // toCard VERBATIM — no formatting at the carrier (the caption
+        // renders it through scoreText, ONE formatter).
+        val served = SeriesDto(
+            id = "s-5",
+            displayName = "Клевер",
+            metadata = ElementMetadata(
+                about = MetadataAbout(description = "Описание", score = 8.1),
+            ),
+        ).toCard()
+        assertEquals(8.1, served.score!!, 1e-9)
+
+        // Absent metadata → no score fact (the field-driven law: absence
+        // renders absent, never a placeholder).
+        assertNull(SeriesDto(id = "s-9", displayName = "Сага").toCard().score)
+
+        // An about block without a score → no score fact either.
+        assertNull(
+            SeriesDto(
+                id = "s-10",
+                displayName = "Без оценки",
+                metadata = ElementMetadata(about = MetadataAbout(description = "Только описание")),
+            ).toCard().score,
+        )
+    }
+
+    @Test
     fun episode_rows_follow_the_same_law() {
         // Absent artwork/watched → null blocks; present → verbatim.
         val bare = ItemDto(id = "e-1", displayName = "Серия 1").toCard()
@@ -163,6 +191,44 @@ class SeriesGridTest {
     }
 
     @Test
+    fun episode_title_rides_the_served_precedence() {
+        // The served-title precedence (design D3's episode row): the
+        // document's _view.title.value wins when present — the read-time
+        // accessor family documentDuration uses for ffprobe — and the
+        // composed name is NEVER re-derived client-side.
+        val doc = Json.parseToJsonElement(
+            """{"_view":{"title":{"value":"Рикошет"}},"sources":{"serial-parser":{"season":1,"episode":2}}}""",
+        )
+        assertEquals("Рикошет", episodeTitle(doc, "Сага · S01E02"))
+        // A number renders its literal bytes (the JS String(value) law,
+        // INV-no-rounding)...
+        assertEquals("12", episodeTitle(Json.parseToJsonElement("""{"_view":{"title":{"value":12}}}"""), "Сага · S01E02"))
+        assertEquals("12.5", episodeTitle(Json.parseToJsonElement("""{"_view":{"title":{"value":12.5}}}"""), "Сага · S01E02"))
+        // ...anything else — absent, null, mistyped — floors to the composed
+        // name verbatim.
+        assertEquals("Сага · S01E02", episodeTitle(Json.parseToJsonElement("""{"sources":{}}"""), "Сага · S01E02"))
+        assertEquals("Сага · S01E02", episodeTitle(Json.parseToJsonElement("""{"_view":{"title":{"value":null}}}"""), "Сага · S01E02"))
+        assertEquals("Сага · S01E02", episodeTitle(Json.parseToJsonElement("""{"_view":{"title":{"value":{"nested":true}}}}"""), "Сага · S01E02"))
+        // A blank composed name carries no title block — nothing fabricated.
+        assertNull(episodeTitle(JsonNull, ""))
+        // The mapper wires the precedence: a document-titled row titles its
+        // card with the served value.
+        assertEquals("Рикошет", ItemDto(id = "e-11", displayName = "Сага · S01E02", document = doc).toCard().title)
+    }
+
+    @Test
+    fun episode_card_carries_the_display_formatted_duration_line() {
+        // The episode card's duration line: the document's ffprobe duration,
+        // display-formatted (ONE formatter — formatPosition)...
+        val card = ItemDto(id = "e-12", displayName = "S01E01", document = Json.parseToJsonElement(probedDoc())).toCard()
+        assertEquals("23:50", card.duration)
+        // ...absent → NO duration line (field-driven absence, L1).
+        assertNull(ItemDto(id = "e-13", displayName = "S01E02").toCard().duration)
+        // The duration is episode-scoped: the series card never carries one.
+        assertNull(SeriesDto(id = "s-11", displayName = "Сага").toCard().duration)
+    }
+
+    @Test
     fun format_position_law() {
         // The SPA's formatPosition law verbatim (Home.tsx): MM:SS, then
         // H:MM:SS past the hour; negative input floors at zero.
@@ -230,11 +296,12 @@ class SeriesGridTest {
 
     @Test
     fun type_accent_law_follows_the_spa_dot_map() {
-        // D3 — the SPA's pastel dot map (styles/index.css .dot-*).
-        assertEquals(Color(0xFFB7A6F4), typeAccent("serial"))
-        assertEquals(Color(0xFFF6C3A4), typeAccent("tv"))
-        assertEquals(Color(0xFFA4E3C3), typeAccent("image"))
-        assertEquals(Color(0xFFA4C8F4), typeAccent("audio"))
+        // D3 — the SPA's pastel dot map (styles/index.css .dot-*), the
+        // mockup :root pastel values both clients carry.
+        assertEquals(Color(0xFFD8CEF2), typeAccent("serial"))
+        assertEquals(Color(0xFFF6D3B8), typeAccent("tv"))
+        assertEquals(Color(0xFFCDEBD7), typeAccent("image"))
+        assertEquals(Color(0xFFCFE4F6), typeAccent("audio"))
         // An unknown module id falls to the SPA's default dot pastel (the
         // watched-mark color) — never a blank, never a guessed hue.
         assertEquals(DEFAULT_TYPE_ACCENT, typeAccent("audiobook"))

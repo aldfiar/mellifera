@@ -185,6 +185,39 @@ class PlayerInfoTest {
     }
 
     @Test
+    fun title_bar_label_field_driven() {
+        // The controls' top bar reads the SAME served blocks the info column
+        // reads: eyebrow · heading; nothing to show → NO bar (null), never a
+        // placeholder (L1).
+        val info = playerInfo(episode(fullMetadata), series)
+        assertEquals("S01E02 · Название серии", controlsTitle(info))
+
+        // Parseable facts + no served title → the eyebrow alone.
+        assertEquals("S01E02", controlsTitle(playerInfo(episode(), series)))
+
+        // A film floors to its served display name alone (no eyebrow).
+        val film = ItemDto(
+            id = "itm_1_f9",
+            displayName = "Фильм",
+            document = Json.parseToJsonElement("""{"parsed": {}}"""),
+        )
+        assertEquals("Фильм", controlsTitle(playerInfo(film, series = null)))
+
+        // Neither served → no bar even when other blocks exist (About, cast).
+        assertNull(
+            controlsTitle(
+                PlayerInfoBlocks(
+                    eyebrow = null,
+                    heading = null,
+                    episodeDescription = null,
+                    cast = listOf(MetadataCastEntry(name = "Имя")),
+                    about = "О сериале",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun clock_formats_spa_law() {
         assertEquals("0:00", formatClock(0))
         assertEquals("42:10", formatClock(42 * 60_000L + 10_000L))

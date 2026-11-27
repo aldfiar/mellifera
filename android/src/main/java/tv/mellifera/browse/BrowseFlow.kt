@@ -14,6 +14,11 @@ import tv.mellifera.net.LibraryDto
 import tv.mellifera.net.LibrarySummaryResponse
 import tv.mellifera.net.MelliferaApi
 import tv.mellifera.net.SeriesDto
+import tv.mellifera.nav.firstUnwatchedEpisode
+import tv.mellifera.ui.dotAudio
+import tv.mellifera.ui.dotImage
+import tv.mellifera.ui.dotSerial
+import tv.mellifera.ui.dotTv
 
 /**
  * The module-label law (5.14 — the SPA's default-dot law, Sidebar.tsx
@@ -30,21 +35,24 @@ internal fun moduleLabel(moduleId: String): String = when (moduleId) {
 
 /**
  * The type accents (design D3 — the SPA's pastel dot map, styles/index.css
- * .dot-*): one pastel per module_id, tinting the card's ✓ glyph and the
- * in-progress bar; an unknown id falls to the SPA's default dot pastel (the
- * watched-mark color — type-agnostic), never a blank. `tvAccent` stays the
- * focus ring color and never renders state (D11).
+ * .dot-*, read from the ui token home): one pastel per module_id, tinting
+ * the card's ✓ glyph; the in-progress bar reads its own fill/track tokens;
+ * an unknown id falls to the
+ * SPA's default dot pastel (the watched-mark color — type-agnostic), never
+ * a blank. State colors ride this pastel map; `tvAccent` is not part of it —
+ * it marks the selected card's name tint in browse.
  */
 internal fun typeAccent(moduleId: String): Color = when (moduleId) {
-    "serial" -> Color(0xFFB7A6F4)
-    "tv" -> Color(0xFFF6C3A4)
-    "image" -> Color(0xFFA4E3C3)
-    "audio" -> Color(0xFFA4C8F4)
+    "serial" -> dotSerial
+    "tv" -> dotTv
+    "image" -> dotImage
+    "audio" -> dotAudio
     else -> DEFAULT_TYPE_ACCENT
 }
 
-/** The SPA's default dot pastel (styles/index.css .watched-mark). */
-internal val DEFAULT_TYPE_ACCENT = Color(0xFFA4C8F4)
+/** The SPA's default dot pastel (styles/index.css .watched-mark) — the
+ * token-home [tv.mellifera.ui.dotAudio]. */
+internal val DEFAULT_TYPE_ACCENT = dotAudio
 
 /**
  * The browse session state: the served collections, the current collection's
@@ -757,11 +765,18 @@ class BrowseFlow(
         return opened
     }
 
-    /** The D-pad moved the rail cursor (the moveInList law's landing,
-     * same clamp semantics as [onGridFocusMoved]). */
+    /**
+     * The D-pad moved the rail cursor (the moveInList law's landing, the
+     * same clamp-to-the-walker's-count semantics as [onGridFocusMoved]).
+     * The rail walk's count is the served libraries PLUS the fixed settings
+     * row: the settings index (libraries.size) is walkable state —
+     * the walk lands on it and clamps inside it — but never an activatable
+     * library ([activateRailRow]'s getOrNull guard refuses the virtual
+     * index; the overlay opens at the composition site instead).
+     */
     fun onRailFocusMoved(index: Int) {
         _state.value = _state.value.copy(
-            railFocus = index.coerceIn(0, _state.value.libraries.lastIndex.coerceAtLeast(0)),
+            railFocus = index.coerceIn(0, _state.value.libraries.size.coerceAtLeast(0)),
         )
     }
 
@@ -769,7 +784,10 @@ class BrowseFlow(
      * best-effort positions walk for the episode rows' in-progress bars.
      * The rows render as soon as the episodes land; the bars arrive with
      * the progress walk. The grid cursor PARKS — untouched — so Back
-     * restores the exact card; the episode cursor starts at the first row. */
+     * restores the exact card; the episode cursor seeds the
+     * first-unwatched law (nav/InitialFocus.kt — the served rows' watched
+     * states pick the landing; no states or an all-watched page → 0) and
+     * the walk keeps it from there. */
     suspend fun openSeries(series: SeriesDto) {
         _state.value = _state.value.copy(
             selectedSeries = series,
@@ -790,6 +808,7 @@ class BrowseFlow(
                 selectedSeries = series,
                 episodes = episodes,
                 isLoading = false,
+                episodeFocus = firstUnwatchedEpisode(episodes),
             )
             // The positions write follows the loadPositions loop await —
             // capture again before the walk, check at the write (Q12).

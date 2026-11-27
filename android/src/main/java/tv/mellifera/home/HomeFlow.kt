@@ -86,20 +86,43 @@ class HomeFlow(
     suspend fun load() {
         _state.value = _state.value.copy(isLoading = true, error = null)
         try {
-            val rows = apiFor().home().rows
-            // The cursors ride through the replace (the no-restart law, same
-            // posture as BrowseFlow.refresh), coerce-clamped so a shrunken
-            // served set never aims past the end.
-            val prior = _state.value
-            _state.value = HomeState(
-                isLoading = false,
-                rows = rows,
-                continueFocus = prior.continueFocus.coerceIn(0, resumeCount(rows)),
-                nextUpFocus = prior.nextUpFocus.coerceIn(0, anchorCount(rows)),
-            )
+            replaceWith(apiFor().home().rows)
         } catch (e: Exception) {
             fail(e)
         }
+    }
+
+    /**
+     * The foreground-resume refetch: the SAME /home
+     * round-trip as [load] WITHOUT the opening state clear — the rows and
+     * the error line already on screen stay visible while in flight (no
+     * born-loading flare, the entry focus is never re-grabbed mid-session).
+     * Success replaces the state whole by the load law (served order
+     * verbatim, cursors coerce-clamped — a stale error line heals); failure
+     * keeps the prior posture (the same failure law as [load]).
+     */
+    suspend fun resumeRefetch() {
+        try {
+            replaceWith(apiFor().home().rows)
+        } catch (e: Exception) {
+            fail(e)
+        }
+    }
+
+    /** The verdict lands: the served rows replace the state whole (served
+     * order verbatim — no re-sort, no filter); the cursors ride through
+     * (the no-restart law, same posture as BrowseFlow.refresh), coerce-
+     * clamped so a shrunken served set never aims past the end. Both fetch
+     * paths read the prior cursors HERE — after the wire resolves — so a
+     * cursor moved mid-flight rides the fresh answer, not the stale one. */
+    private fun replaceWith(rows: List<ContinueRow>) {
+        val prior = _state.value
+        _state.value = HomeState(
+            isLoading = false,
+            rows = rows,
+            continueFocus = prior.continueFocus.coerceIn(0, resumeCount(rows)),
+            nextUpFocus = prior.nextUpFocus.coerceIn(0, anchorCount(rows)),
+        )
     }
 
     /** The D-pad moved the resume row's cursor (the moveInRow law's

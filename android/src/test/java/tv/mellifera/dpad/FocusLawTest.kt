@@ -8,8 +8,10 @@ import org.junit.Test
 import tv.mellifera.browse.BrowseState
 import tv.mellifera.nav.FocusTarget
 import tv.mellifera.nav.browseFocusTarget
+import tv.mellifera.nav.firstUnwatchedEpisode
 import tv.mellifera.nav.pairingFocusTarget
 import tv.mellifera.nav.playerFocusTarget
+import tv.mellifera.net.ItemDto
 import tv.mellifera.net.SeriesDto
 import tv.mellifera.pairing.PairingState
 import tv.mellifera.state.Phase
@@ -45,7 +47,8 @@ class FocusLawTest {
         assertEquals(FocusTarget.Surface, pairingFocusTarget(PairingState.Paired))
 
         // Browse: grid → the card at the cursor; series page → the episode
-        // row at the cursor; loading/error → the shell.
+        // GRID card at the cursor (the target renamed with the 36dp
+        // row list's retirement); loading/error → the shell.
         val grid = BrowseState(series = List(5) { SeriesDto(id = "s-$it") }, gridFocus = 3)
         assertEquals(FocusTarget.GridCard(3), browseFocusTarget(grid))
         // A shrunken series list never aims past the end.
@@ -56,9 +59,33 @@ class FocusLawTest {
             episodes = emptyList(),
             episodeFocus = 0,
         )
-        assertEquals(FocusTarget.EpisodeRow(0), browseFocusTarget(seriesPage))
+        assertEquals(FocusTarget.EpisodeGrid(0), browseFocusTarget(seriesPage))
         assertEquals(FocusTarget.Surface, browseFocusTarget(BrowseState(isLoading = true)))
         assertEquals(FocusTarget.Surface, browseFocusTarget(BrowseState(error = "сбой")))
+
+        // The episode grid's first-unwatched law (nav/InitialFocus.kt):
+        // the seed picks the FIRST row that is not watched when the served
+        // rows carry watched states...
+        val watched = listOf(
+            ItemDto(id = "e-1", displayName = "Серия 1", watched = true),
+            ItemDto(id = "e-2", displayName = "Серия 2", watched = true),
+            ItemDto(id = "e-3", displayName = "Серия 3"),
+        )
+        assertEquals(2, firstUnwatchedEpisode(watched))
+        // ...an all-watched page floors to index 0...
+        assertEquals(0, firstUnwatchedEpisode(watched.take(2)))
+        // ...no served states resolve the same law's floor — the first row.
+        assertEquals(0, firstUnwatchedEpisode(listOf(ItemDto(id = "e-1"))))
+        assertEquals(0, firstUnwatchedEpisode(emptyList()))
+        // The target serves the seeded cursor: openSeries seeds the law's
+        // answer (EpisodesTest pins the wire side); browseFocusTarget keeps
+        // it — the grid card at the first-unwatched index holds the entry.
+        val seeded = grid.copy(
+            selectedSeries = grid.series[3],
+            episodes = watched,
+            episodeFocus = firstUnwatchedEpisode(watched),
+        )
+        assertEquals(FocusTarget.EpisodeGrid(2), browseFocusTarget(seeded))
 
         // Player: wherever the overlay renders it owns focus; Idle renders
         // nothing — null is honest, not a missing focus.
