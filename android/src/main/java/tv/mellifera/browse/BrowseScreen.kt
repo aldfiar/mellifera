@@ -1356,7 +1356,7 @@ private fun RailRow(
             // The mode-derived rail row height: every row's card is the
             // same height at any data state, riding the scale tier.
             .height(railRowHeight(LocalUiScale.current))
-            .background(if (focused) Color(0xFF1E293B) else Color.Transparent, cardShape)
+            .background(if (focused) Color(0xFF232739) else Color.Transparent, cardShape)
             .border(1.dp, railBorder, cardShape)
             // The TV collection card's padding (SPA Home.tsx:266 p-4 16px ÷ 2)
             .padding(horizontal = 8.dp, vertical = 8.dp),

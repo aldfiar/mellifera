@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- The app canvas: the web SPA's near-black background token
-         (#020617 ≈ hsl(222.2 84% 4.9%)) — the window's windowBackground
-         paints it (themes.xml). Mirrors ui/App.kt's AppCanvas; JVM tests
-         cannot read res without Robolectric, so the duplication is
-         accepted (C-2). -->
-    <color name="app_canvas">#020617</color>
+    <!-- The app canvas: the web SPA's dark background token
+         (#10121d = hsl(230.8 28.9% 8.8%), the mockup family's lifted-ink
+         base) — the window's windowBackground paints it (themes.xml).
+         Mirrors ui/App.kt's AppCanvas; JVM tests cannot read res without
+         Robolectric, so the duplication is accepted (C-2). -->
+    <color name="app_canvas">#10121d</color>
 </resources>

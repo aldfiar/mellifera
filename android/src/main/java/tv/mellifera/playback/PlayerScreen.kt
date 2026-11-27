@@ -315,7 +315,7 @@ private fun BoxScope.ControlsTitleBar(playback: PlayerOrchestration) {
             .align(Alignment.TopCenter)
             .fillMaxWidth()
             .background(
-                Brush.verticalGradient(listOf(Color(0xCC1A1D24), Color.Transparent)),
+                Brush.verticalGradient(listOf(Color(0xCC10121D), Color.Transparent)),
             )
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
@@ -342,7 +342,7 @@ private fun BoxScope.ControlsBar(playback: PlayerOrchestration) {
         modifier = Modifier
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
-            .background(Color(0xCC1A1D24))
+            .background(Color(0xCC10121D))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {

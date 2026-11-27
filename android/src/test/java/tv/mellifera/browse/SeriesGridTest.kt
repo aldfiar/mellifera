@@ -296,11 +296,12 @@ class SeriesGridTest {
 
     @Test
     fun type_accent_law_follows_the_spa_dot_map() {
-        // D3 — the SPA's pastel dot map (styles/index.css .dot-*).
-        assertEquals(Color(0xFFB7A6F4), typeAccent("serial"))
-        assertEquals(Color(0xFFF6C3A4), typeAccent("tv"))
-        assertEquals(Color(0xFFA4E3C3), typeAccent("image"))
-        assertEquals(Color(0xFFA4C8F4), typeAccent("audio"))
+        // D3 — the SPA's pastel dot map (styles/index.css .dot-*), the
+        // mockup :root pastel values both clients carry.
+        assertEquals(Color(0xFFD8CEF2), typeAccent("serial"))
+        assertEquals(Color(0xFFF6D3B8), typeAccent("tv"))
+        assertEquals(Color(0xFFCDEBD7), typeAccent("image"))
+        assertEquals(Color(0xFFCFE4F6), typeAccent("audio"))
         // An unknown module id falls to the SPA's default dot pastel (the
         // watched-mark color) — never a blank, never a guessed hue.
         assertEquals(DEFAULT_TYPE_ACCENT, typeAccent("audiobook"))

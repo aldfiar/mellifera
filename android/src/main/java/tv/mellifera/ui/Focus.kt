@@ -37,13 +37,13 @@ fun Modifier.tvInitialFocus(): Modifier {
 }
 
 /**
- * The SPA html.tv :focus-visible ring color — --ring resolves to slate
- * #CBD5E1 (hsl 212.7 26.8% 83.9%, web/src/styles/index.css html.tv block).
- * Private to Focus.kt — the ring color lives beside its consumer;
- * promoting it into the Colors.kt token home is a one-line follow-up,
- * not a call-site sweep.
+ * The SPA :focus-visible ring color — --ring resolves to #C9CDDC
+ * (hsl 227.4 21.3% 82.5%, web/src/styles/index.css .dark — the lifted-ink
+ * family's ring tone). Private to Focus.kt — the ring color lives beside its
+ * consumer; promoting it into the Colors.kt token home is a one-line
+ * follow-up, not a call-site sweep.
  */
-private val RingSlate = Color(0xFFCBD5E1)
+private val RingSlate = Color(0xFFC9CDDC)
 
 /**
  * The SPA html.tv :focus-visible outline-width law in device px

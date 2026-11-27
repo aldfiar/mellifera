@@ -458,7 +458,7 @@ describe("WatchedToggle — the cardact stylesheet pin", () => {
 
   it("the state colors: watched accent / unwatched muted ghost, no border chrome in either (D5)", () => {
     const watched = ruleBody(css, ".wtoggle--watched {");
-    expect(watched).toContain("color: #a4c8f4");
+    expect(watched).toContain("color: #cfe4f6");
     expect(watched).not.toContain("border");
     const unwatched = ruleBody(css, ".wtoggle--unwatched {");
     expect(unwatched).toContain("color: hsl(var(--muted-foreground))");
@@ -469,7 +469,7 @@ describe("WatchedToggle — the cardact stylesheet pin", () => {
     expect(ruleBody(css, ".wtoggle--watched:hover {")).toContain(
       "background: transparent",
     );
-    expect(ruleBody(css, ".wtoggle--watched:hover {")).toContain("color: #a4c8f4");
+    expect(ruleBody(css, ".wtoggle--watched:hover {")).toContain("color: #cfe4f6");
     expect(ruleBody(css, ".wtoggle--unwatched:hover {")).toContain(
       "background: transparent",
     );
