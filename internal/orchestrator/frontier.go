@@ -64,6 +64,14 @@ type FrontierIn struct {
 	// Deps.Play closure), which re-fronts the serial here. Zero value
 	// (nil) suppresses nothing — the pre-eviction behavior byte for byte.
 	Suppressed map[string]bool
+	// Playing marks the items a live playback session is serving RIGHT NOW
+	// (the shell's servedIndex item projection): a playing position emits no
+	// job — a repack would publish a fresh nonce and orphan the mid-play
+	// session — joins no pin, and contributes no bytes; a playing episode is
+	// omitted from DEMOTE so no policy eviction takes the build a client is
+	// actively reading. Zero value (nil) plays nothing — the pre-anchor
+	// behavior byte for byte.
+	Playing map[string]bool
 }
 
 // Job is ONE enqueue decision: the item to package, its library (for
@@ -88,14 +96,16 @@ type Job struct {
 // PREFIX of the frontier positions whose accumulated build bytes fit
 // PinCapBytes — serials ordered by serial recency (the most recent stamp
 // among the serial's episodes; a stampless serial oldest; input order
-// breaking ties), and a position that would overflow the cap ends the walk;
-// a non-positive cap is unbounded. Jobs emit ONLY from pinned positions.
+// breaking ties), a position that would overflow the cap ends the walk, and
+// a Playing position (a live session's item) skips outright; a non-positive
+// cap is unbounded. Jobs emit ONLY from pinned positions.
 // The working set is the budget sweep's eviction pin: a position item that
 // is packaged (or cooling) emits no job today but WILL be the frontier's
 // next repack after any eviction — and an unbounded set guarantees the
 // evict→repack churn loop, which is exactly what the cap breaks (the set
 // empties when fresh builds no longer fit under the cap to protect). DEMOTE
-// carries every fully-watched serial's episode ids in input order (the
+// carries every fully-watched serial's episode ids — Playing episodes
+// omitted — in input order (the
 // judgment stays in this policy — the executor is the shell's, task 1.2).
 // The result is deterministic; the slices are empty, never nil, and the
 // zero-value input reproduces the pre-cap behavior byte for byte.
@@ -120,6 +130,9 @@ func Frontier(in FrontierIn) ([]Job, map[string]bool, []string) {
 		}
 		if last == len(sr.Episodes)-1 {
 			for _, e := range sr.Episodes {
+				if in.Playing[e.ItemID] {
+					continue // a live session's episode: no policy eviction may take it
+				}
 				demote = append(demote, e.ItemID) // fully watched: the demote list
 			}
 			continue // the whole serial is watched — nothing is past the frontier
@@ -147,6 +160,12 @@ func Frontier(in FrontierIn) ([]Job, map[string]bool, []string) {
 			// keeps the position out of the cap's walk, so it can neither
 			// end the prefix nor consume budget for builds it will never
 			// receive). A real play clears the mark, which re-fronts here.
+			continue
+		}
+		if in.Playing[pos.cand.ItemID] {
+			// A live session is reading this position's build right now —
+			// no job (a repack would orphan it mid-play), no pin, no bytes;
+			// the served anchor guards the directory itself.
 			continue
 		}
 		if in.PinCapBytes > 0 { // <=0: unbounded — the zero value's behavior

@@ -438,6 +438,104 @@ func TestFrontierBoundedPinSet(t *testing.T) {
 	}
 }
 
+// TestFrontierSkipsPlaying pins the live-session guard (fix-live-session-
+// eviction, task 1): a position whose item a client is actively reading
+// emits no job and joins no pin (a repack there would publish a fresh nonce
+// and orphan the mid-play session), a playing episode of a fully-watched
+// serial stays out of the demote list while its siblings still demote, and
+// a nil Playing map fronts the baseline byte-identically.
+func TestFrontierSkipsPlaying(t *testing.T) {
+	cases := []struct {
+		name       string
+		in         FrontierIn
+		wantJobs   []string // exact job ids in emission order
+		wantPinned []string // exact pinned item set
+		wantDemote []string // exact episode ids, in order
+	}{
+		{
+			name: "playing_next_after_watched_candidate_fronts_nothing",
+			in: FrontierIn{
+				Serials: []Serial{serial(1, ep("w1"), ep("w2"))},
+				Watched: map[string]bool{"w1": true},
+				Now:     testNow,
+				Playing: map[string]bool{"w2": true},
+			},
+			wantJobs:   nil,
+			wantPinned: nil,
+			wantDemote: []string{},
+		},
+		{
+			name: "playing_pilot_fronts_nothing",
+			in: FrontierIn{
+				Serials: []Serial{serial(2, ep("p1"), ep("p2"))},
+				Watched: map[string]bool{},
+				Now:     testNow,
+				Playing: map[string]bool{"p1": true},
+			},
+			wantJobs:   nil,
+			wantPinned: nil,
+			wantDemote: []string{},
+		},
+		{
+			name: "playing_episode_omitted_from_demote_siblings_still_demote",
+			in: FrontierIn{
+				Serials: []Serial{serial(3, ep("d1"), ep("d2"), ep("d3"))},
+				Watched: map[string]bool{"d1": true, "d2": true, "d3": true},
+				Now:     testNow,
+				Playing: map[string]bool{"d2": true},
+			},
+			wantJobs:   nil,
+			wantPinned: nil,
+			wantDemote: []string{"d1", "d3"},
+		},
+		{
+			name: "nil_playing_fronts_the_baseline",
+			in: FrontierIn{
+				Serials: []Serial{serial(4, ep("b1"), ep("b2"))},
+				Watched: map[string]bool{"b1": true},
+				Now:     testNow,
+			},
+			wantJobs:   []string{"b2"},
+			wantPinned: []string{"b2"},
+			wantDemote: []string{},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			jobs, pinned, demote := Frontier(tc.in)
+			ids := make([]string, len(jobs))
+			for i, j := range jobs {
+				ids[i] = j.ItemID
+			}
+			if len(ids) != len(tc.wantJobs) {
+				t.Fatalf("Frontier() jobs = %v, want %v", ids, tc.wantJobs)
+			}
+			for i := range ids {
+				if ids[i] != tc.wantJobs[i] {
+					t.Fatalf("Frontier() jobs = %v, want %v (emission order)", ids, tc.wantJobs)
+				}
+			}
+			if len(pinned) != len(tc.wantPinned) {
+				t.Fatalf("Frontier() pinned = %v, want exactly %v", pinned, tc.wantPinned)
+			}
+			for _, id := range tc.wantPinned {
+				if !pinned[id] {
+					t.Fatalf("Frontier() pinned missing %q (got %v)", id, pinned)
+				}
+			}
+			if len(demote) != len(tc.wantDemote) {
+				t.Fatalf("Frontier() demote = %v, want %v", demote, tc.wantDemote)
+			}
+			for i := range tc.wantDemote {
+				if demote[i] != tc.wantDemote[i] {
+					t.Fatalf("Frontier() demote = %v, want %v (input order)", demote, tc.wantDemote)
+				}
+			}
+		})
+	}
+}
+
 // TestFrontierDemote pins the demotion judgment (D2's policy half): every
 // fully-watched serial's episode ids come back in input order (canonical
 // order within a serial), a mixed serial is never demoted, and the gate
