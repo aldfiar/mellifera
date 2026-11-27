@@ -47,6 +47,12 @@ const (
 	// everything at once).
 	retentionGrace = 10 * time.Minute
 
+	// playingWindow is the live-session window (fix-live-session-eviction):
+	// a progress stamp or a served /media read within this window marks the
+	// item as actively playing. Locked like retentionGrace (a rule bump
+	// re-anchors every build at once).
+	playingWindow = 5 * time.Minute
+
 	// watchScanLimit is the playback-progress scan depth per sweep: the LRU
 	// clock and the watched set over at most this many most-recent rows —
 	// far beyond any realistic continue-watching surface.
