@@ -1,6 +1,0 @@
-schema: lite
-created: 2026-11-27
-goal: Ship jav-parser (JAV-code grammar) and javinizer (REST client over the
-  deployed Javinizer service) as subprocess plugins from an external private
-  repo, with optional load sites, no-relay trait, seed v3 bindings, and
-  prebuilt-release deploy wiring
