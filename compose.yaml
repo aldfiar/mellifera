@@ -24,8 +24,15 @@ services:
       # secret (in-flight playback breaks on every restart), so set it.
       # Generate with: openssl rand -hex 32
       MELLIFERA_MEDIA_SECRET: ${MELLIFERA_MEDIA_SECRET:-}
+      # optional extra plugin binaries, read-only mount below; a missing or
+      # dangling `current` symlink only fails the calls that need them
+      MELLIFERA_EXTRA_PLUGINS: ${MELLIFERA_EXTRA_PLUGINS:-}
     volumes:
       # server state: SQLite DB (WAL), thumbnails, packaged HLS artifacts
       - ./data:/app/data
       # EDIT ME: your media roots, read-only
       - /srv/media:/media:ro
+      # optional external plugin binaries, read-only; the parent dir is
+      # mounted (not the `current` symlink) so a dangling symlink never
+      # breaks compose up
+      - ./plugins-external:/app/bin-extra:ro

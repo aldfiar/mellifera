@@ -1,0 +1,6 @@
+schema: lite
+created: 2026-11-27
+goal: Ship ext-source-a (release-code grammar) and ext-source-b (REST client over the
+  deployed external enrichment source service) as subprocess plugins from an external private
+  repo, with optional load sites, no-relay trait, seed v3 bindings, and
+  prebuilt-release deploy wiring

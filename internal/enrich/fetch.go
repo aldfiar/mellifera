@@ -23,8 +23,10 @@ import (
 	metadatav1 "github.com/mellifera/mellifera/proto/mellifera/metadata/v1"
 )
 
-// placeholderRe matches the {var} tokens a RequestSpec url template carries.
-var placeholderRe = regexp.MustCompile(`\{([A-Za-z0-9_]+)\}`)
+// placeholderRe matches the {var} tokens a RequestSpec url template carries,
+// plus the !raw marker suffix that opts a placeholder out of percent-encoding
+// (an origin value must survive verbatim to dial).
+var placeholderRe = regexp.MustCompile(`\{([A-Za-z0-9_]+)(!raw)?\}`)
 
 // errRedactedRef is the explicit unsupported error for a redacted_ref
 // variable the core cannot resolve: any "client:" ref (client-held secrets
@@ -314,10 +316,14 @@ func secretArg(args []map[string]string) map[string]string {
 	return args[0]
 }
 
-// substitute percent-encodes each {var} of the template from the resolved
-// values. An unresolvable placeholder is a spec error (the plugin named a
-// variable it never declared). QueryEscape is used so a value is safe in both
-// path and query positions (&, ?, # all percent-encoded).
+// substitute renders each {var} of the template from the resolved values,
+// percent-encoding by default so a value is safe in both path and query
+// positions (&, ?, # all percent-encoded); a placeholder carrying the !raw
+// marker (e.g. {base_url!raw}) writes its value VERBATIM instead, so a
+// server-ref origin (http://host:port) survives substitution (raw-marker
+// substitution law). The marker is template-level — resolution looks the
+// bare name up, and an unresolvable name errors identically with or without
+// the marker (the plugin named a variable it never declared).
 func substitute(tmpl string, values map[string]string) (string, error) {
 	var b strings.Builder
 	last := 0
@@ -328,7 +334,11 @@ func substitute(tmpl string, values map[string]string) (string, error) {
 			return "", fmt.Errorf("placeholder {%s} has no variable in the request spec", name)
 		}
 		b.WriteString(tmpl[last:m[0]])
-		b.WriteString(url.QueryEscape(v))
+		if m[4] != -1 {
+			b.WriteString(v)
+		} else {
+			b.WriteString(url.QueryEscape(v))
+		}
 		last = m[1]
 	}
 	b.WriteString(tmpl[last:])

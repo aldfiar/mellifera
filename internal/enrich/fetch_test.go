@@ -515,3 +515,56 @@ func (s *captureSource) Convert(_ context.Context, req *metadatav1.ConvertReques
 func (s *captureSource) Merge(_ context.Context, req *metadatav1.MergeRequest) (*metadatav1.MergeResult, error) {
 	return &metadatav1.MergeResult{Document: wrapNamespace("capture", req.GetIncoming(), false)}, nil
 }
+
+// TestSubstituteRawMarkerDialsOrigin pins the raw-marker substitution law: a
+// {name!raw} placeholder writes its resolved value VERBATIM (so a server-ref
+// origin with scheme, host, and port dials instead of arriving
+// percent-encoded), sibling unmarked placeholders still escape, and an
+// unresolvable name errors identically with or without the marker.
+func TestSubstituteRawMarkerDialsOrigin(t *testing.T) {
+	values := map[string]string{
+		"base_url": "http://192.168.1.5:9999",
+		"api_key":  "k y/1",
+		"title":    "Cowboy Bebop & Spike",
+	}
+	out, err := substitute("{base_url!raw}/search?q={title}&token={api_key}", values)
+	if err != nil {
+		t.Fatalf("substitute: %v", err)
+	}
+	// The origin survives verbatim (:, //, :port untouched) while the
+	// other placeholders on the same template still percent-encode.
+	want := "http://192.168.1.5:9999/search?q=Cowboy+Bebop+%26+Spike&token=k+y%2F1"
+	if out != want {
+		t.Fatalf("substitute = %q, want %q", out, want)
+	}
+
+	// An unresolvable name errors the same as unmarked — the marker is
+	// template-level, never a lookup key.
+	_, rawErr := substitute("{missing!raw}", values)
+	_, bareErr := substitute("{missing}", values)
+	if rawErr == nil || bareErr == nil {
+		t.Fatalf("unresolvable placeholder: raw err = %v, bare err = %v, want both non-nil", rawErr, bareErr)
+	}
+	if rawErr.Error() != bareErr.Error() {
+		t.Fatalf("raw-marker error %q, want the bare-marker text %q", rawErr, bareErr)
+	}
+}
+
+// TestSubstituteRawMarkerLegacyByteIdentical pins the legacy half of the law:
+// a template without the marker substitutes byte-identically to the
+// pre-change percent-encoding law (QueryEscape is the default).
+func TestSubstituteRawMarkerLegacyByteIdentical(t *testing.T) {
+	values := map[string]string{
+		"search": "Cowboy Bebop & Spike",
+		"key":    "abc/123+def",
+		"limit":  "10",
+	}
+	out, err := substitute("http://host/api?search={search}&key={key}&limit={limit}", values)
+	if err != nil {
+		t.Fatalf("substitute: %v", err)
+	}
+	want := "http://host/api?search=Cowboy+Bebop+%26+Spike&key=abc%2F123%2Bdef&limit=10"
+	if out != want {
+		t.Fatalf("substitute = %q, want the pre-change encoding %q", out, want)
+	}
+}

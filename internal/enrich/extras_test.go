@@ -16,13 +16,18 @@ import (
 
 // chainDoneDoc is a document whose chain sources have all written their
 // namespaces (done): the chain derivation contributes nothing, so any derived
-// task for the row must come from the element-attachment input (D-4).
+// task for the row must come from the element-attachment input (D-4). The
+// promoted generic pair rides along done — these fixtures run without a
+// RequiredSecrets closure, so the SERVER ext-source-b slot is queueable here
+// and must not resurrect the chain as pending.
 func chainDoneDoc(relPath string) map[string]any {
 	doc := baseDoc(relPath)
 	doc["sources"] = map[string]any{
 		"tv-parser":     map[string]any{"title": "done"},
 		"tmdb":          map[string]any{"title": "done"},
 		"frame-grabber": map[string]any{"thumbnail": "done"},
+		"ext-source-a":  map[string]any{"title": "done"},
+		"ext-source-b":  map[string]any{"title": "done"},
 	}
 	return doc
 }
@@ -109,6 +114,7 @@ func TestQueue_ElementAttachedDerivation(t *testing.T) {
 	ctx := context.Background()
 	withFixedClock(t, time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC))
 	s, reg := queueTestStore(t)
+	promoteGenericPair(t, reg)
 	libID, err := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
 	if err != nil {
 		t.Fatalf("CreateLibrary: %v", err)

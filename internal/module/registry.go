@@ -45,6 +45,17 @@ const upgradeTVConfigSQL = `UPDATE modules
   SET config_json = ?, schema_version = 2, updated_at = ?
   WHERE id = 'tv' AND schema_version < 2`
 
+// upgradeTVConfigV3SQL promotes an existing tv row from config v2 to v3: the
+// guarded UPDATE is what INSERT OR IGNORE never reaches on existing stores,
+// rewriting the chain to the current seed (the four built-in bindings). It is
+// idempotent (a no-op on re-runs and on fresh v3 inserts), so a row already at
+// v3 from an earlier seed shape keeps whatever chain it carries — stale
+// bindings for uninstalled plugins stay in place, dormant under the
+// availability law, and are not garbage-collected.
+const upgradeTVConfigV3SQL = `UPDATE modules
+  SET config_json = ?, schema_version = 3, updated_at = ?
+  WHERE id = 'tv' AND schema_version < 3`
+
 // upgradeSerialConfigSQL promotes an existing serial row from config v1 to v2
 // (enrichment D-7): the tv upgrade's guarded-UPDATE pattern, scoped to the
 // serial row alone.
@@ -90,15 +101,16 @@ const setBindingOptionsSQL = `UPDATE modules SET config_json = ? WHERE id = ?`
 // (priority 1) is the local Phase A parser; kinopoisk (2) and tmdb (3) are the
 // designed external enrichers, soft-failed in Phase A while their plugins are
 // unloaded (AC-6); schema v2 (continue-nextup-media D-7) binds frame-grabber
-// (4) after the unloaded slots. document_schema is omitted (validation is a
-// deferred feature; module does not read it); the scanner binding is what
-// scan resolves via Get("tv"). display_name carries Russian first-class
-// (arch §1.2); presentation declarations are CONFIG, not code (element-pages
-// D-1, AC-4) — kinopoisk/tmdb declare none: seeded-but-unloaded slot groups
-// render their pill only.
+// (4) after the unloaded slots. The seed binds only the shipped built-ins
+// (core neutrality): optional third-party sources add their own bindings when
+// their plugin is installed. document_schema is omitted (validation is a
+// deferred feature; module does not read it); the scanner binding is what scan
+// resolves via Get("tv"). display_name carries Russian first-class (arch
+// §1.2); presentation declarations are CONFIG, not code (element-pages D-1,
+// AC-4) — the unloaded slot groups render their pill only.
 const tvConfigJSON = `{
   "id": "tv",
-  "schema_version": 2,
+  "schema_version": 3,
   "display_name": {"ru": "Сериалы", "en": "TV Series"},
   "media_type": "tv",
   "identity_fields": ["title", "year"],
@@ -184,6 +196,13 @@ const imageConfigJSON = `{
 // carrying the quoted literal — the AC-4 config-driven-core probe forbids
 // media literals outside internal/module (tmdb-enrichment 7.2).
 const PluginIDTmdb = "tmdb"
+
+// ModuleIDTV is the module id of the TV library's config entity — the
+// enrichment chain that boot-time external-plugin binding promotion joins.
+// Declared in the config home for the same reason as PluginIDTmdb: the AC-4
+// config-driven-core probe forbids quoted media literals in core
+// orchestration code.
+const ModuleIDTV = "tv"
 
 // serialConfigJSON is the serials-library module config, as JSON — a CONFIG
 // ENTITY (INV1/INV2) mirroring the tv seed shape. It binds serial-scanner
@@ -293,15 +312,17 @@ type ScannerBinding struct {
 // capability serves it, its chain priority (lower runs first), whether it is
 // active, its auth mode (opaque config string; Phase B interprets SERVER /
 // CLIENT), the ordered display_fields declaration (footer render order —
-// element-pages D-1), and the opaque options forwarded to its RPCs. Core
-// selection reads this slice from config and never branches on media type
-// (AC-4).
+// element-pages D-1), the opaque options forwarded to its RPCs, and whether it
+// is exempt from client-relayed fetches (no_relay — LAN-local sources must
+// never hand work to remote viewers). Core selection reads this slice from
+// config and never branches on media type (AC-4).
 type MetadataSourceBinding struct {
 	PluginID      string
 	CapabilityID  string
 	Priority      int
 	Enabled       bool
 	AuthMode      string
+	NoRelay       bool // config no_relay; absent decodes false
 	DisplayFields []string
 	Options       json.RawMessage
 }
@@ -312,7 +333,7 @@ type MetadataSourceBinding struct {
 func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	db := s.DB()
 	if _, err := db.ExecContext(ctx, seedModulesSQL,
-		"tv", "tv", tvConfigJSON, 2, 1, seedCreatedAt, seedCreatedAt,
+		"tv", "tv", tvConfigJSON, 3, 1, seedCreatedAt, seedCreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("module: seed: %w", err)
 	}
@@ -352,6 +373,12 @@ func Open(ctx context.Context, s *store.Store) (*Registry, error) {
 	// promotion.
 	if _, err := db.ExecContext(ctx, upgradeSerialConfigV4SQL, serialConfigJSON, seedCreatedAt); err != nil {
 		return nil, fmt.Errorf("module: upgrade serial v4: %w", err)
+	}
+	// v2→v3 tv promotion — the two optional metadata sources, the same
+	// guarded-UPDATE mechanism as every promotion above: fresh installs already
+	// carry v3 from the INSERT, so this only rewrites pre-v3 rows.
+	if _, err := db.ExecContext(ctx, upgradeTVConfigV3SQL, tvConfigJSON, seedCreatedAt); err != nil {
+		return nil, fmt.Errorf("module: upgrade tv v3: %w", err)
 	}
 	rows, err := db.QueryContext(ctx, listModulesSQL)
 	if err != nil {
@@ -475,6 +502,106 @@ func (r *Registry) SetBindingOptions(ctx context.Context, moduleID, pluginID str
 	return nil
 }
 
+// EnsureModuleBindings reconciles a module's metadata_sources chain with the
+// passed bindings — pure storage: the CALLER derives the posture (auth mode,
+// relay exemption, enabled), this method persists exactly what it is given.
+// A binding whose plugin_id is already on the chain has ONLY its derived
+// posture (AuthMode, NoRelay, Enabled) rewritten in place — Priority, Options
+// and DisplayFields stay untouched, so operator-set secrets and the declared
+// chain order survive; an unbound plugin is inserted after the chain's current
+// max priority (+1 per binding, in slice order). Persistence rides the same
+// guarded UPDATE as SetBindingOptions — config_json only, schema_version
+// untouched: a promoted binding is runtime config, never a schema step. An
+// empty bindings slice is a no-op; an unknown module id wraps errNotFound.
+func (r *Registry) EnsureModuleBindings(moduleID string, bindings []MetadataSourceBinding) error {
+	// Fail before the lock on a slice that could never persist cleanly.
+	for _, b := range bindings {
+		if b.PluginID == "" {
+			return fmt.Errorf("module %q: binding with empty plugin_id", moduleID)
+		}
+		if len(b.Options) > 0 && !json.Valid(b.Options) {
+			return fmt.Errorf("module %q source %q options: not valid JSON", moduleID, b.PluginID)
+		}
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Background contexts: the signature carries no ctx — these are two
+	// single-row statements against the local store.
+	ctx := context.Background()
+
+	// Read-before-write from the row itself (the cache carries no raw config
+	// bytes). The row must exist: the unknown-module refusal.
+	var (
+		mediaType     string
+		schemaVersion int
+		config        []byte
+	)
+	err := r.s.DB().QueryRowContext(ctx, selectModuleRowSQL, moduleID).
+		Scan(&mediaType, &schemaVersion, &config)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("module %q: %w", moduleID, errNotFound)
+		}
+		return fmt.Errorf("module %q: load row: %w", moduleID, err)
+	}
+
+	// Chain snapshot off the raw row: membership decides reconcile vs insert
+	// per binding, the max priority seeds the insert numbering.
+	snapshot, err := parseModule(moduleID, mediaType, schemaVersion, config)
+	if err != nil {
+		return err
+	}
+	present := make(map[string]bool, len(snapshot.MetadataSources))
+	maxPriority := 0
+	for _, src := range snapshot.MetadataSources {
+		present[src.PluginID] = true
+		if src.Priority > maxPriority {
+			maxPriority = src.Priority
+		}
+	}
+
+	for _, b := range bindings {
+		var err error
+		if present[b.PluginID] {
+			config, err = reconcileBindingPosture(config, b.PluginID, b.AuthMode, b.NoRelay, b.Enabled)
+		} else {
+			maxPriority++
+			config, err = appendMetadataBinding(config, b, maxPriority)
+			present[b.PluginID] = true
+		}
+		if err != nil {
+			return fmt.Errorf("module %q source %q: %w", moduleID, b.PluginID, err)
+		}
+	}
+
+	res, err := r.s.DB().ExecContext(ctx, setBindingOptionsSQL, config, moduleID)
+	if err != nil {
+		return fmt.Errorf("module %q: update config: %w", moduleID, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n != 1 {
+		return fmt.Errorf("module %q: update config: %d rows affected, want 1", moduleID, n)
+	}
+
+	// Refresh the cache under the same lock the write holds: re-parse the
+	// rewritten config and swap both indexes' entry for this module.
+	m, err := parseModule(moduleID, mediaType, schemaVersion, config)
+	if err != nil {
+		return err
+	}
+	r.byID[moduleID] = m
+	for i := range r.ordered {
+		if r.ordered[i].ID == moduleID {
+			r.ordered[i] = m
+			break
+		}
+	}
+	return nil
+}
+
 // IdentityFields returns a defensive copy of the module's declared
 // identity_fields (cache-only — pure). Unknown module id → wrapped errNotFound.
 func (r *Registry) IdentityFields(moduleID string) ([]string, error) {
@@ -519,35 +646,53 @@ func copyFields(src []string) []string {
 
 // rewriteBindingOptions returns config with ONLY the options value of the
 // metadata_sources binding whose plugin_id matches pluginID replaced by
-// options. A byte-offset walk (json.Decoder.InputOffset) locates the exact
-// value span to splice, so schema_version, the display block, and every
-// sibling binding are copied byte-identical — a whole-document re-marshal
-// would compact whitespace and reorder keys, touching bytes it must not.
-// A config with no such metadata_source binding yields errUnknownSource
-// (wrapped — the caller decides the wire shape).
+// options. A byte-offset splice (findBindingElem + spliceOptionsValue) keeps
+// schema_version, the display block, and every sibling binding byte-identical
+// — a whole-document re-marshal would compact whitespace and reorder keys,
+// touching bytes it must not. A config with no such metadata_source binding
+// yields errUnknownSource (wrapped — the caller decides the wire shape).
 func rewriteBindingOptions(config []byte, pluginID string, options []byte) ([]byte, error) {
+	objStart, objEnd, err := findBindingElem(config, pluginID)
+	if err != nil {
+		return nil, err
+	}
+	out, err := spliceOptionsValue(config, objStart, objEnd, options)
+	if err != nil {
+		return nil, fmt.Errorf("walk config: metadata_source %q: %w", pluginID, err)
+	}
+	return out, nil
+}
+
+// findBindingElem locates the metadata_sources element whose plugin_id matches
+// pluginID and returns its exact byte span in config. A Decoder.InputOffset
+// walk: the offset after the previous element parks on the separator (',',
+// whitespace) rather than the element's own '{', so the span start advances to
+// the brace before the span is handed on for splicing. A config with no such
+// binding — no metadata_sources key at all, or a chain binding no such plugin
+// — yields errUnknownSource (wrapped — the caller decides the wire shape).
+func findBindingElem(config []byte, pluginID string) (int64, int64, error) {
 	dec := json.NewDecoder(bytes.NewReader(config))
 	if tok, err := dec.Token(); err != nil {
-		return nil, fmt.Errorf("walk config: %w", err)
+		return 0, 0, fmt.Errorf("walk config: %w", err)
 	} else if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return nil, fmt.Errorf("walk config: not a JSON object")
+		return 0, 0, fmt.Errorf("walk config: not a JSON object")
 	}
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
-			return nil, fmt.Errorf("walk config: %w", err)
+			return 0, 0, fmt.Errorf("walk config: %w", err)
 		}
 		if keyTok.(string) != "metadata_sources" {
 			// Skip any other top-level key (RawMessage decode consumes the
 			// whole value without modeling it).
 			var skip json.RawMessage
 			if err := dec.Decode(&skip); err != nil {
-				return nil, fmt.Errorf("walk config: %w", err)
+				return 0, 0, fmt.Errorf("walk config: %w", err)
 			}
 			continue
 		}
 		if _, err := dec.Token(); err != nil { // the '['
-			return nil, fmt.Errorf("walk config: %w", err)
+			return 0, 0, fmt.Errorf("walk config: %w", err)
 		}
 		for dec.More() {
 			elemStart := dec.InputOffset()
@@ -562,23 +707,17 @@ func rewriteBindingOptions(config []byte, pluginID string, options []byte) ([]by
 				PluginID string `json:"plugin_id"`
 			}
 			if err := dec.Decode(&probe); err != nil {
-				return nil, fmt.Errorf("walk config: metadata_source element: %w", err)
+				return 0, 0, fmt.Errorf("walk config: metadata_source element: %w", err)
 			}
-			elemEnd := dec.InputOffset()
-			if probe.PluginID != pluginID {
-				continue
+			if probe.PluginID == pluginID {
+				return elemStart, dec.InputOffset(), nil
 			}
-			out, err := spliceOptionsValue(config, elemStart, elemEnd, options)
-			if err != nil {
-				return nil, fmt.Errorf("walk config: metadata_source %q: %w", pluginID, err)
-			}
-			return out, nil
 		}
 		// The chain exists but binds no such plugin: the 400 refusal.
-		return nil, errUnknownSource
+		return 0, 0, errUnknownSource
 	}
 	// No metadata_sources key at all: the module binds nothing — same refusal.
-	return nil, errUnknownSource
+	return 0, 0, errUnknownSource
 }
 
 // isJSONSpace reports whether b is JSON insignificant whitespace.
@@ -642,6 +781,233 @@ func spliceOptionsValue(config []byte, objStart, objEnd int64, options []byte) (
 	return out, nil
 }
 
+// reconcileBindingPosture rewrites ONLY the derived-posture values (auth_mode,
+// no_relay, enabled) of the metadata_sources binding whose plugin_id matches —
+// the byte-offset splice shape of rewriteBindingOptions minus the options
+// value, so Priority, Options and DisplayFields stay byte-identical and
+// operator secrets survive a posture promotion. A config with no such binding
+// yields errUnknownSource (wrapped — the caller decides the wire shape).
+func reconcileBindingPosture(config []byte, pluginID, authMode string, noRelay, enabled bool) ([]byte, error) {
+	objStart, objEnd, err := findBindingElem(config, pluginID)
+	if err != nil {
+		return nil, err
+	}
+	out, err := setBindingPosture(config, objStart, objEnd, authMode, noRelay, enabled)
+	if err != nil {
+		return nil, fmt.Errorf("walk config: metadata_source %q: %w", pluginID, err)
+	}
+	return out, nil
+}
+
+// setBindingPosture replaces, inside the JSON object spanning
+// config[objStart:objEnd], the values of the three derived-posture keys.
+// Keys the binding already declares are value-spliced at their exact spans
+// (applied last-to-first, so the earlier spans stay valid while the object is
+// rewritten); keys it omits (the seed leaves auth_mode / no_relay off local
+// sources) are appended before the object's closing brace. Every other byte
+// of the binding is copied verbatim.
+func setBindingPosture(config []byte, objStart, objEnd int64, authMode string, noRelay, enabled bool) ([]byte, error) {
+	authBytes, err := json.Marshal(authMode)
+	if err != nil {
+		return nil, err
+	}
+	wanted := map[string][]byte{
+		"auth_mode": authBytes,
+		"no_relay":  jsonBool(noRelay),
+		"enabled":   jsonBool(enabled),
+	}
+	obj := config[objStart:objEnd]
+	dec := json.NewDecoder(bytes.NewReader(obj))
+	if tok, err := dec.Token(); err != nil {
+		return nil, err
+	} else if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, fmt.Errorf("binding is not a JSON object")
+	}
+	type kvSpan struct {
+		key        string
+		start, end int64
+	}
+	var present []kvSpan
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		// InputOffset parks just after the key token — before the colon — so
+		// the value's first byte is found by skipping whitespace, the ':', and
+		// whitespace again.
+		rel := dec.InputOffset()
+		for rel < int64(len(obj)) && isJSONSpace(obj[rel]) {
+			rel++
+		}
+		if rel >= int64(len(obj)) || obj[rel] != ':' {
+			return nil, fmt.Errorf("binding key %v: no colon follows", keyTok)
+		}
+		rel++
+		for rel < int64(len(obj)) && isJSONSpace(obj[rel]) {
+			rel++
+		}
+		valStart := rel
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return nil, err
+		}
+		valEnd := dec.InputOffset() // end of the value token
+		if _, ok := wanted[keyTok.(string)]; ok {
+			present = append(present, kvSpan{keyTok.(string), valStart, valEnd})
+		}
+	}
+	// Replace values last-to-first so earlier spans stay valid.
+	work := make([]byte, len(obj))
+	copy(work, obj)
+	for i := len(present) - 1; i >= 0; i-- {
+		p := present[i]
+		next := make([]byte, 0, len(work)-int(p.end-p.start)+len(wanted[p.key]))
+		next = append(next, work[:p.start]...)
+		next = append(next, wanted[p.key]...)
+		next = append(next, work[p.end:]...)
+		work = next
+	}
+	seen := make(map[string]bool, len(present))
+	for _, p := range present {
+		seen[p.key] = true
+	}
+	var missing []string
+	for _, key := range []string{"auth_mode", "no_relay", "enabled"} {
+		if !seen[key] {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) == 0 {
+		return joinSplice(config, objStart, objEnd, work), nil
+	}
+	brace := int64(len(work)) - 1 // the '}' byte
+	// An object declaring no other keys takes its first pair without a comma.
+	first := true
+	for j := brace - 1; j > 0; j-- {
+		if !isJSONSpace(work[j]) {
+			first = false
+			break
+		}
+	}
+	var ins []byte
+	for _, key := range missing {
+		if len(ins) > 0 || !first {
+			ins = append(ins, `, `...)
+		}
+		keyBytes, err := json.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		ins = append(ins, keyBytes...)
+		ins = append(ins, `: `...)
+		ins = append(ins, wanted[key]...)
+	}
+	merged := make([]byte, 0, int(brace)+len(ins)+1)
+	merged = append(merged, work[:brace]...)
+	merged = append(merged, ins...)
+	merged = append(merged, work[brace:]...)
+	return joinSplice(config, objStart, objEnd, merged), nil
+}
+
+// joinSplice reassembles config around the object span [objStart:objEnd],
+// substituting mid for the span's bytes. A fresh buffer every call: splices
+// must never write into config's backing array.
+func joinSplice(config []byte, objStart, objEnd int64, mid []byte) []byte {
+	out := make([]byte, 0, int(objStart)+len(mid)+len(config)-int(objEnd))
+	out = append(out, config[:objStart]...)
+	out = append(out, mid...)
+	out = append(out, config[objEnd:]...)
+	return out
+}
+
+// jsonBool renders a Go bool as its JSON literal.
+func jsonBool(v bool) []byte {
+	if v {
+		return []byte("true")
+	}
+	return []byte("false")
+}
+
+// appendMetadataBinding returns config with one new metadata_sources element —
+// binding serialized at the given priority — spliced in right after the
+// array's current last element (right after the '[' when the chain is empty),
+// separator included, so the array's own whitespace and closing bracket stay
+// untouched bytes. The same Decoder.InputOffset walk as findBindingElem locates
+// the insertion point; schema_version, the display block, and every existing
+// binding are copied byte-identical. A config without a metadata_sources array
+// is a refusal: the module binds no enrichment chain to extend.
+func appendMetadataBinding(config []byte, binding MetadataSourceBinding, priority int) ([]byte, error) {
+	options := binding.Options
+	if len(options) == 0 {
+		options = json.RawMessage("{}")
+	}
+	elem, err := json.Marshal(struct {
+		PluginID      string          `json:"plugin_id"`
+		CapabilityID  string          `json:"capability_id"`
+		Priority      int             `json:"priority"`
+		Enabled       bool            `json:"enabled"`
+		AuthMode      string          `json:"auth_mode,omitempty"`
+		NoRelay       bool            `json:"no_relay,omitempty"`
+		DisplayFields []string        `json:"display_fields,omitempty"`
+		Options       json.RawMessage `json:"options"`
+	}{
+		PluginID:      binding.PluginID,
+		CapabilityID:  binding.CapabilityID,
+		Priority:      priority,
+		Enabled:       binding.Enabled,
+		AuthMode:      binding.AuthMode,
+		NoRelay:       binding.NoRelay,
+		DisplayFields: binding.DisplayFields,
+		Options:       options,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("serialize binding: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(config))
+	if tok, err := dec.Token(); err != nil {
+		return nil, fmt.Errorf("walk config: %w", err)
+	} else if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, fmt.Errorf("walk config: not a JSON object")
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("walk config: %w", err)
+		}
+		if keyTok.(string) != "metadata_sources" {
+			// Skip any other top-level key (RawMessage decode consumes the
+			// whole value without modeling it).
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return nil, fmt.Errorf("walk config: %w", err)
+			}
+			continue
+		}
+		if _, err := dec.Token(); err != nil { // the '['
+			return nil, fmt.Errorf("walk config: %w", err)
+		}
+		sawElem := false
+		for dec.More() {
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return nil, fmt.Errorf("walk config: metadata_source element: %w", err)
+			}
+			sawElem = true
+		}
+		insAt := dec.InputOffset()
+		out := make([]byte, 0, int(insAt)+len(elem)+len(config))
+		out = append(out, config[:insAt]...)
+		if sawElem {
+			out = append(out, ',')
+		}
+		out = append(out, elem...)
+		out = append(out, config[insAt:]...)
+		return out, nil
+	}
+	return nil, fmt.Errorf("walk config: no metadata_sources array")
+}
+
 // parseModule decodes a config_json blob into a Module, extracting the scanner
 // slot, the ordered metadata_sources enrichment chain, and the presentation
 // declarations (identity_fields per module, display_fields per binding —
@@ -679,6 +1045,7 @@ func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (M
 			Priority      int             `json:"priority"`
 			Enabled       bool            `json:"enabled"`
 			AuthMode      string          `json:"auth_mode"`
+			NoRelay       bool            `json:"no_relay"`
 			DisplayFields []string        `json:"display_fields"`
 			Options       json.RawMessage `json:"options"`
 		} `json:"metadata_sources"`
@@ -709,6 +1076,7 @@ func parseModule(id, mediaType string, schemaVersion int, configBytes []byte) (M
 			Priority:      src.Priority,
 			Enabled:       src.Enabled,
 			AuthMode:      src.AuthMode,
+			NoRelay:       src.NoRelay,
 			DisplayFields: src.DisplayFields,
 			Options:       src.Options,
 		}

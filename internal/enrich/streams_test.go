@@ -550,8 +550,9 @@ func TestStreamsMasterMarker(t *testing.T) {
 // is done (the tmdb namespace added to the streamsItem shape), so Start's
 // derivation sweep derives nothing and only lane tasks ride the channels —
 // the lane tests observe exactly the tasks they enqueue themselves.
-func settledPackItem(t *testing.T, s *store.Store, libID int64, id string) {
+func settledPackItem(t *testing.T, s *store.Store, reg *module.Registry, libID int64, id string) {
 	t.Helper()
+	promoteGenericPair(t, reg)
 	it := streamsItem(t, s, libID, id)
 	var doc map[string]any
 	if err := json.Unmarshal(it.Document, &doc); err != nil {
@@ -562,7 +563,9 @@ func settledPackItem(t *testing.T, s *store.Store, libID int64, id string) {
 		t.Fatalf("item %s document carries no sources map", id)
 	}
 	srcs["tmdb"] = map[string]any{"title": "done"}
-	srcs["frame-grabber"] = map[string]any{"title": "done"} // the tv seed's 4th queueable source (registry.go)
+	srcs["frame-grabber"] = map[string]any{"title": "done"} // the built-in seed's 4th queueable source (registry.go)
+	srcs["ext-source-a"] = map[string]any{"title": "done"}  // the promoted LOCAL source (5th on the chain)
+	srcs["ext-source-b"] = map[string]any{"title": "done"}  // the promoted SERVER source — queueable here (no RequiredSecrets closure)
 	b, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal %s document: %v", id, err)
@@ -634,7 +637,7 @@ func TestEnqueuePackUrgent(t *testing.T) {
 	t.Run("accepted_when_free", func(t *testing.T) {
 		s, reg := queueTestStore(t)
 		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
-		settledPackItem(t, s, libID, "i_bg")
+		settledPackItem(t, s, reg, libID, "i_bg")
 		h := newPackHold()
 		q := parkedQueue(t, s, reg, h, "i_bg")
 
@@ -657,7 +660,7 @@ func TestEnqueuePackUrgent(t *testing.T) {
 	t.Run("full_lane_refuses_and_spills_nothing", func(t *testing.T) {
 		s, reg := queueTestStore(t)
 		libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
-		settledPackItem(t, s, libID, "i_bg")
+		settledPackItem(t, s, reg, libID, "i_bg")
 		h := newPackHold()
 		q := parkedQueue(t, s, reg, h, "i_bg")
 
@@ -704,7 +707,7 @@ func TestUrgentLanePreferred(t *testing.T) {
 	s, reg := queueTestStore(t)
 	libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
 	for _, id := range []string{"i_bg_0", "i_bg_1", "i_bg_2", "i_bg_3", "i_bg_4", "i_urgent"} {
-		settledPackItem(t, s, libID, id)
+		settledPackItem(t, s, reg, libID, id)
 	}
 	h := newPackHold()
 	q := parkedQueue(t, s, reg, h, "i_bg_0") // the lone worker is now held inside the seam on i_bg_0
@@ -771,7 +774,7 @@ func TestUrgentLaneWakesIdleWorker(t *testing.T) {
 	ctx := context.Background()
 	s, reg := queueTestStore(t)
 	libID, _ := s.CreateLibrary(ctx, "tv", filepath.Join(t.TempDir(), "lib"), "TV")
-	settledPackItem(t, s, libID, "i_urgent")
+	settledPackItem(t, s, reg, libID, "i_urgent")
 	h := newPackHold()
 	// the hold id matches nothing the test enqueues, so the seam only records
 	// call order and never blocks.

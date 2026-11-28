@@ -11,11 +11,11 @@ import (
 // TestParseModule_MetadataSources covers T03 B2/B3: parseModule now models the
 // metadata_sources config slot (scan-library previously DROPPED it). It is a
 // pure function, so a single-module table test is the preferred form. Cases:
-// (a) the seeded TV config yields the tv-parser -> kinopoisk -> tmdb chain at
-// priorities 1/2/3, each enabled; (b) a config with no metadata_sources yields
-// an empty slice without error; (c) a source's opaque options round-trip
-// verbatim as json.RawMessage. A parseModule that still DROPPED the slot fails
-// case (a) at len==3 (BUG CATCH).
+// (a) the seeded TV config yields the full ordered chain (tv-parser ->
+// kinopoisk -> tmdb -> frame-grabber), each enabled; (b) a config with no
+// metadata_sources yields an empty slice without error; (c) a source's opaque
+// options round-trip verbatim as json.RawMessage. A parseModule that still
+// DROPPED the slot fails case (a) at len mismatch (BUG CATCH).
 func TestParseModule_MetadataSources(t *testing.T) {
 	cases := []struct {
 		name   string

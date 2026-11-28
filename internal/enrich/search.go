@@ -83,6 +83,31 @@ func (q *Queue) resolveServerSecrets(pluginID string) (map[string]string, bool) 
 	return nil, false
 }
 
+// relayExempt reports whether ANY of the plugin's metadata bindings carries
+// the no-relay trait (no_relay — a LAN-local source must never hand work to
+// remote viewers): the SAME modules walk resolveServerSecrets runs, so the
+// relay leg and the secrets resolution can never disagree about a plugin's
+// bindings. The vacuous cases keep the pre-trait shape (the trait-absent law):
+// a nil Deps.Modules or a failed List answers false, and only a binding that
+// BOTH names the plugin AND carries NoRelay flips the answer.
+func (q *Queue) relayExempt(pluginID string) bool {
+	if q.deps.Modules == nil {
+		return false
+	}
+	mods, err := q.deps.Modules.List()
+	if err != nil {
+		return false
+	}
+	for _, mod := range mods {
+		for _, src := range mod.MetadataSources {
+			if src.PluginID == pluginID && src.NoRelay {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // sourceConfigured runs the interactive producers' pre-action required-secrets
 // check (tmdb-enrichment D3): configured iff resolveServerSecrets resolves a
 // declared name against one binding; otherwise the producers answer
@@ -106,9 +131,10 @@ const relayStateClaimed = "claimed"
 // An UNCONFIGURED source (tmdb-enrichment D3) answers ErrUnconfiguredSource
 // before SearchSpecs executes — never a doomed anonymous fetch. A
 // NETWORK-class fetch failure with the relay live rides the client relay
-// instead (ruled OQ-6/D8): searchOverRelay holds and polls inside this
-// closure, so the api endpoint and this signature stay byte-identical; every
-// other failure keeps the immediate answer.
+// instead (ruled OQ-6/D8) unless a binding carries the no-relay trait
+// (relayExempt): searchOverRelay holds and polls inside this closure, so the
+// api endpoint and this signature stay byte-identical; every other failure
+// keeps the immediate answer.
 func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) ([]map[string]any, error) {
 	if q.resolve == nil {
 		return nil, errors.New("enrich: search: no plugin resolver")
@@ -144,10 +170,12 @@ func (q *Queue) SearchSource(ctx context.Context, pluginID, query, kind string) 
 		// Ruled OQ-6 (D8): a NETWORK-class fetch rides the relay — the job
 		// enqueues for the plugin and this closure holds and polls it. Every
 		// other condition keeps today's immediate answer bit-for-bit: relay
-		// disabled (nil Deps.Relay, the chain's same rule), a non-network
-		// class, a dying context (no durable relay state off a dead request),
-		// or a plan that will not build.
-		if q.deps.Relay != nil && ctx.Err() == nil && classifyFetchError(err) == fetchClassNetwork {
+		// disabled (nil Deps.Relay, the chain's same rule), a no-relay binding
+		// (the plugin's trait says its traffic never hands to a remote viewer
+		// — the failure answers here, immediately), a non-network class, a
+		// dying context (no durable relay state off a dead request), or a plan
+		// that will not build.
+		if q.deps.Relay != nil && !q.relayExempt(pluginID) && ctx.Err() == nil && classifyFetchError(err) == fetchClassNetwork {
 			if plan := buildPlan(specs.GetSpec(), nil, secrets); plan != nil {
 				return q.searchOverRelay(ctx, md, pluginID, query, kind, plan, err)
 			}

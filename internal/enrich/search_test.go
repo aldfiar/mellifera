@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/mellifera/mellifera/internal/access"
+	"github.com/mellifera/mellifera/internal/module"
 	"github.com/mellifera/mellifera/internal/relay"
 	"github.com/mellifera/mellifera/internal/sourcestate"
 	"github.com/mellifera/mellifera/internal/store"
@@ -924,4 +925,126 @@ func TestSearchSourceRedactedRefAnswersUnconfigured(t *testing.T) {
 	if _, found := relayClaim(t, s); found {
 		t.Fatal("a redacted_ref failure must never enqueue a relay job")
 	}
+}
+
+// noRelayStore seeds a FOURTH module row alongside the built-ins (id
+// "mediabox", its own media_type — the unique key accepts any distinct value)
+// whose bindings carry the trait fixture: ext-source-b bound WITH
+// no_relay:true, tmdb bound alongside WITHOUT it (the sibling control).
+// module.Open loads the row through the same parseModule walk the registry's
+// parse tests pin, so the registry's cache carries the trait exactly as a real
+// seed would.
+func noRelayStore(t *testing.T) (*store.Store, *module.Registry) {
+	t.Helper()
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "norelay.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	cfg := `{"metadata_sources":[` +
+		`{"plugin_id":"ext-source-b","priority":5,"enabled":true,"no_relay":true},` +
+		`{"plugin_id":"tmdb","priority":6,"enabled":true}]}`
+	if _, err := s.DB().ExecContext(ctx, `INSERT OR IGNORE INTO modules
+  (id, media_type, config_json, schema_version, enabled, created_at, updated_at)
+  VALUES ('mediabox', 'mediabox', ?, 1, 1, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z')`, cfg); err != nil {
+		t.Fatalf("seed no-relay module: %v", err)
+	}
+	reg, err := module.Open(ctx, s)
+	if err != nil {
+		t.Fatalf("module.Open: %v", err)
+	}
+	return s, reg
+}
+
+// TestRelayExemptWalksBindings pins the trait walk: the answer flips ONLY on a
+// binding that both names the plugin and carries NoRelay — a traitless sibling
+// in the same module, a traitless binding in another module, and a plugin no
+// module binds all answer false, and the vacuous dep (nil Modules) keeps the
+// pre-trait shape too.
+func TestRelayExemptWalksBindings(t *testing.T) {
+	s, reg := noRelayStore(t)
+
+	cases := []struct {
+		name     string
+		pluginID string
+		want     bool
+	}{
+		{"trait_carrying_binding", "ext-source-b", true},
+		{"traitless_sibling_same_module", "tmdb", false},
+		{"traitless_binding_other_module", "kinopoisk", false},
+		{"plugin_no_module_binds", "nosuchplugin", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := NewQueue(Deps{Store: s, Modules: reg}, QueueConfig{})
+			if got := q.relayExempt(tc.pluginID); got != tc.want {
+				t.Fatalf("relayExempt(%q) = %v, want %v", tc.pluginID, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nil_modules_answers_false", func(t *testing.T) {
+		q := NewQueue(Deps{Store: s}, QueueConfig{})
+		if q.relayExempt("ext-source-b") {
+			t.Fatal("relayExempt with nil Deps.Modules = true, want false (the vacuous pre-trait shape)")
+		}
+	})
+}
+
+// TestSearchNoRelaySkipsEnqueue pins the search-seam guard: a trait-carrying
+// plugin's NETWORK-class search failure answers the upstream error IMMEDIATELY
+// — no relay job enqueues, no hold, no poll — while the traitless twin in the
+// SAME fixture module still enqueues, proving the withheld leg is the trait
+// conjunct and nothing else.
+func TestSearchNoRelaySkipsEnqueue(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	realNow := now
+	t.Cleanup(func() { now = realNow })
+
+	// The immediate answer today: a relay-disabled queue for the same failing
+	// fetch (the byte-for-byte baseline TestSearchRelayExpiresToUpstreamError
+	// pins). Computed before the fake clock installs — the failing dial reads
+	// no clock.
+	qBase, _ := searchQueue(t, map[string]sdk.MetadataSource{"ext-source-b": deadSearchSrc()}, nil)
+	_, wantErr := qBase.SearchSource(ctx, "ext-source-b", "code", "")
+	if wantErr == nil || !strings.HasPrefix(wantErr.Error(), "enrich: search fetch: ") {
+		t.Fatalf("baseline immediate answer = %v", wantErr)
+	}
+
+	// A fast-spending fake clock: if the guard regresses, the wrongly-relayed
+	// hold gives up on its budget in two reads instead of hanging — and the
+	// zero-jobs assertion below catches the detour.
+	stepClock(t, t0, 31*time.Second)
+
+	t.Run("trait_carrying_source_answers_immediately", func(t *testing.T) {
+		s, reg := noRelayStore(t)
+		q := NewQueue(Deps{Store: s, Modules: reg}, QueueConfig{})
+		q.resolve = mapResolver{"ext-source-b": deadSearchSrc()}.resolver()
+		q.deps.Relay = &Relay{Store: s} // live: the trait must ignore it
+
+		_, err := q.SearchSource(ctx, "ext-source-b", "code", "")
+		if err == nil || err.Error() != wantErr.Error() {
+			t.Fatalf("answer = %v, want byte-identical immediate %v", err, wantErr)
+		}
+		if _, found := relayClaim(t, s); found {
+			t.Fatal("a no-relay source's network failure must never enqueue a search job")
+		}
+	})
+
+	t.Run("traitless_twin_still_enqueues", func(t *testing.T) {
+		s, reg := noRelayStore(t)
+		q := NewQueue(Deps{Store: s, Modules: reg}, QueueConfig{})
+		q.resolve = mapResolver{"tmdb": deadSearchSrc()}.resolver() // same module, no trait
+		q.deps.Relay = &Relay{Store: s}
+
+		_, err := q.SearchSource(ctx, "tmdb", "code", "")
+		if err == nil || err.Error() != wantErr.Error() {
+			t.Fatalf("answer = %v, want the budget-expired upstream answer %v (no client ever claims)", err, wantErr)
+		}
+		if _, found := relayClaim(t, s); !found {
+			t.Fatal("the traitless twin must enqueue (the guard is the conjunct, not the fixture)")
+		}
+	})
 }

@@ -119,8 +119,8 @@ func TestSetBindingOptionsRewritesOneBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(tv) after write: %v", err)
 	}
-	if m.SchemaVersion != 2 {
-		t.Errorf("SchemaVersion after write = %d, want 2 (options edits never bump the schema)", m.SchemaVersion)
+	if m.SchemaVersion != 3 {
+		t.Errorf("SchemaVersion after write = %d, want 3 (options edits never bump the schema)", m.SchemaVersion)
 	}
 	var target *MetadataSourceBinding
 	for i := range m.MetadataSources {
