@@ -189,7 +189,8 @@ func loadOptionalPlugin(ctx context.Context, mgr *plugin.Manager, pluginID, bina
 // when the binary actually loaded AND declared secrets in its handshake — so
 // a binary re-appearing engages SERVER without operator action, and
 // operator-set option values are never touched (EnsureModuleBindings rewrites
-// only the derived posture of an already-bound id). A declared-but-absent id
+// only the derived posture of an already-bound id, and backfills display
+// fields only where the stored ones are empty). A declared-but-absent id
 // still gets its row and stays dormant via the unavailable law. A failed
 // promotion is one warn log; the remaining declared ids still promote.
 func promoteExternalBindings(reg *module.Registry, extras []extraPlugin, loadedCaps map[string][]string, requiredSecrets func(pluginID string) []string) {
@@ -204,6 +205,10 @@ func promoteExternalBindings(reg *module.Registry, extras []extraPlugin, loadedC
 			Enabled:      true,
 			AuthMode:     authMode,
 			NoRelay:      true,
+			// The display walk reads the binding's display fields; promoted
+			// sources must declare them or anchored items keep filename
+			// titles. Either field is honest-absent in a plugin's namespace.
+			DisplayFields: []string{"title", "parsed_from"},
 		}
 		if err := reg.EnsureModuleBindings(module.ModuleIDTV, []module.MetadataSourceBinding{binding}); err != nil {
 			slog.Warn("external plugin: chain promotion failed — skipped", "plugin", p.id, "error", err)

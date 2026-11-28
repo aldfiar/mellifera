@@ -877,8 +877,9 @@ func TestEnsureModuleBindingsInsertsAfterChainMax(t *testing.T) {
 
 // TestEnsureModuleBindingsReconcileDerivedPosture: a binding already on the
 // chain gets ONLY its derived posture rewritten — AuthMode, NoRelay and
-// Enabled land on the passed values; Priority, Options and DisplayFields stay
-// exactly as the seed declared them; sibling bindings are byte-identical.
+// Enabled land on the passed values; Priority and Options stay exactly as the
+// seed declared them; the seed's absent display_fields is backfilled from the
+// passed binding; sibling bindings are byte-identical.
 func TestEnsureModuleBindingsReconcileDerivedPosture(t *testing.T) {
 	r, _ := openRegistry(t)
 
@@ -926,8 +927,11 @@ func TestEnsureModuleBindingsReconcileDerivedPosture(t *testing.T) {
 				t.Errorf("tmdb.%s changed: before %s after %s", key, b[key], a[key])
 			}
 		}
-		if _, ok := a["display_fields"]; ok {
-			t.Errorf("tmdb.display_fields = %s, want the key absent (the seed declares none)", a["display_fields"])
+		// The seed declares no display_fields, so the reconcile backfills
+		// them from the passed binding — the display walk then sees the
+		// source instead of skipping it.
+		if !bytes.Equal(a["display_fields"], []byte(`["junk"]`)) {
+			t.Errorf("tmdb.display_fields = %s, want the passed [\"junk\"] (absent stored value is backfilled)", a["display_fields"])
 		}
 	}
 
@@ -940,16 +944,19 @@ func TestEnsureModuleBindingsReconcileDerivedPosture(t *testing.T) {
 	if src.Enabled || src.AuthMode != "CLIENT" || !src.NoRelay || src.Priority != 3 {
 		t.Errorf("cached tmdb binding = %+v, want disabled CLIENT NoRelay priority 3", src)
 	}
+	if want := []string{"junk"}; !reflect.DeepEqual(src.DisplayFields, want) {
+		t.Errorf("cached tmdb display_fields = %v, want %v (backfill is cache-visible)", src.DisplayFields, want)
+	}
 }
 
 // TestEnsureModuleBindingsOptionsUntouched: operator secrets survive a posture
-// reconcile byte-for-byte — the target binding's options and display_fields
-// values, and every untouched config region (schema, display block, scanner),
-// are identical raw bytes after the write.
+// reconcile byte-for-byte — the target binding's options and priority values,
+// and every untouched config region (schema, display block, scanner), are
+// identical raw bytes after the write.
 func TestEnsureModuleBindingsOptionsUntouched(t *testing.T) {
 	r, _ := openRegistry(t)
 
-	const moduleID = "tv" // kinopoisk: seeded options {"language":"ru"} + display_fields
+	const moduleID = "tv" // kinopoisk: seeded options {"language":"ru"}
 	before := rowConfig(t, r, moduleID)
 	beforeTop := rawTopLevel(t, before)
 	beforeChain := rawSourceChain(t, before)
@@ -994,11 +1001,74 @@ func TestEnsureModuleBindingsOptionsUntouched(t *testing.T) {
 			}
 			continue
 		}
-		for _, key := range []string{"options", "display_fields", "priority"} {
+		for _, key := range []string{"options", "priority"} {
 			if !bytes.Equal(b[key], a[key]) {
 				t.Errorf("kinopoisk.%s changed: before %s after %s", key, b[key], a[key])
 			}
 		}
+	}
+}
+
+// TestEnsureModuleBindingsBackfillsEmptyDisplayFields: the reconcile display
+// law — a binding whose stored display_fields are absent or empty is
+// backfilled from the passed binding so the display walk sees the source; a
+// non-empty stored value is operator surface and stays byte-identical even
+// against a different passed value.
+func TestEnsureModuleBindingsBackfillsEmptyDisplayFields(t *testing.T) {
+	tests := []struct {
+		name       string
+		pluginID   string   // the tv seed slot to reconcile
+		stored     []string // the seed's display_fields for that slot
+		passed     []string // the caller's DisplayFields
+		wantStored bool     // whether the passed fields must land
+	}{
+		{
+			name:       "absent stored value is backfilled",
+			pluginID:   "tmdb", // the seed declares no display_fields here
+			stored:     nil,
+			passed:     []string{"title", "parsed_from"},
+			wantStored: true,
+		},
+		{
+			name:       "non-empty stored value is untouched",
+			pluginID:   "tv-parser", // seeded ["title","year","resolution","parsed_from"]
+			stored:     []string{"title", "year", "resolution", "parsed_from"},
+			passed:     []string{"hacked"},
+			wantStored: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, _ := openRegistry(t)
+
+			if err := r.EnsureModuleBindings("tv", []MetadataSourceBinding{{
+				PluginID:      tt.pluginID,
+				Enabled:       false,
+				DisplayFields: tt.passed,
+			}}); err != nil {
+				t.Fatalf("EnsureModuleBindings(reconcile %s): %v", tt.pluginID, err)
+			}
+
+			m, err := r.Get("tv")
+			if err != nil {
+				t.Fatalf("Get(tv): %v", err)
+			}
+			for _, src := range m.MetadataSources {
+				if src.PluginID != tt.pluginID {
+					continue
+				}
+				want := tt.stored
+				if tt.wantStored {
+					want = tt.passed
+				}
+				if !reflect.DeepEqual(src.DisplayFields, want) {
+					t.Errorf("%s display_fields = %v, want %v (stored untouched: %t)",
+						tt.pluginID, src.DisplayFields, want, !tt.wantStored)
+				}
+				return
+			}
+			t.Fatalf("no %s binding on the tv chain after reconcile", tt.pluginID)
+		})
 	}
 }
 
