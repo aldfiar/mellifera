@@ -391,6 +391,11 @@ func TestPromotionInsertsEnvDeclaredExternals(t *testing.T) {
 		if !row.NoRelay {
 			t.Errorf("%s.NoRelay = false, want true", id)
 		}
+		// The display walk reads the binding's display fields; a promoted
+		// row without them leaves anchored items on filename titles.
+		if want := []string{"title", "parsed_from"}; !reflect.DeepEqual(row.DisplayFields, want) {
+			t.Errorf("%s.DisplayFields = %v, want %v (the generic enrichment shape)", id, row.DisplayFields, want)
+		}
 		// The registry's storage law persists a nil Options as the empty
 		// object; the pin is that promotion writes no option MATERIAL.
 		var opts map[string]any

@@ -507,8 +507,11 @@ func (r *Registry) SetBindingOptions(ctx context.Context, moduleID, pluginID str
 // relay exemption, enabled), this method persists exactly what it is given.
 // A binding whose plugin_id is already on the chain has ONLY its derived
 // posture (AuthMode, NoRelay, Enabled) rewritten in place — Priority, Options
-// and DisplayFields stay untouched, so operator-set secrets and the declared
-// chain order survive; an unbound plugin is inserted after the chain's current
+// and a non-empty DisplayFields stay untouched, so operator-set secrets and
+// the declared chain order survive; an EMPTY or absent stored DisplayFields is
+// backfilled from the passed binding (a promoted source must declare its
+// display fields or the display walk skips it and anchored items keep
+// filename titles); an unbound plugin is inserted after the chain's current
 // max priority (+1 per binding, in slice order). Persistence rides the same
 // guarded UPDATE as SetBindingOptions — config_json only, schema_version
 // untouched: a promoted binding is runtime config, never a schema step. An
@@ -567,7 +570,7 @@ func (r *Registry) EnsureModuleBindings(moduleID string, bindings []MetadataSour
 	for _, b := range bindings {
 		var err error
 		if present[b.PluginID] {
-			config, err = reconcileBindingPosture(config, b.PluginID, b.AuthMode, b.NoRelay, b.Enabled)
+			config, err = reconcileBindingPosture(config, b.PluginID, b.AuthMode, b.NoRelay, b.Enabled, b.DisplayFields)
 		} else {
 			maxPriority++
 			config, err = appendMetadataBinding(config, b, maxPriority)
@@ -784,15 +787,16 @@ func spliceOptionsValue(config []byte, objStart, objEnd int64, options []byte) (
 // reconcileBindingPosture rewrites ONLY the derived-posture values (auth_mode,
 // no_relay, enabled) of the metadata_sources binding whose plugin_id matches —
 // the byte-offset splice shape of rewriteBindingOptions minus the options
-// value, so Priority, Options and DisplayFields stay byte-identical and
-// operator secrets survive a posture promotion. A config with no such binding
-// yields errUnknownSource (wrapped — the caller decides the wire shape).
-func reconcileBindingPosture(config []byte, pluginID, authMode string, noRelay, enabled bool) ([]byte, error) {
+// value, so Priority, Options and a non-empty DisplayFields stay
+// byte-identical and operator secrets survive a posture promotion. A config
+// with no such binding yields errUnknownSource (wrapped — the caller decides
+// the wire shape).
+func reconcileBindingPosture(config []byte, pluginID, authMode string, noRelay, enabled bool, displayFields []string) ([]byte, error) {
 	objStart, objEnd, err := findBindingElem(config, pluginID)
 	if err != nil {
 		return nil, err
 	}
-	out, err := setBindingPosture(config, objStart, objEnd, authMode, noRelay, enabled)
+	out, err := setBindingPosture(config, objStart, objEnd, authMode, noRelay, enabled, displayFields)
 	if err != nil {
 		return nil, fmt.Errorf("walk config: metadata_source %q: %w", pluginID, err)
 	}
@@ -804,9 +808,12 @@ func reconcileBindingPosture(config []byte, pluginID, authMode string, noRelay, 
 // Keys the binding already declares are value-spliced at their exact spans
 // (applied last-to-first, so the earlier spans stay valid while the object is
 // rewritten); keys it omits (the seed leaves auth_mode / no_relay off local
-// sources) are appended before the object's closing brace. Every other byte
-// of the binding is copied verbatim.
-func setBindingPosture(config []byte, objStart, objEnd int64, authMode string, noRelay, enabled bool) ([]byte, error) {
+// sources) are appended before the object's closing brace. display_fields
+// follows the backfill law: a non-empty stored value is operator surface and
+// is never rewritten, an empty or absent one is filled from displayFields so
+// promoted sources participate in the display walk. Every other byte of the
+// binding is copied verbatim.
+func setBindingPosture(config []byte, objStart, objEnd int64, authMode string, noRelay, enabled bool, displayFields []string) ([]byte, error) {
 	authBytes, err := json.Marshal(authMode)
 	if err != nil {
 		return nil, err
@@ -828,6 +835,7 @@ func setBindingPosture(config []byte, objStart, objEnd int64, authMode string, n
 		start, end int64
 	}
 	var present []kvSpan
+	dfPresent, dfEmpty := false, true
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
@@ -853,8 +861,26 @@ func setBindingPosture(config []byte, objStart, objEnd int64, authMode string, n
 			return nil, err
 		}
 		valEnd := dec.InputOffset() // end of the value token
-		if _, ok := wanted[keyTok.(string)]; ok {
-			present = append(present, kvSpan{keyTok.(string), valStart, valEnd})
+		key := keyTok.(string)
+		if _, ok := wanted[key]; ok || key == "display_fields" {
+			present = append(present, kvSpan{key, valStart, valEnd})
+		}
+		if key == "display_fields" {
+			dfPresent = true
+			var fields []string
+			if err := json.Unmarshal(obj[valStart:valEnd], &fields); err != nil {
+				return nil, fmt.Errorf("binding display_fields: %w", err)
+			}
+			dfEmpty = len(fields) == 0
+		}
+	}
+	// Backfill bytes: set only when an empty or absent stored display_fields
+	// meets a non-empty passed value — the promoted-source title fix.
+	var backfill []byte
+	if len(displayFields) > 0 && (!dfPresent || dfEmpty) {
+		backfill, err = json.Marshal(displayFields)
+		if err != nil {
+			return nil, err
 		}
 	}
 	// Replace values last-to-first so earlier spans stay valid.
@@ -862,9 +888,16 @@ func setBindingPosture(config []byte, objStart, objEnd int64, authMode string, n
 	copy(work, obj)
 	for i := len(present) - 1; i >= 0; i-- {
 		p := present[i]
-		next := make([]byte, 0, len(work)-int(p.end-p.start)+len(wanted[p.key]))
+		repl, isWanted := wanted[p.key]
+		if !isWanted {
+			if backfill == nil {
+				continue
+			}
+			repl = backfill
+		}
+		next := make([]byte, 0, len(work)-int(p.end-p.start)+len(repl))
 		next = append(next, work[:p.start]...)
-		next = append(next, wanted[p.key]...)
+		next = append(next, repl...)
 		next = append(next, work[p.end:]...)
 		work = next
 	}
@@ -877,6 +910,9 @@ func setBindingPosture(config []byte, objStart, objEnd int64, authMode string, n
 		if !seen[key] {
 			missing = append(missing, key)
 		}
+	}
+	if backfill != nil && !dfPresent {
+		missing = append(missing, "display_fields")
 	}
 	if len(missing) == 0 {
 		return joinSplice(config, objStart, objEnd, work), nil
@@ -899,9 +935,13 @@ func setBindingPosture(config []byte, objStart, objEnd int64, authMode string, n
 		if err != nil {
 			return nil, err
 		}
+		value := wanted[key]
+		if key == "display_fields" {
+			value = backfill
+		}
 		ins = append(ins, keyBytes...)
 		ins = append(ins, `: `...)
-		ins = append(ins, wanted[key]...)
+		ins = append(ins, value...)
 	}
 	merged := make([]byte, 0, int(brace)+len(ins)+1)
 	merged = append(merged, work[:brace]...)
